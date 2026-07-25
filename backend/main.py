@@ -12,13 +12,25 @@ try:
 except ImportError:
     psutil = None  # type: ignore
 
+import logging
+
 from routers import (
     upload, stats, charts, models, session, compute, repeated, advanced_anova,
     pub_tables, categorical, agreement, reliability, missing_data, decision_curve,
     model_compare, diagnostics, model_diagnostics, pub_export, nomogram,
     survival_advanced, article_parser, code_runner, ml, timeseries, meta,
-    multiplicity, factor, bayesian, causal, causal_sem, agent
+    multiplicity, factor, bayesian, causal, causal_sem
 )
+
+# The agent router is optional: it needs httpx + openai, which a slim
+# deployment may omit. Importing it unguarded took the whole app down with a
+# 502 when those wheels were missing — one optional feature must never break
+# startup for every other endpoint.
+try:
+    from routers import agent
+except ImportError as exc:  # pragma: no cover - depends on the install profile
+    agent = None
+    _AGENT_IMPORT_ERROR = str(exc)
 from services import store
 
 app = FastAPI(title="Wizard Stats API", version="1.0.0")
@@ -105,7 +117,12 @@ app.include_router(factor.router, prefix="/api/factor", tags=["factor"])
 app.include_router(bayesian.router, prefix="/api/bayesian", tags=["bayesian"])
 app.include_router(causal.router, prefix="/api/causal", tags=["causal"])
 app.include_router(causal_sem.router, prefix="/api/causal", tags=["causal"])
-app.include_router(agent.router, prefix="/api/agent", tags=["agent"])
+if agent is not None:
+    app.include_router(agent.router, prefix="/api/agent", tags=["agent"])
+else:
+    logging.getLogger(__name__).warning(
+        "Agent router disabled - optional dependency missing: %s", _AGENT_IMPORT_ERROR
+    )
 
 
 @app.get("/.well-known/security.txt", response_class=PlainTextResponse)

@@ -24,3 +24,8 @@ simpleeval==1.0.7
 # slim deployment omits them.
 plotly==6.8.0
 kaleido==1.3.0
+
+# LLM agent (/api/agent/run). httpx also backs starlette's TestClient; openai
+# is the model client. main.py degrades gracefully if these are absent.
+httpx==0.28.1
+openai==1.109.1
