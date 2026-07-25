@@ -6,5 +6,6 @@
 hypothesis==6.155.1          # Property-based testing for simulation studies
 pytest==9.0.2
 pytest-cov==7.1.0
-httpx2
+httpx
+pytest-httpx>=0.30.0
 
