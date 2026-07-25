@@ -413,6 +413,65 @@ function DataTableBody({ session }: { session: Session }) {
     });
   }, [filtered, sortCol, sortDir]);
 
+  // ── Row virtualisation ──────────────────────────────────────────────────
+  // A 1000 x 125 sheet is 126,000 <td>s and ~256k DOM nodes; rendering them
+  // all took ~5.8s before the grid became usable (the upload itself is 0.4s).
+  // Rows are a uniform 33px, so a fixed-height window is exact. Small sheets
+  // render in full so short datasets — and the existing tests — are untouched.
+  const ROW_H = 33;
+  const VIRTUALIZE_ABOVE = 150;
+  const OVERSCAN = 12;
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportH, setViewportH] = useState(0);
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const measure = () => setViewportH(el.clientHeight);
+    measure();
+    // ResizeObserver is absent in jsdom and older embedded webviews; a single
+    // measurement is a fine fallback there.
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Coalesce scroll events into one state update per frame.
+  const rafRef = useRef<number | null>(null);
+  const onGridScroll = () => {
+    const el = scrollRef.current;
+    if (!el || rafRef.current != null) return;
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = null;
+      setScrollTop(el.scrollTop);
+    });
+  };
+  useEffect(() => () => { if (rafRef.current != null) cancelAnimationFrame(rafRef.current); }, []);
+
+  const virtualized = displayRows.length > VIRTUALIZE_ABOVE;
+  const { startIdx, endIdx } = useMemo(() => {
+    if (!virtualized) return { startIdx: 0, endIdx: displayRows.length };
+    const visible = Math.ceil((viewportH || 800) / ROW_H);
+    const first = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN);
+    return { startIdx: first, endIdx: Math.min(displayRows.length, first + visible + OVERSCAN * 2) };
+  }, [virtualized, displayRows.length, viewportH, scrollTop]);
+
+  const visibleRows = useMemo(
+    () => (virtualized ? displayRows.slice(startIdx, endIdx) : displayRows),
+    [virtualized, displayRows, startIdx, endIdx],
+  );
+  const padTop = virtualized ? startIdx * ROW_H : 0;
+  const padBottom = virtualized ? (displayRows.length - endIdx) * ROW_H : 0;
+
+  // A filter/sort change can leave the window scrolled past the new end.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el && el.scrollTop > displayRows.length * ROW_H) el.scrollTop = 0;
+  }, [displayRows.length]);
+
   useEffect(() => {
     if (renameCol) setTimeout(() => renameRef.current?.focus(), 0);
   }, [renameCol]);
@@ -1557,7 +1616,8 @@ function DataTableBody({ session }: { session: Session }) {
       </div>
 
       {/* ── Table ── */}
-      <div className="overflow-auto rounded-xl border border-gray-200 flex-1" style={{ minHeight: 0 }}>
+      <div ref={scrollRef} onScroll={onGridScroll}
+        className="overflow-auto rounded-xl border border-gray-200 flex-1" style={{ minHeight: 0 }}>
         <table className="w-full text-sm border-collapse">
           <thead className="sticky top-0 z-10">
 
@@ -1793,7 +1853,11 @@ function DataTableBody({ session }: { session: Session }) {
           </thead>
 
           <tbody>
-            {displayRows.map((row, visualIdx) => {
+            {padTop > 0 && (
+              <tr aria-hidden="true"><td colSpan={columns.length + 1} style={{ height: padTop, padding: 0, border: 0 }} /></tr>
+            )}
+            {visibleRows.map((row, windowIdx) => {
+              const visualIdx = startIdx + windowIdx;
               const origIdx = row._idx as number;
               const rowChecked = checkedRows.has(origIdx);
               return (
@@ -1955,6 +2019,9 @@ function DataTableBody({ session }: { session: Session }) {
               );
             })}
 
+            {padBottom > 0 && (
+              <tr aria-hidden="true"><td colSpan={columns.length + 1} style={{ height: padBottom, padding: 0, border: 0 }} /></tr>
+            )}
             {displayRows.length === 0 && (
               <tr>
                 <td

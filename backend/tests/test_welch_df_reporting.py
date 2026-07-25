@@ -123,3 +123,87 @@ def test_ttest_still_states_welch_was_applied(welch_result):
     levene = next(a for a in welch_result["assumptions"] if "Levene" in a["name"])
     assert levene["met"] is False
     assert "Welch correction applied" in levene["detail"]
+
+
+# ── Variance-assumption selection and the R snippet ──────────────────────────
+
+
+def _post(payload):
+    from fastapi.testclient import TestClient
+    from main import app
+    r = TestClient(app).post("/api/stats/ttest", json=payload)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+@pytest.fixture(scope="module")
+def sid_unequal(welch_pair):
+    g0, g1 = welch_pair
+    frame = pd.DataFrame({
+        "age": np.concatenate([g0, g1]),
+        "heart_disease": [0] * len(g0) + [1] * len(g1),
+    })
+    return make_session(frame, "ttest_variance_choice")
+
+
+def test_equal_var_false_forces_welch(sid_unequal, welch_pair):
+    g0, g1 = welch_pair
+    body = _post({"session_id": sid_unequal, "column": "age",
+                  "group_column": "heart_disease", "equal_var": False})
+    assert body["variance_assumption"] == "welch"
+    assert body["variance_assumption_selected_by"] == "request (equal_var)"
+    assert body["t"] == pytest.approx(sp.ttest_ind(g0, g1, equal_var=False)[0], rel=1e-12)
+
+
+def test_equal_var_true_forces_student_even_when_levene_fails(sid_unequal, welch_pair):
+    """The parameter used to be accepted and then silently ignored."""
+    g0, g1 = welch_pair
+    body = _post({"session_id": sid_unequal, "column": "age",
+                  "group_column": "heart_disease", "equal_var": True})
+    levene = next(a for a in body["assumptions"] if "Levene" in a["name"])
+    assert levene["met"] is False, "fixture must violate equal variances"
+    assert body["variance_assumption"] == "student"
+    assert body["df"] == pytest.approx(len(g0) + len(g1) - 2)
+    assert body["t"] == pytest.approx(sp.ttest_ind(g0, g1, equal_var=True)[0], rel=1e-12)
+
+
+@pytest.mark.parametrize("method,expected", [("student", "student"), ("welch", "welch")])
+def test_method_parameter_overrides_levene(sid_unequal, method, expected):
+    body = _post({"session_id": sid_unequal, "column": "age",
+                  "group_column": "heart_disease", "method": method})
+    assert body["variance_assumption"] == expected
+    assert body["variance_assumption_selected_by"] == "request (method)"
+
+
+def test_method_beats_the_legacy_equal_var_alias(sid_unequal):
+    body = _post({"session_id": sid_unequal, "column": "age", "group_column": "heart_disease",
+                  "method": "welch", "equal_var": True})
+    assert body["variance_assumption"] == "welch"
+
+
+def test_default_is_still_levene_driven(sid_unequal):
+    body = _post({"session_id": sid_unequal, "column": "age", "group_column": "heart_disease"})
+    assert body["variance_assumption_selected_by"] == "auto (Levene)"
+
+
+@pytest.mark.parametrize("payload,var_equal", [
+    ({"method": "welch"}, "FALSE"),
+    ({"method": "student"}, "TRUE"),
+    ({"equal_var": False}, "FALSE"),
+    ({"equal_var": True}, "TRUE"),
+])
+def test_r_snippet_matches_the_test_that_ran(sid_unequal, payload, var_equal):
+    """var.equal = TRUE is Student's; emitting it for a Welch result is wrong."""
+    body = _post({"session_id": sid_unequal, "column": "age",
+                  "group_column": "heart_disease", **payload})
+    assert f"var.equal = {var_equal}" in body["r_code"]
+    assert (body["variance_assumption"] == "welch") == (var_equal == "FALSE")
+
+
+def test_invalid_method_is_rejected(sid_unequal):
+    from fastapi.testclient import TestClient
+    from main import app
+    r = TestClient(app).post("/api/stats/ttest", json={
+        "session_id": sid_unequal, "column": "age",
+        "group_column": "heart_disease", "method": "nonsense"})
+    assert r.status_code == 422, r.text

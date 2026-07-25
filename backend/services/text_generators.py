@@ -218,8 +218,14 @@ def results_anova(result: dict) -> str:
 # R CODE GENERATORS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def r_ttest_ind(col: str, group_col: str) -> str:
-    return f't.test({col} ~ {group_col}, data = data, var.equal = TRUE)'
+def r_ttest_ind(col: str, group_col: str, welch: bool = False) -> str:
+    """R equivalent of the test that was actually run.
+
+    var.equal = TRUE is Student's pooled-variance test; Welch needs FALSE.
+    Emitting TRUE for a Welch result made the snippet irreproducible.
+    """
+    var_equal = "FALSE" if welch else "TRUE"
+    return f't.test({col} ~ {group_col}, data = data, var.equal = {var_equal})'
 
 def r_ttest_one(col: str, mu: float) -> str:
     return f't.test(data${col}, mu = {mu})'

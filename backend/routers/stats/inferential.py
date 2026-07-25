@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 import numpy as np
 import pandas as pd
 from scipy import stats as scipy_stats
@@ -79,7 +79,12 @@ class TTestRequest(BaseModel):
     column: str
     group_column: Optional[str] = None
     mu: Optional[float] = 0.0
-    equal_var: bool = True
+    # "auto" lets Levene pick Student vs Welch; the other two force it.
+    method: Literal["auto", "student", "welch"] = "auto"
+    # Legacy alias, kept so existing callers keep working. None means "not
+    # supplied" — it used to default to True while the handler ignored it
+    # entirely and always let Levene decide.
+    equal_var: Optional[bool] = None
 
 
 @router.post("/ttest")
@@ -99,7 +104,15 @@ def ttest(req: TTestRequest):
         assumptions = [check_normality(g1, str(groups[0])), check_normality(g2, str(groups[1])),
                        check_equal_variances([g1, g2], [str(groups[0]), str(groups[1])],
                                              on_violation="Welch correction applied")]
-        use_welch = not assumptions[2]["met"]
+        # Precedence: explicit method > legacy equal_var > Levene.
+        if req.method == "welch":
+            use_welch, chosen_by = True, "request (method)"
+        elif req.method == "student":
+            use_welch, chosen_by = False, "request (method)"
+        elif req.equal_var is not None:
+            use_welch, chosen_by = (not req.equal_var), "request (equal_var)"
+        else:
+            use_welch, chosen_by = (not assumptions[2]["met"]), "auto (Levene)"
         stat, p = scipy_stats.ttest_ind(g1, g2, equal_var=not use_welch)
         sig = bool(p < 0.05)
         es = cohen_d(g1, g2)
@@ -114,6 +127,8 @@ def ttest(req: TTestRequest):
             "t": float(stat), "p": float(p),
             "df": welch_satterthwaite_df(g1, g2) if use_welch else float(len(g1) + len(g2) - 2),
             "df_method": "welch_satterthwaite" if use_welch else "pooled",
+            "variance_assumption": "welch" if use_welch else "student",
+            "variance_assumption_selected_by": chosen_by,
             "significant": sig,
             "effect_sizes": [es],
             "assumptions": assumptions,
@@ -121,7 +136,7 @@ def ttest(req: TTestRequest):
                         str(groups[1]): group_summary(g2, str(groups[1]))},
             "interpretation": f"{'Significant' if sig else 'No significant'} difference between groups (t = {stat:.3f}, p = {p_str}, Hedges' g = {es['value']:.3f} [{es['magnitude']}])",
             "methods_text": methods_ttest_ind(req.column, req.group_column, use_welch),
-            "r_code": r_ttest_ind(req.column, req.group_column),
+            "r_code": r_ttest_ind(req.column, req.group_column, use_welch),
         }
         if warnings:
             ret["warnings"] = warnings
