@@ -30,8 +30,8 @@ export default function UploadZone() {
   const onDriveConnect = () => {
     if (cloud.status === "setupNeeded") {
       window.alert(
-        "Google Drive senkronizasyonu için OAuth Client ID gerekli.\n\n" +
-          "Kurulum detayları: frontend/src/lib/cloudConfig.ts dosyasının başında.",
+        "Google Drive sync needs an OAuth Client ID.\n\n" +
+          "Setup details are at the top of frontend/src/lib/cloudConfig.ts.",
       );
       return;
     }
@@ -48,7 +48,7 @@ export default function UploadZone() {
     }
   };
   const onDriveDisconnect = () => {
-    if (window.confirm("Google Drive bağlantısı kesilsin mi? Yerel oturum kayıtlarınız silinmez.")) {
+    if (window.confirm("Disconnect Google Drive? Your locally saved sessions are kept.")) {
       void cloudSync.signOut();
     }
   };
@@ -155,7 +155,7 @@ export default function UploadZone() {
             <button
               type="button"
               onClick={exitPower}
-              title="Karşılama ekranına dön"
+              title="Back to the welcome screen"
               className="flex items-center gap-3 rounded-lg -m-1 p-1 hover:bg-ink-50 focus:outline-none focus:ring-2 focus:ring-ink-200 transition-colors"
             >
               <img src="/logo.png" alt="uSTAT" className="w-8 h-8 object-contain" />
@@ -296,7 +296,7 @@ export default function UploadZone() {
           {cloud.signedIn ? (
             <>
               <p className="text-xs font-semibold text-sky-800 truncate">
-                Google Drive bağlı
+                Google Drive connected
                 {cloud.user?.email && (
                   <span className="font-normal text-sky-600"> · {cloud.user.email}</span>
                 )}
@@ -305,19 +305,19 @@ export default function UploadZone() {
                 {cloud.status === "syncing"
                   ? "Senkronize ediliyor…"
                   : cloud.status === "error"
-                    ? `Hata: ${cloud.message || "senkronizasyon başarısız"}`
+                    ? `Error: ${cloud.message || "sync failed"}`
                     : cloud.lastSync
                       ? `Son senkronizasyon: ${new Date(cloud.lastSync).toLocaleString()}`
-                      : "Henüz senkronize edilmedi"}
+                      : "Not synced yet"}
               </p>
             </>
           ) : (
             <>
               <p className="text-xs font-semibold text-sky-800">
-                Google Drive ile cihazlar arası taşıyın &amp; yedekleyin
+                Carry your work across devices &amp; back it up with Google Drive
               </p>
               <p className="text-[10px] text-sky-500">
-                Oturumlarınız kendi gizli Drive klasörünüze yedeklenir — sunucudan geçmez.
+                Sessions are backed up to your own private Drive folder — they never pass through our server.
               </p>
             </>
           )}
@@ -334,7 +334,7 @@ export default function UploadZone() {
             </button>
             <button
               onClick={onDriveDisconnect}
-              title="Bağlantıyı kes"
+              title="Disconnect"
               className="inline-flex items-center text-[11px] font-semibold text-sky-600 hover:text-red-600 bg-white border border-sky-200 hover:border-red-200 hover:bg-red-50 rounded-lg px-2 py-1.5 transition-colors"
             >
               <LogOut size={12} />
@@ -350,7 +350,7 @@ export default function UploadZone() {
             }`}
           >
             <CloudDownload size={13} />
-            Drive Bağla
+            Connect Drive
           </button>
         )}
       </div>

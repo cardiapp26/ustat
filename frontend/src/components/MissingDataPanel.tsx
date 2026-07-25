@@ -10,6 +10,7 @@ import {
   runMICEPreview,
   runMICETransfer,
   runMissingDiagnostics,
+  runMnarSensitivity,
 } from "../api";
 import ResultExporter from "./ResultExporter";
 import api from "../api";
@@ -73,6 +74,105 @@ interface ExternalImputeResult {
   applied?: boolean;
 }
 
+/** Every heavy sub-analysis of /api/models/mnar_sensitivity is individually
+ *  guarded server-side and degrades to `{ available: false, reason: "..." }`
+ *  instead of failing the whole request, so each block must be able to render
+ *  its own reason. */
+interface MnarBlockBase { available?: boolean; reason?: string }
+interface MnarPmmScenario { delta: number; pooled_means?: Record<string, number | null> }
+interface MnarPatternMixture extends MnarBlockBase {
+  n_imputations?: number;
+  delta_values?: number[];
+  scenarios?: MnarPmmScenario[];
+  interpretation?: string;
+}
+interface MnarModelDeltaRow {
+  delta: number;
+  estimate?: number; log_odds?: number; odds_ratio?: number; hr?: number; se?: number; error?: string;
+}
+interface MnarModelDelta extends MnarBlockBase {
+  model_type?: string;
+  results?: MnarModelDeltaRow[];
+  interpretation?: string;
+}
+interface MnarHeckman extends MnarBlockBase {
+  n_total?: number;
+  n_observed_outcome?: number;
+  selection_rate?: number;
+  inverse_mills_ratio_p?: number | null;
+  selection_bias_signal?: boolean;
+  outcome_coefficients?: Array<{ variable: string; estimate: number; se: number; p: number }>;
+  interpretation?: string;
+}
+interface MnarIsniRow {
+  variable: string;
+  missingness_indicator_coef?: number;
+  target_coefficient?: number | null;
+  isni?: number;
+  high_sensitivity?: boolean;
+  error?: string;
+}
+interface MnarIsni extends MnarBlockBase { indices?: MnarIsniRow[]; interpretation?: string }
+interface MnarConvergence extends MnarBlockBase {
+  variables?: Record<string, { r_hat_proxy?: number | null; converged?: boolean }>;
+  warning?: string;
+}
+interface MnarPpcCheck {
+  variable: string;
+  available?: boolean;
+  reason?: string;
+  observed_mean?: number;
+  imputed_mean?: number;
+  mean_difference?: number;
+  ks_p?: number | null;
+  flag_distribution_shift?: boolean;
+}
+interface MnarPpc extends MnarBlockBase { checks?: MnarPpcCheck[] }
+interface MnarCongeniality extends MnarBlockBase {
+  congenial?: boolean;
+  analysis_variables_missing_from_imputation?: string[];
+  passive_variables?: string[];
+  recommendation?: string;
+}
+interface MnarAux extends MnarBlockBase {
+  recommended_auxiliary_variables?: Array<{
+    target: string; candidate: string; missingness_corr_abs: number; value_corr_abs: number; priority_score: number;
+  }>;
+  method_note?: string;
+}
+interface MnarSurvivalRow {
+  delta: number;
+  censored_weight_multiplier?: number;
+  concordance?: number;
+  coefficients?: Array<{ variable: string; hr: number }>;
+  error?: string;
+}
+interface MnarSurvival extends MnarBlockBase { results?: MnarSurvivalRow[]; interpretation?: string }
+interface MnarResult {
+  test?: string;
+  n?: number;
+  columns?: string[];
+  pattern_mixture_model?: MnarPatternMixture | null;
+  model_delta_sensitivity?: MnarModelDelta | null;
+  heckman_selection_model?: MnarHeckman | null;
+  isni?: MnarIsni | null;
+  mice_convergence_diagnostics?: MnarConvergence | null;
+  imputation_model_diagnostics?: MnarPpc | null;
+  congeniality_assessment?: MnarCongeniality | null;
+  passive_imputation?: {
+    formulas?: Record<string, string>;
+    preview?: Record<string, { n_nonmissing?: number; mean?: number | null }>;
+  } | null;
+  survival_specific_imputation?: { enabled?: boolean; auxiliary_variables?: string[] } | null;
+  auxiliary_variable_guidance?: MnarAux | null;
+  survival_mnar_sensitivity?: MnarSurvival | null;
+  warnings?: string[];
+  assumptions?: Array<{ name: string; met: boolean; detail: string }>;
+  result_text?: string;
+  r_code?: string;
+}
+type MnarModelType = "linear" | "logistic" | "cox";
+
 const QUICK_SUFFIX: Record<QuickMethod, string> = {
   __mean__: "mean",
   __median__: "median",
@@ -85,12 +185,33 @@ const errText = (e: unknown): string =>
 
 const normColumnName = (name: string) => name.trim().toLowerCase();
 
+/** Mirrors the backend default `delta_values` of /api/models/mnar_sensitivity. */
+const MNAR_DEFAULT_DELTAS = "-1, 0, 1";
+
+/** Parse the comma-separated delta input; null means "not a valid delta list". */
+const parseDeltaValues = (raw: string): number[] | null => {
+  const parts = raw.split(",").map((p) => p.trim()).filter((p) => p.length > 0);
+  if (parts.length === 0) return null;
+  const values = parts.map(Number);
+  return values.some((v) => !Number.isFinite(v)) ? null : values;
+};
+
+/** Reason a guarded sub-analysis could not be produced, or null when it has results. */
+const mnarUnavailableReason = (block: MnarBlockBase | null | undefined, fallback: string): string | null => {
+  if (block == null) return fallback;
+  if (block.available === false) return block.reason || fallback;
+  return null;
+};
+
+const fmtNum = (v: number | null | undefined): string =>
+  v == null || !Number.isFinite(v) ? "—" : String(v);
+
 export default function MissingDataPanel() {
   const session = useStore((s) => s.session);
   const columns = session?.columns ?? [];
   const numCols = columns.filter((c) => isNumericKind(c.kind));
   const sid = session?.session_id ?? "";
-  const [activeSubTab, setActiveSubTab] = useState<"overview" | "cleaning" | "reference">("overview");
+  const [activeSubTab, setActiveSubTab] = useState<"overview" | "cleaning" | "reference" | "mnar">("overview");
 
   const preview = session?.preview ?? [];
   const missingInfo = columns
@@ -136,6 +257,18 @@ export default function MissingDataPanel() {
   const [externalStratifyBy, setExternalStratifyBy] = useState("");
   const [externalResult, setExternalResult] = useState<ExternalImputeResult | null>(null);
   const [externalLoading, setExternalLoading] = useState<"columns" | "preview" | "apply" | null>(null);
+
+  // MNAR sensitivity state
+  const [mnarColumns, setMnarColumns] = useState<string[]>([]);
+  const [mnarDeltaText, setMnarDeltaText] = useState(MNAR_DEFAULT_DELTAS);
+  const [mnarModelType, setMnarModelType] = useState<MnarModelType>("logistic");
+  // Without an outcome model the backend skips model_delta_sensitivity, Heckman
+  // and ISNI entirely — and model_type then has nothing to act on. These two
+  // pickers are what make those three blocks (and the selector above) live.
+  const [mnarOutcome, setMnarOutcome] = useState("");
+  const [mnarPredictors, setMnarPredictors] = useState<string[]>([]);
+  const [mnarLoading, setMnarLoading] = useState(false);
+  const [mnarResult, setMnarResult] = useState<MnarResult | null>(null);
 
   if (!session) return <p className="text-gray-400 text-sm p-6">Upload data first.</p>;
 
@@ -191,7 +324,7 @@ export default function MissingDataPanel() {
       const response = await fillBlanks(sid, col, method, newColumn);
       await refresh();
       setMutationNotice(
-        `${col} korundu; ${response.data.column} oluşturuldu ve ${response.data.n_filled} eksik değer tamamlandı.`
+        `${col} kept; ${response.data.column} created with ${response.data.n_filled} missing value(s) filled.`
       );
     } catch (e: unknown) {
       setErr(errText(e));
@@ -394,6 +527,38 @@ export default function MissingDataPanel() {
     }
   };
 
+  const toggleMnarColumn = (name: string) => {
+    setMnarResult(null);
+    setMnarColumns((p) => (p.includes(name) ? p.filter((c) => c !== name) : [...p, name]));
+  };
+
+  const runMnar = async () => {
+    if (mnarColumns.length === 0) { setErr("Select at least one variable with missing data"); return; }
+    const deltaValues = parseDeltaValues(mnarDeltaText);
+    if (!deltaValues) { setErr("Enter delta values as comma-separated numbers, e.g. -1, 0, 1"); return; }
+    setErr(null); setMnarResult(null); setMnarLoading(true);
+    try {
+      const payload: Record<string, unknown> = {
+        session_id: sid,
+        columns: mnarColumns,
+        delta_values: deltaValues,
+        model_type: mnarModelType,
+      };
+      // Only send the outcome model when it is complete; a half-specified one
+      // makes the backend fall back to the same placeholders as sending none.
+      if (mnarOutcome && mnarPredictors.length > 0) {
+        payload.outcome_col = mnarOutcome;
+        payload.predictors = mnarPredictors;
+      }
+      const res = await runMnarSensitivity(payload);
+      setMnarResult(res.data);
+    } catch (e: unknown) {
+      setErr(errText(e));
+    } finally {
+      setMnarLoading(false);
+    }
+  };
+
   const pctClass = (pct: number) =>
     pct > 30 ? "bg-red-100 text-red-600" : pct > 10 ? "bg-amber-100 text-amber-600" : "bg-gray-100 text-gray-500";
   const QuickBtn = ({ col, method, label, show }: { col: string; method: QuickMethod; label: string; show: boolean }) =>
@@ -407,6 +572,33 @@ export default function MissingDataPanel() {
       </button>
     );
 
+  /** Renders one MNAR sub-analysis, falling back to the backend's own
+   *  `{ available: false, reason }` explanation instead of an empty tile. */
+  const MnarBlock = ({ title, block, fallback, children }: {
+    title: string;
+    block: MnarBlockBase | null | undefined;
+    fallback: string;
+    children: ReactNode;
+  }) => {
+    const reason = mnarUnavailableReason(block, fallback);
+    return (
+      <div className="border border-gray-200 rounded-lg overflow-hidden">
+        <div className="px-4 py-2 bg-gray-50 border-b border-gray-100">
+          <h4 className="text-xs font-semibold text-gray-700">{title}</h4>
+        </div>
+        <div className="px-4 py-3 space-y-2">
+          {reason ? (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-[11px] text-amber-700">
+              <span className="font-semibold">Not available — </span>{reason}
+            </div>
+          ) : children}
+        </div>
+      </div>
+    );
+  };
+
+  const mnarAnalysedColumns = mnarResult?.columns ?? mnarColumns;
+
   return (
     <div className="max-w-4xl mx-auto p-4">
       <div
@@ -418,6 +610,7 @@ export default function MissingDataPanel() {
           ["overview", "Missing Data Overview"],
           ["cleaning", "Data Cleaning"],
           ["reference", "Reference Imputation"],
+          ["mnar", "MNAR Sensitivity"],
         ] as const).map(([id, label]) => (
           <button
             key={id}
@@ -963,6 +1156,461 @@ export default function MissingDataPanel() {
                       {externalLoading === "apply" ? "Transferring…" : externalResult.applied ? "Transferred" : "Transfer data"}
                     </button>
                   </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+          </>
+        )}
+      </div>
+
+      <div className={activeSubTab === "mnar" ? "space-y-5" : "hidden"} role="tabpanel">
+        {activeSubTab === "mnar" && (
+          <>
+        {err && <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-xs text-red-600">{err}</div>}
+
+        {missingInfo.length === 0 ? (
+          <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-3 text-sm text-emerald-700">
+            No missing values detected in any column.
+          </div>
+        ) : (
+          <div className="border border-purple-200 rounded-xl overflow-hidden">
+            <div className="px-5 py-3.5 bg-purple-50 border-b border-purple-100">
+              <h3 className="text-sm font-semibold text-purple-800">MNAR Sensitivity Analysis</h3>
+              <p className="text-[11px] text-purple-500 mt-0.5">
+                Pattern-mixture delta adjustment, selection model, ISNI and imputation diagnostics for data that may be
+                missing not at random. Each sub-analysis is reported separately; ones that cannot be computed explain why.
+              </p>
+            </div>
+            <div className="px-5 py-4 space-y-4">
+              <div>
+                <p className="text-xs text-gray-500 font-medium mb-2">Variables to analyse</p>
+                <div
+                  role="group"
+                  aria-label="Variables to analyse"
+                  className="max-h-48 overflow-y-auto rounded-lg border border-gray-200"
+                >
+                  {missingInfo.map((m) => (
+                    <label
+                      key={m.name}
+                      className="flex items-center gap-2 px-3 py-2 border-t first:border-t-0 border-gray-100 text-xs text-gray-700"
+                    >
+                      <input
+                        type="checkbox"
+                        className="accent-purple-600"
+                        checked={mnarColumns.includes(m.name)}
+                        onChange={() => toggleMnarColumn(m.name)}
+                      />
+                      <span className="truncate">{m.name}</span>
+                      <span className="text-[10px] text-gray-400">{m.pct.toFixed(1)}% missing</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-[1fr_1fr]">
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs text-gray-500 font-medium">Delta values</span>
+                  <input
+                    type="text"
+                    value={mnarDeltaText}
+                    onChange={(e) => { setMnarDeltaText(e.target.value); setMnarResult(null); }}
+                    placeholder={MNAR_DEFAULT_DELTAS}
+                    className="text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:border-purple-400"
+                  />
+                  <span className="text-[10px] text-gray-400">
+                    Comma-separated shifts applied to originally missing cells; 0 is the MAR reference scenario.
+                  </span>
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs text-gray-500 font-medium">Model type</span>
+                  <select
+                    value={mnarModelType}
+                    onChange={(e) => { setMnarModelType(e.target.value as MnarModelType); setMnarResult(null); }}
+                    className="text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:border-purple-400"
+                  >
+                    <option value="logistic">Logistic</option>
+                    <option value="linear">Linear</option>
+                    <option value="cox">Cox</option>
+                  </select>
+                  <span className="text-[10px] text-gray-400">
+                    Applies to the model-based delta sensitivity below. Pick an outcome and
+                    predictors to activate it.
+                  </span>
+                </label>
+              </div>
+
+              {/* Outcome model — optional, but without it the backend returns
+                  placeholders for delta sensitivity, Heckman and ISNI. */}
+              <div className="grid gap-3 md:grid-cols-[1fr_1.4fr]">
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs text-gray-500 font-medium">Outcome (optional)</span>
+                  <select
+                    value={mnarOutcome}
+                    onChange={(e) => { setMnarOutcome(e.target.value); setMnarResult(null); }}
+                    className="text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:border-purple-400"
+                  >
+                    <option value="">— none —</option>
+                    {columns.map((c) => (
+                      <option key={c.name} value={c.name}>{c.name}</option>
+                    ))}
+                  </select>
+                  <span className="text-[10px] text-gray-400">
+                    Unlocks model-based delta sensitivity, Heckman and ISNI.
+                  </span>
+                </label>
+                <div>
+                  <p className="text-xs text-gray-500 font-medium mb-2">Outcome-model predictors</p>
+                  <div
+                    role="group"
+                    aria-label="Outcome-model predictors"
+                    className="max-h-28 overflow-y-auto border border-gray-200 rounded-lg p-2 grid grid-cols-2 gap-1 bg-white"
+                  >
+                    {columns.filter((c) => c.name !== mnarOutcome).map((c) => (
+                      <label key={c.name} className="flex items-center gap-1.5 text-xs text-gray-600">
+                        <input
+                          type="checkbox"
+                          className="accent-purple-500"
+                          checked={mnarPredictors.includes(c.name)}
+                          onChange={() => {
+                            setMnarResult(null);
+                            setMnarPredictors((p) =>
+                              p.includes(c.name) ? p.filter((x) => x !== c.name) : [...p, c.name]);
+                          }}
+                        />
+                        <span className="truncate">{c.name}</span>
+                      </label>
+                    ))}
+                  </div>
+                  {mnarOutcome && mnarPredictors.length === 0 && (
+                    <p className="text-[10px] text-amber-600 mt-1">
+                      Select at least one predictor, or the outcome model is ignored.
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3 flex-wrap">
+                <button
+                  onClick={runMnar}
+                  disabled={mnarLoading || mnarColumns.length === 0}
+                  className="px-4 py-2 text-sm font-medium bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50"
+                >
+                  {mnarLoading ? "Running MNAR sensitivity…" : `Run MNAR sensitivity${mnarColumns.length ? ` (${mnarColumns.length})` : ""}`}
+                </button>
+                {mnarColumns.length === 0 && <p className="text-xs text-gray-400">Select variables above</p>}
+                <p className="text-[10px] text-gray-400">
+                  Runs MICE plus several models — this can take a minute or more on larger datasets.
+                </p>
+              </div>
+              {mnarLoading && (
+                <div className="bg-purple-50 border border-purple-200 rounded-lg px-3 py-2 text-[11px] text-purple-700">
+                  Running multiple imputation and sensitivity models… please keep this tab open.
+                </div>
+              )}
+
+              {mnarResult && (
+                <div className="space-y-3">
+                  {mnarResult.result_text && (
+                    <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 text-sm text-emerald-800">
+                      {mnarResult.result_text}
+                    </div>
+                  )}
+                  {mnarResult.warnings?.map((w) => (
+                    <div key={w} className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-[11px] text-amber-700">{w}</div>
+                  ))}
+
+                  <MnarBlock
+                    title="Pattern-mixture delta scenarios"
+                    block={mnarResult.pattern_mixture_model}
+                    fallback="Pattern-mixture model was not returned."
+                  >
+                    {mnarResult.pattern_mixture_model?.scenarios?.length ? (
+                      <div className="overflow-auto rounded-lg border border-gray-200">
+                        <table className="text-xs w-full">
+                          <thead>
+                            <tr className="bg-gray-50 text-left text-gray-500">
+                              <th className="px-3 py-1.5">Delta</th>
+                              {mnarAnalysedColumns.map((c) => <th key={c} className="px-3 py-1.5">{c} (pooled mean)</th>)}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {mnarResult.pattern_mixture_model.scenarios.map((s) => (
+                              <tr key={s.delta} className="border-t border-gray-100">
+                                <td className="px-3 py-1 text-gray-700">{s.delta}</td>
+                                {mnarAnalysedColumns.map((c) => (
+                                  <td key={c} className="px-3 py-1 text-gray-700">{fmtNum(s.pooled_means?.[c])}</td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : <p className="text-[11px] text-gray-400">No delta scenarios returned.</p>}
+                    {mnarResult.pattern_mixture_model?.interpretation && (
+                      <p className="text-[10px] text-gray-400">{mnarResult.pattern_mixture_model.interpretation}</p>
+                    )}
+                  </MnarBlock>
+
+                  <MnarBlock
+                    title="Model-based delta sensitivity"
+                    block={mnarResult.model_delta_sensitivity}
+                    fallback="Not run — requires an outcome model with predictors."
+                  >
+                    <div className="overflow-auto rounded-lg border border-gray-200">
+                      <table className="text-xs w-full">
+                        <thead>
+                          <tr className="bg-gray-50 text-left text-gray-500">
+                            <th className="px-3 py-1.5">Delta</th>
+                            <th className="px-3 py-1.5">Estimate</th>
+                            <th className="px-3 py-1.5">SE</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(mnarResult.model_delta_sensitivity?.results ?? []).map((r, i) => (
+                            <tr key={i} className="border-t border-gray-100">
+                              <td className="px-3 py-1 text-gray-700">{r.delta}</td>
+                              <td className="px-3 py-1 text-gray-700">
+                                {r.error ?? fmtNum(r.estimate ?? r.log_odds ?? r.hr)}
+                              </td>
+                              <td className="px-3 py-1 text-gray-700">{fmtNum(r.se)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </MnarBlock>
+
+                  <MnarBlock
+                    title="Heckman selection model"
+                    block={mnarResult.heckman_selection_model}
+                    fallback="Heckman selection model was not run."
+                  >
+                    <p className="text-[11px] text-gray-600">
+                      Observed outcomes: {mnarResult.heckman_selection_model?.n_observed_outcome ?? "—"} / {mnarResult.heckman_selection_model?.n_total ?? "—"}
+                      {" · "}Selection rate: {fmtNum(mnarResult.heckman_selection_model?.selection_rate)}
+                      {" · "}Inverse Mills ratio p: {fmtNum(mnarResult.heckman_selection_model?.inverse_mills_ratio_p)}
+                    </p>
+                    {mnarResult.heckman_selection_model?.outcome_coefficients?.length ? (
+                      <div className="overflow-auto rounded-lg border border-gray-200">
+                        <table className="text-xs w-full">
+                          <thead>
+                            <tr className="bg-gray-50 text-left text-gray-500">
+                              <th className="px-3 py-1.5">Variable</th>
+                              <th className="px-3 py-1.5">Estimate</th>
+                              <th className="px-3 py-1.5">SE</th>
+                              <th className="px-3 py-1.5">p</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {mnarResult.heckman_selection_model.outcome_coefficients.map((c) => (
+                              <tr key={c.variable} className="border-t border-gray-100">
+                                <td className="px-3 py-1 text-gray-700">{c.variable}</td>
+                                <td className="px-3 py-1 text-gray-700">{fmtNum(c.estimate)}</td>
+                                <td className="px-3 py-1 text-gray-700">{fmtNum(c.se)}</td>
+                                <td className="px-3 py-1 text-gray-700">{fmtP(Number(c.p))}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : null}
+                  </MnarBlock>
+
+                  <MnarBlock
+                    title="ISNI — index of sensitivity to non-ignorability"
+                    block={mnarResult.isni}
+                    fallback="ISNI was not computed."
+                  >
+                    <div className="overflow-auto rounded-lg border border-gray-200">
+                      <table className="text-xs w-full">
+                        <thead>
+                          <tr className="bg-gray-50 text-left text-gray-500">
+                            <th className="px-3 py-1.5">Variable</th>
+                            <th className="px-3 py-1.5">ISNI</th>
+                            <th className="px-3 py-1.5">High sensitivity</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(mnarResult.isni?.indices ?? []).map((r) => (
+                            <tr key={r.variable} className="border-t border-gray-100">
+                              <td className="px-3 py-1 text-gray-700">{r.variable}</td>
+                              <td className="px-3 py-1 text-gray-700">{r.error ?? fmtNum(r.isni)}</td>
+                              <td className={`px-3 py-1 ${r.high_sensitivity ? "text-red-500" : "text-gray-700"}`}>
+                                {r.high_sensitivity ? "Yes" : "No"}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </MnarBlock>
+
+                  <MnarBlock
+                    title="MICE convergence diagnostics"
+                    block={mnarResult.mice_convergence_diagnostics}
+                    fallback="Convergence diagnostics were not returned."
+                  >
+                    <div className="overflow-auto rounded-lg border border-gray-200">
+                      <table className="text-xs w-full">
+                        <thead>
+                          <tr className="bg-gray-50 text-left text-gray-500">
+                            <th className="px-3 py-1.5">Variable</th>
+                            <th className="px-3 py-1.5">R-hat proxy</th>
+                            <th className="px-3 py-1.5">Converged</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {Object.entries(mnarResult.mice_convergence_diagnostics?.variables ?? {}).map(([name, v]) => (
+                            <tr key={name} className="border-t border-gray-100">
+                              <td className="px-3 py-1 text-gray-700">{name}</td>
+                              <td className="px-3 py-1 text-gray-700">{fmtNum(v.r_hat_proxy)}</td>
+                              <td className={`px-3 py-1 ${v.converged ? "text-gray-700" : "text-red-500"}`}>
+                                {v.converged ? "Yes" : "No"}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    {mnarResult.mice_convergence_diagnostics?.warning && (
+                      <p className="text-[10px] text-gray-400">{mnarResult.mice_convergence_diagnostics.warning}</p>
+                    )}
+                  </MnarBlock>
+
+                  <MnarBlock
+                    title="Imputation model diagnostics"
+                    block={mnarResult.imputation_model_diagnostics}
+                    fallback="Imputation diagnostics were not returned."
+                  >
+                    {(mnarResult.imputation_model_diagnostics?.checks ?? []).map((c) => (
+                      c.available === false ? (
+                        <div key={c.variable} className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-[11px] text-amber-700">
+                          <span className="font-semibold">{c.variable} — </span>{c.reason || "Not available."}
+                        </div>
+                      ) : (
+                        <p key={c.variable} className="text-[11px] text-gray-600">
+                          <span className="font-semibold">{c.variable}:</span> observed mean {fmtNum(c.observed_mean)} → imputed mean {fmtNum(c.imputed_mean)}
+                          {" · "}KS <i>p</i> {c.ks_p == null ? "—" : fmtP(Number(c.ks_p))}
+                          {c.flag_distribution_shift ? " · distribution shift flagged" : ""}
+                        </p>
+                      )
+                    ))}
+                  </MnarBlock>
+
+                  <MnarBlock
+                    title="Congeniality assessment"
+                    block={mnarResult.congeniality_assessment}
+                    fallback="Congeniality assessment was not returned."
+                  >
+                    <p className="text-[11px] text-gray-600">
+                      <span className="font-semibold">{mnarResult.congeniality_assessment?.congenial ? "Congenial" : "Not congenial"}.</span>{" "}
+                      {mnarResult.congeniality_assessment?.recommendation}
+                    </p>
+                    {mnarResult.congeniality_assessment?.analysis_variables_missing_from_imputation?.length ? (
+                      <p className="text-[11px] text-gray-600">
+                        Missing from imputation model: {mnarResult.congeniality_assessment.analysis_variables_missing_from_imputation.join(", ")}
+                      </p>
+                    ) : null}
+                  </MnarBlock>
+
+                  <MnarBlock
+                    title="Auxiliary variable guidance"
+                    block={mnarResult.auxiliary_variable_guidance}
+                    fallback="Auxiliary variable guidance was not returned."
+                  >
+                    {mnarResult.auxiliary_variable_guidance?.recommended_auxiliary_variables?.length ? (
+                      <div className="overflow-auto rounded-lg border border-gray-200">
+                        <table className="text-xs w-full">
+                          <thead>
+                            <tr className="bg-gray-50 text-left text-gray-500">
+                              <th className="px-3 py-1.5">Target</th>
+                              <th className="px-3 py-1.5">Candidate</th>
+                              <th className="px-3 py-1.5">Priority</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {mnarResult.auxiliary_variable_guidance.recommended_auxiliary_variables.map((r) => (
+                              <tr key={`${r.target}:${r.candidate}`} className="border-t border-gray-100">
+                                <td className="px-3 py-1 text-gray-700">{r.target}</td>
+                                <td className="px-3 py-1 text-gray-700">{r.candidate}</td>
+                                <td className="px-3 py-1 text-gray-700">{fmtNum(r.priority_score)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : <p className="text-[11px] text-gray-400">No auxiliary variables recommended.</p>}
+                  </MnarBlock>
+
+                  <MnarBlock
+                    title="Survival MNAR sensitivity (informative censoring)"
+                    block={mnarResult.survival_mnar_sensitivity}
+                    fallback="Survival MNAR sensitivity was not run."
+                  >
+                    <div className="overflow-auto rounded-lg border border-gray-200">
+                      <table className="text-xs w-full">
+                        <thead>
+                          <tr className="bg-gray-50 text-left text-gray-500">
+                            <th className="px-3 py-1.5">Delta</th>
+                            <th className="px-3 py-1.5">Censored weight ×</th>
+                            <th className="px-3 py-1.5">Concordance</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(mnarResult.survival_mnar_sensitivity?.results ?? []).map((r) => (
+                            <tr key={r.delta} className="border-t border-gray-100">
+                              <td className="px-3 py-1 text-gray-700">{r.delta}</td>
+                              <td className="px-3 py-1 text-gray-700">{r.error ?? fmtNum(r.censored_weight_multiplier)}</td>
+                              <td className="px-3 py-1 text-gray-700">{fmtNum(r.concordance)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </MnarBlock>
+
+                  {mnarResult.survival_specific_imputation?.enabled && (
+                    <div className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-[11px] text-gray-600">
+                      Survival-specific imputation auxiliaries added:{" "}
+                      {mnarResult.survival_specific_imputation.auxiliary_variables?.join(", ") || "none"}
+                    </div>
+                  )}
+                  {mnarResult.passive_imputation?.formulas && Object.keys(mnarResult.passive_imputation.formulas).length > 0 && (
+                    <div className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-[11px] text-gray-600">
+                      Passive imputation formulas:{" "}
+                      {Object.entries(mnarResult.passive_imputation.formulas).map(([k, v]) => `${k} = ${v}`).join("; ")}
+                    </div>
+                  )}
+
+                  {mnarResult.assumptions?.length ? (
+                    <div className="border border-gray-200 rounded-lg px-4 py-3 space-y-1">
+                      <p className="text-xs font-semibold text-gray-700">Assumptions</p>
+                      <ul className="ml-3 list-disc text-[11px] text-gray-600">
+                        {mnarResult.assumptions.map((a) => (
+                          <li key={a.name}>
+                            <span className="font-medium">{a.name}</span> ({a.met ? "met" : "not met"}): {a.detail}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+
+                  {mnarResult.r_code && (
+                    <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-4 py-3">
+                      <div className="flex items-center justify-between gap-3 mb-1.5">
+                        <p className="text-xs font-semibold text-indigo-800">R code</p>
+                        <button
+                          onClick={() => navigator.clipboard.writeText(mnarResult.r_code ?? "")}
+                          className="text-[10px] px-2 py-0.5 rounded border border-indigo-200 text-indigo-600 hover:bg-white transition-colors"
+                        >
+                          Copy
+                        </button>
+                      </div>
+                      <pre className="text-[11px] text-indigo-800 whitespace-pre-wrap">{mnarResult.r_code}</pre>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

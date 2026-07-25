@@ -233,7 +233,7 @@ export async function restoreSession(id: string): Promise<void> {
 }
 
 /** Permanently delete a single record from IndexedDB (hard delete). Used
- *  by "Kalıcı Sil" in the Trash bin and by purgeExpiredTrash(). */
+ *  by "Delete permanently" in the Trash bin and by purgeExpiredTrash(). */
 export async function purgeSession(id: string): Promise<void> {
   await getDb().sessions.delete(id);
 }

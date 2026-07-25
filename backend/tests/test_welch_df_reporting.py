@@ -1,0 +1,125 @@
+"""The reported df must belong to the test that produced t and p.
+
+`ttest_ind(equal_var=False)` was used whenever Levene failed, but the response
+hardcoded `df = n1 + n2 - 2` — the pooled value. A Welch t reported against the
+pooled df understates the tail, so a manuscript would carry a df that does not
+correspond to its own p-value.
+
+The same helper also claimed "using Welch correction" for one-way ANOVA, whose
+omnibus F is scipy's classic equal-variance `f_oneway`; only the post-hoc
+switches to Games-Howell.
+"""
+import numpy as np
+import pandas as pd
+import pytest
+from conftest import make_session
+from scipy import stats as sp
+
+SEED = 20260725
+
+
+def _levene_violating_pair():
+    """Two groups with clearly unequal variances, so the Welch path is taken."""
+    rng = np.random.default_rng(SEED)
+    g0 = np.round(rng.normal(52.59, 9.0, 164), 4)
+    g1 = np.round(rng.normal(56.63, 3.0, 139), 4)
+    return g0, g1
+
+
+@pytest.fixture(scope="module")
+def welch_pair():
+    return _levene_violating_pair()
+
+
+@pytest.fixture(scope="module")
+def welch_result(welch_pair):
+    from fastapi.testclient import TestClient
+    from main import app
+
+    g0, g1 = welch_pair
+    df = pd.DataFrame({
+        "age": np.concatenate([g0, g1]),
+        "heart_disease": [0] * len(g0) + [1] * len(g1),
+    })
+    sid = make_session(df, "welch_df_session")
+    r = TestClient(app).post("/api/stats/ttest", json={
+        "session_id": sid, "column": "age", "group_column": "heart_disease",
+    })
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_welch_path_was_actually_taken(welch_result):
+    assert "Welch" in welch_result["test"]
+    assert welch_result["df_method"] == "welch_satterthwaite"
+
+
+def test_reported_df_matches_welch_satterthwaite(welch_result, welch_pair):
+    g0, g1 = welch_pair
+    n1, n2 = len(g0), len(g1)
+    a, b = g0.var(ddof=1) / n1, g1.var(ddof=1) / n2
+    expected = (a + b) ** 2 / ((a ** 2) / (n1 - 1) + (b ** 2) / (n2 - 1))
+    assert welch_result["df"] == pytest.approx(expected, rel=1e-12)
+    # The whole point: it must not be the pooled value.
+    assert welch_result["df"] != pytest.approx(n1 + n2 - 2)
+
+
+def test_t_and_p_agree_with_scipy_welch(welch_result, welch_pair):
+    g0, g1 = welch_pair
+    t_w, p_w = sp.ttest_ind(g0, g1, equal_var=False)
+    assert welch_result["t"] == pytest.approx(t_w, rel=1e-12)
+    assert welch_result["p"] == pytest.approx(p_w, rel=1e-12)
+
+
+def test_p_is_reproducible_from_the_reported_t_and_df(welch_result):
+    """The triple must be internally consistent, which is what broke before."""
+    recomputed = float(2 * sp.t.sf(abs(welch_result["t"]), welch_result["df"]))
+    assert recomputed == pytest.approx(welch_result["p"], rel=1e-9)
+
+
+def test_result_text_rounds_the_fractional_df(welch_result):
+    assert f"t({welch_result['df']:.2f})" in welch_result["result_text"]
+
+
+def test_pooled_path_reports_pooled_df():
+    from fastapi.testclient import TestClient
+    from main import app
+
+    rng = np.random.default_rng(SEED + 1)
+    g0 = np.round(rng.normal(10, 2, 80), 4)
+    g1 = np.round(rng.normal(10.5, 2, 80), 4)   # equal variances → no Welch
+    df = pd.DataFrame({"y": np.concatenate([g0, g1]), "g": [0] * 80 + [1] * 80})
+    sid = make_session(df, "pooled_df_session")
+    r = TestClient(app).post("/api/stats/ttest", json={
+        "session_id": sid, "column": "y", "group_column": "g",
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["df_method"] == "pooled"
+    assert body["df"] == pytest.approx(len(g0) + len(g1) - 2)
+
+
+def test_anova_does_not_claim_a_welch_omnibus():
+    from fastapi.testclient import TestClient
+    from main import app
+
+    rng = np.random.default_rng(SEED + 2)
+    frame = pd.DataFrame({
+        "y": np.concatenate([rng.normal(10, 1, 60), rng.normal(11, 5, 60), rng.normal(12, 12, 60)]),
+        "g": ["A"] * 60 + ["B"] * 60 + ["C"] * 60,
+    })
+    sid = make_session(frame, "anova_levene_session")
+    r = TestClient(app).post("/api/stats/anova", json={
+        "session_id": sid, "column": "y", "group_column": "g",
+    })
+    assert r.status_code == 200, r.text
+    levene = next(a for a in r.json()["assumptions"] if "Levene" in a["name"])
+    assert levene["met"] is False
+    assert "Welch correction applied" not in levene["detail"]
+    assert "not Welch-corrected" in levene["detail"]
+
+
+def test_ttest_still_states_welch_was_applied(welch_result):
+    levene = next(a for a in welch_result["assumptions"] if "Levene" in a["name"])
+    assert levene["met"] is False
+    assert "Welch correction applied" in levene["detail"]

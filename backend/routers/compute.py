@@ -1843,7 +1843,7 @@ def replace_values(session_id: str, req: ReplaceValuesRequest):
 
     Backs the data-grid 'Find & Replace' modal. After replacing, if every
     non-null value parses as a number the column is cast to numeric (so e.g.
-    kadın→0 / erkek→1 yields a real 0/1 predictor, not object strings). Any
+    female→0 / male→1 yields a real 0/1 predictor, not object strings). Any
     existing value labels have their keys remapped so they keep matching.
     """
     df = _get_df(session_id)

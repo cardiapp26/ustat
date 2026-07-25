@@ -54,6 +54,7 @@ interface CategoricalResult {
   posthoc?: PostHocRow[];
   posthoc_method?: string;
   r_code?: string;
+  warnings?: string[];
   [key: string]: unknown;
 }
 
@@ -68,6 +69,17 @@ function ResultCard({ result }: { result: CategoricalResult }) {
         {"significant" in result && <span className={result.significant ? "badge-sig" : "badge-ns"}>{result.significant ? "Significant" : "Not significant"}</span>}
       </div>
       <p className="text-sm text-gray-500 italic">{result.interpretation}</p>
+      {/* Warnings can invert the reading of a result (e.g. an assumed level
+          ordering flips the trend direction), so they sit above the numbers. */}
+      {(result.warnings?.length ?? 0) > 0 && (
+        <div className="space-y-1">
+          {(result.warnings ?? []).map((w, i) => (
+            <p key={i} className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-800 leading-relaxed">
+              ⚠ {w}
+            </p>
+          ))}
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
         {stats.map(([k, v]) => (
           <div key={k} className="flex justify-between border-b border-gray-100 py-1">
@@ -137,6 +149,9 @@ function CategoricalTestsPanelBody({ session }: { session: Session }) {
   const [groupCol, setGroupCol] = usePersistedPanelState<string>("categorical_tests", "groupCol", catCols[0] ?? "");
   const [strataCol, setStrataCol] = usePersistedPanelState<string>("categorical_tests", "strataCol", catCols[1] ?? catCols[0] ?? "");
   const [nullProp, setNullProp] = usePersistedPanelState<string>("categorical_tests", "nullProp", "0.5");
+  // Low→high ordering for word-labelled exposures. Left blank the backend sorts
+  // alphabetically, which reverses e.g. Low/Medium/High and flips the trend.
+  const [levelOrder, setLevelOrder] = usePersistedPanelState<string>("categorical_tests", "levelOrder", "");
   const [friedmanCols, setFriedmanCols] = usePersistedPanelState<string[]>("categorical_tests", "friedmanCols", []);
   const [result, setResult] = useState<CategoricalResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -164,7 +179,13 @@ function CategoricalTestsPanelBody({ session }: { session: Session }) {
       else if (test === "mcnemar") res = await runMcNemar({ session_id: sid, col1: col, col2: col2 });
       else if (test === "cochran_q") res = await runCochranQ({ session_id: sid, columns: friedmanCols });
       else if (test === "mantel_haenszel") res = await runMantelHaenszel({ session_id: sid, row_col: col, col_col: col2, strata_col: strataCol });
-      else if (test === "cochran_armitage") res = await runCochranArmitage({ session_id: sid, ordinal_col: groupCol, event_col: col });
+      else if (test === "cochran_armitage") {
+        const order = levelOrder.split(",").map((s) => s.trim()).filter(Boolean);
+        res = await runCochranArmitage({
+          session_id: sid, ordinal_col: groupCol, event_col: col,
+          ...(order.length > 0 ? { level_order: order } : {}),
+        });
+      }
       setResult(res?.data ?? null);
     } catch (e: unknown) {
       const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
@@ -256,6 +277,17 @@ function CategoricalTestsPanelBody({ session }: { session: Session }) {
                 {[...catCols, ...numCols].map((c) => <option key={c}>{c}</option>)}
               </select>
               <p className="text-[10px] text-gray-400 mt-1">Scores default to 0,1,2,… (rank order). Custom scores not exposed in UI for v1.</p>
+              <label className="text-xs text-gray-400 block mt-2 mb-1">Level order, low → high (optional)</label>
+              <input
+                className="input w-full text-xs"
+                placeholder="e.g. Low, Medium, High"
+                value={levelOrder}
+                onChange={(e) => setLevelOrder(e.target.value)}
+              />
+              <p className="text-[10px] text-gray-400 mt-1">
+                Numeric levels sort themselves. For word labels, leaving this blank sorts
+                alphabetically — which reverses e.g. Low/Medium/High and flips the trend.
+              </p>
             </div>
           )}
           <button className="btn-primary w-full" onClick={run} disabled={loading || (isCochran && friedmanCols.length < 3)}>

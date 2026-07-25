@@ -16,7 +16,7 @@
 
 import { useState, useRef } from "react";
 import { useStore, isNumericKind, isCategoricalKind } from "../store";
-import { runDCA } from "../api";
+import { runDCA, runIntegratedExtValDCA } from "../api";
 import { Tip } from "./Tip";
 import TitledPlot from "./TitledPlot";
 import ThreeCol from "./ThreeCol";
@@ -49,6 +49,40 @@ interface DcaResult {
   mode?: string;
 }
 
+// ---- Integrated External Validation + DCA (POST /api/decision_curve/integrated_extval_dca)
+interface ExtValResult {
+  // The service short-circuits with an `{error: ...}`-only object when the
+  // validation cohort has fewer than 20 complete rows — always guard for it.
+  error?: string;
+  n_validation?: number;
+  validation_c_index?: number | null;
+  validation_calibration_slope?: number | null;
+  validation_calibration_intercept?: number | null;
+  note?: string;
+}
+interface BootstrapDca {
+  available?: boolean;
+  n_boot?: number;
+  summary?: { max_corrected_net_benefit?: number; threshold_at_max_corrected?: number };
+}
+// The integrated endpoint returns the raw DCA service dict (no legacy curve
+// re-shaping), so `curves` carries the flat *_net_benefit arrays.
+interface IntegratedDcaBlock extends DcaResult {
+  n?: number;
+  note?: string;
+  error?: string;
+  bootstrap_corrected_dca?: BootstrapDca;
+}
+interface IntegratedResult {
+  test?: string;
+  prediction_source?: string;
+  n_validation?: number;
+  external_validation?: ExtValResult;
+  decision_curve?: IntegratedDcaBlock;
+  transportability?: Record<string, unknown> | null;
+  result_text?: string;
+}
+
 // Plotly request payload — accepts arbitrary extra keys.
 type DcaPayload = Record<string, unknown>;
 
@@ -60,7 +94,7 @@ export default function DecisionCurvePanel() {
   const columns = session?.columns ?? [];
   const sid = session?.session_id;
 
-  const [mode, setMode] = useState<"binary" | "survival">("survival");
+  const [mode, setMode] = useState<"binary" | "survival" | "integrated">("survival");
 
   // Binary mode
   const [probCol, setProbCol] = useState("");
@@ -72,7 +106,17 @@ export default function DecisionCurvePanel() {
   const [riskCol, setRiskCol] = useState("");
   const [timeHorizon, setTimeHorizon] = useState<number | "">("");
 
+  // Integrated external validation + DCA mode
+  const [ivDurationCol, setIvDurationCol] = useState("");
+  const [ivEventCol, setIvEventCol] = useState("");
+  const [ivPredictionCol, setIvPredictionCol] = useState("");
+  const [ivTimeHorizon, setIvTimeHorizon] = useState<number | "">("");
+  const [ivTimePoints, setIvTimePoints] = useState("");
+  const [ivBootstrap, setIvBootstrap] = useState(true);
+  const [ivNBoot, setIvNBoot] = useState<number | "">(200);
+
   const [result, setResult] = useState<DcaResult | null>(null);
+  const [integrated, setIntegrated] = useState<IntegratedResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -83,7 +127,8 @@ export default function DecisionCurvePanel() {
 
   const canRun = sid && (
     (mode === "binary" && probCol && outcomeCol) ||
-    (mode === "survival" && durationCol && eventCol && riskCol)
+    (mode === "survival" && durationCol && eventCol && riskCol) ||
+    (mode === "integrated" && ivDurationCol && ivEventCol && ivPredictionCol)
   );
 
   async function handleRun() {
@@ -92,6 +137,7 @@ export default function DecisionCurvePanel() {
     setLoading(true);
     setError(null);
     setResult(null);
+    setIntegrated(null);
 
     try {
       const payload: DcaPayload = {
@@ -120,14 +166,54 @@ export default function DecisionCurvePanel() {
     }
   }
 
-  // Build improved Plotly data with shaded benefit region + harm threshold
-  function buildPlotData() {
-    if (!result?.curves) return [];
+  // Integrated mode: one call runs external validation + DCA on the same
+  // validation cohort (POST /api/decision_curve/integrated_extval_dca).
+  async function handleIntegratedRun() {
+    if (!sid || !canRun) return;
 
-    const thresholds: number[] = result.curves.thresholds || result.curves.model?.thresholds || [];
-    const modelNB: number[] = result.curves.model?.net_benefit || result.curves.model_net_benefit || [];
-    const allNB: number[] = result.curves.treat_all?.net_benefit || result.curves.treat_all_net_benefit || [];
-    const noneNB: number[] = result.curves.treat_none?.net_benefit || result.curves.treat_none_net_benefit || [];
+    setLoading(true);
+    setError(null);
+    setResult(null);
+    setIntegrated(null);
+
+    try {
+      const payload: Record<string, unknown> = {
+        session_id: sid,
+        duration_col: ivDurationCol,
+        event_col: ivEventCol,
+        prediction_col: ivPredictionCol,
+        bootstrap_corrected_dca: ivBootstrap,
+      };
+      if (ivTimeHorizon) payload.time_horizon = Number(ivTimeHorizon);
+      if (ivBootstrap && ivNBoot) payload.n_boot = Number(ivNBoot);
+      const timePoints = ivTimePoints
+        .split(",")
+        .map((s) => Number(s.trim()))
+        .filter((v) => Number.isFinite(v));
+      if (timePoints.length > 0) payload.time_points = timePoints;
+
+      const res = await runIntegratedExtValDCA(payload);
+      setIntegrated(res.data);
+    } catch (e: unknown) {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setError(detail ?? "Integrated external validation + DCA failed");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // The DCA block the middle/right columns should render for the active mode.
+  const activeDca: DcaResult | null =
+    mode === "integrated" ? integrated?.decision_curve ?? null : result;
+
+  // Build improved Plotly data with shaded benefit region + harm threshold
+  function buildPlotData(dca: DcaResult | null) {
+    if (!dca?.curves) return [];
+
+    const thresholds: number[] = dca.curves.thresholds || dca.curves.model?.thresholds || [];
+    const modelNB: number[] = dca.curves.model?.net_benefit || dca.curves.model_net_benefit || [];
+    const allNB: number[] = dca.curves.treat_all?.net_benefit || dca.curves.treat_all_net_benefit || [];
+    const noneNB: number[] = dca.curves.treat_none?.net_benefit || dca.curves.treat_none_net_benefit || [];
 
     const traces: PlotData[] = [];
 
@@ -229,9 +315,9 @@ export default function DecisionCurvePanel() {
     return traces;
   }
 
-  function buildLayout() {
-    const harmThreshold = result?.summary?.harm_threshold;
-    const maxThreshold = result?.summary?.max_net_benefit_threshold;
+  function buildLayout(dca: DcaResult | null) {
+    const harmThreshold = dca?.summary?.harm_threshold;
+    const maxThreshold = dca?.summary?.max_net_benefit_threshold;
 
     const shapes: Record<string, unknown>[] = [];
     const annotations: Record<string, unknown>[] = [];
@@ -328,7 +414,49 @@ export default function DecisionCurvePanel() {
     };
   }
 
-  const plotData = buildPlotData();
+  // Shared "Clinical Utility Summary" card — used by both the plain DCA result
+  // and the integrated ext-val pipeline's decision_curve block.
+  function renderDcaSummaryCard(dca: DcaResult | null) {
+    if (!dca?.summary) return null;
+    const s = dca.summary;
+    return (
+      <div className="bg-white border border-gray-200 rounded-2xl p-4 shadow-sm">
+        <div className="uppercase text-[10px] tracking-[1px] font-semibold text-gray-500 mb-3">Clinical Utility Summary</div>
+
+        <div className="space-y-3">
+          <div>
+            <div className="text-[11px] text-gray-500">Maximum Net Benefit</div>
+            <div className="text-2xl font-semibold text-emerald-600 tabular-nums">
+              {s.max_net_benefit?.toFixed(4)}
+            </div>
+            <div className="text-xs text-gray-600 mt-0.5">
+              at threshold probability <span className="font-medium text-gray-800">{s.max_net_benefit_threshold?.toFixed(3)}</span>
+            </div>
+          </div>
+
+          {s.positive_nb_range && (
+            <div className="pt-1 border-t">
+              <div className="text-[11px] text-gray-500">Range where model adds value</div>
+              <div className="font-medium text-gray-800">
+                {s.positive_nb_range[0]} — {s.positive_nb_range[1]}
+              </div>
+            </div>
+          )}
+
+          {s.interventions_avoided_per_100_at_max != null && (
+            <div className="pt-1 border-t">
+              <div className="text-[11px] text-gray-500">Interventions avoided per 100 patients</div>
+              <div className="text-xl font-semibold text-indigo-600 tabular-nums">
+                {s.interventions_avoided_per_100_at_max.toFixed(1)}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  const plotData = buildPlotData(activeDca);
 
   return (
     <div className="p-4">
@@ -350,6 +478,12 @@ export default function DecisionCurvePanel() {
           >
             Survival / Risk Score
           </button>
+          <button
+            onClick={() => setMode("integrated")}
+            className={`px-3 py-1 rounded-lg border ${mode === "integrated" ? "bg-indigo-600 text-white border-indigo-600" : "hover:bg-gray-100"}`}
+          >
+            Ext-Val + DCA
+          </button>
         </div>
       </div>
 
@@ -358,7 +492,72 @@ export default function DecisionCurvePanel() {
           <div className="space-y-4">
             <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Inputs</div>
 
-            {mode === "survival" ? (
+            {mode === "integrated" ? (
+              <>
+                <label className="block text-xs text-gray-600">Duration / Time column</label>
+                <select value={ivDurationCol} onChange={(e) => setIvDurationCol(e.target.value)} className="w-full border rounded px-3 py-2 text-sm">
+                  <option value="">— select —</option>
+                  {numericCols.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+
+                <label className="block text-xs text-gray-600">Event (0/1)</label>
+                <select value={ivEventCol} onChange={(e) => setIvEventCol(e.target.value)} className="w-full border rounded px-3 py-2 text-sm">
+                  <option value="">— select —</option>
+                  {binaryCols.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+
+                <label className="block text-xs text-gray-600">
+                  Prediction column (LP / risk score / probability)
+                  <Tip text="A precomputed prediction from any model: Cox linear predictor, survival-ML risk score, joint-model dynamic prediction, Fine-Gray CIF, or a fitted probability." />
+                </label>
+                <select value={ivPredictionCol} onChange={(e) => setIvPredictionCol(e.target.value)} className="w-full border rounded px-3 py-2 text-sm">
+                  <option value="">— select —</option>
+                  {numericCols.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+
+                <label className="block text-xs text-gray-600">Time horizon (optional)</label>
+                <input
+                  type="number"
+                  value={ivTimeHorizon}
+                  onChange={(e) => setIvTimeHorizon(e.target.value ? Number(e.target.value) : "")}
+                  className="w-full border rounded px-3 py-2 text-sm"
+                  placeholder="e.g. 60 months"
+                />
+
+                <label className="block text-xs text-gray-600">Calibration time points (optional, comma-separated)</label>
+                <input
+                  type="text"
+                  value={ivTimePoints}
+                  onChange={(e) => setIvTimePoints(e.target.value)}
+                  className="w-full border rounded px-3 py-2 text-sm"
+                  placeholder="e.g. 12, 36, 60"
+                />
+
+                <label className="flex items-center gap-2 text-xs text-gray-600">
+                  <input
+                    type="checkbox"
+                    checked={ivBootstrap}
+                    onChange={(e) => setIvBootstrap(e.target.checked)}
+                    className="rounded border-gray-300"
+                  />
+                  Bootstrap-corrected DCA (optimism adjustment)
+                </label>
+
+                {ivBootstrap && (
+                  <>
+                    <label className="block text-xs text-gray-600">Bootstrap resamples</label>
+                    <input
+                      type="number"
+                      value={ivNBoot}
+                      min={50}
+                      max={2000}
+                      onChange={(e) => setIvNBoot(e.target.value ? Number(e.target.value) : "")}
+                      className="w-full border rounded px-3 py-2 text-sm"
+                    />
+                  </>
+                )}
+              </>
+            ) : mode === "survival" ? (
               <>
                 <label className="block text-xs text-gray-600">Duration / Time column</label>
                 <select value={durationCol} onChange={(e) => setDurationCol(e.target.value)} className="w-full border rounded px-3 py-2 text-sm">
@@ -404,11 +603,15 @@ export default function DecisionCurvePanel() {
             )}
 
             <button
-              onClick={handleRun}
+              onClick={mode === "integrated" ? handleIntegratedRun : handleRun}
               disabled={!canRun || loading}
               className="mt-3 w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white font-medium transition-colors"
             >
-              {loading ? "Calculating…" : "Run Decision Curve Analysis"}
+              {loading
+                ? "Calculating…"
+                : mode === "integrated"
+                  ? "Run External Validation + DCA"
+                  : "Run Decision Curve Analysis"}
             </button>
 
             {error && <p className="text-xs text-red-600 mt-1">{error}</p>}
@@ -417,12 +620,12 @@ export default function DecisionCurvePanel() {
           </div>
         }
         middle={
-          result && plotData.length > 0 ? (
+          activeDca && plotData.length > 0 ? (
             <TitledPlot
               plotRefOut={dcaPlotRef}
               storageKey="dca:netbenefit"
               data={plotData}
-              layout={buildLayout()}
+              layout={buildLayout(activeDca)}
               defaultTitle="Net Benefit Curves"
               defaultSubtitle="Green = model provides clinical value over alternatives"
               defaultXAxis="Threshold Probability (pt)"
@@ -435,43 +638,84 @@ export default function DecisionCurvePanel() {
           )
         }
         right={
-          result ? (
-            <div className="space-y-4 text-sm">
-              {result.summary && (
+          mode === "integrated" ? (
+            integrated ? (
+              <div className="space-y-4 text-sm">
                 <div className="bg-white border border-gray-200 rounded-2xl p-4 shadow-sm">
-                  <div className="uppercase text-[10px] tracking-[1px] font-semibold text-gray-500 mb-3">Clinical Utility Summary</div>
-
-                  <div className="space-y-3">
-                    <div>
-                      <div className="text-[11px] text-gray-500">Maximum Net Benefit</div>
-                      <div className="text-2xl font-semibold text-emerald-600 tabular-nums">
-                        {result.summary.max_net_benefit?.toFixed(4)}
-                      </div>
-                      <div className="text-xs text-gray-600 mt-0.5">
-                        at threshold probability <span className="font-medium text-gray-800">{result.summary.max_net_benefit_threshold?.toFixed(3)}</span>
-                      </div>
+                  <div className="uppercase text-[10px] tracking-[1px] font-semibold text-gray-500 mb-3">External Validation</div>
+                  {integrated.external_validation?.error ? (
+                    <p className="text-xs text-amber-700">{integrated.external_validation.error}</p>
+                  ) : (
+                    <div className="space-y-3">
+                      {integrated.n_validation != null && (
+                        <div>
+                          <div className="text-[11px] text-gray-500">Validation cohort</div>
+                          <div className="font-medium text-gray-800">n = {integrated.n_validation}</div>
+                        </div>
+                      )}
+                      {integrated.external_validation?.validation_c_index != null && (
+                        <div>
+                          <div className="text-[11px] text-gray-500">C-index (discrimination)</div>
+                          <div className="text-2xl font-semibold text-indigo-600 tabular-nums">
+                            {integrated.external_validation.validation_c_index.toFixed(3)}
+                          </div>
+                        </div>
+                      )}
+                      {integrated.external_validation?.validation_calibration_slope != null && (
+                        <div className="pt-1 border-t">
+                          <div className="text-[11px] text-gray-500">Calibration slope</div>
+                          <div className="font-medium text-gray-800 tabular-nums">
+                            {integrated.external_validation.validation_calibration_slope.toFixed(3)}
+                          </div>
+                        </div>
+                      )}
+                      {integrated.external_validation?.validation_calibration_intercept != null && (
+                        <div className="pt-1 border-t">
+                          <div className="text-[11px] text-gray-500">Calibration intercept</div>
+                          <div className="font-medium text-gray-800 tabular-nums">
+                            {integrated.external_validation.validation_calibration_intercept.toFixed(3)}
+                          </div>
+                        </div>
+                      )}
+                      {integrated.external_validation?.note && (
+                        <p className="text-[11px] text-gray-500 pt-1 border-t">{integrated.external_validation.note}</p>
+                      )}
                     </div>
+                  )}
+                </div>
 
-                    {result.summary.positive_nb_range && (
-                      <div className="pt-1 border-t">
-                        <div className="text-[11px] text-gray-500">Range where model adds value</div>
-                        <div className="font-medium text-gray-800">
-                          {result.summary.positive_nb_range[0]} — {result.summary.positive_nb_range[1]}
-                        </div>
-                      </div>
-                    )}
-
-                    {result.summary.interventions_avoided_per_100_at_max != null && (
-                      <div className="pt-1 border-t">
-                        <div className="text-[11px] text-gray-500">Interventions avoided per 100 patients</div>
-                        <div className="text-xl font-semibold text-indigo-600 tabular-nums">
-                          {result.summary.interventions_avoided_per_100_at_max.toFixed(1)}
-                        </div>
+                {integrated.decision_curve?.bootstrap_corrected_dca?.available &&
+                  integrated.decision_curve.bootstrap_corrected_dca.summary && (
+                  <div className="bg-white border border-gray-200 rounded-2xl p-4 shadow-sm">
+                    <div className="uppercase text-[10px] tracking-[1px] font-semibold text-gray-500 mb-3">Bootstrap-Corrected DCA</div>
+                    <div className="text-[11px] text-gray-500">Max optimism-corrected net benefit</div>
+                    <div className="text-xl font-semibold text-emerald-600 tabular-nums">
+                      {integrated.decision_curve.bootstrap_corrected_dca.summary.max_corrected_net_benefit?.toFixed(4)}
+                    </div>
+                    {integrated.decision_curve.bootstrap_corrected_dca.summary.threshold_at_max_corrected != null && (
+                      <div className="text-xs text-gray-600 mt-0.5">
+                        at threshold <span className="font-medium text-gray-800">{integrated.decision_curve.bootstrap_corrected_dca.summary.threshold_at_max_corrected.toFixed(3)}</span>
                       </div>
                     )}
                   </div>
-                </div>
-              )}
+                )}
+
+                {renderDcaSummaryCard(integrated.decision_curve ?? null)}
+
+                {integrated.result_text && (
+                  <div className="bg-gradient-to-br from-emerald-50 to-white border border-emerald-200 rounded-2xl p-4 text-sm text-emerald-800 leading-snug shadow-sm">
+                    {integrated.result_text}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="h-full flex items-center justify-center text-center text-gray-400 border border-dashed border-gray-200 rounded-2xl p-6 text-sm">
+                Run external validation + DCA to see discrimination,<br />calibration, and net benefit.
+              </div>
+            )
+          ) : result ? (
+            <div className="space-y-4 text-sm">
+              {renderDcaSummaryCard(result)}
 
               {result.result_text && (
                 <div className="bg-gradient-to-br from-emerald-50 to-white border border-emerald-200 rounded-2xl p-4 text-sm text-emerald-800 leading-snug shadow-sm">

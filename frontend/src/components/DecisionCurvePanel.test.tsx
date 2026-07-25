@@ -108,4 +108,97 @@ describe('DecisionCurvePanel', () => {
 
     await waitFor(() => expect(screen.getByText('Risk column must be numeric')).toBeInTheDocument())
   })
+
+  it('runs the integrated external validation + DCA pipeline and renders both blocks', async () => {
+    installSession()
+    server.use(
+      http.post('/api/decision_curve/integrated_extval_dca', () =>
+        HttpResponse.json({
+          test: 'Integrated External Validation + Decision Curve Analysis',
+          prediction_source: 'precomputed',
+          n_validation: 42,
+          external_validation: {
+            n_validation: 42,
+            validation_c_index: 0.71,
+            validation_calibration_slope: 0.95,
+            validation_calibration_intercept: 0.02,
+          },
+          decision_curve: {
+            curves: {
+              thresholds: [0.1, 0.2, 0.3],
+              model_net_benefit: [0.3, 0.25, 0.1],
+              treat_all_net_benefit: [0.2, 0.1, 0.0],
+              treat_none_net_benefit: [0, 0, 0],
+            },
+            summary: {
+              max_net_benefit: 0.3,
+              max_net_benefit_threshold: 0.1,
+              interventions_avoided_per_100_at_max: 12.5,
+            },
+            n: 42,
+            bootstrap_corrected_dca: {
+              available: true,
+              n_boot: 200,
+              summary: { max_corrected_net_benefit: 0.22, threshold_at_max_corrected: 0.1 },
+            },
+          },
+          transportability: null,
+          result_text: 'Integrated validation/DCA pipeline for precomputed predictions on n=42 validation observations.',
+        }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<DecisionCurvePanel />)
+
+    await user.click(screen.getByRole('button', { name: /ext-val \+ dca/i }))
+
+    const runButton = screen.getByRole('button', { name: /run external validation \+ dca/i })
+    expect(runButton).toBeDisabled()
+
+    // Order in DOM: duration, event, prediction
+    const selects = screen.getAllByRole('combobox')
+    await user.selectOptions(selects[0], 'AGE')
+    expect(runButton).toBeDisabled()
+    await user.selectOptions(selects[1], 'GROUP')
+    expect(runButton).toBeDisabled()
+    await user.selectOptions(selects[2], 'LDL')
+    expect(runButton).toBeEnabled()
+
+    await user.click(runButton)
+
+    await waitFor(() => expect(screen.getByText('External Validation')).toBeInTheDocument())
+    expect(screen.getByText('n = 42')).toBeInTheDocument()
+    expect(screen.getByText('0.710')).toBeInTheDocument()
+    expect(screen.getByText('0.950')).toBeInTheDocument()
+    expect(screen.getByText('Bootstrap-Corrected DCA')).toBeInTheDocument()
+    expect(screen.getByText('0.2200')).toBeInTheDocument()
+    expect(screen.getByText('Clinical Utility Summary')).toBeInTheDocument()
+    expect(
+      screen.getByText(/integrated validation\/dca pipeline for precomputed predictions/i),
+    ).toBeInTheDocument()
+  })
+
+  it('shows the integrated-mode backend error message on failure', async () => {
+    installSession()
+    server.use(
+      http.post('/api/decision_curve/integrated_extval_dca', () =>
+        HttpResponse.json({ detail: 'Need at least 20 complete validation observations.' }, { status: 400 }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<DecisionCurvePanel />)
+
+    await user.click(screen.getByRole('button', { name: /ext-val \+ dca/i }))
+    const selects = screen.getAllByRole('combobox')
+    await user.selectOptions(selects[0], 'AGE')
+    await user.selectOptions(selects[1], 'GROUP')
+    await user.selectOptions(selects[2], 'LDL')
+    await user.click(screen.getByRole('button', { name: /run external validation \+ dca/i }))
+
+    await waitFor(() =>
+      expect(screen.getByText('Need at least 20 complete validation observations.')).toBeInTheDocument(),
+    )
+  })
 })

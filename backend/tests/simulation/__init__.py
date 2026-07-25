@@ -1,20 +1,20 @@
 """
 Simulation-based and Property-Based Testing Infrastructure (Phase 2)
 
-Bu paket, uSTAT'ın istatistiksel yöntemlerini orta-ileri düzeyde doğrulamak için
-geliştirilmiştir.
+This package validates uSTAT's statistical methods at an intermediate-to-advanced
+level.
 
-İçerik:
-- `data_generators.py` → Bilinen parametrelerle sentetik veri üretimi
-- `test_property_based.py` → Hypothesis ile property-based testler
-- `test_*_simulation.py` → Klasik simulation recovery testleri
-- `conftest.py` → Hypothesis stratejileri ve ayarlar
+Contents:
+- `data_generators.py` -> synthetic data from known parameters
+- `test_property_based.py` -> property-based tests via Hypothesis
+- `test_*_simulation.py` -> classic simulation-recovery tests
+- `conftest.py` -> Hypothesis strategies and settings
 
-Kullanım:
+Usage:
     PYTHONPATH=. python -m pytest tests/simulation/ -q -m "simulation or not simulation"
 
-Gelecek plan:
-- Daha fazla model (Survival, PSM/IPTW, GEE)
-- Automated "method vs ground truth" raporları
-- Assumption violation altında davranış testleri
+Planned:
+- More models (survival, PSM/IPTW, GEE)
+- Automated "method vs ground truth" reports
+- Behaviour tests under assumption violations
 """

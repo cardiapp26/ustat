@@ -306,19 +306,23 @@ function SplineTermCard({ label, term, onChange, numCols }: {
 // ── Main panel ──────────────────────────────────────────────────────────────
 
 export default function RCSPanel() {
-  const session = useStore((s) => s.session!);
+  // No non-null assertion on session: async setState after the session is
+  // cleared (session delete, test teardown) would otherwise re-render into
+  // `session.columns` and crash the whole tab.
+  const session = useStore((s) => s.session);
   const showGrid = useStore((s) => s.showGrid);
 
   // Columns flagged "exclude from analysis" (e.g. NAME, row-id) never appear
   // in any picker, including covariates.
   const numCols = useMemo(
-    () => session.columns.filter((c) => isNumericKind(c.kind) && !c.analysis_excluded).map((c) => c.name),
-    [session.columns],
+    () => (session?.columns ?? []).filter((c) => isNumericKind(c.kind) && !c.analysis_excluded).map((c) => c.name),
+    [session?.columns],
   );
   const binaryCols = useMemo(
     () => {
-      if (!session.preview?.length) return [] as string[];
-      return session.columns
+      const cols = session?.columns;
+      if (!session?.preview?.length || !cols) return [] as string[];
+      return cols
         .filter((c) => {
           if (c.analysis_excluded) return false;
           const vals = session.preview!.map((r) => (r as Record<string, unknown>)[c.name]).filter((v) => v != null);
@@ -327,9 +331,9 @@ export default function RCSPanel() {
         })
         .map((c) => c.name);
     },
-    [session.columns, session.preview],
+    [session?.columns, session?.preview],
   );
-  const allCols = useMemo(() => session.columns.filter((c) => !c.analysis_excluded).map((c) => c.name), [session.columns]);
+  const allCols = useMemo(() => (session?.columns ?? []).filter((c) => !c.analysis_excluded).map((c) => c.name), [session?.columns]);
 
   // ── Mode: "rcs" (univariate) or "cox_rcs" (multivariable) ─────────────────
   const [mode, setMode] = useState<"rcs" | "cox_rcs">("rcs");
@@ -365,7 +369,7 @@ export default function RCSPanel() {
   const [crxInteraction, setCrxInteraction] = useState(false);
   const [crxCovariates, setCrxCovariates] = useState<string[]>([]);
 
-  const sid = session.session_id;
+  const sid = session?.session_id ?? "";
 
   const run = async () => {
     setLoading(true); setError(null); setResult(null);
@@ -591,7 +595,7 @@ export default function RCSPanel() {
                         : c !== rcsOutcome;
                     })
                     .map((c) => {
-                      const kind = session.columns.find((col) => col.name === c)?.kind ?? "numeric";
+                      const kind = (session?.columns ?? []).find((col) => col.name === c)?.kind ?? "numeric";
                       const isNum = kind === "numeric";
                       const isSelected = rcsCovariates.includes(c);
                       const isInteracting = rcsInteractionCov.includes(c);

@@ -2444,7 +2444,18 @@ def fit_joint_model(req):
     if req.session_id_surv:
         surv_df = _get_df(req.session_id_surv)
     else:
-        surv_df = long_df  # fallback (user should provide proper survival data)
+        # Single-session use: the survival part needs ONE row per subject.
+        # Passing the long frame through unchanged made every repeated
+        # measurement look like a separate patient — it inflated n_subjects and
+        # the BIC sample size, and fitted the Cox model on duplicated subjects.
+        # duration/event/baseline covariates are subject-constant, so the first
+        # record per id is the right collapse.
+        if req.id_col not in long_df.columns:
+            raise HTTPException(
+                status_code=400,
+                detail=f"id_col '{req.id_col}' not found in the longitudinal session.",
+            )
+        surv_df = long_df.drop_duplicates(subset=[req.id_col], keep="first").reset_index(drop=True)
 
     if req.latent_classes > 0:
         from services.joint_model import fit_latent_class_joint_model
@@ -2508,15 +2519,22 @@ def fit_external_validation(req):
     surv_probs_arr = np.array(req.survival_probs) if req.survival_probs else None
 
     from services.external_validation import evaluate_external_validation
-    result = evaluate_external_validation(
-        val_df=df,
-        duration_col=req.duration_col,
-        event_col=req.event_col,
-        predicted_lp_col=req.predicted_lp_col,
-        survival_probs=surv_probs_arr,
-        time_points=np.array(req.time_points) if req.time_points else None,
-        dev_metrics=req.dev_metrics,
-    )
+    try:
+        result = evaluate_external_validation(
+            val_df=df,
+            duration_col=req.duration_col,
+            event_col=req.event_col,
+            predicted_lp_col=req.predicted_lp_col,
+            survival_probs=surv_probs_arr,
+            time_points=np.array(req.time_points) if req.time_points else None,
+            dev_metrics=req.dev_metrics,
+        )
+    except ValueError as exc:
+        # evaluate_external_validation signals unusable input with ValueError —
+        # here that is a predicted_lp_col the session does not have. Bad column
+        # name is the caller's mistake, so surface the reason as a 400 instead
+        # of a detail-less 500.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     result["test"] = "External Validation & Calibration (Phase 9 - Enhanced)"
     if "error" not in result:
@@ -2561,22 +2579,29 @@ def fit_ml_survival_benchmark(req):
     preds = req.predictors or [c for c in df.columns if c not in (req.duration_col, req.event_col)]
 
     from services.survival_ml import run_survival_ml_benchmark
-    result = run_survival_ml_benchmark(
-        df,
-        duration_col=req.duration_col,
-        event_col=req.event_col,
-        predictors=preds,
-        n_estimators=req.n_estimators,
-        nested_cv=req.nested_cv,
-        repeated_cv_repeats=req.repeated_cv_repeats,
-        cv_folds=req.cv_folds,
-        inner_cv_folds=req.inner_cv_folds,
-        hyperparameter_iter=req.hyperparameter_iter,
-        include_shap=req.include_shap,
-        include_partial_dependence=req.include_partial_dependence,
-        include_competing_risks_ml=req.include_competing_risks_ml,
-        optimization_method=req.optimization_method,
-    )
+    try:
+        result = run_survival_ml_benchmark(
+            df,
+            duration_col=req.duration_col,
+            event_col=req.event_col,
+            predictors=preds,
+            n_estimators=req.n_estimators,
+            nested_cv=req.nested_cv,
+            repeated_cv_repeats=req.repeated_cv_repeats,
+            cv_folds=req.cv_folds,
+            inner_cv_folds=req.inner_cv_folds,
+            hyperparameter_iter=req.hyperparameter_iter,
+            include_shap=req.include_shap,
+            include_partial_dependence=req.include_partial_dependence,
+            include_competing_risks_ml=req.include_competing_risks_ml,
+            optimization_method=req.optimization_method,
+        )
+    except ValueError as exc:
+        # The benchmark signals unusable input with ValueError — too few
+        # complete rows once the chosen duration/event/predictor columns are
+        # combined. That is the caller's data, not a server fault, so return
+        # the reason as a 400 rather than a bare 500.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     result["test"] = "Survival ML Benchmark (Phase 13 - nested CV, calibration, interpretability)"
     # Prefer the rich result_text produced by the service (Phase 12)
@@ -2611,20 +2636,33 @@ def fit_shared_frailty(req):
     df = apply_imputation(df_full[needed], needed, req.imputation or "listwise")
 
     from services.frailty import fit_shared_gamma_frailty
-    result = fit_shared_gamma_frailty(
-        df,
-        duration_col=req.duration_col,
-        event_col=req.event_col,
-        cluster_col=req.cluster_col,
-        predictors=req.predictors,
-        penalizer=req.penalizer,
-        frailty_distribution=req.frailty_distribution,
-        estimation_method=req.estimation_method,
-        nested_cluster_cols=req.nested_cluster_cols or [],
-        correlated_cluster_col=req.correlated_cluster_col,
-        baseline_hazard=req.baseline_hazard,
-        include_diagnostics=req.include_diagnostics,
-    )
+    try:
+        result = fit_shared_gamma_frailty(
+            df,
+            duration_col=req.duration_col,
+            event_col=req.event_col,
+            cluster_col=req.cluster_col,
+            predictors=req.predictors,
+            penalizer=req.penalizer,
+            frailty_distribution=req.frailty_distribution,
+            estimation_method=req.estimation_method,
+            nested_cluster_cols=req.nested_cluster_cols or [],
+            correlated_cluster_col=req.correlated_cluster_col,
+            baseline_hazard=req.baseline_hazard,
+            include_diagnostics=req.include_diagnostics,
+        )
+    except ValueError as exc:
+        # The frailty routine signals unusable input (too few clusters, no
+        # complete rows, bad distribution name) with ValueError. Those are the
+        # caller's problem, not a server fault — surface the reason as a 400 so
+        # the UI can show it instead of a bare "failed".
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        # The baseline CoxPH fit inside the frailty routine is re-raised as
+        # RuntimeError when lifelines cannot converge — collinear, constant or
+        # otherwise degenerate predictor columns. Same class of problem: the
+        # data the caller chose, so report the reason as a 400.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # Make everything JSON-safe (cluster keys can be numpy.int64 etc.)
     def _safe(v):

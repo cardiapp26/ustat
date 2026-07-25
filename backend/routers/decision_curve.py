@@ -5,7 +5,7 @@ import statsmodels.api as sm
 from scipy import stats as sp
 from sklearn.metrics import brier_score_loss, roc_auc_score
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional
 
 from services import store
@@ -342,7 +342,7 @@ class DCARequest(BaseModel):
     event_col: Optional[str] = None
     time_horizon: Optional[float] = None
 
-    threshold_range: List[float] = [0.01, 0.99]
+    threshold_range: List[float] = Field(default_factory=lambda: [0.01, 0.99])
     n_thresholds: int = 100
     bootstrap_corrected: bool = False
     n_boot: int = 200
@@ -497,7 +497,7 @@ class IntegratedExtValDCARequest(BaseModel):
     survival_prob_cols: Optional[List[str]] = None
     time_points: Optional[List[float]] = None
     time_horizon: Optional[float] = None
-    threshold_range: List[float] = [0.01, 0.50]
+    threshold_range: List[float] = Field(default_factory=lambda: [0.01, 0.50])
     n_thresholds: int = 100
     bootstrap_corrected_dca: bool = True
     n_boot: int = 200

@@ -636,6 +636,10 @@ class CochranArmitageRequest(BaseModel):
     scores: Optional[List[float]] = None  # custom scores per level; default = ranks 0..K-1
     success_value: Optional[str] = None   # which value of event_col counts as "success"
     alpha: float = 0.05
+    # Explicit low→high ordering for non-numeric levels. Without it the levels
+    # can only be sorted alphabetically, which silently reverses e.g.
+    # Low/Medium/High and inverts the trend.
+    level_order: Optional[List[str]] = None
 
 
 @router.post("/cochran_armitage")
@@ -669,12 +673,41 @@ def cochran_armitage(req: CochranArmitageRequest):
     ev_bin = (ev == success).astype(int)
 
     # Build K-row contingency table ordered by the ordinal column.
-    levels = sorted(sub[req.ordinal_col].unique(), key=lambda x: (
-        # Numeric-ish keys sort by value; fall back to string.
-        (0, float(x)) if isinstance(x, (int, float, np.integer, np.floating))
-        or (isinstance(x, str) and x.replace(".", "", 1).replace("-", "", 1).isdigit())
-        else (1, str(x))
-    ))
+    present = list(sub[req.ordinal_col].unique())
+
+    def _is_numeric_level(x) -> bool:
+        return (isinstance(x, (int, float, np.integer, np.floating))
+                or (isinstance(x, str)
+                    and x.replace(".", "", 1).replace("-", "", 1).isdigit()))
+
+    ca_warnings: List[str] = []
+    if req.level_order is not None:
+        # Caller stated the ordering explicitly — honour it, but insist it
+        # matches the data exactly so a typo can't silently drop a level.
+        wanted = [str(v) for v in req.level_order]
+        have = [str(v) for v in present]
+        if sorted(wanted) != sorted(have):
+            raise HTTPException(422,
+                f"level_order must list every level of '{req.ordinal_col}' exactly once. "
+                f"Got {wanted}; the data has {sorted(have)}.")
+        by_str = {str(v): v for v in present}
+        levels = [by_str[v] for v in wanted]
+        order_source = "caller-supplied level_order"
+    else:
+        levels = sorted(present, key=lambda x: (0, float(x)) if _is_numeric_level(x) else (1, str(x)))
+        if all(_is_numeric_level(v) for v in present):
+            order_source = "numeric value"
+        else:
+            # Alphabetical order is an assumption, not a fact: "Low, Medium,
+            # High" becomes "High, Low, Medium" and the trend flips sign. The
+            # test still runs, but the caller has to be told what was assumed.
+            order_source = "alphabetical (assumed)"
+            ca_warnings.append(
+                f"'{req.ordinal_col}' has non-numeric levels, so they were ordered "
+                f"alphabetically: {[str(v) for v in levels]}. If that is not the "
+                "true low-to-high order, the trend direction is wrong — pass "
+                "level_order (or scores) to state the ordering explicitly."
+            )
     K = len(levels)
     if K < 3:
         raise HTTPException(422,
@@ -734,10 +767,13 @@ def cochran_armitage(req: CochranArmitageRequest):
         "p": p_two,
         "significant": sig,
         "effect_sizes": [],
+        "warnings": ca_warnings,
+        "level_order_source": order_source,
         "assumptions": [
             "Ordered (ordinal) exposure with ≥3 levels",
             "Binary outcome",
             "Independence between observations",
+            f"Level ordering taken from: {order_source}",
         ],
         "summary": {
             "n": int(N),

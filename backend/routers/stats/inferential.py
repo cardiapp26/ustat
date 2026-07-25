@@ -30,6 +30,7 @@ from services.stat_utils import (
     cramers_v, odds_ratio_effect,
     check_normality, check_equal_variances, group_summary,
     tukey_hsd, games_howell, sorted_groups,
+    welch_satterthwaite_df,
 )
 
 router = APIRouter()
@@ -96,7 +97,8 @@ def ttest(req: TTestRequest):
 
         # Assumption checks
         assumptions = [check_normality(g1, str(groups[0])), check_normality(g2, str(groups[1])),
-                       check_equal_variances([g1, g2], [str(groups[0]), str(groups[1])])]
+                       check_equal_variances([g1, g2], [str(groups[0]), str(groups[1])],
+                                             on_violation="Welch correction applied")]
         use_welch = not assumptions[2]["met"]
         stat, p = scipy_stats.ttest_ind(g1, g2, equal_var=not use_welch)
         sig = bool(p < 0.05)
@@ -107,7 +109,11 @@ def ttest(req: TTestRequest):
             "test": f"Independent samples t-test{' (Welch)' if use_welch else ''}",
             "group1": str(groups[0]), "n1": len(g1), "mean1": float(g1.mean()),
             "group2": str(groups[1]), "n2": len(g2), "mean2": float(g2.mean()),
-            "t": float(stat), "p": float(p), "df": int(len(g1) + len(g2) - 2),
+            # df must match the test that produced t and p. Welch uses the
+            # fractional Satterthwaite df; only the pooled test uses n1+n2-2.
+            "t": float(stat), "p": float(p),
+            "df": welch_satterthwaite_df(g1, g2) if use_welch else float(len(g1) + len(g2) - 2),
+            "df_method": "welch_satterthwaite" if use_welch else "pooled",
             "significant": sig,
             "effect_sizes": [es],
             "assumptions": assumptions,
@@ -256,7 +262,12 @@ def anova(req: AnovaRequest):
     es_omega = omega_squared(float(stat), df_between, df_within, ms_within)
 
     # Assumption checks
-    assumptions = [check_equal_variances(group_arrays, group_names)]
+    # The omnibus F below is scipy's classic equal-variance f_oneway; only the
+    # post-hoc switches to Games-Howell. Say exactly that.
+    assumptions = [check_equal_variances(
+        group_arrays, group_names,
+        on_violation="omnibus F is not Welch-corrected; post-hoc uses Games-Howell",
+    )]
     for name, arr in grp_dict.items():
         assumptions.append(check_normality(arr, name))
 

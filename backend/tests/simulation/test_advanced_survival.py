@@ -550,8 +550,9 @@ def test_external_validation_cohorts_generator():
 @pytest.mark.simulation
 def test_multistate_weibull_and_advanced_features():
     """
-    Phase 7 Gelişmiş Özellikler: Weibull geçiş modelleri, Bootstrap güven aralıkları,
-    Microsimulation ve formal Markov Assumption testi bir arada hatasız çalışmalıdır.
+    Phase 7 advanced features: Weibull transition models, bootstrap confidence
+    intervals, microsimulation and the formal Markov-assumption test must all
+    run together without error.
     """
     from services.simulation_generators import generate_multistate_data
     from services.multistate import fit_multistate_transitions, dynamic_prediction_from_landmark
@@ -559,7 +560,7 @@ def test_multistate_weibull_and_advanced_features():
 
     df, _ = generate_multistate_data(n=250, seed=123)
 
-    # 1. Weibull geçişleri ve Markov Assumption Testini kontrol et
+    # 1. Check the Weibull transitions and the Markov assumption test
     res_fit = fit_multistate_transitions(
         df,
         id_col="id",
@@ -578,7 +579,7 @@ def test_multistate_weibull_and_advanced_features():
     assert res_fit["markov_assumption_tests"]["1->2"]["status"] == "Tested"
     assert "shape_rho" in res_fit["results"]["0->1"]
 
-    # 2. Weibull tabanlı dynamic prediction, bootstrap ve microsimulation kontrol et
+    # 2. Check Weibull-based dynamic prediction, bootstrap and microsimulation
     horizon = np.linspace(2.0, 6.0, 8)
     res_pred = dynamic_prediction_from_landmark(
         df,

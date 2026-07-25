@@ -165,6 +165,9 @@ function ColMenuGroup({
   };
   useEffect(() => cancelClose, []);
 
+  /* eslint-disable react-hooks/set-state-in-effect -- positioning a portal
+     requires a synchronous DOM measurement before paint; this is the documented
+     "synchronize with an external system" use of an effect. */
   useLayoutEffect(() => {
     if (!open || !btnRef.current) { setPos(null); return; }
     const btn = btnRef.current.getBoundingClientRect();
@@ -182,6 +185,7 @@ function ColMenuGroup({
     );
     setPos({ top: Math.max(4, btn.top), left });
   }, [open, flip]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   return (
     <div className="relative" onMouseEnter={openNow} onMouseLeave={scheduleClose}>
@@ -2023,7 +2027,7 @@ function DataTableBody({ session }: { session: Session }) {
           {/* Decimal places selector — explanation lives in the tooltip */}
           {columns.find((c) => c.name === ctxMenu.col)?.kind === "numeric" && (
             <div className="px-3 py-1"
-              title={'Summary, Histogram & Tablo 1 metriklerine de uygulanır. "A" = otomatik (integer kolonlar 0, diğerleri 2 ondalık).'}>
+              title={'Also applied to Summary, Histogram and Table 1 metrics. "A" = automatic (0 decimals for integer columns, 2 otherwise).'}>
               <span className="text-xs text-gray-500">🔢 Decimals</span>
               <div className="flex items-center gap-1 mt-1">
                 {[0, 1, 2, 3, 4, "auto"].map((d) => (

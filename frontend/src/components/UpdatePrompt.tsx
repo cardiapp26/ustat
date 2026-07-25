@@ -132,7 +132,7 @@ export default function UpdatePrompt() {
             <div className="flex items-center gap-2">
               <AlertCircle size={16} />
               <span className="text-xs font-bold tracking-tight">
-                {isTauri ? "Yeni Masaüstü Sürümü Hazır" : "Yeni sürüm hazır"}
+                {isTauri ? "New desktop version ready" : "New version ready"}
               </span>
             </div>
             <button
@@ -154,8 +154,8 @@ export default function UpdatePrompt() {
           <div className="p-4">
             <p className="text-xs text-gray-700 leading-relaxed">
               {isTauri
-                ? `uSTAT Desktop için yeni bir güncelleme (v${newVersion}) yayınlandı. Şimdi indirip kurmak ister misiniz?`
-                : "uSTAT güncellendi. Mevcut sekmeniz eski sürümü kullanıyor olabilir. Yeni özellikleri ve hata düzeltmelerini almak için sayfayı yenileyin."}
+                ? `An update for uSTAT Desktop (v${newVersion}) is available. Download and install it now?`
+                : "uSTAT has been updated. This tab may still be running the old version — reload to pick up the new features and fixes."}
             </p>
             <p className="text-[10px] text-gray-400 font-mono mt-1">
               Mevcut: v{__APP_VERSION__} {!isTauri && `· Build ${__BUILD_TIME__}`}
@@ -218,7 +218,7 @@ export default function UpdatePrompt() {
     <div className="fixed bottom-4 right-4 z-[60] max-w-sm animate-in fade-in duration-300">
       <div className="bg-emerald-50 border border-emerald-200 rounded-xl shadow-md px-3 py-2 flex items-center gap-2">
         <CheckCircle2 size={14} className="text-emerald-600 flex-shrink-0" />
-        <span className="text-[11px] text-emerald-800">Çevrimdışı kullanım için hazır.</span>
+        <span className="text-[11px] text-emerald-800">Ready for offline use.</span>
         <button
           onClick={() => setOfflineReady(false)}
           className="ml-1 text-emerald-600 hover:text-emerald-900"

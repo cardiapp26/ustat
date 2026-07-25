@@ -616,6 +616,7 @@ def run_survival_ml_benchmark(
         "Survival probabilities are approximated via exponential decay model calibrated to observed time scale; not a full parametric or non-parametric cumulative hazard estimator.",
         "Risk direction: higher ML risk score and higher Cox LP both correspond to worse prognosis (shorter survival). Inversion applied before S(t) generation.",
         "Phase 9 external_validation receives both LP (for C-index/calibration) and generated S(t) curves (for proper IPCW IBS and tdAUC).",
+        "The headline classical_cox and ml_gradient_boosting_survival C-indices are APPARENT (resubstitution) values — the model is scored on the same rows it was fitted on. Gradient boosting is far more prone to this optimism than Cox, so the two are not directly comparable. Use repeated_cv for the honest, out-of-sample estimate.",
     ]
     warnings = []
     if ml_c is None:
@@ -662,11 +663,30 @@ def run_survival_ml_benchmark(
         "reason": "Competing-risks ML not requested.",
     }
 
+    # The apparent ML C-index is computed on the training rows, so a boosted
+    # model can score near-perfectly while generalising no better than chance.
+    # Say so out loud when the cross-validated estimate contradicts it —
+    # otherwise the headline number invites a false "ML beats Cox" conclusion.
+    cv_mean = (repeated_cv or {}).get("summary", {}).get("mean")
+    if ml_c is not None and isinstance(cv_mean, (int, float)):
+        if float(ml_c) - float(cv_mean) > 0.10:
+            warnings.append(
+                f"Apparent ML C-index ({round(float(ml_c), 3)}) is far above the cross-validated "
+                f"estimate ({round(float(cv_mean), 3)}) — the gradient-boosting model is overfitting. "
+                "Report the cross-validated value, not the apparent one."
+            )
+        if float(cv_mean) < 0.55:
+            warnings.append(
+                f"Cross-validated ML C-index is {round(float(cv_mean), 3)}, i.e. at or below chance "
+                "(0.5). The ML model does not generalise on this dataset."
+            )
+
     result_text = (
         f"Survival ML benchmark on n={len(df_work)} complete subjects. "
-        f"Classical Cox C-index {round(cox_c, 3)}. "
-        f"ML (GB ranking) C-index {round(float(ml_c), 3) if ml_c else 'N/A'}. "
-        f"Repeated CV mean C-index {repeated_cv['summary']['mean']}. "
+        f"Apparent (in-sample) C-index: classical Cox {round(cox_c, 3)}, "
+        f"ML (GB ranking) {round(float(ml_c), 3) if ml_c else 'N/A'} — both optimistically biased, "
+        "and more so for the ML model. "
+        f"Honest cross-validated ML C-index: {repeated_cv['summary']['mean']}. "
         f"Full Phase 9 validation (IBS + tdAUC) and calibration curves computed on generated survival curves. "
         f"IBS winner: {comparison.get('winner_by_ibs') or 'undetermined'}. "
         "Useful when non-linear effects or interactions are suspected."
@@ -677,10 +697,13 @@ def run_survival_ml_benchmark(
         "n_excluded_missing": int(len(df) - len(df_work)),
         "classical_cox": {
             "c_index": round(cox_c, 4),
+            # Scored on the fitting rows — consumers must label it as such.
+            "c_index_type": "apparent",
             "calibration_slope": cox_cal.get("calibration_slope"),
         },
         "ml_gradient_boosting_survival": {
             "c_index": round(float(ml_c), 4) if ml_c else None,
+            "c_index_type": "apparent",
             "calibration_slope": ml_cal.get("calibration_slope"),
             "permutation_importance": importance[:8],
             "shap_values": shap_values,

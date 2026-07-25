@@ -88,8 +88,10 @@ def promax_rotation(loadings, m=4):
     L_inv = np.linalg.pinv(v_loadings)
     H = L_inv @ P
     
-    # Normalize columns of H
-    d = np.diag(H.T @ H)
+    # Normalize columns of H. np.diag on a 2-D array returns a read-only VIEW,
+    # so the guard below raised "assignment destination is read-only" on every
+    # call — promax was a guaranteed 500. Copy before writing.
+    d = np.diag(H.T @ H).copy()
     d[d == 0] = 1e-12
     Q = H @ np.diag(1.0 / np.sqrt(d))
     
@@ -190,7 +192,22 @@ def factor_pca(req: FactorPCARequest):
     
     if n < 10:
         raise HTTPException(status_code=400, detail=f"Too few observations after imputation (need at least 10, got {n}).")
-        
+
+    # A zero-variance item makes df.corr() emit NaN for its whole row/column,
+    # and np.linalg.eigh then dies with "Eigenvalues did not converge" — a 500
+    # for what is ordinary user input (e.g. a flag that became constant after
+    # filtering). Name the offending columns instead.
+    constant_items = [c for c in df_clean.columns if df_clean[c].nunique(dropna=True) <= 1]
+    if constant_items:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"These items have no variance and cannot be factored: {constant_items}. "
+                "Remove them, or widen the filter so they vary."
+            ),
+        )
+
+
     # ── 1. Suitability Tests ──
     overall_kmo, item_kmo = calculate_kmo(df_clean)
     chi2_stat, df_sphericity, p_sphericity = calculate_bartlett(df_clean)
@@ -248,7 +265,14 @@ def factor_pca(req: FactorPCARequest):
     else:  # Exploratory Factor Analysis (EFA)
         from sklearn.decomposition import FactorAnalysis
         fa = FactorAnalysis(n_components=n_fac, random_state=42, max_iter=1000)
-        fa.fit(df_clean.values)
+        # Standardise first. KMO, Bartlett and the eigenvalues above all work
+        # off the correlation matrix; fitting the factor model on raw units
+        # left the loadings on the variables' own scale, so communalities came
+        # back above 1 and uniqueness negative — impossible as proportions of
+        # variance. z-scoring puts EFA on the same correlation scale as PCA.
+        sd = df_clean.std(ddof=0).replace(0, np.nan)
+        z = (df_clean - df_clean.mean()) / sd
+        fa.fit(z.values)
         # sklearn stores as (n_components, n_features), transpose to (n_features, n_components)
         unrotated = fa.components_.T
         method_label = "Exploratory Factor Analysis (EFA — Principal Axis)"

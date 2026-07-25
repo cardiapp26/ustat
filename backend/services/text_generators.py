@@ -97,11 +97,21 @@ def methods_anova(col: str, group_col: str) -> str:
 # RESULTS TEXT — reports what was found (for Results section)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _df_str(df) -> str:
+    """Whole df prints bare; a Welch–Satterthwaite df keeps 2 decimals."""
+    if not isinstance(df, (int, float)):
+        return str(df)
+    f = float(df)
+    if f != f:  # NaN
+        return ""
+    return str(int(f)) if float(f).is_integer() else f"{f:.2f}"
+
+
 def results_ttest_ind(result: dict) -> str:
     g1, g2 = result.get("group1", "Group 1"), result.get("group2", "Group 2")
     t = result.get("t", 0)
     p = result.get("p", 1)
-    df = result.get("df", "")
+    df = _df_str(result.get("df", ""))
     m1, m2 = result.get("mean1", 0), result.get("mean2", 0)
     sig = result.get("significant", False)
     es_list = result.get("effect_sizes", [])

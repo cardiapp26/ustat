@@ -65,6 +65,7 @@ export const runMelt          = (data: object) => api.post("/api/models/melt", d
 export const runRandomForest      = (data: object) => api.post("/api/ml/random_forest", data);
 export const runGradientBoosting  = (data: object) => api.post("/api/ml/gradient_boosting", data);
 export const runFeatureImportance = (data: object) => api.post("/api/ml/feature_importance", data);
+export const runMLSurvivalBenchmark = (data: object) => api.post("/api/survival_advanced/ml_survival_benchmark", data);
 
 // Time series
 export const runArima        = (data: object) => api.post("/api/timeseries/arima", data);
@@ -156,6 +157,9 @@ export const runCronbach     = (data: object) => api.post("/api/reliability/cron
 export const runMissingPattern = (data: object) => api.post("/api/missing_data/pattern", data);
 export const runMCARTest     = (data: object) => api.post("/api/missing_data/mcar_test", data);
 export const runImputationCompare = (data: object) => api.post("/api/missing_data/imputation_compare", data);
+// The /api/models/ copy is async and degrades gracefully; the /api/missing_data/
+// twin 500s when a sub-analysis fails, so prefer this one.
+export const runMnarSensitivity = (data: object) => api.post("/api/models/mnar_sensitivity", data);
 export const getExternalImputeReferenceColumns = (file: File) => {
   const fd = new FormData();
   fd.append("file", file);
@@ -239,16 +243,21 @@ export const runLogisticDiag   = (data: object) => api.post("/api/model_diagnost
 export const runCoxDiag        = (data: object) => api.post("/api/model_diagnostics/cox_diagnostics", data);
 export const runModelValidation = (data: object) => api.post("/api/model_diagnostics/model_validation", data);
 export const runExternalValidationLogistic = (data: object) => api.post("/api/model_diagnostics/external_validation_logistic", data);
+export const runNriIdi         = (data: object) => api.post("/api/model_diagnostics/nri_idi", data);
 
 // Decision curve
 export const runCalibration    = (data: object) => api.post("/api/decision_curve/calibration", data);
 export const runDCA            = (data: object) => api.post("/api/decision_curve/dca", data);
+export const runIntegratedExtValDCA = (data: object) => api.post("/api/decision_curve/integrated_extval_dca", data);
 
 // Model comparison
 export const runNestedLR       = (data: object) => api.post("/api/model_compare/nested_lr_test", data);
 export const runCompareModels  = (data: object) => api.post("/api/model_compare/compare_models", data);
 export const runAddedValue     = (data: object) => api.post("/api/model_compare/added_value", data);
 export const runIV2SLS         = (data: object) => api.post("/api/causal/iv_2sls", data);
+// Full sensitivity suite. Three routes expose this; /api/models/ is the async,
+// strictly-validated one (the model_diagnostics route is a smaller subset).
+export const runCausalSensitivity = (data: object) => api.post("/api/models/causal_sensitivity", data);
 export const runMediation      = (data: object) => api.post("/api/causal/mediation", data);
 export const runTargetTrial    = (data: object) => api.post("/api/causal/target_trial", data);
 export const runDiD            = (data: object) => api.post("/api/causal/did", data);
@@ -267,6 +276,11 @@ export const runLandmark   = (data: object) => api.post("/api/survival_advanced/
 export const runRMST       = (data: object) => api.post("/api/survival_advanced/rmst", data);
 export const runRecurrentLWYY = (data: object) => api.post("/api/survival_advanced/recurrent_lwyy", data);
 export const runIntervalCensored = (data: object) => api.post("/api/survival_advanced/interval_censored", data);
+export const runFrailty    = (data: object) => api.post("/api/survival_advanced/frailty", data);
+export const runMultistate = (data: object) => api.post("/api/survival_advanced/multistate", data);
+export const runDynamicPrediction = (data: object) => api.post("/api/survival_advanced/dynamic_prediction", data);
+export const runJointModel = (data: object) => api.post("/api/survival_advanced/joint_model", data);
+export const runExternalValidationSurvival = (data: object) => api.post("/api/survival_advanced/external_validation", data);
 
 // Article parser
 export const parseArticle = (file: File) => {

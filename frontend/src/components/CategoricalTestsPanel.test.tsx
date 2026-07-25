@@ -72,4 +72,58 @@ describe('CategoricalTestsPanel', () => {
 
     await waitFor(() => expect(screen.getByText('Column is not binary')).toBeInTheDocument())
   })
+
+  it('surfaces backend warnings above the numbers', async () => {
+    // An assumed level ordering can invert the trend direction, so the warning
+    // must be visible — it used to be dropped from the result card entirely.
+    installSession()
+    server.use(
+      http.post('/api/categorical/cochran_armitage', () =>
+        HttpResponse.json({
+          test: 'Cochran-Armitage trend test',
+          z: -4.0249,
+          p: 0.000057,
+          significant: true,
+          level_order_source: 'alphabetical (assumed)',
+          warnings: [
+            "'dose' has non-numeric levels, so they were ordered alphabetically: ['High', 'Low', 'Medium'].",
+          ],
+          interpretation: 'Significant linear trend (direction: decreasing).',
+        }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<CategoricalTestsPanel />)
+    await user.click(screen.getByLabelText('Cochran-Armitage trend'))
+    await user.click(screen.getByRole('button', { name: /run test/i }))
+
+    await waitFor(() =>
+      expect(screen.getByText(/ordered alphabetically/i)).toBeInTheDocument(),
+    )
+  })
+
+  it('sends level_order only when the user supplies one', async () => {
+    installSession()
+    const bodies: Record<string, unknown>[] = []
+    server.use(
+      http.post('/api/categorical/cochran_armitage', async ({ request }) => {
+        bodies.push((await request.json()) as Record<string, unknown>)
+        return HttpResponse.json({ test: 'Cochran-Armitage trend test', z: 1, p: 0.3 })
+      }),
+    )
+
+    const user = userEvent.setup()
+    render(<CategoricalTestsPanel />)
+    await user.click(screen.getByLabelText('Cochran-Armitage trend'))
+
+    await user.click(screen.getByRole('button', { name: /run test/i }))
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    expect(bodies[0]).not.toHaveProperty('level_order')
+
+    await user.type(screen.getByPlaceholderText(/Low, Medium, High/i), 'Low, Medium, High')
+    await user.click(screen.getByRole('button', { name: /run test/i }))
+    await waitFor(() => expect(bodies).toHaveLength(2))
+    expect(bodies[1].level_order).toEqual(['Low', 'Medium', 'High'])
+  })
 })

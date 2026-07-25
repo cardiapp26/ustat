@@ -6,8 +6,12 @@ from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
 from typing import Any, Dict, List, Optional
 from services import store, plot_render
-from services.dirty_value_guard import coerce_numeric, mask_sentinels, plausibility_max_for_column
-from services.stat_utils import sorted_groups
+from services.dirty_value_guard import (
+    coerce_numeric,
+    mask_sentinels,
+    plausibility_max_for_column,
+)
+from services.stat_utils import sorted_groups, _categorical_p_with_rule
 
 router = APIRouter()
 
@@ -35,13 +39,17 @@ def _plausibility_warnings(col: str, series: pd.Series) -> list[dict]:
         rule = "expected fu_days > 0"
     if not mask.any():
         return []
-    return [{
-        "variable": col,
-        "n_implausible": int(mask.sum()),
-        "implausible_values": sorted({float(v) for v in numeric[mask].dropna().unique()}),
-        "rule": rule,
-        "note": "Values were retained for display but should be reviewed.",
-    }]
+    return [
+        {
+            "variable": col,
+            "n_implausible": int(mask.sum()),
+            "implausible_values": sorted(
+                {float(v) for v in numeric[mask].dropna().unique()}
+            ),
+            "rule": rule,
+            "note": "Values were retained for display but should be reviewed.",
+        }
+    ]
 
 
 class ChartRequest(BaseModel):
@@ -60,19 +68,30 @@ def histogram(req: ChartRequest):
         raise HTTPException(status_code=400, detail=f"Column '{req.x}' not found")
     s = coerce_numeric(df[req.x]).replace([np.inf, -np.inf], np.nan).dropna()
     if len(s) < 2:
-        raise HTTPException(status_code=400, detail="Need at least 2 numeric values for a histogram.")
+        raise HTTPException(
+            status_code=400, detail="Need at least 2 numeric values for a histogram."
+        )
     counts, edges = np.histogram(s, bins=req.bins)
     kde_x = np.linspace(s.min(), s.max(), 200)
     kde_points = []
     if len(s) >= 3 and float(s.std()) > 0:
         kde = scipy_stats.gaussian_kde(s)
-        kde_points = [{"x": float(kx), "y": float(ky)} for kx, ky in zip(kde_x, kde(kde_x))]
+        kde_points = [
+            {"x": float(kx), "y": float(ky)} for kx, ky in zip(kde_x, kde(kde_x))
+        ]
     return {
         "type": "histogram",
         "x": req.x,
-        "bins": [{"x0": float(edges[i]), "x1": float(edges[i+1]), "count": int(counts[i])} for i in range(len(counts))],
+        "bins": [
+            {"x0": float(edges[i]), "x1": float(edges[i + 1]), "count": int(counts[i])}
+            for i in range(len(counts))
+        ],
         "kde": kde_points,
-        "stats": {"mean": float(s.mean()), "median": float(s.median()), "std": float(s.std())},
+        "stats": {
+            "mean": float(s.mean()),
+            "median": float(s.median()),
+            "std": float(s.std()),
+        },
         "warnings": _plausibility_warnings(req.x, df[req.x]),
     }
 
@@ -100,7 +119,10 @@ def scatter(req: ChartRequest):
     sub = sub.dropna()
 
     if len(sub) < 2:
-        raise HTTPException(status_code=400, detail="Not enough non-missing data points to draw scatter (need ≥ 2)")
+        raise HTTPException(
+            status_code=400,
+            detail="Not enough non-missing data points to draw scatter (need ≥ 2)",
+        )
 
     # Regression only when both axes are numeric
     x_numeric = df[req.x].dtype.kind in ("f", "i", "u")
@@ -117,32 +139,51 @@ def scatter(req: ChartRequest):
             line_x = [float(sub[req.x].min()), float(sub[req.x].max())]
             line_y = [float(slope * lx + intercept) for lx in line_x]
             reg = {
-                "slope": float(slope), "intercept": float(intercept),
-                "r": float(r), "r2": float(r ** 2),
-                "p": float(p), "se": float(se),
-                "line_x": line_x, "line_y": line_y,
+                "slope": float(slope),
+                "intercept": float(intercept),
+                "r": float(r),
+                "r2": float(r**2),
+                "p": float(p),
+                "se": float(se),
+                "line_x": line_x,
+                "line_y": line_y,
             }
         except Exception:
             reg = {
-                "slope": None, "intercept": None,
-                "r": None, "r2": None, "p": None, "se": None,
-                "line_x": [], "line_y": [],
+                "slope": None,
+                "intercept": None,
+                "r": None,
+                "r2": None,
+                "p": None,
+                "se": None,
+                "line_x": [],
+                "line_y": [],
                 "note": "Regression unavailable (constant or degenerate data)",
             }
     else:
         reg = {
-            "slope": None, "intercept": None,
-            "r": None, "r2": None, "p": None, "se": None,
-            "line_x": [], "line_y": [],
+            "slope": None,
+            "intercept": None,
+            "r": None,
+            "r2": None,
+            "p": None,
+            "se": None,
+            "line_x": [],
+            "line_y": [],
             "note": "Regression requires two numeric axes",
         }
 
     # Serialize points safely (NaN → null via json round-trip)
-    points = _json.loads(sub.to_json(orient="records", default_handler=str, date_format="iso", date_unit="s"))
+    points = _json.loads(
+        sub.to_json(
+            orient="records", default_handler=str, date_format="iso", date_unit="s"
+        )
+    )
 
     return {
         "type": "scatter",
-        "x": req.x, "y": req.y,
+        "x": req.x,
+        "y": req.y,
         "points": points,
         "regression": reg,
         "color": req.color,
@@ -260,7 +301,10 @@ def splom(req: SplomRequest):
     sub = df[needed].replace([np.inf, -np.inf], np.nan).dropna()
 
     if len(sub) < 3:
-        raise HTTPException(status_code=400, detail="Not enough data after removing missing values (need ≥ 3 rows)")
+        raise HTTPException(
+            status_code=400,
+            detail="Not enough data after removing missing values (need ≥ 3 rows)",
+        )
 
     # Build column arrays
     data_cols = {col: sub[col].tolist() for col in req.variables}
@@ -275,8 +319,12 @@ def splom(req: SplomRequest):
             else:
                 key = f"{a}||{b}"
                 try:
-                    r, _ = scipy_stats.pearsonr(sub[a].astype(float), sub[b].astype(float))
-                    corr[key] = round(float(r), 4) if not (np.isnan(r) or np.isinf(r)) else None
+                    r, _ = scipy_stats.pearsonr(
+                        sub[a].astype(float), sub[b].astype(float)
+                    )
+                    corr[key] = (
+                        round(float(r), 4) if not (np.isnan(r) or np.isinf(r)) else None
+                    )
                 except Exception:
                     corr[key] = None
 
@@ -297,19 +345,25 @@ def bar(req: ChartRequest):
         grp = df.groupby(req.x)[req.y].mean().reset_index()
         return {
             "type": "bar",
-            "x": req.x, "y": req.y,
-            "data": [{"label": str(row[req.x]), "value": float(row[req.y])} for _, row in grp.iterrows()],
+            "x": req.x,
+            "y": req.y,
+            "data": [
+                {"label": str(row[req.x]), "value": float(row[req.y])}
+                for _, row in grp.iterrows()
+            ],
         }
     else:
         counts = df[req.x].value_counts()
         return {
             "type": "bar",
-            "x": req.x, "y": "count",
+            "x": req.x,
+            "y": "count",
             "data": [{"label": str(k), "value": int(v)} for k, v in counts.items()],
         }
 
 
 # ── Forest plot ─────────────────────────────────────────────────────────────────
+
 
 class ForestRow(BaseModel):
     label: str
@@ -317,20 +371,20 @@ class ForestRow(BaseModel):
     ci_low: float
     ci_high: float
     weight: Optional[float] = None  # for meta-analysis weighting
-    group: Optional[str] = None     # optional group label (sub-heading)
-    n: Optional[int] = None         # optional sample-size annotation
+    group: Optional[str] = None  # optional group label (sub-heading)
+    n: Optional[int] = None  # optional sample-size annotation
 
 
 class ForestRequest(BaseModel):
     rows: List[ForestRow]
-    effect_label: str = "OR"        # OR / HR / RR / β / Mean difference
-    x_axis: str = "log"             # "log" for OR/HR/RR, "linear" for β/diff
-    null_line: float = 1.0          # reference value (1.0 for log-scale, 0 for linear)
+    effect_label: str = "OR"  # OR / HR / RR / β / Mean difference
+    x_axis: str = "log"  # "log" for OR/HR/RR, "linear" for β/diff
+    null_line: float = 1.0  # reference value (1.0 for log-scale, 0 for linear)
     title: Optional[str] = None
-    sort_by: Optional[str] = None   # "effect" | "p" | None (preserve order)
+    sort_by: Optional[str] = None  # "effect" | "p" | None (preserve order)
     # Meta-analysis (optional):
     do_meta: bool = False
-    meta_method: str = "DL"         # DerSimonian-Laird random-effects
+    meta_method: str = "DL"  # DerSimonian-Laird random-effects
 
 
 @router.post("/forest")
@@ -353,7 +407,10 @@ def forest_plot(req: ForestRequest):
     for r in rows:
         if log_scale:
             if r["est"] <= 0 or r["ci_low"] <= 0 or r["ci_high"] <= 0:
-                raise HTTPException(status_code=422, detail="Log-scale forest plots require positive est, ci_low, and ci_high values.")
+                raise HTTPException(
+                    status_code=422,
+                    detail="Log-scale forest plots require positive est, ci_low, and ci_high values.",
+                )
             r["log_est"] = float(np.log(max(r["est"], 1e-12)))
             r["log_low"] = float(np.log(max(r["ci_low"], 1e-12)))
             r["log_high"] = float(np.log(max(r["ci_high"], 1e-12)))
@@ -363,19 +420,24 @@ def forest_plot(req: ForestRequest):
 
     meta = None
     if req.do_meta and len(rows) >= 2:
-        ests = np.array([r["log_est"] if log_scale else r["est"] for r in rows], dtype=float)
-        ses  = np.array([r["se"] for r in rows], dtype=float)
-        wts_fe = 1.0 / (ses ** 2)
+        ests = np.array(
+            [r["log_est"] if log_scale else r["est"] for r in rows], dtype=float
+        )
+        ses = np.array([r["se"] for r in rows], dtype=float)
+        wts_fe = 1.0 / (ses**2)
         wts_fe = wts_fe / wts_fe.sum()  # normalise
         # Fixed-effect mean
         mu_fe = float(np.sum(wts_fe * ests))
         # Cochran Q and τ² (DerSimonian-Laird)
-        q = float(np.sum((1.0 / (ses ** 2)) * (ests - mu_fe) ** 2))
+        q = float(np.sum((1.0 / (ses**2)) * (ests - mu_fe) ** 2))
         dfree = len(rows) - 1
-        c = float(np.sum(1.0 / (ses ** 2)) - np.sum((1.0 / (ses ** 2)) ** 2) / np.sum(1.0 / (ses ** 2)))
+        c = float(
+            np.sum(1.0 / (ses**2))
+            - np.sum((1.0 / (ses**2)) ** 2) / np.sum(1.0 / (ses**2))
+        )
         tau2 = max(0.0, (q - dfree) / c if c > 0 else 0.0)
         # Random-effects re-weighting
-        wts_re = 1.0 / (ses ** 2 + tau2)
+        wts_re = 1.0 / (ses**2 + tau2)
         mu_re = float(np.sum(wts_re * ests) / np.sum(wts_re))
         var_re = float(1.0 / np.sum(wts_re))
         se_re = float(np.sqrt(var_re))
@@ -383,6 +445,7 @@ def forest_plot(req: ForestRequest):
         ci_high_re = float(mu_re + 1.96 * se_re)
         i2 = max(0.0, (q - dfree) / q * 100.0) if q > 0 else 0.0
         from scipy.stats import chi2 as _chi2
+
         q_p = float(1 - _chi2.cdf(q, dfree)) if dfree > 0 else 1.0
         if log_scale:
             pooled_est = float(np.exp(mu_re))
@@ -435,27 +498,35 @@ class SubgroupBarRequest(BaseModel):
 @router.post("/subgroup_bar")
 def subgroup_bar(req: SubgroupBarRequest):
     df = _get_df(req.session_id)
-    
+
     # Check if selected columns exist
     for col in [req.y_col, req.subgroup_col, req.xaxis_col]:
         if col not in df.columns:
             raise HTTPException(status_code=400, detail=f"Column '{col}' not found")
-            
+
     if req.color_col and req.color_col not in df.columns:
-        raise HTTPException(status_code=400, detail=f"Column '{req.color_col}' not found")
-        
+        raise HTTPException(
+            status_code=400, detail=f"Column '{req.color_col}' not found"
+        )
+
     # Get subset of columns
     cols_to_use = [req.y_col, req.subgroup_col, req.xaxis_col]
     if req.color_col:
         cols_to_use.append(req.color_col)
-        
+
     sub = df[cols_to_use].copy()
-    
+
     # Drop missing in grouping columns, but handle Y missing per cell safely
-    sub = sub.dropna(subset=[req.subgroup_col, req.xaxis_col] + ([req.color_col] if req.color_col else []))
-    
+    sub = sub.dropna(
+        subset=[req.subgroup_col, req.xaxis_col]
+        + ([req.color_col] if req.color_col else [])
+    )
+
     if len(sub) == 0:
-        raise HTTPException(status_code=400, detail="No valid data points found after dropping missing values in grouping variables.")
+        raise HTTPException(
+            status_code=400,
+            detail="No valid data points found after dropping missing values in grouping variables.",
+        )
 
     # Get unique groups, ordered by value code (numeric when coercible, else
     # string) so multi-digit codes (1, 2, 10) don't sort as 1, 10, 2.
@@ -468,10 +539,12 @@ def subgroup_bar(req: SubgroupBarRequest):
         raw_y = sub[req.y_col]
         masked_y = mask_sentinels(raw_y, max_plausible)
         if masked_y.isna().sum() > coerce_numeric(raw_y).isna().sum():
-            warnings.append({
-                "variable": req.y_col,
-                "note": "Implausible high sentinel values were treated as missing for mean bars.",
-            })
+            warnings.append(
+                {
+                    "variable": req.y_col,
+                    "note": "Implausible high sentinel values were treated as missing for mean bars.",
+                }
+            )
         sub[req.y_col] = masked_y
 
     # ── Percentage "success" level — resolved ONCE over the whole subset, not
@@ -501,12 +574,24 @@ def subgroup_bar(req: SubgroupBarRequest):
         denom = 1.0 + Z * Z / n
         center = (p + Z * Z / (2 * n)) / denom
         half = (Z / denom) * np.sqrt(p * (1 - p) / n + Z * Z / (4 * n * n))
-        return p * 100.0, max(0.0, center - half) * 100.0, min(1.0, center + half) * 100.0
+        return (
+            p * 100.0,
+            max(0.0, center - half) * 100.0,
+            min(1.0, center + half) * 100.0,
+        )
 
     traces = []
     for cg in color_groups:
-        tr = {"name": str(cg), "x_subgroup": [], "x_xaxis": [], "y": [],
-              "error": [], "error_low": [], "error_high": [], "ns": []}
+        tr = {
+            "name": str(cg),
+            "x_subgroup": [],
+            "x_xaxis": [],
+            "y": [],
+            "error": [],
+            "error_low": [],
+            "error_high": [],
+            "ns": [],
+        }
         for sg in subgroups:
             iter_x_vals = x_vals if req.color_col else [cg]
             for xv in iter_x_vals:
@@ -524,7 +609,10 @@ def subgroup_bar(req: SubgroupBarRequest):
                     se = np.sqrt(p * (1 - p) / n) * 100.0
                     sd = np.sqrt(p * (1 - p)) * 100.0
                     if req.error_type == "ci":
-                        e_low, e_high = max(0.0, val - lo), max(0.0, hi - val)  # asymmetric (Wilson)
+                        e_low, e_high = (
+                            max(0.0, val - lo),
+                            max(0.0, hi - val),
+                        )  # asymmetric (Wilson)
                     elif req.error_type == "se":
                         e_low = e_high = se
                     elif req.error_type == "sd":
@@ -537,7 +625,9 @@ def subgroup_bar(req: SubgroupBarRequest):
                         sd = float(nums.std(ddof=1)) if m > 1 else 0.0
                         se = sd / np.sqrt(m)
                         if req.error_type == "ci":
-                            tcrit = float(scipy_stats.t.ppf(0.975, m - 1)) if m > 1 else 0.0
+                            tcrit = (
+                                float(scipy_stats.t.ppf(0.975, m - 1)) if m > 1 else 0.0
+                            )
                             e_low = e_high = tcrit * se  # t-distribution CI half-width
                         elif req.error_type == "se":
                             e_low = e_high = se
@@ -547,13 +637,18 @@ def subgroup_bar(req: SubgroupBarRequest):
                 tr["x_subgroup"].append(str(sg))
                 tr["x_xaxis"].append(str(xv))
                 tr["y"].append(val)
-                tr["error"].append(e_high)        # legacy symmetric field (= upper offset)
+                tr["error"].append(e_high)  # legacy symmetric field (= upper offset)
                 tr["error_low"].append(e_low)
                 tr["error_high"].append(e_high)
                 tr["ns"].append(n)
         traces.append(tr)
 
-    _err_label = {"ci": "95% CI", "se": "± 1 SE", "sd": "± 1 SD", "none": "no error bars"}.get(req.error_type, req.error_type)
+    _err_label = {
+        "ci": "95% CI",
+        "se": "± 1 SE",
+        "sd": "± 1 SD",
+        "none": "no error bars",
+    }.get(req.error_type, req.error_type)
     return {
         "type": "subgroup_bar",
         "y_col": req.y_col,
@@ -569,7 +664,7 @@ def subgroup_bar(req: SubgroupBarRequest):
             "Means use a t-distribution CI (t_{n−1}); percentages use the Wilson "
             "score interval (bounded to 0–100%, accurate for small n and extreme "
             f"proportions). Error bars show {_err_label}."
-        )
+        ),
     }
 
 
@@ -598,9 +693,13 @@ def _format_p_value(p: Optional[float]) -> str:
     return f"p = {p:.3f}"
 
 
-def _score_group_pvalue(score: pd.Series, groups: pd.Series, group_levels: list[str]) -> Optional[float]:
+def _score_group_pvalue(
+    score: pd.Series, groups: pd.Series, group_levels: list[str]
+) -> Optional[float]:
     samples = [
-        pd.to_numeric(score[groups == g], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+        pd.to_numeric(score[groups == g], errors="coerce")
+        .replace([np.inf, -np.inf], np.nan)
+        .dropna()
         for g in group_levels
     ]
     samples = [s for s in samples if len(s) > 0]
@@ -608,7 +707,11 @@ def _score_group_pvalue(score: pd.Series, groups: pd.Series, group_levels: list[
         return None
     try:
         if len(samples) == 2:
-            return float(scipy_stats.mannwhitneyu(samples[0], samples[1], alternative="two-sided").pvalue)
+            return float(
+                scipy_stats.mannwhitneyu(
+                    samples[0], samples[1], alternative="two-sided"
+                ).pvalue
+            )
         return float(scipy_stats.kruskal(*samples).pvalue)
     except Exception:
         return None
@@ -623,10 +726,15 @@ def _component_positive(series: pd.Series, positive_values: list[str]) -> pd.Ser
     return non_missing & (numeric_positive | string_positive)
 
 
-def _component_pvalue(values: pd.Series, groups: pd.Series, group_levels: list[str], positive_values: list[str]) -> Optional[float]:
+def _component_pvalue(
+    values: pd.Series,
+    groups: pd.Series,
+    group_levels: list[str],
+    positive_values: list[str],
+) -> tuple[Optional[float], Optional[str]]:
     valid = values.notna() & groups.notna()
     if not valid.any():
-        return None
+        return None, None
     pos = _component_positive(values[valid], positive_values)
     valid_groups = groups[valid]
     table = []
@@ -636,17 +744,20 @@ def _component_pvalue(values: pd.Series, groups: pd.Series, group_levels: list[s
         total = int(mask.sum())
         table.append([positives, max(total - positives, 0)])
     if len(table) < 2 or any(sum(row) == 0 for row in table):
-        return None
+        return None, None
     try:
-        if len(table) == 2:
-            return float(scipy_stats.fisher_exact(table).pvalue)
-        return float(scipy_stats.chi2_contingency(table).pvalue)
+        p_value, test_name = _categorical_p_with_rule(np.array(table))
+        return float(p_value), test_name
     except Exception:
-        return None
+        return None, None
 
 
 def _score_xbins(values: pd.Series, bins: int) -> dict:
-    clean = pd.to_numeric(values, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    clean = (
+        pd.to_numeric(values, errors="coerce")
+        .replace([np.inf, -np.inf], np.nan)
+        .dropna()
+    )
     if clean.empty:
         return {"nbinsx": max(2, int(bins))}
     arr = clean.to_numpy(dtype=float)
@@ -675,30 +786,48 @@ def score_composite(req: ScoreCompositeRequest):
     """
     df = _get_df(req.session_id)
     if req.group_col not in df.columns:
-        raise HTTPException(status_code=400, detail=f"Column '{req.group_col}' not found")
+        raise HTTPException(
+            status_code=400, detail=f"Column '{req.group_col}' not found"
+        )
     if len(req.scores) != 2:
-        raise HTTPException(status_code=400, detail="Select exactly two score columns for a 5-panel score-composite figure.")
+        raise HTTPException(
+            status_code=400,
+            detail="Select exactly two score columns for a 5-panel score-composite figure.",
+        )
 
     needed = [req.group_col]
     for spec in req.scores:
         if spec.score_col not in df.columns:
-            raise HTTPException(status_code=400, detail=f"Column '{spec.score_col}' not found")
+            raise HTTPException(
+                status_code=400, detail=f"Column '{spec.score_col}' not found"
+            )
         if not spec.components:
-            raise HTTPException(status_code=400, detail=f"Select at least one component for '{spec.score_col}'.")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Select at least one component for '{spec.score_col}'.",
+            )
         needed.append(spec.score_col)
         for comp in spec.components:
             if comp not in df.columns:
-                raise HTTPException(status_code=400, detail=f"Column '{comp}' not found")
+                raise HTTPException(
+                    status_code=400, detail=f"Column '{comp}' not found"
+                )
             needed.append(comp)
 
     sub = df[list(dict.fromkeys(needed))].copy()
     sub["_score_group"] = sub[req.group_col].astype(str)
     if req.group_order:
-        group_levels = [str(g) for g in req.group_order if str(g) in set(sub["_score_group"].dropna())]
+        group_levels = [
+            str(g)
+            for g in req.group_order
+            if str(g) in set(sub["_score_group"].dropna())
+        ]
     else:
         group_levels = [str(g) for g in pd.unique(sub["_score_group"].dropna())]
     if len(group_levels) < 2:
-        raise HTTPException(status_code=400, detail="Need at least two non-missing groups.")
+        raise HTTPException(
+            status_code=400, detail="Need at least two non-missing groups."
+        )
 
     colors = ["#4f86c6", "#dd7b6e", "#6fbf73", "#9b6ec8", "#d19a2e"]
     axis_ids = [
@@ -721,40 +850,65 @@ def score_composite(req: ScoreCompositeRequest):
         f"D  {req.scores[0].label or req.scores[0].score_col} Component Prevalence",
         f"E  {req.scores[1].label or req.scores[1].score_col} Component Prevalence",
     ]
-    title_positions = [(0.0, 1.06), (0.37, 1.06), (0.74, 1.06), (0.0, 0.47), (0.74, 0.47)]
+    title_positions = [
+        (0.0, 1.06),
+        (0.37, 1.06),
+        (0.74, 1.06),
+        (0.0, 0.47),
+        (0.74, 0.47),
+    ]
     for text, (xpos, ypos) in zip(panel_titles, title_positions):
-        annotations.append({
-            "xref": "paper", "yref": "paper", "x": xpos, "y": ypos,
-            "text": f"<b>{text}</b>", "showarrow": False, "xanchor": "left",
-            "font": {"size": 14, "color": "#111827"},
-        })
+        annotations.append(
+            {
+                "xref": "paper",
+                "yref": "paper",
+                "x": xpos,
+                "y": ypos,
+                "text": f"<b>{text}</b>",
+                "showarrow": False,
+                "xanchor": "left",
+                "font": {"size": 14, "color": "#111827"},
+            }
+        )
 
     for score_idx, spec in enumerate(req.scores):
         label = spec.label or spec.score_col
-        score_values = pd.to_numeric(sub[spec.score_col], errors="coerce").replace([np.inf, -np.inf], np.nan)
+        score_values = pd.to_numeric(sub[spec.score_col], errors="coerce").replace(
+            [np.inf, -np.inf], np.nan
+        )
         p_value = _score_group_pvalue(score_values, sub["_score_group"], group_levels)
         n_by_group = {
             g: int(score_values[sub["_score_group"] == g].dropna().shape[0])
             for g in group_levels
         }
-        score_summaries.append({
-            "score_col": spec.score_col,
-            "label": label,
-            "p_value": p_value,
-            "p_text": _format_p_value(p_value),
-            "n_by_group": n_by_group,
-            "components": [],
-        })
+        score_summaries.append(
+            {
+                "score_col": spec.score_col,
+                "label": label,
+                "p_value": p_value,
+                "p_text": _format_p_value(p_value),
+                "n_by_group": n_by_group,
+                "components": [],
+            }
+        )
 
         xref, yref = axis_ids[score_idx]
         bin_kwargs = _score_xbins(score_values, req.bins)
         for group_idx, group in enumerate(group_levels):
-            vals = score_values[sub["_score_group"] == group].dropna().astype(float).tolist()
+            vals = (
+                score_values[sub["_score_group"] == group]
+                .dropna()
+                .astype(float)
+                .tolist()
+            )
             trace = {
                 "type": "histogram",
                 "x": vals,
                 "name": f"{group} (n={len(vals)})",
-                "marker": {"color": colors[group_idx % len(colors)], "line": {"color": "white", "width": 0.5}},
+                "marker": {
+                    "color": colors[group_idx % len(colors)],
+                    "line": {"color": "white", "width": 0.5},
+                },
                 "opacity": 0.78,
                 "showlegend": score_idx == 0,
                 "legendgroup": group,
@@ -765,28 +919,40 @@ def score_composite(req: ScoreCompositeRequest):
             trace_data.append(trace)
 
             box_x = [f"{group}<br>{label}"] * len(vals)
-            trace_data.append({
-                "type": "box",
-                "x": box_x,
-                "y": vals,
-                "name": group,
-                "marker": {"color": colors[group_idx % len(colors)]},
-                "line": {"color": "#111827", "width": 1},
-                "boxpoints": "outliers" if len(vals) < 500 else False,
-                "showlegend": False,
-                "legendgroup": group,
-                "xaxis": "x3",
-                "yaxis": "y3",
-            })
+            trace_data.append(
+                {
+                    "type": "box",
+                    "x": box_x,
+                    "y": vals,
+                    "name": group,
+                    "marker": {"color": colors[group_idx % len(colors)]},
+                    "line": {"color": "#111827", "width": 1},
+                    "boxpoints": "outliers" if len(vals) < 500 else False,
+                    "showlegend": False,
+                    "legendgroup": group,
+                    "xaxis": "x3",
+                    "yaxis": "y3",
+                }
+            )
 
-        annotations.append({
-            "xref": f"{xref} domain", "yref": f"{yref} domain", "x": 0.86, "y": 0.9,
-            "text": _format_p_value(p_value), "showarrow": False,
-            "font": {"size": 12, "color": "#4b5563"},
-        })
+        annotations.append(
+            {
+                "xref": f"{xref} domain",
+                "yref": f"{yref} domain",
+                "x": 0.86,
+                "y": 0.9,
+                "text": _format_p_value(p_value),
+                "showarrow": False,
+                "font": {"size": 12, "color": "#4b5563"},
+            }
+        )
 
     box_max_candidates = [
-        float(pd.to_numeric(sub[spec.score_col], errors="coerce").replace([np.inf, -np.inf], np.nan).max())
+        float(
+            pd.to_numeric(sub[spec.score_col], errors="coerce")
+            .replace([np.inf, -np.inf], np.nan)
+            .max()
+        )
         for spec in req.scores
     ]
     box_max_candidates = [v for v in box_max_candidates if np.isfinite(v)]
@@ -796,20 +962,39 @@ def score_composite(req: ScoreCompositeRequest):
         x0 = f"{group_levels[0]}<br>{label}"
         x1 = f"{group_levels[-1]}<br>{label}"
         y = box_y_max * (0.94 if score_idx == 0 else 0.88)
-        shapes.append({
-            "type": "line", "xref": "x3", "yref": "y3", "x0": x0, "x1": x1, "y0": y, "y1": y,
-            "line": {"color": "#9ca3af", "width": 1},
-        })
-        annotations.append({
-            "xref": "x3", "yref": "y3", "x": x0 if score_idx == 0 else x1, "y": y + max(box_y_max * 0.04, 0.5),
-            "text": score_summaries[score_idx]["p_text"], "showarrow": False,
-            "font": {"size": 12, "color": "#4b5563"},
-        })
+        shapes.append(
+            {
+                "type": "line",
+                "xref": "x3",
+                "yref": "y3",
+                "x0": x0,
+                "x1": x1,
+                "y0": y,
+                "y1": y,
+                "line": {"color": "#9ca3af", "width": 1},
+            }
+        )
+        annotations.append(
+            {
+                "xref": "x3",
+                "yref": "y3",
+                "x": x0 if score_idx == 0 else x1,
+                "y": y + max(box_y_max * 0.04, 0.5),
+                "text": score_summaries[score_idx]["p_text"],
+                "showarrow": False,
+                "font": {"size": 12, "color": "#4b5563"},
+            }
+        )
 
     for score_idx, spec in enumerate(req.scores):
         xref, yref = axis_ids[3 + score_idx]
-        labels = [spec.component_labels.get(c, c) if spec.component_labels else c for c in spec.components]
-        component_ticks.append({"tickvals": list(range(len(labels))), "ticktext": labels})
+        labels = [
+            spec.component_labels.get(c, c) if spec.component_labels else c
+            for c in spec.components
+        ]
+        component_ticks.append(
+            {"tickvals": list(range(len(labels))), "ticktext": labels}
+        )
         component_rows = []
         bar_width = 0.8 / max(len(group_levels), 1)
         for group_idx, group in enumerate(group_levels):
@@ -820,7 +1005,11 @@ def score_composite(req: ScoreCompositeRequest):
                 raw = sub.loc[mask, comp]
                 valid = raw.notna()
                 n = int(valid.sum())
-                positives = int(_component_positive(raw[valid], req.positive_values).sum()) if n else 0
+                positives = (
+                    int(_component_positive(raw[valid], req.positive_values).sum())
+                    if n
+                    else 0
+                )
                 prevalence = (positives / n * 100.0) if n else 0.0
                 y_values.append(prevalence)
                 text_values.append(f"{positives}/{n}")
@@ -828,36 +1017,57 @@ def score_composite(req: ScoreCompositeRequest):
                 comp_idx - 0.4 + (group_idx + 0.5) * bar_width
                 for comp_idx in range(len(labels))
             ]
-            trace_data.append({
-                "type": "bar",
-                "x": x_positions,
-                "y": y_values,
-                "width": [bar_width * 0.92] * len(labels),
-                "name": group,
-                "text": text_values,
-                "textposition": "none",
-                "customdata": labels,
-                "hovertemplate": "%{customdata}<br>%{fullData.name}: %{y:.1f}% (%{text})<extra></extra>",
-                "marker": {"color": colors[group_idx % len(colors)]},
-                "showlegend": score_idx == 1,
-                "legendgroup": group,
-                "xaxis": xref,
-                "yaxis": yref,
-            })
+            trace_data.append(
+                {
+                    "type": "bar",
+                    "x": x_positions,
+                    "y": y_values,
+                    "width": [bar_width * 0.92] * len(labels),
+                    "name": group,
+                    "text": text_values,
+                    "textposition": "none",
+                    "customdata": labels,
+                    "hovertemplate": "%{customdata}<br>%{fullData.name}: %{y:.1f}% (%{text})<extra></extra>",
+                    "marker": {"color": colors[group_idx % len(colors)]},
+                    "showlegend": score_idx == 1,
+                    "legendgroup": group,
+                    "xaxis": xref,
+                    "yaxis": yref,
+                }
+            )
 
         for comp_idx, (comp, label) in enumerate(zip(spec.components, labels)):
-            p_value = _component_pvalue(sub[comp], sub["_score_group"], group_levels, req.positive_values)
-            component_rows.append({"component": comp, "label": label, "p_value": p_value, "p_text": _format_p_value(p_value)})
-            annotations.append({
-                "xref": xref, "yref": yref, "x": comp_idx, "y": 103,
-                "text": "ns" if p_value is not None and p_value >= 0.05 else _format_p_value(p_value),
-                "showarrow": False, "font": {"size": 11, "color": "#9ca3af"},
-            })
+            p_value, test_name = _component_pvalue(
+                sub[comp], sub["_score_group"], group_levels, req.positive_values
+            )
+            component_rows.append(
+                {
+                    "component": comp,
+                    "label": label,
+                    "p_value": p_value,
+                    "p_text": _format_p_value(p_value),
+                    "test": test_name,
+                }
+            )
+            annotations.append(
+                {
+                    "xref": xref,
+                    "yref": yref,
+                    "x": comp_idx,
+                    "y": 103,
+                    "text": "ns"
+                    if p_value is not None and p_value >= 0.05
+                    else _format_p_value(p_value),
+                    "showarrow": False,
+                    "font": {"size": 11, "color": "#9ca3af"},
+                }
+            )
         score_summaries[score_idx]["components"] = component_rows
 
     layout = {
         "title": {
-            "text": req.title or "Score Distributions and Component Prevalence by Group",
+            "text": req.title
+            or "Score Distributions and Component Prevalence by Group",
             "x": 0.5,
             "xanchor": "center",
             "font": {"size": 16, "color": "#111827"},
@@ -869,19 +1079,89 @@ def score_composite(req: ScoreCompositeRequest):
         "plot_bgcolor": "#ffffff",
         "font": {"family": "Arial, sans-serif", "size": 12, "color": "#111827"},
         "margin": {"l": 70, "r": 30, "t": 90, "b": 90},
-        "legend": {"orientation": "v", "x": 0.98, "y": 0.98, "xanchor": "right", "yanchor": "top"},
+        "legend": {
+            "orientation": "v",
+            "x": 0.98,
+            "y": 0.98,
+            "xanchor": "right",
+            "yanchor": "top",
+        },
         "annotations": annotations,
         "shapes": shapes,
-        "xaxis": {"domain": [0.0, 0.29], "anchor": "y", "title": {"text": req.scores[0].label or req.scores[0].score_col}, "gridcolor": "#e5e7eb", "zeroline": False},
-        "yaxis": {"domain": [0.57, 1.0], "anchor": "x", "title": {"text": "Number of Patients"}, "gridcolor": "#e5e7eb", "rangemode": "tozero"},
-        "xaxis2": {"domain": [0.36, 0.65], "anchor": "y2", "title": {"text": req.scores[1].label or req.scores[1].score_col}, "gridcolor": "#e5e7eb", "zeroline": False},
-        "yaxis2": {"domain": [0.57, 1.0], "anchor": "x2", "title": {"text": "Number of Patients"}, "gridcolor": "#e5e7eb", "rangemode": "tozero"},
-        "xaxis3": {"domain": [0.72, 1.0], "anchor": "y3", "tickangle": 0, "gridcolor": "#e5e7eb", "zeroline": False},
-        "yaxis3": {"domain": [0.57, 1.0], "anchor": "x3", "title": {"text": "Score Value"}, "gridcolor": "#e5e7eb", "rangemode": "tozero"},
-        "xaxis4": {"domain": [0.0, 0.68], "anchor": "y4", "tickangle": 0, "gridcolor": "#e5e7eb", "zeroline": False, **component_ticks[0]},
-        "yaxis4": {"domain": [0.0, 0.42], "anchor": "x4", "title": {"text": "Prevalence (%)"}, "range": [0, 108], "gridcolor": "#e5e7eb", "zeroline": False},
-        "xaxis5": {"domain": [0.76, 1.0], "anchor": "y5", "tickangle": 0, "gridcolor": "#e5e7eb", "zeroline": False, **component_ticks[1]},
-        "yaxis5": {"domain": [0.0, 0.42], "anchor": "x5", "title": {"text": "Prevalence (%)"}, "range": [0, 108], "gridcolor": "#e5e7eb", "zeroline": False},
+        "xaxis": {
+            "domain": [0.0, 0.29],
+            "anchor": "y",
+            "title": {"text": req.scores[0].label or req.scores[0].score_col},
+            "gridcolor": "#e5e7eb",
+            "zeroline": False,
+        },
+        "yaxis": {
+            "domain": [0.57, 1.0],
+            "anchor": "x",
+            "title": {"text": "Number of Patients"},
+            "gridcolor": "#e5e7eb",
+            "rangemode": "tozero",
+        },
+        "xaxis2": {
+            "domain": [0.36, 0.65],
+            "anchor": "y2",
+            "title": {"text": req.scores[1].label or req.scores[1].score_col},
+            "gridcolor": "#e5e7eb",
+            "zeroline": False,
+        },
+        "yaxis2": {
+            "domain": [0.57, 1.0],
+            "anchor": "x2",
+            "title": {"text": "Number of Patients"},
+            "gridcolor": "#e5e7eb",
+            "rangemode": "tozero",
+        },
+        "xaxis3": {
+            "domain": [0.72, 1.0],
+            "anchor": "y3",
+            "tickangle": 0,
+            "gridcolor": "#e5e7eb",
+            "zeroline": False,
+        },
+        "yaxis3": {
+            "domain": [0.57, 1.0],
+            "anchor": "x3",
+            "title": {"text": "Score Value"},
+            "gridcolor": "#e5e7eb",
+            "rangemode": "tozero",
+        },
+        "xaxis4": {
+            "domain": [0.0, 0.68],
+            "anchor": "y4",
+            "tickangle": 0,
+            "gridcolor": "#e5e7eb",
+            "zeroline": False,
+            **component_ticks[0],
+        },
+        "yaxis4": {
+            "domain": [0.0, 0.42],
+            "anchor": "x4",
+            "title": {"text": "Prevalence (%)"},
+            "range": [0, 108],
+            "gridcolor": "#e5e7eb",
+            "zeroline": False,
+        },
+        "xaxis5": {
+            "domain": [0.76, 1.0],
+            "anchor": "y5",
+            "tickangle": 0,
+            "gridcolor": "#e5e7eb",
+            "zeroline": False,
+            **component_ticks[1],
+        },
+        "yaxis5": {
+            "domain": [0.0, 0.42],
+            "anchor": "x5",
+            "title": {"text": "Prevalence (%)"},
+            "range": [0, 108],
+            "gridcolor": "#e5e7eb",
+            "zeroline": False,
+        },
     }
 
     return {
@@ -890,11 +1170,16 @@ def score_composite(req: ScoreCompositeRequest):
         "groups": group_levels,
         "scores": score_summaries,
         "figure": {"data": trace_data, "layout": layout},
-        "method_note": "Score comparisons use Mann-Whitney U for two groups or Kruskal-Wallis for more groups. Component prevalence uses Fisher exact for two groups or chi-square for more groups.",
+        "method_note": (
+            "Score comparisons use Mann-Whitney U for two groups or Kruskal-Wallis for more groups. "
+            "Component prevalence uses chi-square when all expected cells are ≥ 5; otherwise Fisher exact "
+            "for 2×2 tables or Fisher-Freeman-Halton Monte Carlo for larger r×c tables."
+        ),
     }
 
 
 # ── Kaplan-Meier composite (NEJM-style multi-endpoint cumulative incidence) ──
+
 
 class KMEndpointSpec(BaseModel):
     duration_col: str
@@ -904,15 +1189,15 @@ class KMEndpointSpec(BaseModel):
 
 class KMCompositeRequest(BaseModel):
     session_id: str
-    group_col: str                      # treatment arm / comparison column
-    endpoints: List[KMEndpointSpec]     # 1-4 endpoints, one panel each
-    risk_times: Optional[List[float]] = None   # x-axis ticks for No.-at-risk
+    group_col: str  # treatment arm / comparison column
+    endpoints: List[KMEndpointSpec]  # 1-4 endpoints, one panel each
+    risk_times: Optional[List[float]] = None  # x-axis ticks for No.-at-risk
     group_order: Optional[List[str]] = None
     # 1 - S(t) climbing from 0 (event accrual) vs S(t) falling from 1.
     as_cumulative_incidence: bool = True
-    inset: bool = True                  # magnified zoom sub-panel per endpoint
-    inset_max_pct: Optional[float] = None      # inset y-max in %; None = auto
-    as_percent: bool = True             # y in % (0-100) vs proportion (0-1)
+    inset: bool = True  # magnified zoom sub-panel per endpoint
+    inset_max_pct: Optional[float] = None  # inset y-max in %; None = auto
+    as_percent: bool = True  # y in % (0-100) vs proportion (0-1)
     imputation: str = "listwise"
     title: Optional[str] = None
 
@@ -948,7 +1233,9 @@ def km_composite(req: KMCompositeRequest):
 
     df_full = _get_df(req.session_id)
     if req.group_col not in df_full.columns:
-        raise HTTPException(status_code=400, detail=f"Column '{req.group_col}' not found")
+        raise HTTPException(
+            status_code=400, detail=f"Column '{req.group_col}' not found"
+        )
     if not (1 <= len(req.endpoints) <= 4):
         raise HTTPException(status_code=400, detail="Select between 1 and 4 endpoints.")
     for spec in req.endpoints:
@@ -988,17 +1275,32 @@ def km_composite(req: KMCompositeRequest):
         sub[spec.duration_col] = pd.to_numeric(sub[spec.duration_col], errors="coerce")
         sub[spec.event_col] = pd.to_numeric(sub[spec.event_col], errors="coerce")
         sub = apply_imputation(sub, [spec.duration_col, spec.event_col], req.imputation)
-        sub, _w, _ni = _drop_invalid_survival_rows(sub, spec.duration_col, spec.event_col)
+        sub, _w, _ni = _drop_invalid_survival_rows(
+            sub, spec.duration_col, spec.event_col
+        )
         sub = sub.dropna(subset=[req.group_col])
         if sub.empty:
-            raise HTTPException(status_code=400, detail=f"No valid rows for endpoint '{label}' after cleaning duration/event.")
-        ev_vals = sorted(pd.to_numeric(sub[spec.event_col], errors="coerce").dropna().unique())
+            raise HTTPException(
+                status_code=400,
+                detail=f"No valid rows for endpoint '{label}' after cleaning duration/event.",
+            )
+        ev_vals = sorted(
+            pd.to_numeric(sub[spec.event_col], errors="coerce").dropna().unique()
+        )
         if set(ev_vals) - {0, 1, 0.0, 1.0}:
-            raise HTTPException(status_code=422, detail=f"Event column '{spec.event_col}' must be binary 0/1. Found: {ev_vals[:8]}")
+            raise HTTPException(
+                status_code=422,
+                detail=f"Event column '{spec.event_col}' must be binary 0/1. Found: {ev_vals[:8]}",
+            )
 
         groups = _km_fit_groups(
-            sub, spec.duration_col, spec.event_col, req.group_col,
-            survival_times=None, risk_times=req.risk_times, include_censors=False,
+            sub,
+            spec.duration_col,
+            spec.event_col,
+            req.group_col,
+            survival_times=None,
+            risk_times=req.risk_times,
+            include_censors=False,
         )
         present = [g["group"] for g in groups]
         if group_levels is None:
@@ -1008,7 +1310,10 @@ def km_composite(req: KMCompositeRequest):
             else:
                 group_levels = present
             if len(group_levels) < 2:
-                raise HTTPException(status_code=400, detail="Need at least two non-missing groups in the arm column.")
+                raise HTTPException(
+                    status_code=400,
+                    detail="Need at least two non-missing groups in the arm column.",
+                )
         by_group = {g["group"]: g for g in groups}
 
         logrank = _km_logrank(sub, spec.duration_col, spec.event_col, req.group_col)
@@ -1034,8 +1339,13 @@ def km_composite(req: KMCompositeRequest):
             g = by_group.get(grp)
             pts = g["curve"] if g else []
             xs = [p["time"] for p in pts if p["time"] is not None]
-            ys = [(1.0 - p["survival"]) * scale if req.as_cumulative_incidence else p["survival"] * scale
-                  for p in pts if p["survival"] is not None]
+            ys = [
+                (1.0 - p["survival"]) * scale
+                if req.as_cumulative_incidence
+                else p["survival"] * scale
+                for p in pts
+                if p["survival"] is not None
+            ]
             curves[grp] = {"x": xs, "y": ys}
             if xs:
                 tmax = max(tmax, max(xs))
@@ -1052,24 +1362,37 @@ def km_composite(req: KMCompositeRequest):
             final_by_group[grp] = round(ys[-1], 1) if ys else 0.0
             inset_peak = max(inset_peak, ys[-1] if ys else 0.0)
             color = colors[gi % len(colors)]
-            trace_data.append({
-                "type": "scatter", "mode": "lines",
-                "x": xs, "y": ys,
-                "line": {"color": color, "width": 2, "shape": "hv"},
-                "name": str(grp),
-                "legendgroup": str(grp),
-                "showlegend": idx == 0,
-                "xaxis": main_x, "yaxis": main_y,
-                "hovertemplate": f"{grp}<br>%{{x}}: %{{y:.1f}}<extra></extra>",
-            })
+            trace_data.append(
+                {
+                    "type": "scatter",
+                    "mode": "lines",
+                    "x": xs,
+                    "y": ys,
+                    "line": {"color": color, "width": 2, "shape": "hv"},
+                    "name": str(grp),
+                    "legendgroup": str(grp),
+                    "showlegend": idx == 0,
+                    "xaxis": main_x,
+                    "yaxis": main_y,
+                    "hovertemplate": f"{grp}<br>%{{x}}: %{{y:.1f}}<extra></extra>",
+                }
+            )
             if req.inset:
-                trace_data.append({
-                    "type": "scatter", "mode": "lines",
-                    "x": xs, "y": ys,
-                    "line": {"color": color, "width": 1.6, "shape": "hv"},
-                    "name": str(grp), "legendgroup": str(grp), "showlegend": False,
-                    "xaxis": inset_x, "yaxis": inset_y, "hoverinfo": "skip",
-                })
+                trace_data.append(
+                    {
+                        "type": "scatter",
+                        "mode": "lines",
+                        "x": xs,
+                        "y": ys,
+                        "line": {"color": color, "width": 1.6, "shape": "hv"},
+                        "name": str(grp),
+                        "legendgroup": str(grp),
+                        "showlegend": False,
+                        "xaxis": inset_x,
+                        "yaxis": inset_y,
+                        "hoverinfo": "skip",
+                    }
+                )
 
         # Full-range y for the main panel.
         y_full = 100.0 if req.as_percent else 1.0
@@ -1090,14 +1413,22 @@ def km_composite(req: KMCompositeRequest):
         # the table instead.
         show_axis_title = is_bottom_row and not risk_times
         layout_axes[main_x_key] = {
-            "domain": [x0, x1], "anchor": main_y, "range": [0, tmax],
-            "title": {"text": "Months since Randomization"} if show_axis_title else None,
-            "gridcolor": "#eef1f4", "zeroline": False,
+            "domain": [x0, x1],
+            "anchor": main_y,
+            "range": [0, tmax],
+            "title": {"text": "Months since Randomization"}
+            if show_axis_title
+            else None,
+            "gridcolor": "#eef1f4",
+            "zeroline": False,
         }
         layout_axes[main_y_key] = {
-            "domain": [y0, y1], "anchor": main_x, "range": [0, y_full],
+            "domain": [y0, y1],
+            "anchor": main_x,
+            "range": [0, y_full],
             "title": {"text": "Percentage of Patients"} if c == 0 else None,
-            "gridcolor": "#eef1f4", "zeroline": False,
+            "gridcolor": "#eef1f4",
+            "zeroline": False,
         }
         if req.inset:
             ix0 = x0 + 0.34 * cell_w
@@ -1105,87 +1436,139 @@ def km_composite(req: KMCompositeRequest):
             iy0 = y0 + 0.40 * cell_h
             iy1 = y1 - 0.02 * cell_h
             layout_axes[f"xaxis{inset_ref}"] = {
-                "domain": [ix0, ix1], "anchor": inset_y, "range": [0, tmax],
-                "showgrid": False, "zeroline": False,
-                "tickfont": {"size": 8}, "ticklen": 2,
+                "domain": [ix0, ix1],
+                "anchor": inset_y,
+                "range": [0, tmax],
+                "showgrid": False,
+                "zeroline": False,
+                "tickfont": {"size": 8},
+                "ticklen": 2,
             }
             layout_axes[f"yaxis{inset_ref}"] = {
-                "domain": [iy0, iy1], "anchor": inset_x, "range": [0, inset_top],
-                "showgrid": False, "zeroline": False,
-                "tickfont": {"size": 8}, "ticklen": 2,
+                "domain": [iy0, iy1],
+                "anchor": inset_x,
+                "range": [0, inset_top],
+                "showgrid": False,
+                "zeroline": False,
+                "tickfont": {"size": 8},
+                "ticklen": 2,
             }
             # Final cumulative-incidence value label at the end of each inset curve.
             for gi, grp in enumerate(group_levels):
                 if curves[grp]["y"]:
-                    annotations.append({
-                        "xref": inset_x, "yref": inset_y,
-                        "x": tmax, "y": curves[grp]["y"][-1],
-                        "text": f"{final_by_group[grp]:.1f}", "showarrow": False,
-                        "xanchor": "left", "xshift": 2,
-                        "font": {"size": 9, "color": colors[gi % len(colors)]},
-                    })
+                    annotations.append(
+                        {
+                            "xref": inset_x,
+                            "yref": inset_y,
+                            "x": tmax,
+                            "y": curves[grp]["y"][-1],
+                            "text": f"{final_by_group[grp]:.1f}",
+                            "showarrow": False,
+                            "xanchor": "left",
+                            "xshift": 2,
+                            "font": {"size": 9, "color": colors[gi % len(colors)]},
+                        }
+                    )
 
         # Panel letter + endpoint title.
-        annotations.append({
-            "xref": "paper", "yref": "paper", "x": x0, "y": min(y1 + 0.035, 1.0),
-            "text": f"<b>{_PANEL_LETTERS[idx]}</b>  {label}", "showarrow": False,
-            "xanchor": "left", "font": {"size": 12, "color": "#111827"},
-        })
+        annotations.append(
+            {
+                "xref": "paper",
+                "yref": "paper",
+                "x": x0,
+                "y": min(y1 + 0.035, 1.0),
+                "text": f"<b>{_PANEL_LETTERS[idx]}</b>  {label}",
+                "showarrow": False,
+                "xanchor": "left",
+                "font": {"size": 12, "color": "#111827"},
+            }
+        )
         # Log-rank p on the main panel.
-        annotations.append({
-            "xref": main_x, "yref": main_y, "x": tmax * 0.5, "y": y_full * 0.9,
-            "text": _format_p_value(p_value), "showarrow": False,
-            "font": {"size": 11, "color": "#4b5563"},
-        })
+        annotations.append(
+            {
+                "xref": main_x,
+                "yref": main_y,
+                "x": tmax * 0.5,
+                "y": y_full * 0.9,
+                "text": _format_p_value(p_value),
+                "showarrow": False,
+                "font": {"size": 11, "color": "#4b5563"},
+            }
+        )
 
         # No.-at-risk rows beneath the panel.
         if risk_times:
-            annotations.append({
-                "xref": "paper", "yref": "paper", "x": x0, "y": y0 - risk_gap,
-                "text": "<b>No. at Risk</b>", "showarrow": False,
-                "xanchor": "left", "font": {"size": 9, "color": "#374151"},
-            })
+            annotations.append(
+                {
+                    "xref": "paper",
+                    "yref": "paper",
+                    "x": x0,
+                    "y": y0 - risk_gap,
+                    "text": "<b>No. at Risk</b>",
+                    "showarrow": False,
+                    "xanchor": "left",
+                    "font": {"size": 9, "color": "#374151"},
+                }
+            )
             for gi, grp in enumerate(group_levels):
                 g = by_group.get(grp)
                 at_risk = g.get("at_risk") if g else None
                 row_y = y0 - risk_gap - (gi + 1) * risk_row_h
                 # Arm name in the left gutter so it never collides with the
                 # t=0 count that sits at the panel's left edge.
-                annotations.append({
-                    "xref": "paper", "yref": "paper",
-                    "x": max(x0 - 0.06, 0.002), "y": row_y,
-                    "text": str(grp), "showarrow": False, "xanchor": "left",
-                    "font": {"size": 9, "color": colors[gi % len(colors)]},
-                })
+                annotations.append(
+                    {
+                        "xref": "paper",
+                        "yref": "paper",
+                        "x": max(x0 - 0.06, 0.002),
+                        "y": row_y,
+                        "text": str(grp),
+                        "showarrow": False,
+                        "xanchor": "left",
+                        "font": {"size": 9, "color": colors[gi % len(colors)]},
+                    }
+                )
                 if at_risk:
                     for ti, t in enumerate(risk_times):
                         px = x0 + (float(t) / tmax) * cell_w if tmax else x0
-                        annotations.append({
-                            "xref": "paper", "yref": "paper",
-                            "x": min(max(px, x0), x1), "y": row_y,
-                            "text": str(at_risk[ti]) if ti < len(at_risk) else "",
-                            "showarrow": False, "xanchor": "center",
-                            "font": {"size": 9, "color": "#374151"},
-                        })
+                        annotations.append(
+                            {
+                                "xref": "paper",
+                                "yref": "paper",
+                                "x": min(max(px, x0), x1),
+                                "y": row_y,
+                                "text": str(at_risk[ti]) if ti < len(at_risk) else "",
+                                "showarrow": False,
+                                "xanchor": "center",
+                                "font": {"size": 9, "color": "#374151"},
+                            }
+                        )
             if is_bottom_row:
                 # X-axis title below the at-risk table (suppressed on the axis).
-                annotations.append({
-                    "xref": "paper", "yref": "paper",
-                    "x": (x0 + x1) / 2.0,
-                    "y": y0 - risk_gap - (len(group_levels) + 1) * risk_row_h,
-                    "text": "Months since Randomization", "showarrow": False,
-                    "xanchor": "center", "font": {"size": 12, "color": "#111827"},
-                })
+                annotations.append(
+                    {
+                        "xref": "paper",
+                        "yref": "paper",
+                        "x": (x0 + x1) / 2.0,
+                        "y": y0 - risk_gap - (len(group_levels) + 1) * risk_row_h,
+                        "text": "Months since Randomization",
+                        "showarrow": False,
+                        "xanchor": "center",
+                        "font": {"size": 12, "color": "#111827"},
+                    }
+                )
 
-        endpoint_summaries.append({
-            "label": label,
-            "duration_col": spec.duration_col,
-            "event_col": spec.event_col,
-            "p_value": p_value,
-            "p_text": _format_p_value(p_value),
-            "final_by_group": final_by_group,
-            "n_by_group": n_by_group,
-        })
+        endpoint_summaries.append(
+            {
+                "label": label,
+                "duration_col": spec.duration_col,
+                "event_col": spec.event_col,
+                "p_value": p_value,
+                "p_text": _format_p_value(p_value),
+                "final_by_group": final_by_group,
+                "n_by_group": n_by_group,
+            }
+        )
 
     # Drop None-valued axis titles (Plotly rejects title:{text:None} noisily).
     for axis in layout_axes.values():
@@ -1194,8 +1577,11 @@ def km_composite(req: KMCompositeRequest):
 
     layout = {
         "title": {
-            "text": req.title or "Composite Primary End Point and Individual Components",
-            "x": 0.5, "xanchor": "center", "font": {"size": 15, "color": "#111827"},
+            "text": req.title
+            or "Composite Primary End Point and Individual Components",
+            "x": 0.5,
+            "xanchor": "center",
+            "font": {"size": 15, "color": "#111827"},
         },
         "height": 760 if nrows > 1 else 440,
         "paper_bgcolor": "#ffffff",
@@ -1231,12 +1617,13 @@ def km_composite(req: KMCompositeRequest):
 # caller's figure — the server never builds traces, so there is no drift from
 # what the frontend shows. plotly/kaleido are optional; absent → 503.
 
+
 class RenderRequest(BaseModel):
-    figure: Dict[str, Any]            # Plotly figure: {"data": [...], "layout": {...}}
-    format: str = "png"              # png | svg | jpeg | pdf | webp
-    width: Optional[int] = None      # px; None → figure's own layout size
+    figure: Dict[str, Any]  # Plotly figure: {"data": [...], "layout": {...}}
+    format: str = "png"  # png | svg | jpeg | pdf | webp
+    width: Optional[int] = None  # px; None → figure's own layout size
     height: Optional[int] = None
-    scale: float = 2.0               # device-pixel multiplier (print/retina)
+    scale: float = 2.0  # device-pixel multiplier (print/retina)
 
 
 @router.post("/render")
@@ -1244,11 +1631,17 @@ def render_chart(req: RenderRequest):
     """Render a Plotly figure spec to a static image and return the raw bytes."""
     try:
         image = plot_render.render_figure(
-            req.figure, fmt=req.format, width=req.width, height=req.height, scale=req.scale
+            req.figure,
+            fmt=req.format,
+            width=req.width,
+            height=req.height,
+            scale=req.scale,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except plot_render.RenderUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc))
-    media_type = plot_render.MIME_TYPES.get(req.format.lower(), "application/octet-stream")
+    media_type = plot_render.MIME_TYPES.get(
+        req.format.lower(), "application/octet-stream"
+    )
     return Response(content=image, media_type=media_type)

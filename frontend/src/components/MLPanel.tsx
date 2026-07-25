@@ -1,14 +1,14 @@
 import { useState, useRef, type ReactNode } from "react";
 import { useStore, isNumericKind } from "../store";
 import { usePlotLayout, usePalette } from "../plotStyle";
-import { runRandomForest, runGradientBoosting } from "../api";
+import { runRandomForest, runGradientBoosting, runMLSurvivalBenchmark } from "../api";
 import { Tip } from "./Tip";
 import TitledPlot from "./TitledPlot";
 import ResultExporter from "./ResultExporter";
 import ThreeCol from "./ThreeCol";
 import type { PlotCaptureHandle } from "../lib/plotTypes";
 
-type ModelKind = "random_forest" | "gradient_boosting";
+type ModelKind = "random_forest" | "gradient_boosting" | "survival_benchmark";
 type Task = "auto" | "classification" | "regression";
 
 interface ImportanceRow {
@@ -61,9 +61,122 @@ interface MLResult {
   interpretation?: string;
 }
 
+/* ── Survival ML benchmark (POST /api/survival_advanced/ml_survival_benchmark) ──
+ * The backend returns BOTH apparent (resubstitution) C-indices and an honest
+ * repeated-CV estimate. `c_index_type` says which kind each headline number is,
+ * so the UI labels off that field instead of assuming. */
+
+interface CIndexBlock {
+  c_index?: number | null;
+  c_index_type?: string;
+  calibration_slope?: number | null;
+}
+
+interface SurvImportanceRow {
+  variable: string;
+  importance: number;
+}
+
+interface PdpRow {
+  feature: string;
+  points: { value: number; mean_risk: number }[];
+  direction?: string;
+}
+
+interface ShapBlock {
+  available: boolean;
+  reason?: string;
+  method?: string;
+  n_samples?: number;
+  install_hint?: string;
+  summary?: { variable: string; mean_abs_shap: number }[];
+}
+
+interface AvailabilityBlock {
+  available: boolean;
+  reason?: string;
+  method?: string;
+  note?: string;
+  install_hint?: string;
+}
+
+interface CvSummary {
+  mean?: number | null;
+  sd?: number | null;
+  min?: number | null;
+  max?: number | null;
+  n?: number;
+}
+
+interface CvFold {
+  fold: number;
+  c_index?: number | null;
+  outer_c_index?: number | null;
+  inner_best_c_index?: number | null;
+  n_test?: number;
+  events_test?: number;
+}
+
+interface RepeatedCvBlock {
+  enabled?: boolean;
+  folds?: CvFold[];
+  summary?: CvSummary;
+  n_splits?: number;
+  n_repeats?: number;
+  reason?: string;
+}
+
+interface NestedCvBlock {
+  enabled?: boolean;
+  reason?: string;
+  outer_folds?: number;
+  inner_folds?: number;
+  n_iter?: number;
+  folds?: CvFold[];
+  summary?: CvSummary;
+  interpretation?: string;
+  optimization?: { requested?: string; used?: string; fallback_reason?: string | null };
+}
+
+interface ComparisonModel {
+  name: string;
+  c_index?: number | null;
+  calibration_slope?: number | null;
+  ibs?: number | null;
+}
+
+interface SurvivalMLResult {
+  test?: string;
+  n?: number;
+  n_excluded_missing?: number;
+  classical_cox?: CIndexBlock;
+  ml_gradient_boosting_survival?: CIndexBlock & {
+    permutation_importance?: SurvImportanceRow[];
+    shap_values?: ShapBlock;
+    partial_dependence?: PdpRow[];
+  };
+  repeated_cv?: RepeatedCvBlock;
+  nested_cv?: NestedCvBlock;
+  competing_risks_ml?: AvailabilityBlock;
+  auto_comparison?: {
+    models?: ComparisonModel[];
+    winner_by_c_index?: string | null;
+    winner_by_ibs?: string | null;
+  };
+  assumptions?: string[];
+  warnings?: string[];
+  result_text?: string;
+  note?: string;
+}
+
+/** Fixed-precision formatter that keeps nulls / undefined visible as an em dash. */
+const fmt = (v: number | null | undefined, digits = 3): string =>
+  typeof v === "number" && Number.isFinite(v) ? v.toFixed(digits) : "—";
+
 const MODEL_LABEL: Record<ModelKind, string> = {
   random_forest: "Random Forest",
   gradient_boosting: "Gradient Boosting",
+  survival_benchmark: "Survival ML",
 };
 
 export default function MLPanel() {
@@ -90,14 +203,69 @@ export default function MLPanel() {
   const [classWeight, setClassWeight] = useState(true);
   const [learningRate, setLearningRate] = useState(0.1);
 
+  // Survival ML benchmark sub-analysis
+  const [durationCol, setDurationCol] = useState("");
+  const [eventCol, setEventCol] = useState("");
+  const [includeShap, setIncludeShap] = useState(false);
+  const [nestedCv, setNestedCv] = useState(false);
+
   const [result, setResult] = useState<MLResult | null>(null);
+  const [survResult, setSurvResult] = useState<SurvivalMLResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const isSurvival = model === "survival_benchmark";
+  /** Columns that must not double as predictors, per sub-analysis. */
+  const reservedCols = isSurvival ? [durationCol, eventCol] : [outcome];
+  const isReserved = (name: string) => reservedCols.includes(name);
+
+  const clearResults = () => {
+    setResult(null);
+    setSurvResult(null);
+  };
 
   const togglePred = (c: string) =>
     setPredictors((p) => (p.includes(c) ? p.filter((x) => x !== c) : [...p, c]));
 
+  const readDetail = (e: unknown): string => {
+    const detail = (e as { response?: { data?: { detail?: unknown } } }).response?.data?.detail;
+    return Array.isArray(detail)
+      ? detail.map((m) => (m as { msg?: string }).msg ?? String(m)).join(", ")
+      : (typeof detail === "string" ? detail : (e instanceof Error ? e.message : "ML run failed"));
+  };
+
+  const runSurvivalBenchmark = async () => {
+    if (!durationCol || !eventCol) {
+      setError("Select a duration column and an event column.");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    setSurvResult(null);
+    try {
+      const res = await runMLSurvivalBenchmark({
+        session_id: sid,
+        duration_col: durationCol,
+        event_col: eventCol,
+        predictors: predictors.length > 0 ? predictors : null,
+        cv_folds: cvFolds,
+        n_estimators: nEstimators,
+        include_shap: includeShap,
+        nested_cv: nestedCv,
+      });
+      setSurvResult(res.data as SurvivalMLResult);
+    } catch (e: unknown) {
+      setError(readDetail(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const run = async () => {
+    if (isSurvival) {
+      await runSurvivalBenchmark();
+      return;
+    }
     if (!outcome || predictors.length === 0) {
       setError("Select an outcome and at least one predictor.");
       return;
@@ -121,12 +289,7 @@ export default function MLPanel() {
       const res = await fn(payload);
       setResult(res.data as MLResult);
     } catch (e: unknown) {
-      const detail = (e as { response?: { data?: { detail?: unknown } } }).response?.data?.detail;
-      setError(
-        Array.isArray(detail)
-          ? detail.map((m) => (m as { msg?: string }).msg ?? String(m)).join(", ")
-          : (typeof detail === "string" ? detail : (e instanceof Error ? e.message : "ML run failed")),
-      );
+      setError(readDetail(e));
     } finally {
       setLoading(false);
     }
@@ -134,6 +297,13 @@ export default function MLPanel() {
 
   const isClass = result?.task === "classification";
   const topImp = (result?.importance ?? []).slice(0, 15).reverse();
+
+  const cox = survResult?.classical_cox;
+  const mlSurv = survResult?.ml_gradient_boosting_survival;
+  const cvSummary = survResult?.repeated_cv?.summary;
+  const survWarnings = survResult?.warnings ?? [];
+  const pdp = mlSurv?.partial_dependence ?? [];
+  const survImportance = mlSurv?.permutation_importance ?? [];
 
   return (
     <div className="space-y-3">
@@ -147,9 +317,9 @@ export default function MLPanel() {
                 <Tip wide text="Tree-ensemble machine learning. Random Forest = bagged decision trees (robust, little tuning). Gradient Boosting = sequential trees (often higher accuracy, more tuning). Performance is cross-validated (out-of-fold) so the reported AUC / R² is not optimistic in-sample." />
               </h3>
               <div className="flex rounded-lg overflow-hidden border border-gray-300">
-                {(["random_forest", "gradient_boosting"] as const).map((m) => (
-                  <button key={m} onClick={() => { setModel(m); setResult(null); }}
-                    className={`flex-1 px-2 py-1.5 text-xs font-medium transition-colors ${
+                {(["random_forest", "gradient_boosting", "survival_benchmark"] as const).map((m) => (
+                  <button key={m} onClick={() => { setModel(m); clearResults(); }}
+                    className={`flex-1 px-1.5 py-1.5 text-[11px] font-medium transition-colors ${
                       model === m ? "bg-indigo-600 text-white" : "text-gray-500 hover:bg-gray-50"
                     }`}>
                     {MODEL_LABEL[m]}
@@ -157,38 +327,68 @@ export default function MLPanel() {
                 ))}
               </div>
 
-              <label className="flex flex-col gap-1">
-                <span className="text-xs text-gray-500 font-medium">Outcome</span>
-                <select value={outcome} onChange={(e) => { setOutcome(e.target.value); setResult(null); }}
-                  className="text-sm border border-gray-300 rounded-lg px-3 py-1.5 bg-white focus:outline-none focus:border-indigo-400">
-                  <option value="">— select —</option>
-                  {columns.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
-                </select>
-              </label>
+              {isSurvival ? (
+                <>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-xs text-gray-500 font-medium flex items-center gap-1">
+                      Duration
+                      <Tip text="Follow-up time column. Cox and the gradient-boosting survival model are both fitted on this time-to-event scale." />
+                    </span>
+                    <select value={durationCol} onChange={(e) => { setDurationCol(e.target.value); clearResults(); }}
+                      className="text-sm border border-gray-300 rounded-lg px-3 py-1.5 bg-white focus:outline-none focus:border-indigo-400">
+                      <option value="">— select —</option>
+                      {columns.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
+                    </select>
+                  </label>
 
-              <label className="flex flex-col gap-1">
-                <span className="text-xs text-gray-500 font-medium flex items-center gap-1">
-                  Task
-                  <Tip text="Auto picks classification for a binary outcome and regression for a continuous one. Override if needed." />
-                </span>
-                <div className="flex rounded-lg overflow-hidden border border-gray-300">
-                  {(["auto", "classification", "regression"] as const).map((t) => (
-                    <button key={t} onClick={() => setTask(t)}
-                      className={`flex-1 px-1.5 py-1 text-[11px] font-medium transition-colors ${
-                        task === t ? "bg-indigo-600 text-white" : "text-gray-500 hover:bg-gray-50"
-                      }`}>
-                      {t === "auto" ? "Auto" : t === "classification" ? "Classify" : "Regress"}
-                    </button>
-                  ))}
-                </div>
-              </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-xs text-gray-500 font-medium flex items-center gap-1">
+                      Event
+                      <Tip text="Event indicator column (1 = event, 0 = censored)." />
+                    </span>
+                    <select value={eventCol} onChange={(e) => { setEventCol(e.target.value); clearResults(); }}
+                      className="text-sm border border-gray-300 rounded-lg px-3 py-1.5 bg-white focus:outline-none focus:border-indigo-400">
+                      <option value="">— select —</option>
+                      {columns.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
+                    </select>
+                  </label>
+                </>
+              ) : (
+                <>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-xs text-gray-500 font-medium">Outcome</span>
+                    <select value={outcome} onChange={(e) => { setOutcome(e.target.value); setResult(null); }}
+                      className="text-sm border border-gray-300 rounded-lg px-3 py-1.5 bg-white focus:outline-none focus:border-indigo-400">
+                      <option value="">— select —</option>
+                      {columns.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
+                    </select>
+                  </label>
+
+                  <label className="flex flex-col gap-1">
+                    <span className="text-xs text-gray-500 font-medium flex items-center gap-1">
+                      Task
+                      <Tip text="Auto picks classification for a binary outcome and regression for a continuous one. Override if needed." />
+                    </span>
+                    <div className="flex rounded-lg overflow-hidden border border-gray-300">
+                      {(["auto", "classification", "regression"] as const).map((t) => (
+                        <button key={t} onClick={() => setTask(t)}
+                          className={`flex-1 px-1.5 py-1 text-[11px] font-medium transition-colors ${
+                            task === t ? "bg-indigo-600 text-white" : "text-gray-500 hover:bg-gray-50"
+                          }`}>
+                          {t === "auto" ? "Auto" : t === "classification" ? "Classify" : "Regress"}
+                        </button>
+                      ))}
+                    </div>
+                  </label>
+                </>
+              )}
 
               {/* Predictors */}
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-gray-500 font-medium">Predictors</span>
                   <div className="flex gap-1">
-                    <button onClick={() => setPredictors(numCols.filter((c) => c !== outcome))}
+                    <button onClick={() => setPredictors(numCols.filter((c) => !isReserved(c)))}
                       className="text-[10px] px-1.5 py-0.5 rounded border border-gray-300 text-gray-500 hover:bg-gray-50">All num</button>
                     {predictors.length > 0 && (
                       <button onClick={() => setPredictors([])}
@@ -201,7 +401,7 @@ export default function MLPanel() {
                   className="w-full text-xs border border-gray-300 rounded-lg px-3 py-1 focus:outline-none focus:border-indigo-400" />
                 <div className="max-h-44 overflow-y-auto border border-gray-200 rounded-lg p-1 space-y-0.5">
                   {columns
-                    .filter((c) => c.name !== outcome && c.name.toLowerCase().includes(predFilter.toLowerCase()))
+                    .filter((c) => !isReserved(c.name) && c.name.toLowerCase().includes(predFilter.toLowerCase()))
                     .map((c) => (
                       <label key={c.name} className="flex items-center gap-1.5 text-xs px-1 py-0.5 rounded hover:bg-gray-50 cursor-pointer">
                         <input type="checkbox" className="accent-indigo-500"
@@ -213,7 +413,9 @@ export default function MLPanel() {
                       </label>
                     ))}
                 </div>
-                <p className="text-[10px] text-gray-400">{predictors.length} selected</p>
+                <p className="text-[10px] text-gray-400">
+                  {predictors.length} selected{isSurvival && predictors.length === 0 ? " — blank uses every other column" : ""}
+                </p>
               </div>
 
               {/* Hyper-parameters */}
@@ -224,12 +426,14 @@ export default function MLPanel() {
                     onChange={(e) => setNEstimators(Number(e.target.value))}
                     className="text-xs border border-gray-300 rounded px-2 py-1 focus:outline-none focus:border-indigo-400" />
                 </label>
-                <label className="flex flex-col gap-0.5">
-                  <span className="text-[10px] text-gray-500">Max depth (blank=auto)</span>
-                  <input type="number" min={1} max={50} value={maxDepth} placeholder="auto"
-                    onChange={(e) => setMaxDepth(e.target.value)}
-                    className="text-xs border border-gray-300 rounded px-2 py-1 focus:outline-none focus:border-indigo-400" />
-                </label>
+                {!isSurvival && (
+                  <label className="flex flex-col gap-0.5">
+                    <span className="text-[10px] text-gray-500">Max depth (blank=auto)</span>
+                    <input type="number" min={1} max={50} value={maxDepth} placeholder="auto"
+                      onChange={(e) => setMaxDepth(e.target.value)}
+                      className="text-xs border border-gray-300 rounded px-2 py-1 focus:outline-none focus:border-indigo-400" />
+                  </label>
+                )}
                 <label className="flex flex-col gap-0.5">
                   <span className="text-[10px] text-gray-500">CV folds</span>
                   <input type="number" min={2} max={10} value={cvFolds}
@@ -245,23 +449,169 @@ export default function MLPanel() {
                   </label>
                 )}
               </div>
-              <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer">
-                <input type="checkbox" className="accent-indigo-500" checked={classWeight}
-                  onChange={(e) => setClassWeight(e.target.checked)} />
-                Balance classes
-                <Tip text="class_weight='balanced' — reweights minority class. Use for imbalanced outcomes (rare events). Ignored for regression." />
-              </label>
+              {isSurvival ? (
+                <>
+                  <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer">
+                    <input type="checkbox" className="accent-indigo-500" checked={nestedCv}
+                      onChange={(e) => { setNestedCv(e.target.checked); setSurvResult(null); }} />
+                    Nested CV (tuned)
+                    <Tip text="Inner-loop hyper-parameter search inside each outer fold. The least optimistic estimate available here, but it multiplies runtime by the number of tuning candidates." />
+                  </label>
+                  <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer">
+                    <input type="checkbox" className="accent-indigo-500" checked={includeShap}
+                      onChange={(e) => { setIncludeShap(e.target.checked); setSurvResult(null); }} />
+                    SHAP values
+                    <Tip text="Per-feature SHAP attributions via shap.TreeExplainer. Requires the optional `shap` package on the server and adds noticeable runtime." />
+                  </label>
+                  {(nestedCv || includeShap) && (
+                    <p className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 leading-snug">
+                      Nested CV and SHAP both re-fit the model many times — expect this run to take
+                      substantially longer than the default benchmark.
+                    </p>
+                  )}
+                </>
+              ) : (
+                <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer">
+                  <input type="checkbox" className="accent-indigo-500" checked={classWeight}
+                    onChange={(e) => setClassWeight(e.target.checked)} />
+                  Balance classes
+                  <Tip text="class_weight='balanced' — reweights minority class. Use for imbalanced outcomes (rare events). Ignored for regression." />
+                </label>
+              )}
 
               <button onClick={run} disabled={loading}
                 className="w-full px-4 py-2 text-sm font-medium bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-colors">
-                {loading ? "Training…" : "Train & cross-validate"}
+                {isSurvival
+                  ? (loading ? "Running benchmark…" : "Run survival benchmark")
+                  : (loading ? "Training…" : "Train & cross-validate")}
               </button>
               {error && <p className="text-xs text-red-500">{error}</p>}
             </div>
           </>
         }
         middle={
-          result ? (
+          isSurvival ? (
+            survResult ? (
+              <div className="space-y-3">
+                {/* Warnings first: the backend's overfitting alarms must never sit below the fold. */}
+                {survWarnings.length > 0 && (
+                  <div className="panel border-l-4 border-l-red-400 space-y-1.5">
+                    <h4 className="text-sm font-semibold text-red-700">Warnings</h4>
+                    <ul className="space-y-1">
+                      {survWarnings.map((w, i) => (
+                        <li key={i} className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-[11px] text-amber-900 leading-snug">
+                          {w}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* Discrimination — cross-validated headline, apparent values demoted. */}
+                <div className="panel space-y-2">
+                  <h4 className="text-sm font-semibold text-gray-700 flex items-center gap-1">
+                    Discrimination (C-index)
+                    <Tip wide text="The cross-validated estimate scores each fold's model on rows it never saw. The apparent (in-sample) values below are computed on the fitting rows and are optimistically biased — much more so for gradient boosting than for Cox." />
+                  </h4>
+                  <div className="rounded-xl border-2 border-indigo-300 bg-indigo-50 px-4 py-3 text-center">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-indigo-700">
+                      Cross-validated C-index (ML)
+                    </p>
+                    <p className="text-3xl font-bold font-mono text-indigo-900 leading-tight">{fmt(cvSummary?.mean)}</p>
+                    <p className="text-[10px] text-indigo-700">
+                      repeated {survResult.repeated_cv?.n_splits ?? "?"}-fold CV
+                      {survResult.repeated_cv?.n_repeats != null ? ` × ${survResult.repeated_cv.n_repeats}` : ""}
+                      {" · "}SD {fmt(cvSummary?.sd)} · range {fmt(cvSummary?.min)}–{fmt(cvSummary?.max)}
+                      {cvSummary?.n != null ? ` · ${cvSummary.n} folds` : ""}
+                    </p>
+                    <p className="text-[10px] text-indigo-600 mt-1">
+                      Out-of-sample estimate — report this figure.
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {([
+                      ["Classical Cox (baseline)", cox],
+                      ["Gradient Boosting (ML)", mlSurv as CIndexBlock | undefined],
+                    ] as [string, CIndexBlock | undefined][]).map(([label, blk]) => (
+                      <div key={label} className="bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 text-center">
+                        <p className="text-[10px] text-gray-500">{label}</p>
+                        <p className="text-sm font-semibold font-mono text-gray-700">{fmt(blk?.c_index)}</p>
+                        <p className="text-[9px] text-amber-700 font-medium">
+                          {blk?.c_index_type ?? "unspecified"} (in-sample)
+                        </p>
+                        <p className="text-[9px] text-gray-400">calib. slope {fmt(blk?.calibration_slope)}</p>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-[10px] text-gray-500 leading-snug">
+                    Secondary figures. Both are scored on the rows they were fitted on, so they
+                    are not comparable to each other or to the cross-validated value above.
+                  </p>
+                </div>
+
+                {/* Partial dependence for the top permutation-importance features */}
+                {pdp.length > 0 && (
+                  <div className="panel">
+                    <TitledPlot
+                      storageKey="mlsurv:pdp"
+                      data={pdp.map((row, i) => ({
+                        type: "scatter" as const, mode: "lines+markers" as const,
+                        x: row.points.map((p) => p.value),
+                        y: row.points.map((p) => p.mean_risk),
+                        line: { color: pal[i % pal.length], width: 2 },
+                        name: row.feature,
+                        hovertemplate: `${row.feature} %{x}<br>risk %{y:.4f}<extra></extra>`,
+                      }))}
+                      layout={{
+                        ...baseLayout,
+                        xaxis: { ...(baseLayout.xaxis as object), showgrid: showGrid },
+                        yaxis: { ...(baseLayout.yaxis as object), showgrid: showGrid },
+                        showlegend: true,
+                      }}
+                      config={{ responsive: true, displaylogo: false, displayModeBar: false }}
+                      defaultTitle="Partial dependence — gradient-boosting survival risk"
+                      defaultSubtitle=""
+                      defaultXAxis="Predictor value"
+                      defaultYAxis="Mean predicted risk" />
+                  </div>
+                )}
+
+                {/* Per-fold cross-validation detail */}
+                {(survResult.repeated_cv?.folds?.length ?? 0) > 0 && (
+                  <div className="panel space-y-1">
+                    <h4 className="text-sm font-semibold text-gray-700">Cross-validation folds</h4>
+                    <div className="overflow-auto rounded-lg border border-gray-200 max-h-60">
+                      <table className="w-full text-[11px] border-collapse">
+                        <thead className="sticky top-0 bg-gray-50 border-b border-gray-200 text-gray-500">
+                          <tr>
+                            <th className="text-left px-1.5 py-1 font-medium">Fold</th>
+                            <th className="text-right px-1.5 py-1 font-medium">C-index</th>
+                            <th className="text-right px-1.5 py-1 font-medium"><i>n</i> test</th>
+                            <th className="text-right px-1.5 py-1 font-medium">Events</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(survResult.repeated_cv?.folds ?? []).map((f) => (
+                            <tr key={f.fold} className="border-b border-gray-100">
+                              <td className="px-1.5 py-1 font-mono text-gray-700">{f.fold}</td>
+                              <td className="px-1.5 py-1 font-mono text-right text-indigo-700">{fmt(f.c_index, 4)}</td>
+                              <td className="px-1.5 py-1 font-mono text-right text-gray-500">{f.n_test ?? "—"}</td>
+                              <td className="px-1.5 py-1 font-mono text-right text-gray-500">{f.events_test ?? "—"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="flex items-center justify-center h-[360px] border border-dashed border-gray-200 rounded-lg text-xs text-gray-400 text-center px-6">
+                Pick duration and event columns, then run the benchmark to compare a
+                gradient-boosting survival model against classical Cox
+              </div>
+            )
+          ) : result ? (
             <div className="space-y-3">
               {/* ROC (classification) or predicted-vs-actual (regression) */}
               {isClass ? (
@@ -376,7 +726,169 @@ export default function MLPanel() {
           )
         }
         right={
-          result ? (
+          isSurvival ? (
+            survResult ? (
+              <>
+                <div className="panel space-y-2">
+                  <h4 className="text-sm font-semibold text-gray-800">Survival ML benchmark</h4>
+                  <p className="text-[11px] text-gray-500">
+                    <i>n</i> = {survResult.n ?? "—"} analysed
+                    {survResult.n_excluded_missing != null ? ` · ${survResult.n_excluded_missing} excluded (missing)` : ""}
+                  </p>
+                  {survResult.result_text && (
+                    <p className="bg-indigo-50 border border-indigo-200 rounded-xl px-3 py-2 text-[11px] text-indigo-900 leading-relaxed">
+                      {survResult.result_text}
+                    </p>
+                  )}
+                </div>
+
+                {/* Permutation importance (ML) */}
+                <div className="panel space-y-2">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-sm font-semibold text-gray-700">Permutation importance</h4>
+                    <ResultExporter
+                      title="ML_survival_benchmark_importance"
+                      headers={["Variable", "Importance"]}
+                      rows={survImportance.map((d) => [d.variable, d.importance])}
+                    />
+                  </div>
+                  {survImportance.length > 0 ? (
+                    <div className="overflow-auto rounded-lg border border-gray-200 max-h-60">
+                      <table className="w-full text-[11px] border-collapse">
+                        <thead className="sticky top-0 bg-gray-50 border-b border-gray-200 text-gray-500">
+                          <tr>
+                            <th className="text-left px-1.5 py-1 font-medium">Variable</th>
+                            <th className="text-right px-1.5 py-1 font-medium">Importance</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {survImportance.map((d) => (
+                            <tr key={d.variable} className="border-b border-gray-100">
+                              <td className="px-1.5 py-1 font-mono text-gray-700 truncate max-w-[150px]">{d.variable}</td>
+                              <td className="px-1.5 py-1 font-mono text-right text-indigo-700">{fmt(d.importance, 5)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-gray-500">No permutation importance returned.</p>
+                  )}
+                </div>
+
+                {/* Nested CV — placeholder shape carries a reason, so show it. */}
+                <div className="panel space-y-1">
+                  <h4 className="text-sm font-semibold text-gray-700">Nested cross-validation</h4>
+                  {survResult.nested_cv?.enabled ? (
+                    <>
+                      <p className="text-[11px] text-gray-600">
+                        Outer-fold C-index {fmt(survResult.nested_cv.summary?.mean)}
+                        {" (SD "}{fmt(survResult.nested_cv.summary?.sd)}{", "}
+                        {survResult.nested_cv.outer_folds ?? "?"} outer × {survResult.nested_cv.inner_folds ?? "?"} inner folds)
+                      </p>
+                      {survResult.nested_cv.optimization?.used && (
+                        <p className="text-[10px] text-gray-400">
+                          tuning: {survResult.nested_cv.optimization.used}
+                          {survResult.nested_cv.optimization.fallback_reason
+                            ? ` (fell back from ${survResult.nested_cv.optimization.requested ?? "requested"}: ${survResult.nested_cv.optimization.fallback_reason})`
+                            : ""}
+                        </p>
+                      )}
+                      {survResult.nested_cv.interpretation && (
+                        <p className="text-[10px] text-gray-500 leading-snug">{survResult.nested_cv.interpretation}</p>
+                      )}
+                    </>
+                  ) : (
+                    <p className="text-[11px] text-gray-500 leading-snug">
+                      {survResult.nested_cv?.reason ?? "Nested cross-validation was not run."}
+                    </p>
+                  )}
+                </div>
+
+                {/* SHAP — same placeholder treatment */}
+                <div className="panel space-y-1">
+                  <h4 className="text-sm font-semibold text-gray-700">SHAP values</h4>
+                  {mlSurv?.shap_values?.available ? (
+                    <table className="w-full text-[11px]">
+                      <thead className="text-gray-400">
+                        <tr>
+                          <th className="text-left px-1 py-0.5">Variable</th>
+                          <th className="text-right px-1 py-0.5">mean |SHAP|</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(mlSurv.shap_values.summary ?? []).map((s) => (
+                          <tr key={s.variable} className="border-t border-gray-100">
+                            <td className="px-1 py-0.5 font-mono">{s.variable}</td>
+                            <td className="px-1 py-0.5 font-mono text-right">{fmt(s.mean_abs_shap, 5)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <p className="text-[11px] text-gray-500 leading-snug">
+                      {mlSurv?.shap_values?.reason ?? "SHAP values were not returned."}
+                      {mlSurv?.shap_values?.install_hint ? ` ${mlSurv.shap_values.install_hint}` : ""}
+                    </p>
+                  )}
+                </div>
+
+                {/* Competing-risks ML — same placeholder treatment */}
+                <div className="panel space-y-1">
+                  <h4 className="text-sm font-semibold text-gray-700">Competing-risks ML</h4>
+                  <p className="text-[11px] text-gray-500 leading-snug">
+                    {survResult.competing_risks_ml?.available
+                      ? (survResult.competing_risks_ml.note ?? survResult.competing_risks_ml.method ?? "Available.")
+                      : (survResult.competing_risks_ml?.reason ?? "Not returned.")}
+                  </p>
+                </div>
+
+                {/* Head-to-head table — deliberately not a headline verdict. */}
+                {(survResult.auto_comparison?.models?.length ?? 0) > 0 && (
+                  <div className="panel space-y-1">
+                    <h4 className="text-sm font-semibold text-gray-700">Head-to-head (in-sample)</h4>
+                    <div className="overflow-auto rounded-lg border border-gray-200">
+                      <table className="w-full text-[11px] border-collapse">
+                        <thead className="bg-gray-50 border-b border-gray-200 text-gray-500">
+                          <tr>
+                            <th className="text-left px-1.5 py-1 font-medium">Model</th>
+                            <th className="text-right px-1.5 py-1 font-medium">C-index</th>
+                            <th className="text-right px-1.5 py-1 font-medium">Calib.</th>
+                            <th className="text-right px-1.5 py-1 font-medium">IBS</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(survResult.auto_comparison?.models ?? []).map((m) => (
+                            <tr key={m.name} className="border-b border-gray-100">
+                              <td className="px-1.5 py-1 text-gray-700">{m.name}</td>
+                              <td className="px-1.5 py-1 font-mono text-right">{fmt(m.c_index)}</td>
+                              <td className="px-1.5 py-1 font-mono text-right text-gray-500">{fmt(m.calibration_slope)}</td>
+                              <td className="px-1.5 py-1 font-mono text-right text-gray-500">{fmt(m.ibs)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <p className="text-[10px] text-gray-500 leading-snug">
+                      Backend ranking: {survResult.auto_comparison?.winner_by_c_index ?? "—"} by C-index,
+                      {" "}{survResult.auto_comparison?.winner_by_ibs ?? "—"} by IBS. Both rankings are
+                      computed in-sample and carry the same optimism as the apparent C-indices —
+                      treat them as descriptive, not as a verdict.
+                    </p>
+                  </div>
+                )}
+
+                {(survResult.assumptions?.length ?? 0) > 0 && (
+                  <div className="panel space-y-1">
+                    <h4 className="text-sm font-semibold text-gray-700">Assumptions</h4>
+                    <ul className="list-disc pl-4 space-y-1 text-[10px] text-gray-600 leading-snug">
+                      {(survResult.assumptions ?? []).map((a, i) => <li key={i}>{a}</li>)}
+                    </ul>
+                  </div>
+                )}
+              </>
+            ) : null
+          ) : result ? (
             <>
               {/* Metric tiles */}
               <div className="panel space-y-2">

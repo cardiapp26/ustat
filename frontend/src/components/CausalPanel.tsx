@@ -1,10 +1,10 @@
 import { useState, type ReactNode } from "react";
 import { useStore } from "../store";
-import { runIV2SLS, runMediation, runTargetTrial, runDiD, runRDD, runDAGAdjustment, runSEM } from "../api";
+import { runIV2SLS, runMediation, runTargetTrial, runDiD, runRDD, runDAGAdjustment, runSEM, runCausalSensitivity } from "../api";
 import ResultExporter from "./ResultExporter";
 import { fmtP } from "../lib/format";
 
-type Method = "iv" | "mediation" | "target" | "did" | "rdd" | "dag" | "sem";
+type Method = "iv" | "mediation" | "target" | "did" | "rdd" | "dag" | "sem" | "sensitivity";
 
 function getErrorDetail(e: unknown, fallback: string): string {
   const detail = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
@@ -898,6 +898,363 @@ function SEMTab() {
   );
 }
 
+/** Blocks the backend returns as {available:false,…} or {applicable:false,…} placeholders. */
+interface OptionalBlock { available?: boolean; applicable?: boolean; reason?: string }
+
+interface EValueBlock {
+  measure: string;
+  e_value_point_estimate: number;
+  e_value_ci: number;
+  interpretation: string;
+  baseline_risk_used: number | null;
+}
+interface QBABlock {
+  observed_estimate: number;
+  assumed_confounder_risk_ratio: number;
+  prevalence_exposed: number;
+  prevalence_unexposed: number;
+  bias_factor: number;
+  bias_corrected_estimate: number;
+  bias_direction: string;
+  interpretation: string;
+}
+interface SMDEValueBlock extends OptionalBlock {
+  smd?: number; absolute_smd?: number; converted_or?: number;
+  baseline_risk_used?: number; e_value?: EValueBlock; method_note?: string;
+}
+interface ConfounderStep {
+  confounder: string; rr_with_outcome: number;
+  prevalence_exposed: number; prevalence_unexposed: number;
+  bias_factor: number; cumulative_bias_factor: number; corrected_estimate_after_step: number;
+}
+interface MultiConfounderBlock extends OptionalBlock {
+  n_confounders?: number; confounder_steps?: ConfounderStep[];
+  combined_bias_factor?: number; bias_corrected_estimate?: number; method_note?: string;
+}
+interface ManskiBlock extends OptionalBlock {
+  assumptions?: string; n?: number;
+  ey1_bounds?: [number, number]; ey0_bounds?: [number, number]; ate_bounds?: [number, number];
+  identified_sign?: string; interpretation?: string;
+}
+interface RosenbaumBlock extends OptionalBlock {
+  b?: number; c?: number; discordant_pairs?: number; p_unbiased?: number;
+  critical_gamma?: number | null; alpha?: number; gamma_max?: number;
+  n_pairs_used?: number; n_pairs_skipped?: number; method_note?: string;
+}
+interface NegativeControlBlock extends OptionalBlock {
+  model?: string; n?: number; negative_control_outcome?: string;
+  treatment_effect?: number | null; coefficient?: number | null; se?: number | null;
+  p?: number | null; flag_residual_bias?: boolean; interpretation?: string;
+}
+interface SensitivityResult {
+  test: string;
+  e_value: EValueBlock;
+  e_value_smd: SMDEValueBlock;
+  quantitative_bias_analysis: QBABlock;
+  multi_confounder_sensitivity: MultiConfounderBlock;
+  manski_bounds: ManskiBlock;
+  rosenbaum_bounds: RosenbaumBlock;
+  negative_control_analysis: NegativeControlBlock;
+  warnings: string[];
+  assumptions: { name: string; met: boolean; detail: string }[];
+  result_text: string;
+}
+
+function SensitivityTab() {
+  const session = useStore((s) => s.session);
+  const cols = (session?.columns ?? []).map((c) => c.name);
+  const sid = session?.session_id ?? "";
+
+  const [estimate, setEstimate] = useState("");
+  const [measure, setMeasure] = useState("rr");
+  const [ciLow, setCiLow] = useState("");
+  const [ciHigh, setCiHigh] = useState("");
+  const [rareOutcome, setRareOutcome] = useState(false);
+  const [baselineRisk, setBaselineRisk] = useState("");
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [smd, setSmd] = useState("");
+  const [treatment, setTreatment] = useState("");
+  const [outcome, setOutcome] = useState("");
+  const [matchId, setMatchId] = useState("");
+  const [negControl, setNegControl] = useState("");
+  const [result, setResult] = useState<SensitivityResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const run = async () => {
+    const est = Number(estimate);
+    if (!Number.isFinite(est) || est <= 0) {
+      setError("Observed estimate must be a positive number (ratio scale)."); return;
+    }
+    const lo = ciLow === "" ? null : Number(ciLow);
+    const hi = ciHigh === "" ? null : Number(ciHigh);
+    if (lo !== null && hi !== null && lo >= hi) {
+      setError("Lower confidence limit must be below the upper limit."); return;
+    }
+    setLoading(true); setError(null); setResult(null);
+    try {
+      const payload: Record<string, unknown> = { observed_estimate: est, measure, rare_outcome: rareOutcome };
+      if (lo !== null) payload.ci_low = lo;
+      if (hi !== null) payload.ci_high = hi;
+      if (baselineRisk !== "") payload.baseline_risk = Number(baselineRisk);
+      if (smd !== "") payload.smd = Number(smd);
+      if (sid && treatment && outcome) {
+        payload.session_id = sid;
+        payload.treatment_col = treatment;
+        payload.outcome_col = outcome;
+        if (matchId) payload.match_id_col = matchId;
+        if (negControl) payload.negative_control_outcome_col = negControl;
+      }
+      const r = await runCausalSensitivity(payload);
+      setResult(r.data as SensitivityResult);
+    } catch (e: unknown) {
+      setError(getErrorDetail(e, "Sensitivity analysis failed."));
+    } finally { setLoading(false); }
+  };
+  const canRun = estimate !== "" && Number(estimate) > 0 && !loading;
+
+  const fmtN = (v: number | null | undefined, d = 3) =>
+    v === null || v === undefined || Number.isNaN(v) ? "—" : v.toFixed(d);
+  const fmtBounds = (b?: [number, number] | null) => (b ? `${b[0]} to ${b[1]}` : "—");
+
+  const Tile = ({ label, value, sub, tone }: { label: string; value: ReactNode; sub?: ReactNode; tone?: string }) => (
+    <div className="rounded-xl border border-gray-200 bg-white p-3">
+      <div className="text-[10px] uppercase tracking-wider text-gray-500">{label}</div>
+      <div className={`text-xl font-semibold mt-1 ${tone ?? "text-gray-900"}`}>{value}</div>
+      {sub && <div className="text-[11px] text-gray-500 mt-0.5">{sub}</div>}
+    </div>
+  );
+
+  /** Renders a sub-analysis panel, or the backend's reason when it was not computed. */
+  const Block = ({ title, block, children }: { title: string; block: OptionalBlock; children: ReactNode }) => (
+    <div className="panel">
+      <h3 className="text-xs font-bold text-gray-700 uppercase tracking-wider mb-2">{title}</h3>
+      {block.available === false || block.applicable === false ? (
+        <p className="text-xs text-gray-500">Not available — {block.reason ?? "no inputs supplied."}</p>
+      ) : children}
+    </div>
+  );
+
+  return (
+    <div className="flex gap-4">
+      <div className="w-72 flex-shrink-0 space-y-4">
+        <div className="panel bg-indigo-50 border-indigo-200 space-y-1">
+          <p className="text-[10px] font-bold text-indigo-900 uppercase tracking-wider">Unmeasured Confounding Suite</p>
+          <p className="text-xs text-indigo-800 leading-relaxed">
+            Takes a published/observed effect on a ratio scale and asks how strong an <b>unmeasured
+            confounder</b> would have to be to explain it away: <b>E-value</b>, <b>quantitative bias
+            analysis</b>, plus <b>Manski</b> partial-identification bounds, <b>Rosenbaum</b> matched-pair
+            bounds and a <b>negative-control</b> screen when the matching columns are supplied.
+            (A standalone E-value calculator also lives in Survival ▸ Advanced.)
+          </p>
+        </div>
+        <div className="panel space-y-3">
+          <div>
+            <label className="text-xs text-gray-400 block mb-1">Observed estimate (&gt; 0)</label>
+            <input className="input w-full" type="number" step="0.01" min={0} value={estimate}
+              onChange={(e) => setEstimate(e.target.value)} placeholder="e.g. 1.85" />
+          </div>
+          <div>
+            <label className="text-xs text-gray-400 block mb-1">Effect measure</label>
+            <select className="select w-full" value={measure} onChange={(e) => setMeasure(e.target.value)}>
+              <option value="rr">Risk ratio (RR)</option>
+              <option value="or">Odds ratio (OR)</option>
+              <option value="hr">Hazard ratio (HR)</option>
+            </select>
+          </div>
+          <div className="flex gap-2">
+            <div className="flex-1">
+              <label className="text-xs text-gray-400 block mb-1">95% CI lower</label>
+              <input className="input w-full" type="number" step="0.01" value={ciLow}
+                onChange={(e) => setCiLow(e.target.value)} placeholder="optional" />
+            </div>
+            <div className="flex-1">
+              <label className="text-xs text-gray-400 block mb-1">95% CI upper</label>
+              <input className="input w-full" type="number" step="0.01" value={ciHigh}
+                onChange={(e) => setCiHigh(e.target.value)} placeholder="optional" />
+            </div>
+          </div>
+          <label className="flex items-center gap-2 text-xs text-gray-700">
+            <input type="checkbox" checked={rareOutcome} onChange={(e) => setRareOutcome(e.target.checked)} />
+            Rare outcome (OR ≈ RR)
+          </label>
+          <div>
+            <label className="text-xs text-gray-400 block mb-1">Baseline risk (optional)</label>
+            <input className="input w-full" type="number" step="0.01" min={0.001} max={0.99} value={baselineRisk}
+              onChange={(e) => setBaselineRisk(e.target.value)} placeholder="0.001–0.99" />
+            <p className="text-[10px] text-gray-400 mt-1">Used to convert OR → RR for common outcomes.</p>
+          </div>
+          <div>
+            <button type="button" className="text-xs text-indigo-600 hover:underline"
+              onClick={() => setAdvancedOpen((o) => !o)}>
+              {advancedOpen ? "▾" : "▸"} Advanced: SMD &amp; data-driven bounds
+            </button>
+            {advancedOpen && (
+              <div className="mt-2 space-y-3">
+                <div>
+                  <label className="text-xs text-gray-400 block mb-1">Standardized mean difference</label>
+                  <input className="input w-full" type="number" step="0.01" value={smd}
+                    onChange={(e) => setSmd(e.target.value)} placeholder="optional" />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-400 block mb-1">Treatment (binary 0/1)</label>
+                  <select className="select w-full" value={treatment} onChange={(e) => setTreatment(e.target.value)}>
+                    <option value="">— none —</option>{cols.map((c) => <option key={c}>{c}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs text-gray-400 block mb-1">Outcome (binary 0/1)</label>
+                  <select className="select w-full" value={outcome} onChange={(e) => setOutcome(e.target.value)}>
+                    <option value="">— none —</option>{cols.filter((c) => c !== treatment).map((c) => <option key={c}>{c}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs text-gray-400 block mb-1">Matched-pair ID (optional)</label>
+                  <select className="select w-full" value={matchId} onChange={(e) => setMatchId(e.target.value)}>
+                    <option value="">— none —</option>{cols.filter((c) => c !== treatment && c !== outcome).map((c) => <option key={c}>{c}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs text-gray-400 block mb-1">Negative control outcome (optional)</label>
+                  <select className="select w-full" value={negControl} onChange={(e) => setNegControl(e.target.value)}>
+                    <option value="">— none —</option>{cols.filter((c) => c !== treatment && c !== outcome).map((c) => <option key={c}>{c}</option>)}
+                  </select>
+                </div>
+                <p className="text-[10px] text-gray-400">
+                  Manski / Rosenbaum / negative-control blocks need the loaded dataset; without both
+                  treatment and outcome the backend returns them as “not available”.
+                </p>
+              </div>
+            )}
+          </div>
+          <button className="btn-primary w-full" onClick={run} disabled={!canRun}>
+            {loading ? "Running…" : "Run sensitivity suite"}
+          </button>
+          {error && <p className="text-red-500 text-xs">{error}</p>}
+        </div>
+      </div>
+
+      <div className="flex-1 min-w-0 space-y-4">
+        {!result ? (
+          <div className="panel h-64 flex items-center justify-center text-gray-400 text-sm text-center">
+            Enter an observed effect estimate (RR / OR / HR) — no dataset required — then run the suite.
+          </div>
+        ) : (
+          <>
+            <div className={`panel border ${result.warnings.length ? "border-amber-300 bg-amber-50" : "border-emerald-300 bg-emerald-50"}`}>
+              <p className="text-sm text-gray-800 leading-relaxed">{result.result_text}</p>
+              <div className="text-[11px] text-gray-500 mt-2">{result.test}</div>
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <Tile label="E-value (point)" value={fmtN(result.e_value.e_value_point_estimate, 2)}
+                sub={`on the ${result.e_value.measure.toUpperCase()} scale`}
+                tone={result.e_value.e_value_point_estimate < 2 ? "text-amber-600" : "text-emerald-600"} />
+              <Tile label="E-value (CI limit)" value={fmtN(result.e_value.e_value_ci, 2)} />
+              <Tile label="QBA bias factor" value={fmtN(result.quantitative_bias_analysis.bias_factor, 3)}
+                sub={result.quantitative_bias_analysis.bias_direction} />
+              <Tile label="QBA corrected estimate" value={fmtN(result.quantitative_bias_analysis.bias_corrected_estimate, 3)}
+                sub={<>assumed confounder RR {result.quantitative_bias_analysis.assumed_confounder_risk_ratio}</>} />
+            </div>
+
+            <div className="panel space-y-2">
+              <p className="text-xs text-gray-700 leading-relaxed">{result.e_value.interpretation}</p>
+              <p className="text-xs text-gray-500 leading-relaxed">{result.quantitative_bias_analysis.interpretation}</p>
+            </div>
+
+            <Block title="Manski partial-identification bounds" block={result.manski_bounds}>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-xs">
+                <div>ATE bounds: <b>{fmtBounds(result.manski_bounds.ate_bounds)}</b></div>
+                <div>E[Y(1)]: {fmtBounds(result.manski_bounds.ey1_bounds)}</div>
+                <div>E[Y(0)]: {fmtBounds(result.manski_bounds.ey0_bounds)}</div>
+                <div>Sign: {result.manski_bounds.identified_sign ?? "—"}</div>
+                <div><i>n</i> = {result.manski_bounds.n ?? "—"}</div>
+              </div>
+              <p className="text-[10px] text-gray-400 mt-2">{result.manski_bounds.interpretation}</p>
+            </Block>
+
+            <Block title="Rosenbaum bounds (matched pairs)" block={result.rosenbaum_bounds}>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+                <div>Critical Γ: <b>{result.rosenbaum_bounds.critical_gamma ?? `> ${result.rosenbaum_bounds.gamma_max ?? "—"}`}</b></div>
+                <div>Discordant pairs: {result.rosenbaum_bounds.discordant_pairs ?? "—"}</div>
+                <div>Pairs used: {result.rosenbaum_bounds.n_pairs_used ?? "—"}</div>
+                <div><i>p</i> (no bias) = {fmtP(result.rosenbaum_bounds.p_unbiased ?? null)}</div>
+              </div>
+            </Block>
+
+            <Block title="Negative control outcome" block={result.negative_control_analysis}>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+                <div>Outcome: {result.negative_control_analysis.negative_control_outcome ?? "—"}</div>
+                <div>Effect: {fmtN(result.negative_control_analysis.treatment_effect, 3)}</div>
+                <div><i>p</i> = {fmtP(result.negative_control_analysis.p ?? null)}</div>
+                <div className={result.negative_control_analysis.flag_residual_bias ? "text-amber-600 font-semibold" : "text-emerald-600"}>
+                  {result.negative_control_analysis.flag_residual_bias ? "residual bias signal" : "no signal"}
+                </div>
+              </div>
+              <p className="text-[10px] text-gray-400 mt-2">{result.negative_control_analysis.interpretation}</p>
+            </Block>
+
+            <Block title="Multi-confounder scenario" block={result.multi_confounder_sensitivity}>
+              <div className="text-xs text-gray-700">
+                Combined bias factor {result.multi_confounder_sensitivity.combined_bias_factor} over
+                {" "}{result.multi_confounder_sensitivity.n_confounders} confounder(s) → corrected estimate{" "}
+                <b>{result.multi_confounder_sensitivity.bias_corrected_estimate}</b>.
+              </div>
+              {(result.multi_confounder_sensitivity.confounder_steps ?? []).length > 0 && (
+                <table className="w-full text-xs mt-2">
+                  <thead className="text-gray-500">
+                    <tr><th className="text-left py-1">Confounder</th><th className="text-right">RR</th><th className="text-right">Bias factor</th><th className="text-right">Corrected</th></tr>
+                  </thead>
+                  <tbody>
+                    {(result.multi_confounder_sensitivity.confounder_steps ?? []).map((s, i) => (
+                      <tr key={`${s.confounder}-${i}`} className="border-t border-gray-100">
+                        <td className="py-1">{s.confounder}</td>
+                        <td className="text-right">{s.rr_with_outcome}</td>
+                        <td className="text-right">{s.bias_factor}</td>
+                        <td className="text-right">{s.corrected_estimate_after_step}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </Block>
+
+            <Block title="E-value for standardized mean difference" block={result.e_value_smd}>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+                <div>SMD: {result.e_value_smd.smd ?? "—"}</div>
+                <div>Converted OR: {result.e_value_smd.converted_or ?? "—"}</div>
+                <div>E-value: <b>{fmtN(result.e_value_smd.e_value?.e_value_point_estimate, 2)}</b></div>
+                <div>Baseline risk: {result.e_value_smd.baseline_risk_used ?? "—"}</div>
+              </div>
+            </Block>
+
+            {result.warnings.length > 0 && (
+              <div className="text-[11px] text-amber-700">⚠ {result.warnings.join(" ")}</div>
+            )}
+
+            <div className="panel">
+              <h3 className="text-xs font-bold text-gray-700 uppercase tracking-wider mb-2">Assumptions</h3>
+              <table className="w-full text-xs">
+                <tbody>
+                  {result.assumptions.map((a) => (
+                    <tr key={a.name} className="border-t border-gray-100">
+                      <td className="py-1 pr-3 font-medium text-gray-600 align-top whitespace-nowrap">{a.name}</td>
+                      <td className={`py-1 pr-3 align-top ${a.met ? "text-emerald-600" : "text-amber-600"}`}>{a.met ? "✓" : "⚠"}</td>
+                      <td className="py-1 text-gray-500">{a.detail}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <ResultExporter title="causal_sensitivity" />
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function CausalPanel() {
   const [method, setMethod] = useState<Method>("iv");
   const tabs: [Method, string][] = [
@@ -908,6 +1265,7 @@ export default function CausalPanel() {
     ["rdd", "Regression Discontinuity"],
     ["dag", "DAG Backdoor"],
     ["sem", "SEM / Path analysis"],
+    ["sensitivity", "Unmeasured Confounding"],
   ];
   return (
     <div className="space-y-3">
@@ -927,7 +1285,8 @@ export default function CausalPanel() {
         : method === "did" ? <DiDTab />
         : method === "rdd" ? <RDDTab />
         : method === "dag" ? <DAGTab />
-        : <SEMTab />}
+        : method === "sem" ? <SEMTab />
+        : <SensitivityTab />}
     </div>
   );
 }

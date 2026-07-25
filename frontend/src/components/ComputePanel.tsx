@@ -608,7 +608,7 @@ function RecodeTab({
       // an all-empty column. Warn so the user notices (and can delete it) rather
       // than thinking value-labels created a stray column.
       if ((res.data?.n_computed ?? 0) === 0) {
-        setError(`"${newCol.trim()}" tamamen boş oluştu — hiçbir kural eşleşmedi. Sağ tık → Delete column ile silebilirsin.`);
+        setError(`"${newCol.trim()}" came out entirely empty — no rule matched. Right-click → Delete column to remove it.`);
       }
       // Save value labels to metadata if any were defined
       const filledLabels = Object.fromEntries(

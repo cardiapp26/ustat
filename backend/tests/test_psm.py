@@ -222,3 +222,49 @@ def test_psm_rosenbaum_is_returned_when_requested(client):
     assert "critical_gamma" in rb
     assert isinstance(rb["curve"], list)
     assert len(rb["curve"]) > 5
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Bad option strings must read as 400, not 500
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _score_method_df(seed: int) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    n = 200
+    x = rng.normal(0, 1, n)
+    p_t = 1 / (1 + np.exp(-(-0.5 + 1.2 * x)))
+    treat = (rng.uniform(0, 1, n) < p_t).astype(int)
+    y = (0.7 * treat + 0.5 * x + rng.normal(0, 1, n) > 0).astype(int)
+    return pd.DataFrame({"t": treat, "x": x, "y": y})
+
+
+def test_psm_unknown_score_method_400_not_500(client):
+    """score_method is a free-form string; an unknown value is caller input.
+
+    services.psm signals it with ValueError; unwrapped that became a 500 with
+    no detail, so the UI could not say which option was wrong.
+    """
+    sid = make_session(_score_method_df(31), "psm_bad_score_method")
+    r = client.post("/api/models/psm", json={
+        "session_id": sid,
+        "treatment_col": "t",
+        "covariates": ["x"],
+        "outcome_col": "y",
+        "score_method": "random_forest",
+    })
+    assert r.status_code == 400, r.text
+    assert "random_forest" in r.json()["detail"]
+
+
+def test_iptw_unknown_score_method_400_not_500(client):
+    """Same defect on the IPTW endpoint, which shares the propensity fitter."""
+    sid = make_session(_score_method_df(32), "iptw_bad_score_method")
+    r = client.post("/api/models/iptw", json={
+        "session_id": sid,
+        "treatment_col": "t",
+        "covariates": ["x"],
+        "outcome_col": "y",
+        "score_method": "random_forest",
+    })
+    assert r.status_code == 400, r.text
+    assert "random_forest" in r.json()["detail"]

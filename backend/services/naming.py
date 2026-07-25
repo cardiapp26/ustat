@@ -3,7 +3,7 @@ Column-name suggestion: turn raw/cryptic headers into readable Sentence-case
 labels the user can accept as a rename.
 
 Examples:
-    "KAYIT NO"           -> "Kayıt no"
+    "RECORD NO"          -> "Record no"
     "blood_urea"         -> "Blood urea"
     "ejectionFraction"   -> "Ejection fraction"
     "LDL CATEGORIES"     -> "LDL categories"   (LDL kept as a known acronym)

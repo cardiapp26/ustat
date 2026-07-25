@@ -8,7 +8,7 @@ import type { ColMeta, Session } from "../../store";
  * Lists the column's distinct values; the user types a new value next to each.
  * Applying rewrites the ACTUAL cell data (not just display labels) and, when
  * every value ends up numeric, the column is auto-cast to numeric — so e.g.
- * kadın→0 / erkek→1 yields a real 0/1 predictor for analysis. Existing value
+ * female→0 / male→1 yields a real 0/1 predictor for analysis. Existing value
  * labels follow the mapping server-side. Value Labels remain a separate tool. */
 export function FindReplaceModal({
   colName, columns, preview, session, onClose, onApplied,

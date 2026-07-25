@@ -223,12 +223,12 @@ class JointModelRequest(BaseModel):
     session_id_surv: Optional[str] = None   # if None, assume same session
     id_col: str = "id"
     time_col: str = "time"
-    y_cols: List[str] = ["Y"]
-    long_predictors: List[str] = []
-    surv_predictors: List[str] = []
+    y_cols: List[str] = Field(default_factory=lambda: ["Y"])
+    long_predictors: List[str] = Field(default_factory=list)
+    surv_predictors: List[str] = Field(default_factory=list)
     duration_col: str = "duration"
     event_col: str = "event"
-    association: List[str] = ["value"]
+    association: List[str] = Field(default_factory=lambda: ["value"])
     time_spline: bool = False
     latent_classes: int = 0
 

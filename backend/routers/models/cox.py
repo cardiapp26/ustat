@@ -284,10 +284,22 @@ def _km_logrank(df: pd.DataFrame, duration_col: str, event_col: str, group_col: 
                 event_observed_A=g0[event_col].astype(int),
                 event_observed_B=g1[event_col].astype(int),
             )
-            return {"test": "Log-rank", "p": _safe_float(lr.p_value)}
+            # χ² and df travel with p: journals cite "log-rank χ²(1) = 0.70,
+            # p = 0.40", and p alone cannot be checked for consistency.
+            return {
+                "test": "Log-rank",
+                "chi2": _safe_float(lr.test_statistic),
+                "df": 1,
+                "p": _safe_float(lr.p_value),
+            }
         else:
             lr = multivariate_logrank_test(df[duration_col], df[group_col], df[event_col].astype(int))
-            return {"test": "Log-rank (multivariate)", "p": _safe_float(lr.p_value)}
+            return {
+                "test": "Log-rank (multivariate)",
+                "chi2": _safe_float(lr.test_statistic),
+                "df": len(groups) - 1,
+                "p": _safe_float(lr.p_value),
+            }
     except Exception:
         logger.exception("KM logrank test failed")
         return None

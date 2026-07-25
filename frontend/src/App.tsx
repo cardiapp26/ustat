@@ -539,12 +539,12 @@ function SessionNamePill() {
           }}
           maxLength={200}
           className="text-xs text-gray-800 bg-white border border-indigo-300 rounded px-1 py-0 outline-none focus:border-indigo-500 min-w-0 w-44"
-          aria-label="Oturum adını düzenle"
+          aria-label="Rename this session"
         />
       ) : (
         <button
           onClick={() => { setDraft(session.filename); setEditing(true); }}
-          title="Oturum adını değiştirmek için tıklayın"
+          title="Click to rename this session"
           className="text-xs text-gray-600 truncate hover:text-indigo-700 hover:underline decoration-dotted underline-offset-2 cursor-pointer text-left"
         >
           {session.filename}
@@ -585,7 +585,7 @@ export default function App() {
     at?: number;
   }>({ state: "idle" });
   // Stream every session change to IndexedDB (debounced + periodic +
-  // beforeunload flush). Surfaces "Otomatik kayıt · …" next to the
+  // beforeunload flush). Surfaces "Autosaved · …" next to the
   // header Save menu when the user has an open session.
   useAutoSession({
     onStatus: (state, at) => setAutoSaveStatus({ state, at }),
@@ -723,13 +723,13 @@ export default function App() {
             type="button"
             onClick={() => {
               const ok = window.confirm(
-                "Ana ekrana dön? Mevcut oturum otomatik olarak kaydedildi — Son Çalışmalar listesinden devam edebilirsiniz."
+                "Back to the home screen? The current session was saved automatically — resume it from the Recent work list."
               );
               if (!ok) return;
               clearSession();
               setActiveTab("data");
             }}
-            title="Ana ekrana dön (drop zone, Power Analysis, Son Çalışmalar)"
+            title="Back to the home screen (drop zone, Power Analysis, Recent work)"
             className="flex items-center gap-2 flex-shrink-0 hover:opacity-80 transition-opacity cursor-pointer"
           >
             <img src="/logo.png" alt="uSTAT logo" className="w-7 h-7 rounded-lg" />
@@ -851,11 +851,11 @@ export default function App() {
               <div
                 className="flex items-center gap-1 text-[10px] text-gray-400 px-2"
                 title={
-                  autoSaveStatus.state === "saving" ? "Otomatik kayıt sürüyor…"
+                  autoSaveStatus.state === "saving" ? "Autosaving…"
                   : autoSaveStatus.state === "saved" && autoSaveStatus.at
-                    ? `Otomatik kayıt: ${new Date(autoSaveStatus.at).toLocaleTimeString()} — tarayıcınızda saklanıyor (sunucuya gönderilmez)`
-                  : autoSaveStatus.state === "error" ? "Otomatik kayıt başarısız oldu — Save tuşunu kullanın"
-                  : "Otomatik kayıt aktif (her 60 sn + değişiklikten 5 sn sonra)"
+                    ? `Autosaved ${new Date(autoSaveStatus.at).toLocaleTimeString()} — stored in your browser (never sent to the server)`
+                  : autoSaveStatus.state === "error" ? "Autosave failed — use the Save button"
+                  : "Autosave is on (every 60 s, and 5 s after a change)"
                 }
               >
                 <span

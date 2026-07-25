@@ -1,22 +1,22 @@
 """
 Model Assumption Checking Module
 
-Bu modül, farklı istatistiksel modeller için varsayım kontrollerini
-sistematik ve genişletilebilir bir şekilde sağlar.
+Systematic, extensible assumption checks for the statistical models uSTAT
+fits.
 
-Kullanım amacı:
-- Kullanıcıya modelin varsayımlarının ne kadar karşılandığını bildirmek
-- Otomatik uyarı ve öneri üretmek
-- Analiz kalitesini artırmak
+Purpose:
+- Tell the user how well each model assumption is met
+- Emit automatic warnings and suggestions
+- Improve the quality of the analysis
 
-Şu anda desteklenen model tipleri:
+Model types supported today:
 - linear
 - logistic
 - cox
-- ordinal (kısmi)
+- ordinal (partial)
 
-Gelecekte eklenecek:
-- gee, mixed models, vs.
+Planned:
+- gee, mixed models, etc.
 """
 
 from __future__ import annotations
@@ -31,9 +31,9 @@ from scipy import stats
 
 @dataclass
 class AssumptionCheck:
-    """Tek bir varsayım kontrolünün sonucu."""
+    """Result of a single assumption check."""
     name: str
-    passed: bool | None  # None = kontrol edilemedi
+    passed: bool | None  # None = could not be checked
     p_value: float | None = None
     statistic: float | None = None
     message: str = ""
@@ -43,7 +43,7 @@ class AssumptionCheck:
 
 @dataclass
 class AssumptionReport:
-    """Bir model için tüm varsayım kontrollerinin raporu."""
+    """All assumption checks for one model."""
     model_type: str
     checks: list[AssumptionCheck] = field(default_factory=list)
     overall_severity: Literal["ok", "warning", "critical"] = "ok"
@@ -100,11 +100,11 @@ def check_linear_assumptions(
     model,
 ) -> AssumptionReport:
     """
-    Linear regression için temel varsayım kontrolleri.
+    Core assumption checks for linear regression.
     """
     checks: list[AssumptionCheck] = []
 
-    # 1. Normality of residuals (Shapiro-Wilk - küçük n için, Jarque-Bera genel)
+    # 1. Normality of residuals (Shapiro-Wilk for small n, Jarque-Bera otherwise)
     n = len(residuals)
     if n < 5000:
         stat, p = stats.shapiro(residuals)
@@ -119,7 +119,7 @@ def check_linear_assumptions(
             )
         )
     else:
-        # Büyük n'de Jarque-Bera daha uygun
+        # Jarque-Bera is the better fit at large n
         stat, p = stats.jarque_bera(residuals)
         checks.append(
             AssumptionCheck(
@@ -159,7 +159,7 @@ def check_linear_assumptions(
     # 3. Linearity (Rainbow test)
     try:
         from statsmodels.stats.diagnostic import linear_rainbow
-        # Daha güvenli çağrı
+        # Safer call
         rainbow_stat, rainbow_p = linear_rainbow(model.model)
         checks.append(
             AssumptionCheck(
@@ -181,10 +181,10 @@ def check_linear_assumptions(
             )
         )
 
-    # 4. Multicollinearity (VIF) - zaten ayrı hesaplanıyor, burada sadece yorum
-    # Bu kontrolü genellikle ayrı tutuyoruz çünkü VIF zaten endpoint'te var.
+    # 4. Multicollinearity (VIF) - computed separately; only commented on here
+    # Kept separate because VIF is already returned by the endpoint.
 
-    # Genel değerlendirme
+    # Overall assessment
     critical_count = sum(1 for c in checks if c.severity == "critical")
     warning_count = sum(1 for c in checks if c.severity == "warning")
 
@@ -217,7 +217,7 @@ def check_logistic_assumptions(
     model=None,
 ) -> AssumptionReport:
     """
-    Binary logistic regression için varsayım ve goodness-of-fit kontrolleri.
+    Assumption and goodness-of-fit checks for binary logistic regression.
     """
     checks: list[AssumptionCheck] = []
 
@@ -299,7 +299,7 @@ def check_logistic_assumptions(
 def check_cox_assumptions_from_ph_test(ph_test: dict | None) -> AssumptionReport:
     """
     Survival router'da zaten hesaplanan proportional hazards test sonucunu
-    AssumptionReport formatına çevirir.
+    Converts to the AssumptionReport format.
     """
     checks: list[AssumptionCheck] = []
 
@@ -402,8 +402,8 @@ def check_cox_assumptions(
     event_col: str,
 ) -> AssumptionReport:
     """
-    Cox PH modeli için varsayım kontrolleri.
-    Schoenfeld residuals testi lifelines ile zaten yapılıyor.
+    Assumption checks for the Cox PH model.
+    The Schoenfeld residuals test is already run via lifelines.
     """
     checks: list[AssumptionCheck] = []
 
@@ -444,11 +444,11 @@ def check_cox_assumptions(
 
 
 # =============================================================================
-# Yardımcı Fonksiyonlar
+# Helper functions
 # =============================================================================
 
 def add_assumption_warnings_to_result(result: dict, report: AssumptionReport) -> dict:
-    """Varsayım raporunu mevcut sonuç sözlüğüne ekler."""
+    """Attach the assumption report to an existing result dict."""
     result["assumptions"] = report.to_dict()
 
     if report.overall_severity in ("warning", "critical"):

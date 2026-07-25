@@ -3,7 +3,7 @@ import type { Data, Annotations } from "plotly.js";
 import Plot from "../PlotComponent";
 import { useStore, analysisCols, isCategoricalKind, type Session } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
-import { runFineGray, runEValue, runLandmark, runKM, runCox, runRMST, runRecurrentLWYY, runCoxHorizons, runCoxUniMulti, runCoxModelSpecs } from "../api";
+import { runFineGray, runEValue, runLandmark, runKM, runCox, runRMST, runRecurrentLWYY, runCoxHorizons, runCoxUniMulti, runCoxModelSpecs, runFrailty, runMultistate, runDynamicPrediction } from "../api";
 import { usePlotLayout, usePalette, useTraceDefaults } from "../plotStyle";
 import ResultExporter from "./ResultExporter";
 import PlotExporter from "./PlotExporter";
@@ -159,6 +159,80 @@ interface LwyyResult extends ResultBlockData {
   n_events?: number;
   events_per_subject?: number;
   coefficients?: LwyyCoefficient[];
+}
+
+/** Fixed-effect row of the shared frailty Cox fit. The backend emits
+ *  `variable / estimate (log-HR) / hr / se / p` — there is no CI in the
+ *  payload, so the 95% CI is derived here from estimate ± 1.96·se. */
+interface FrailtyCoefficient {
+  variable: string;
+  estimate?: number | null;
+  hr?: number | null;
+  se?: number | null;
+  p?: number | null;
+}
+interface FrailtyVarianceTest {
+  lrt_statistic?: number | null;
+  ordinary_chi_square_p?: number | null;
+  chi_bar_square_p?: number | null;
+  mixture?: string;
+  interpretation?: string;
+}
+interface FrailtyResult extends ResultBlockData {
+  plot?: ApiPlot;
+  n_subjects?: number;
+  n_clusters?: number;
+  n_events?: number;
+  theta?: number | null;
+  theta_se?: number | null;
+  frailty_distribution?: string;
+  estimation_method?: string;
+  coefficients?: FrailtyCoefficient[];
+  frailty_variance_test?: FrailtyVarianceTest;
+  concordance?: number | null;
+  log_likelihood?: number | null;
+  warnings?: string[];
+  method_note?: string;
+}
+
+// ── Multi-state (long-format transition data) ────────────────────────────────
+interface TransitionCoefficient { variable?: string; coef?: number; hr?: number; se?: number; p?: number }
+interface TransitionFit {
+  n_transitions?: number;
+  n_events?: number;
+  coefficients?: TransitionCoefficient[];
+  concordance?: number | null;
+  aic?: number | null;
+}
+interface MarkovTest {
+  status?: string;
+  reason?: string;
+  coef?: number;
+  hr?: number;
+  se?: number;
+  p_value?: number;
+  markov_assumption_violated?: boolean;
+  interpretation?: string;
+}
+interface MultistateResult extends ResultBlockData {
+  transitions_estimated?: string[];
+  results?: Record<string, TransitionFit>;
+  markov_assumption_tests?: Record<string, MarkovTest>;
+  model_type?: string;
+  note?: string;
+}
+interface DynamicPredictionResult extends ResultBlockData {
+  landmark_time?: number;
+  current_state?: number;
+  n_at_risk?: number;
+  times?: number[];
+  state_probabilities?: Record<string, number[]>;
+  elos?: Record<string, number>;
+  bootstrap?: Record<string, unknown>;
+  microsimulation?: Record<string, unknown>;
+  model_type?: string;
+  note?: string;
+  warnings?: string[];
 }
 
 interface EValueResult extends ResultBlockData {
@@ -465,7 +539,7 @@ function CoxUniMultiForest({
 // Method registry — drives the left nav + which Section renders on the right.
 type SurvMethod =
   | "km" | "cox" | "timehorizon" | "landmark" | "rmst"
-  | "finegray" | "lwyy" | "evalue" | "intervalcensored";
+  | "finegray" | "lwyy" | "evalue" | "intervalcensored" | "frailty" | "multistate";
 
 const SURV_METHODS: { id: SurvMethod; title: string; desc: string }[] = [
   { id: "km",          title: "Kaplan-Meier",        desc: "Survival curves + log-rank" },
@@ -476,6 +550,8 @@ const SURV_METHODS: { id: SurvMethod; title: string; desc: string }[] = [
   { id: "finegray",    title: "Fine-Gray",           desc: "Competing risks (CIF)" },
   { id: "lwyy",        title: "Recurrent (LWYY)",    desc: "Repeated events" },
   { id: "intervalcensored", title: "Interval-censored", desc: "Event time bracketed [L, R]" },
+  { id: "frailty",     title: "Shared Frailty",      desc: "Clustered / multi-centre survival" },
+  { id: "multistate",  title: "Multi-state",         desc: "Transitions between clinical states" },
   { id: "evalue",      title: "E-value",             desc: "Unmeasured confounding" },
 ];
 
@@ -1064,6 +1140,41 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
   const [rmstError, setRmstError] = useState<string | null>(null);
   const rmstPlotRef = useRef<PlotCaptureHandle | null>(null);
 
+  // Shared frailty state — clustered / multi-centre Cox with a random
+  // cluster effect. Advanced knobs (nested/correlated clusters, parametric
+  // baseline, estimation method, penalizer) stay at their backend defaults.
+  const [frDuration, setFrDuration] = usePersistedPanelState("survival", "frailtyDuration", "");
+  const [frEvent, setFrEvent] = usePersistedPanelState("survival", "frailtyEvent", "");
+  const [frCluster, setFrCluster] = usePersistedPanelState("survival", "frailtyCluster", "");
+  const [frPredictors, setFrPredictors] = usePersistedPanelState<string[]>("survival", "frailtyPredictors", []);
+  const [frDist, setFrDist] = usePersistedPanelState("survival", "frailtyDistribution", "gamma");
+  const [frailtyResult, setFrailtyResult] = useState<FrailtyResult | null>(null);
+  const [frLoading, setFrLoading] = useState(false);
+  const [frError, setFrError] = useState<string | null>(null);
+  const frPlotRef = useRef<PlotCaptureHandle | null>(null);
+
+  // Multi-state state. Unlike every other method here the input is LONG-FORMAT
+  // transition data (one row per state transition), so the column pickers are
+  // shared by both the transition-model fit and the landmark prediction, and
+  // the two results are held separately so running one keeps the other.
+  const [msId, setMsId] = usePersistedPanelState("survival", "msIdCol", "");
+  const [msFrom, setMsFrom] = usePersistedPanelState("survival", "msFromCol", "");
+  const [msTo, setMsTo] = usePersistedPanelState("survival", "msToCol", "");
+  const [msEntry, setMsEntry] = usePersistedPanelState("survival", "msEntryCol", "");
+  const [msExit, setMsExit] = usePersistedPanelState("survival", "msExitCol", "");
+  const [msEvent, setMsEvent] = usePersistedPanelState("survival", "msEventCol", "");
+  const [msPredictors, setMsPredictors] = usePersistedPanelState<string[]>("survival", "msPredictors", []);
+  const [msLandmark, setMsLandmark] = usePersistedPanelState("survival", "msLandmark", "");
+  const [msHorizon, setMsHorizon] = usePersistedPanelState("survival", "msHorizon", "5");
+  const [msState, setMsState] = usePersistedPanelState("survival", "msCurrentState", "0");
+  const [msBootstrap, setMsBootstrap] = usePersistedPanelState<boolean>("survival", "msBootstrap", false);
+  const [msResult, setMsResult] = useState<MultistateResult | null>(null);
+  const [dpResult, setDpResult] = useState<DynamicPredictionResult | null>(null);
+  const [msLoading, setMsLoading] = useState(false);
+  const [dpLoading, setDpLoading] = useState(false);
+  const [msError, setMsError] = useState<string | null>(null);
+  const dpPlotRef = useRef<PlotCaptureHandle | null>(null);
+
   // Recurrent-events LWYY state
   const [lwId, setLwId] = usePersistedPanelState("survival", "lwId", "");
   const [lwStart, setLwStart] = usePersistedPanelState("survival", "lwStart", "");
@@ -1121,6 +1232,23 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
     finally { setRmstLoading(false); }
   };
 
+  // ── Shared frailty handler
+  const handleFrailty = async () => {
+    if (!frDuration || !frEvent || !frCluster) { setFrError("Select duration, event, and cluster columns"); return; }
+    if (frPredictors.length === 0) { setFrError("Select at least one predictor"); return; }
+    setFrailtyResult(null); setFrError(null); setFrLoading(true);
+    try {
+      const res = await runFrailty({
+        session_id: sid, duration_col: frDuration, event_col: frEvent,
+        cluster_col: frCluster, predictors: frPredictors,
+        frailty_distribution: frDist,
+        imputation: survImputation,
+      });
+      setFrailtyResult(res.data);
+    } catch (e: unknown) { setFrError(errorMessage(e, "Shared frailty model failed")); }
+    finally { setFrLoading(false); }
+  };
+
   // ── E-value handler
   const handleEValue = async () => {
     if (!evEst || !evLo || !evHi) { setEvError("Enter estimate and confidence interval"); return; }
@@ -1158,6 +1286,53 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
   useEffect(() => { setFgResult(null); setFgError(null); }, [fgDuration, fgEvent, fgInterest, fgGroup, fgPredictors]);
   useEffect(() => { setRmstResult(null); setRmstError(null); }, [rmstDuration, rmstEvent, rmstGroup, rmstTau]);
   useEffect(() => { setLwResult(null); setLwError(null); }, [lwId, lwStart, lwStop, lwEvent, lwPreds, lwGroup]);
+  useEffect(() => { setFrailtyResult(null); setFrError(null); }, [frDuration, frEvent, frCluster, frPredictors, frDist]);
+
+  // ── Multi-state handlers. Both endpoints share the same long-format columns.
+  const msColumnsPayload = () => ({
+    session_id: sid,
+    id_col: msId, from_state_col: msFrom, to_state_col: msTo,
+    entry_col: msEntry, exit_col: msExit, event_col: msEvent,
+    predictors: msPredictors,
+  });
+  const msColumnsMissing = () =>
+    !msId || !msFrom || !msTo || !msEntry || !msExit || !msEvent;
+
+  const handleMultistate = async () => {
+    if (msColumnsMissing()) { setMsError("Select the id, from/to state, entry, exit and event columns"); return; }
+    if (msPredictors.length === 0) { setMsError("Select at least one predictor"); return; }
+    setMsResult(null); setMsError(null); setMsLoading(true);
+    try {
+      const res = await runMultistate({ ...msColumnsPayload(), imputation: survImputation });
+      setMsResult(res.data);
+    } catch (e: unknown) { setMsError(errorMessage(e, "Multi-state model failed")); }
+    finally { setMsLoading(false); }
+  };
+
+  const handleDynamicPrediction = async () => {
+    if (msColumnsMissing()) { setMsError("Select the id, from/to state, entry, exit and event columns"); return; }
+    if (msPredictors.length === 0) { setMsError("Select at least one predictor"); return; }
+    const landmark = parseFloat(msLandmark);
+    if (!Number.isFinite(landmark) || landmark < 0) { setMsError("Enter a landmark time ≥ 0"); return; }
+    const horizon = parseFloat(msHorizon);
+    if (!Number.isFinite(horizon) || horizon <= 0) { setMsError("Enter a prediction horizon > 0"); return; }
+    setDpResult(null); setMsError(null); setDpLoading(true);
+    try {
+      const res = await runDynamicPrediction({
+        ...msColumnsPayload(),
+        landmark_time: landmark,
+        horizon,
+        current_state: parseInt(msState, 10) || 0,
+        run_bootstrap: msBootstrap,
+      });
+      setDpResult(res.data);
+    } catch (e: unknown) { setMsError(errorMessage(e, "Dynamic prediction failed")); }
+    finally { setDpLoading(false); }
+  };
+
+  useEffect(() => {
+    setMsResult(null); setDpResult(null); setMsError(null);
+  }, [msId, msFrom, msTo, msEntry, msExit, msEvent, msPredictors]);
 
   const handleLWYY = async () => {
     if (!lwId || !lwStart || !lwStop || !lwEvent || lwPreds.length === 0) {
@@ -1452,6 +1627,327 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
                 </div>
               )}
               <ResultBlock result={rmstResult} />
+            </>
+          }
+        />
+      </Section>
+      )}
+
+      {/* ── Shared frailty — clustered / multi-centre survival ── */}
+      {activeMethod === "frailty" && (
+      <Section title="Shared Frailty Model"
+        description="Cox model with a shared random effect (frailty) per cluster — for multi-centre trials, repeated measures within families, or any design where subjects are nested. θ quantifies the within-cluster dependence remaining after the fixed effects.">
+        <ThreeCol
+          storageKey="SurvivalAdvanced.Frailty"
+          left={
+            <>
+              <div className="grid grid-cols-1 gap-2">
+                <VarSelect label="Duration (time)" value={frDuration} onChange={setFrDuration} columns={pickCols} kinds={["numeric"]} />
+                <VarSelect label="Event (0/1)" value={frEvent} onChange={setFrEvent} columns={binaryCols} />
+                <VarSelect label="Cluster (centre / family)" value={frCluster} onChange={setFrCluster} columns={pickCols} kinds={["categorical"]} />
+                <MultiSelect label="Predictors" columns={pickCols} selected={frPredictors} onChange={setFrPredictors}
+                  excludeNames={[frDuration, frEvent, frCluster].filter(Boolean)} />
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs text-gray-500 font-medium">Frailty distribution</span>
+                  <select value={frDist} onChange={(e) => setFrDist(e.target.value)}
+                    className="text-sm border border-gray-300 rounded-lg px-3 py-1.5 bg-white focus:outline-none focus:border-indigo-400">
+                    <option value="gamma">Gamma</option>
+                    <option value="inverse_gaussian">Inverse Gaussian</option>
+                  </select>
+                </label>
+              </div>
+              <div className="flex items-center gap-3">
+                {frPredictors.length > 0 && <ImputeToggle value={survImputation} onChange={setSurvImputation} />}
+                <RunButton onClick={handleFrailty} loading={frLoading} label="Run Shared Frailty" />
+              </div>
+              {frError && <p className="text-xs text-red-500">{frError}</p>}
+            </>
+          }
+          middle={
+            frailtyResult?.plot ? (
+              <TitledPlot
+                plotRefOut={frPlotRef}
+                storageKey="surv:frailty"
+                data={frailtyResult.plot.data}
+                layout={{ ...frailtyResult.plot.layout, ...baseLayout, title: frailtyResult.plot.layout.title }}
+                config={{ responsive: true }}
+                defaultTitle={frailtyResult.plot.layout?.title?.text ?? ""}
+                defaultSubtitle=""
+                defaultXAxis={frailtyResult.plot.layout?.xaxis?.title?.text ?? ""}
+                defaultYAxis={frailtyResult.plot.layout?.yaxis?.title?.text ?? ""}
+              />
+            ) : (
+              <div className="flex items-center justify-center h-[400px] border border-dashed border-gray-200 rounded-lg text-xs text-gray-400">
+                Run the shared frailty model to render the cluster frailty distribution
+              </div>
+            )
+          }
+          right={
+            <>
+              {frailtyResult && (
+                <div className="overflow-auto rounded-lg border border-gray-200">
+                  <table className="w-full text-[11px]">
+                    <tbody>
+                      <tr className="border-b border-gray-100">
+                        <td className="px-1.5 py-1 text-gray-500">Subjects</td>
+                        <td className="px-1.5 py-1 font-mono text-gray-800">{frailtyResult.n_subjects ?? "—"}</td>
+                      </tr>
+                      <tr className="border-b border-gray-100">
+                        <td className="px-1.5 py-1 text-gray-500">Clusters</td>
+                        <td className="px-1.5 py-1 font-mono text-gray-800">{frailtyResult.n_clusters ?? "—"}</td>
+                      </tr>
+                      <tr className="border-b border-gray-100">
+                        <td className="px-1.5 py-1 text-gray-500">Events</td>
+                        <td className="px-1.5 py-1 font-mono text-gray-800">{frailtyResult.n_events ?? "—"}</td>
+                      </tr>
+                      <tr className="border-b border-gray-100">
+                        <td className="px-1.5 py-1 text-gray-500">Frailty variance θ</td>
+                        <td className="px-1.5 py-1 font-mono font-semibold text-indigo-700">
+                          {frailtyResult.theta ?? "—"}
+                          {frailtyResult.frailty_variance_test?.chi_bar_square_p != null && (
+                            <span className="ml-1.5 font-normal text-gray-500">
+                              (<i>p</i> = {fmtP(frailtyResult.frailty_variance_test.chi_bar_square_p)})
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                      <tr>
+                        <td className="px-1.5 py-1 text-gray-500">Concordance</td>
+                        <td className="px-1.5 py-1 font-mono text-gray-800">{frailtyResult.concordance ?? "—"}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              {frailtyResult?.coefficients && frailtyResult.coefficients.length > 0 && (
+                <div className="overflow-auto rounded-lg border border-indigo-200 bg-indigo-50/30 mt-2">
+                  <table className="w-full text-[11px]">
+                    <thead>
+                      <tr className="bg-white border-b border-indigo-200 text-gray-600">
+                        {(["Variable", "HR", "95% CI", <i key="p">p</i>] as ReactNode[]).map((h, i) => (
+                          <th key={i} className="px-1.5 py-1.5 text-left font-semibold">{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {frailtyResult.coefficients.map((c, i) => {
+                        // Backend returns log-HR (`estimate`) + `se` but no CI —
+                        // derive the Wald 95% CI on the log scale, exponentiate.
+                        const hasCI = c.estimate != null && c.se != null && Number.isFinite(c.se);
+                        const lo = hasCI ? Math.exp(c.estimate! - 1.96 * c.se!) : null;
+                        const hi = hasCI ? Math.exp(c.estimate! + 1.96 * c.se!) : null;
+                        const sig = c.p != null && c.p < 0.05;
+                        return (
+                          <tr key={i} className={`border-b border-indigo-100 ${sig ? "bg-indigo-50/60" : ""}`}>
+                            <td className="px-1.5 py-1 font-mono text-gray-800 truncate max-w-[70px]">{c.variable}</td>
+                            <td className={`px-1.5 py-1 font-mono font-semibold ${sig ? "text-indigo-700" : "text-gray-700"}`}>
+                              {c.hr != null ? c.hr : "—"}
+                            </td>
+                            <td className="px-1.5 py-1 font-mono text-gray-500">
+                              {lo != null && hi != null ? `[${lo.toFixed(2)}, ${hi.toFixed(2)}]` : "—"}
+                            </td>
+                            <td className="px-1.5 py-1">
+                              <span className={`inline-block font-mono px-1 py-0.5 rounded text-[10px] ${
+                                sig ? "bg-indigo-100 text-indigo-700 font-semibold" : "text-gray-400"
+                              }`}>
+                                {fmtPubP(c.p)}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              {frailtyResult?.warnings && frailtyResult.warnings.length > 0 && (
+                <div className="mt-2 space-y-1">
+                  {frailtyResult.warnings.map((w, i) => (
+                    <div key={i} className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">{w}</div>
+                  ))}
+                </div>
+              )}
+              {frailtyResult?.method_note && (
+                <p className="text-[10px] text-gray-500 mt-2 leading-snug">{frailtyResult.method_note}</p>
+              )}
+              <ResultBlock result={frailtyResult} />
+            </>
+          }
+        />
+      </Section>
+      )}
+
+      {/* ── Multi-state transitions + landmark dynamic prediction ── */}
+      {activeMethod === "multistate" && (
+      <Section title="Multi-state Model"
+        description="Transition-specific models across clinical states, plus state-occupancy prediction from a landmark time.">
+        {/* Every other method here takes one row per subject; this one does not,
+            so spell the layout out rather than let users feed it the wrong shape. */}
+        <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800 leading-relaxed">
+          <strong>Needs long-format transition data</strong> — one row per state transition,
+          not one row per subject. Columns: subject id, from-state, to-state, entry time,
+          exit time, event (1 = the transition happened, 0 = censored), plus predictors.
+          Example with 0 = healthy, 1 = illness, 2 = death: a patient who fell ill at t=2
+          and died at t=5 contributes two rows — <code>0→1</code> (entry 0, exit 2, event 1)
+          and <code>1→2</code> (entry 2, exit 5, event 1).
+        </div>
+        <ThreeCol
+          storageKey="SurvivalAdvanced.Multistate"
+          left={
+            <>
+              <VarSelect label="Subject id" value={msId} onChange={setMsId} columns={pickCols} />
+              <VarSelect label="From state" value={msFrom} onChange={setMsFrom} columns={pickCols} />
+              <VarSelect label="To state" value={msTo} onChange={setMsTo} columns={pickCols} />
+              <VarSelect label="Entry time" value={msEntry} onChange={setMsEntry} columns={pickCols} />
+              <VarSelect label="Exit time" value={msExit} onChange={setMsExit} columns={pickCols} />
+              <VarSelect label="Event (1 = transition occurred)" value={msEvent} onChange={setMsEvent} columns={pickCols} />
+              <MultiSelect label="Predictors" columns={pickCols} selected={msPredictors}
+                onChange={setMsPredictors}
+                excludeNames={[msId, msFrom, msTo, msEntry, msExit, msEvent].filter(Boolean)} />
+              {msPredictors.length > 0 && <ImputeToggle value={survImputation} onChange={setSurvImputation} />}
+              <RunButton onClick={handleMultistate} loading={msLoading} label="Fit transition models" />
+
+              <div className="mt-3 pt-3 border-t border-gray-200 space-y-2">
+                <p className="text-xs font-semibold text-gray-600">Landmark prediction</p>
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs text-gray-500 font-medium">Landmark time</span>
+                  <input className="text-sm border border-gray-300 rounded-lg px-3 py-2"
+                    value={msLandmark} onChange={(e) => setMsLandmark(e.target.value)} placeholder="e.g. 2" />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs text-gray-500 font-medium">Horizon</span>
+                  <input className="text-sm border border-gray-300 rounded-lg px-3 py-2"
+                    value={msHorizon} onChange={(e) => setMsHorizon(e.target.value)} />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs text-gray-500 font-medium">State at the landmark</span>
+                  <input className="text-sm border border-gray-300 rounded-lg px-3 py-2"
+                    value={msState} onChange={(e) => setMsState(e.target.value)} />
+                </label>
+                <label className="flex items-center gap-2 text-xs text-gray-600">
+                  <input type="checkbox" className="accent-indigo-500"
+                    checked={msBootstrap} onChange={(e) => setMsBootstrap(e.target.checked)} />
+                  Bootstrap CIs (slower)
+                </label>
+                <RunButton onClick={handleDynamicPrediction} loading={dpLoading} label="Predict from landmark" />
+              </div>
+              {msError && <p className="text-xs text-red-500 mt-2">{msError}</p>}
+            </>
+          }
+          middle={
+            dpResult?.state_probabilities && dpResult.times ? (
+              <TitledPlot
+                plotRefOut={dpPlotRef}
+                storageKey="surv:multistate"
+                data={Object.entries(dpResult.state_probabilities).map(([state, ys], i) => ({
+                  x: dpResult.times, y: ys, type: "scatter", mode: "lines",
+                  name: state.replace("state_", "State "),
+                  line: { color: pal[i % pal.length], width: 2 },
+                  ...traceDefaults,
+                }))}
+                layout={{
+                  ...baseLayout,
+                  title: `State occupancy from landmark t = ${dpResult.landmark_time}`,
+                  xaxis: { title: "Time" },
+                  yaxis: { title: "Probability", range: [0, 1] },
+                }}
+                config={{ responsive: true }}
+                defaultTitle={`State occupancy from landmark t = ${dpResult.landmark_time}`}
+                defaultSubtitle=""
+                defaultXAxis="Time"
+                defaultYAxis="Probability"
+              />
+            ) : (
+              <div className="h-full min-h-[300px] flex items-center justify-center border-2 border-dashed border-gray-200 rounded-xl">
+                <p className="text-xs text-gray-400 text-center px-6">
+                  Run the landmark prediction to see state-occupancy curves.
+                </p>
+              </div>
+            )
+          }
+          right={
+            <>
+              {msResult?.results && (
+                <div className="space-y-3">
+                  <p className="text-xs font-semibold text-gray-600">
+                    Transitions estimated: {(msResult.transitions_estimated ?? []).join(", ") || "—"}
+                  </p>
+                  {Object.entries(msResult.results).map(([trans, fit]) => (
+                    <div key={trans} className="border border-gray-200 rounded-lg overflow-hidden">
+                      <div className="bg-gray-50 px-2 py-1 text-xs font-semibold text-gray-700">
+                        {trans}
+                        <span className="ml-2 font-normal text-gray-500">
+                          {fit.n_events ?? "—"} events / {fit.n_transitions ?? "—"} records
+                          {fit.concordance != null && ` · C = ${fit.concordance.toFixed(3)}`}
+                        </span>
+                      </div>
+                      <table className="w-full text-[11px]">
+                        <thead><tr className="bg-white text-gray-400">
+                          <th className="px-2 py-1 text-left">Variable</th>
+                          <th className="px-2 py-1 text-right">HR</th>
+                          <th className="px-2 py-1 text-right">SE</th>
+                          <th className="px-2 py-1 text-right"><i>p</i></th>
+                        </tr></thead>
+                        <tbody>
+                          {(fit.coefficients ?? []).map((c) => (
+                            <tr key={c.variable} className="border-t border-gray-100">
+                              <td className="px-2 py-1">{c.variable}</td>
+                              <td className="px-2 py-1 text-right font-mono">{c.hr?.toFixed(4) ?? "—"}</td>
+                              <td className="px-2 py-1 text-right font-mono">{c.se?.toFixed(4) ?? "—"}</td>
+                              <td className="px-2 py-1 text-right font-mono">{fmtPubP(c.p)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {msResult?.markov_assumption_tests && (
+                <div className="space-y-1">
+                  <p className="text-xs font-semibold text-gray-600">Markov assumption</p>
+                  {Object.entries(msResult.markov_assumption_tests).map(([trans, t]) => (
+                    <div key={trans} className={`rounded-lg px-2 py-1.5 text-[11px] ${
+                      t.status === "Tested"
+                        ? (t.markov_assumption_violated ? "bg-amber-50 text-amber-800" : "bg-green-50 text-green-800")
+                        : "bg-gray-50 text-gray-500"}`}>
+                      <span className="font-semibold">{trans}</span>{" — "}
+                      {t.status === "Tested"
+                        ? <>{t.markov_assumption_violated ? "violated" : "not violated"} ({fmtPubP(t.p_value)})</>
+                        : (t.reason ?? t.status)}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <ResultBlock result={msResult} />
+
+              {dpResult && (
+                <div className="space-y-2 pt-2 border-t border-gray-200">
+                  <p className="text-xs font-semibold text-gray-600">
+                    Landmark prediction — {dpResult.n_at_risk ?? "—"} at risk in state {dpResult.current_state}
+                  </p>
+                  {dpResult.elos && (
+                    <table className="w-full text-[11px]">
+                      <thead><tr className="text-gray-400">
+                        <th className="px-2 py-1 text-left">State</th>
+                        <th className="px-2 py-1 text-right">Expected time in state</th>
+                      </tr></thead>
+                      <tbody>
+                        {Object.entries(dpResult.elos).map(([st, v]) => (
+                          <tr key={st} className="border-t border-gray-100">
+                            <td className="px-2 py-1">State {st}</td>
+                            <td className="px-2 py-1 text-right font-mono">{Number(v).toFixed(4)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                  {msBootstrap && dpResult.bootstrap && Object.keys(dpResult.bootstrap).length === 0 && (
+                    <p className="text-[11px] text-gray-400">Bootstrap produced no intervals for this fit.</p>
+                  )}
+                  <ResultBlock result={dpResult} />
+                </div>
+              )}
             </>
           }
         />

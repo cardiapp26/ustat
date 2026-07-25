@@ -362,3 +362,130 @@ def test_recurrent_lwyy_group_col_also_predictor(client, sid_recur):
 
 # ── /survival_validation ─────────────────────────────────────────────────────
 
+
+
+# ── /frailty ─────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture(scope="module")
+def clustered_df():
+    """Clustered survival data: 10 centres with a shared per-centre frailty."""
+    rng = np.random.default_rng(SEED)
+    rows = []
+    for c in range(10):
+        frailty = rng.gamma(4.0, 0.25)
+        for _ in range(20):
+            age = float(rng.normal(62, 9))
+            rate = 0.03 * frailty * np.exp(0.03 * (age - 62))
+            t = float(rng.exponential(1.0 / rate))
+            cens = float(rng.uniform(2, 12))
+            rows.append({
+                "centre": f"C{c}",
+                "AGE": age,
+                "duration": min(t, cens),
+                "event": int(t <= cens),
+            })
+    return pd.DataFrame(rows)
+
+
+@pytest.fixture(scope="module")
+def sid_cluster(clustered_df):
+    return make_session(clustered_df, "frailty_session")
+
+
+def test_frailty_happy_path(client, sid_cluster):
+    r = client.post(f"{PREFIX}/frailty", json={
+        "session_id": sid_cluster,
+        "duration_col": "duration",
+        "event_col": "event",
+        "cluster_col": "centre",
+        "predictors": ["AGE"],
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["n_clusters"] == 10
+    assert body["n_subjects"] == 200
+    assert body["theta"] is not None
+    # The panel renders these directly, so the contract must hold.
+    assert {"variable", "estimate", "hr", "se", "p"} <= set(body["coefficients"][0])
+
+
+def test_frailty_too_few_clusters_400_not_500(client, clustered_df):
+    """Unusable input must surface as a readable 400.
+
+    services.frailty signals bad input with ValueError; unwrapped that became a
+    500 and the UI could only say "failed" with no reason.
+    """
+    two_centres = clustered_df.assign(
+        pair=np.where(clustered_df["centre"].isin(["C0", "C1", "C2", "C3", "C4"]), "A", "B")
+    )
+    sid_two = make_session(two_centres, "frailty_two_clusters")
+    r = client.post(f"{PREFIX}/frailty", json={
+        "session_id": sid_two,
+        "duration_col": "duration",
+        "event_col": "event",
+        "cluster_col": "pair",
+        "predictors": ["AGE"],
+    })
+    assert r.status_code == 400, r.text
+    assert "cluster" in r.json()["detail"].lower()
+
+
+def test_frailty_missing_column_400(client, sid_cluster):
+    r = client.post(f"{PREFIX}/frailty", json={
+        "session_id": sid_cluster,
+        "duration_col": "duration",
+        "event_col": "event",
+        "cluster_col": "NOPE",
+        "predictors": ["AGE"],
+    })
+    assert r.status_code == 400, r.text
+
+
+def test_frailty_degenerate_predictor_400_not_500(client, clustered_df):
+    """A CoxPH that cannot converge is bad data, not a server fault.
+
+    services.frailty re-raises the lifelines failure as RuntimeError; unwrapped
+    that became a 500 with no detail.
+    """
+    degenerate = clustered_df.assign(CONST=1.0)
+    sid_const = make_session(degenerate, "frailty_degenerate")
+    r = client.post(f"{PREFIX}/frailty", json={
+        "session_id": sid_const,
+        "duration_col": "duration",
+        "event_col": "event",
+        "cluster_col": "centre",
+        "predictors": ["CONST"],
+    })
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"].strip()
+
+
+def test_external_validation_unknown_prediction_column_400_not_500(client, sid):
+    """A predicted_lp_col that is not in the session must read as a 400.
+
+    services.external_validation signals it with ValueError; unwrapped that
+    became a 500 and the UI could only say "failed".
+    """
+    r = client.post(f"{PREFIX}/external_validation", json={
+        "session_id": sid,
+        "duration_col": "duration",
+        "event_col": "event",
+        "predicted_lp_col": "NOT_A_COLUMN",
+    })
+    assert r.status_code == 400, r.text
+    assert "NOT_A_COLUMN" in r.json()["detail"]
+
+
+def test_ml_survival_benchmark_too_few_rows_400_not_500(client, surv_df):
+    """Too few complete rows is caller input, so it must be a readable 400."""
+    sid_tiny = make_session(surv_df.head(12), "ml_benchmark_tiny")
+    r = client.post(f"{PREFIX}/ml_survival_benchmark", json={
+        "session_id": sid_tiny,
+        "duration_col": "duration",
+        "event_col": "event",
+        "predictors": ["AGE", "LDL"],
+        "include_partial_dependence": False,
+    })
+    assert r.status_code == 400, r.text
+    assert "20" in r.json()["detail"]

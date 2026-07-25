@@ -71,7 +71,7 @@ describe('RecentSessionsPanel', () => {
     await waitFor(() => expect(screen.getByText('patients.csv')).toBeInTheDocument())
     expect(screen.getByText(/120.*×.*8/)).toBeInTheDocument()
     expect(screen.getByText('Data')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /devam et/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /resume/i })).toBeInTheDocument()
   })
 
   it('restores a session: loads it via load_session and updates the store', async () => {
@@ -97,7 +97,7 @@ describe('RecentSessionsPanel', () => {
     render(<RecentSessionsPanel />)
     await waitFor(() => expect(screen.getByText('patients.csv')).toBeInTheDocument())
 
-    await user.click(screen.getByRole('button', { name: /devam et/i }))
+    await user.click(screen.getByRole('button', { name: /resume/i }))
 
     await waitFor(() => expect(sessionDb.getRecentSession).toHaveBeenCalledWith('sess-1'))
   })
@@ -109,7 +109,7 @@ describe('RecentSessionsPanel', () => {
     const user = userEvent.setup()
     render(<RecentSessionsPanel />)
     await waitFor(() => expect(screen.getByText('patients.csv')).toBeInTheDocument())
-    await user.click(screen.getByRole('button', { name: /devam et/i }))
+    await user.click(screen.getByRole('button', { name: /resume/i }))
 
     await waitFor(() => expect(screen.getByText('Snapshot not found')).toBeInTheDocument())
   })
@@ -122,7 +122,7 @@ describe('RecentSessionsPanel', () => {
     render(<RecentSessionsPanel />)
     await waitFor(() => expect(screen.getByText('patients.csv')).toBeInTheDocument())
 
-    await user.click(screen.getByTitle(/çöp kutusuna taşı/i))
+    await user.click(screen.getByTitle(/move to trash/i))
 
     await waitFor(() => expect(sessionDb.trashSession).toHaveBeenCalledWith('sess-1'))
   })
@@ -137,11 +137,11 @@ describe('RecentSessionsPanel', () => {
     const user = userEvent.setup()
     render(<RecentSessionsPanel />)
 
-    await waitFor(() => expect(screen.getByText('Çöp Kutusu')).toBeInTheDocument())
-    await user.click(screen.getByText('Çöp Kutusu'))
+    await waitFor(() => expect(screen.getByText('Trash')).toBeInTheDocument())
+    await user.click(screen.getByText('Trash'))
     await waitFor(() => expect(screen.getByText('old.csv')).toBeInTheDocument())
 
-    await user.click(screen.getByText('Geri Yükle'))
+    await user.click(screen.getByText('Restore'))
     await waitFor(() => expect(sessionDb.restoreSession).toHaveBeenCalledWith('sess-2'))
   })
 
@@ -150,6 +150,6 @@ describe('RecentSessionsPanel', () => {
     mockLists([], [])
     render(<RecentSessionsPanel />)
 
-    await waitFor(() => expect(screen.getByText(/drive'dan içe aktar/i)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText(/import from drive/i)).toBeInTheDocument())
   })
 })

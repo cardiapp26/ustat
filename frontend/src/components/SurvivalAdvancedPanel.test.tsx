@@ -238,6 +238,98 @@ describe('SurvivalAdvancedPanel', () => {
     expect(screen.getByText(/would need to be associated/)).toBeInTheDocument()
   })
 
+  it('Shared Frailty tab: runs the clustered Cox model and renders θ + the coefficient table', async () => {
+    installSession(survivalSession())
+    server.use(
+      http.post('/api/survival_advanced/frailty', () =>
+        HttpResponse.json({
+          n_subjects: 4,
+          n_clusters: 2,
+          n_events: 2,
+          theta: 0.4271,
+          theta_se: null,
+          frailty_distribution: 'gamma',
+          estimation_method: 'penalized',
+          coefficients: [
+            { variable: 'AGE', estimate: 0.048, hr: 1.0492, se: 0.021, p: 0.0223 },
+          ],
+          cluster_frailties: { A: 1.12, B: 0.89 },
+          nested_frailties: {},
+          variance_components: {},
+          correlated_frailty: null,
+          diagnostics: { available: false, reason: 'Diagnostics not requested.' },
+          parametric_baseline: {},
+          frailty_variance_test: {
+            lrt_statistic: 3.1,
+            ordinary_chi_square_p: 0.0783,
+            chi_bar_square_p: 0.0391,
+            mixture: '0.5*chi-square(df=0) + 0.5*chi-square(df=1)',
+            interpretation: 'Boundary test for theta=0.',
+          },
+          concordance: 0.6821,
+          log_likelihood: -10.5,
+          assumptions: [],
+          warnings: ['Only 2 clusters — frailty variance estimate (θ) may be unstable.'],
+          result_text: 'Shared gamma frailty Cox model on 4 observations across 2 clusters.',
+          model: 'shared_gamma_frailty_cox',
+          method_note: 'Gamma shared frailty estimated via penalized Cox.',
+          plot: {
+            data: [{ x: [0.89, 1.12], type: 'histogram', name: 'Posterior frailties' }],
+            layout: { title: 'Estimated Cluster Frailties (Gamma model)' },
+          },
+          diagnostic_plots: {},
+          test: 'Shared Gamma Frailty Cox Model',
+        }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<SurvivalAdvancedPanel />)
+    await selectMethod(user, 'Shared Frailty')
+
+    await user.selectOptions(selectAfterLabel('Duration (time)'), 'TIME')
+    await user.selectOptions(selectAfterLabel('Event (0/1)'), 'EVENT')
+    await user.selectOptions(selectAfterLabel('Cluster (centre / family)'), 'GROUP')
+    // Tick the AGE predictor checkbox in the predictor MultiSelect.
+    const ageLabel = screen.getAllByText('AGE').find((el) => el.nextElementSibling?.textContent === 'N')
+      ?.closest('label') as HTMLElement
+    await user.click(within(ageLabel).getByRole('checkbox'))
+
+    await user.click(screen.getByRole('button', { name: 'Run Shared Frailty' }))
+
+    await waitFor(() => expect(screen.getByText('0.4271')).toBeInTheDocument())
+    expect(screen.getByText('1.0492')).toBeInTheDocument()
+    expect(screen.getByText('0.6821')).toBeInTheDocument()
+    expect(screen.getByText(/Shared gamma frailty Cox model on 4 observations/)).toBeInTheDocument()
+    expect(screen.getByText(/Only 2 clusters/)).toBeInTheDocument()
+  })
+
+  it('Shared Frailty tab: shows the backend error message on failure', async () => {
+    installSession(survivalSession())
+    server.use(
+      http.post('/api/survival_advanced/frailty', () =>
+        HttpResponse.json({ detail: 'Cluster column must have at least 2 levels' }, { status: 400 }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<SurvivalAdvancedPanel />)
+    await selectMethod(user, 'Shared Frailty')
+
+    await user.selectOptions(selectAfterLabel('Duration (time)'), 'TIME')
+    await user.selectOptions(selectAfterLabel('Event (0/1)'), 'EVENT')
+    await user.selectOptions(selectAfterLabel('Cluster (centre / family)'), 'GROUP')
+    const ageLabel = screen.getAllByText('AGE').find((el) => el.nextElementSibling?.textContent === 'N')
+      ?.closest('label') as HTMLElement
+    await user.click(within(ageLabel).getByRole('checkbox'))
+
+    await user.click(screen.getByRole('button', { name: 'Run Shared Frailty' }))
+
+    await waitFor(() =>
+      expect(screen.getByText('Cluster column must have at least 2 levels')).toBeInTheDocument(),
+    )
+  })
+
   it('E-value tab: shows validation error when fields are missing (no request sent)', async () => {
     installSession(survivalSession())
     const user = userEvent.setup()
@@ -248,6 +340,141 @@ describe('SurvivalAdvancedPanel', () => {
 
     await waitFor(() =>
       expect(screen.getByText('Enter estimate and confidence interval')).toBeInTheDocument(),
+    )
+  })
+
+  it('Multi-state tab: fits transition models and renders each transition', async () => {
+    installSession(survivalSession())
+    let sent: Record<string, unknown> | null = null
+    server.use(
+      http.post('/api/survival_advanced/multistate', async ({ request }) => {
+        sent = (await request.json()) as Record<string, unknown>
+        return HttpResponse.json({
+          transitions_estimated: ['0->1', '1->2'],
+          results: {
+            '0->1': {
+              n_transitions: 85, n_events: 85, concordance: 0.6021, aic: 712.4,
+              coefficients: [{ variable: 'AGE', coef: 0.02199, hr: 1.0222, se: 0.01593, p: 0.16737 }],
+            },
+            '1->2': {
+              n_transitions: 40, n_events: 24, concordance: 0.5533, aic: 210.1,
+              coefficients: [{ variable: 'AGE', coef: -0.011, hr: 0.9891, se: 0.02, p: 0.5821 }],
+            },
+          },
+          markov_assumption_tests: {
+            '0->1': { status: 'Skipped', reason: 'No variation in entry time.' },
+            '1->2': { status: 'Tested', p_value: 0.21135, markov_assumption_violated: false },
+          },
+          model_type: 'cox',
+          test: 'Multi-state model',
+          result_text: 'Multi-state analysis on 265 transition records.',
+        })
+      }),
+    )
+
+    const user = userEvent.setup()
+    render(<SurvivalAdvancedPanel />)
+    await selectMethod(user, 'Multi-state')
+
+    // The long-format requirement must be stated, not assumed.
+    expect(screen.getByText(/Needs long-format transition data/i)).toBeInTheDocument()
+
+    await user.selectOptions(selectAfterLabel('Subject id'), 'GROUP')
+    await user.selectOptions(selectAfterLabel('From state'), 'EVENT')
+    await user.selectOptions(selectAfterLabel('To state'), 'GROUP')
+    await user.selectOptions(selectAfterLabel('Entry time'), 'TIME')
+    await user.selectOptions(selectAfterLabel('Exit time'), 'TIME')
+    await user.selectOptions(selectAfterLabel('Event (1 = transition occurred)'), 'EVENT')
+    const ageLabel = screen.getAllByText('AGE').find((el) => el.nextElementSibling?.textContent === 'N')
+      ?.closest('label') as HTMLElement
+    await user.click(within(ageLabel).getByRole('checkbox'))
+
+    await user.click(screen.getByRole('button', { name: 'Fit transition models' }))
+
+    await waitFor(() => expect(screen.getByText(/Transitions estimated: 0->1, 1->2/)).toBeInTheDocument())
+    expect(screen.getByText('1.0222')).toBeInTheDocument()
+    expect(screen.getByText('0.9891')).toBeInTheDocument()
+    // Markov results: one skipped with a reason, one tested and not violated.
+    expect(screen.getByText(/No variation in entry time/)).toBeInTheDocument()
+    expect(screen.getByText(/not violated/)).toBeInTheDocument()
+    expect(sent!.predictors).toEqual(['AGE'])
+  })
+
+  it('Multi-state tab: landmark prediction plots state occupancy against the time axis', async () => {
+    installSession(survivalSession())
+    let sent: Record<string, unknown> | null = null
+    server.use(
+      http.post('/api/survival_advanced/dynamic_prediction', async ({ request }) => {
+        sent = (await request.json()) as Record<string, unknown>
+        return HttpResponse.json({
+          landmark_time: 2,
+          current_state: 0,
+          n_at_risk: 104,
+          times: [2, 4.5, 7],
+          state_probabilities: {
+            state_0: [1, 0.62, 0.15867],
+            state_1: [0, 0.28, 0.45951],
+            state_2: [0, 0.1, 0.38182],
+          },
+          elos: { '0': 2.2995, '1': 1.7567, '2': 0.9438 },
+          bootstrap: {},
+          microsimulation: {},
+          model_type: 'cox',
+          test: 'Dynamic prediction',
+          result_text: 'Dynamic prediction from landmark 2.',
+        })
+      }),
+    )
+
+    const user = userEvent.setup()
+    render(<SurvivalAdvancedPanel />)
+    await selectMethod(user, 'Multi-state')
+
+    await user.selectOptions(selectAfterLabel('Subject id'), 'GROUP')
+    await user.selectOptions(selectAfterLabel('From state'), 'EVENT')
+    await user.selectOptions(selectAfterLabel('To state'), 'GROUP')
+    await user.selectOptions(selectAfterLabel('Entry time'), 'TIME')
+    await user.selectOptions(selectAfterLabel('Exit time'), 'TIME')
+    await user.selectOptions(selectAfterLabel('Event (1 = transition occurred)'), 'EVENT')
+    const ageLabel = screen.getAllByText('AGE').find((el) => el.nextElementSibling?.textContent === 'N')
+      ?.closest('label') as HTMLElement
+    await user.click(within(ageLabel).getByRole('checkbox'))
+
+    await user.clear(screen.getByPlaceholderText('e.g. 2'))
+    await user.type(screen.getByPlaceholderText('e.g. 2'), '2')
+    await user.click(screen.getByRole('button', { name: 'Predict from landmark' }))
+
+    await waitFor(() => expect(screen.getByText(/104 at risk in state 0/)).toBeInTheDocument())
+    expect(screen.getByText('2.2995')).toBeInTheDocument()
+    expect(sent!.landmark_time).toBe(2)
+  })
+
+  it('Multi-state tab: shows the backend error message on failure', async () => {
+    installSession(survivalSession())
+    server.use(
+      http.post('/api/survival_advanced/multistate', () =>
+        HttpResponse.json({ detail: 'from_state_col not found in dataframe' }, { status: 400 }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<SurvivalAdvancedPanel />)
+    await selectMethod(user, 'Multi-state')
+
+    await user.selectOptions(selectAfterLabel('Subject id'), 'GROUP')
+    await user.selectOptions(selectAfterLabel('From state'), 'EVENT')
+    await user.selectOptions(selectAfterLabel('To state'), 'GROUP')
+    await user.selectOptions(selectAfterLabel('Entry time'), 'TIME')
+    await user.selectOptions(selectAfterLabel('Exit time'), 'TIME')
+    await user.selectOptions(selectAfterLabel('Event (1 = transition occurred)'), 'EVENT')
+    const ageLabel = screen.getAllByText('AGE').find((el) => el.nextElementSibling?.textContent === 'N')
+      ?.closest('label') as HTMLElement
+    await user.click(within(ageLabel).getByRole('checkbox'))
+
+    await user.click(screen.getByRole('button', { name: 'Fit transition models' }))
+
+    await waitFor(() =>
+      expect(screen.getByText('from_state_col not found in dataframe')).toBeInTheDocument(),
     )
   })
 })

@@ -2,7 +2,7 @@
  * CloudSyncBar — Google Drive sync status indicator for the uSTAT header.
  *
  * Sits next to the auto-save pill. States:
- *   - Not signed in: "Google Drive Bağla" button (opens the GIS popup /
+ *   - Not signed in: "Connect Google Drive" button (opens the GIS popup /
  *     redirect flow).
  *   - Signed in: avatar + email + status dot (syncing = amber pulse,
  *     ok = emerald, error = red). Clicking the dot triggers a manual
@@ -45,17 +45,17 @@ export default function CloudSyncBar() {
   const onSignIn = () => {
     if (info.status === "setupNeeded") {
       window.alert(
-        "Google Drive senkronizasyonu için OAuth Client ID gerekli.\n\n" +
-          "Kurulum (uygulama sahibi yapar):\n" +
-          "1. console.cloud.google.com → yeni proje\n" +
-          "2. Google Drive API'yi etkinleştir\n" +
+        "Google Drive sync needs an OAuth Client ID.\n\n" +
+          "Setup (done by the app owner):\n" +
+          "1. console.cloud.google.com → new project\n" +
+          "2. Enable the Google Drive API\n" +
           "3. OAuth consent screen + scope: drive.appdata\n" +
           "4. Credentials → OAuth client ID (Web)\n" +
           "   - JS origins: https://ustat.drtr.uk, http://localhost:5173, http://127.0.0.1\n" +
-          "   - Redirect URIs: https://ustat.drtr.uk/ (sonunda slash)\n" +
-          "5. Client ID'yi frontend/src/lib/cloudConfig.ts içine yapıştır\n" +
-          "6. Yeniden yükle\n\n" +
-          "Detaylar cloudConfig.ts dosyasının başında.",
+          "   - Redirect URIs: https://ustat.drtr.uk/ (trailing slash)\n" +
+          "5. Paste the Client ID into frontend/src/lib/cloudConfig.ts\n" +
+          "6. Reload\n\n" +
+          "Details are at the top of cloudConfig.ts.",
       );
       return;
     }
@@ -63,7 +63,7 @@ export default function CloudSyncBar() {
   };
 
   const onSignOut = () => {
-    if (window.confirm("Google Drive bağlantısı kesilsin mi? Yerel oturum kayıtlarınız silinmez.")) {
+    if (window.confirm("Disconnect Google Drive? Your locally saved sessions are kept.")) {
       setMenuOpen(false);
       void cloudSync.signOut();
     }
@@ -84,7 +84,7 @@ export default function CloudSyncBar() {
         title={
           info.status === "setupNeeded"
             ? "Google OAuth Client ID eksik (cloudConfig.ts)"
-            : "Oturumlarınızı kendi Google Drive'ınıza yedekleyin / cihazlar arası taşıyın"
+            : "Back your sessions up to your own Google Drive and carry them across devices"
         }
         className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-semibold transition-colors ${
           info.status === "setupNeeded"
@@ -93,7 +93,7 @@ export default function CloudSyncBar() {
         }`}
       >
         <Cloud size={13} />
-        <span className="hidden sm:inline">Drive Bağla</span>
+        <span className="hidden sm:inline">Connect Drive</span>
       </button>
     );
   }
@@ -114,8 +114,8 @@ export default function CloudSyncBar() {
       : info.status === "ok"
         ? "Drive ile senkronize"
         : info.status === "error"
-          ? `Senkronizasyon hatası${info.message ? ": " + info.message : ""}`
-          : "Boşta";
+          ? `Sync error${info.message ? ": " + info.message : ""}`
+          : "Idle";
 
   const lastSyncStr = info.lastSync
     ? new Date(info.lastSync).toLocaleString()
@@ -146,7 +146,7 @@ export default function CloudSyncBar() {
 
       <button
         onClick={() => setMenuOpen((v) => !v)}
-        title="Drive seçenekleri"
+        title="Drive options"
         className={`p-1 rounded-lg transition-colors ${menuOpen ? "text-gray-700 bg-gray-100" : "text-gray-400 hover:text-gray-700 hover:bg-gray-100"}`}
       >
         <RefreshCw size={12} />
@@ -159,7 +159,7 @@ export default function CloudSyncBar() {
               Google Drive
             </p>
             <p className="text-xs text-gray-700 truncate" title={info.user?.email}>
-              {info.user?.email || info.user?.name || "Bağlı"}
+              {info.user?.email || info.user?.name || "Connected"}
             </p>
           </div>
           <button
@@ -167,7 +167,7 @@ export default function CloudSyncBar() {
             className="w-full flex items-center gap-2 px-3 py-2 text-left text-xs text-gray-700 hover:bg-gray-50 transition-colors"
           >
             <RefreshCw size={13} />
-            Şimdi senkronize et
+            Sync now
           </button>
           <button
             onClick={onSignOut}

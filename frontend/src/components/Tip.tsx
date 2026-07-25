@@ -8,10 +8,14 @@ export function Tip({ text, wide }: { text: string; wide?: boolean }) {
   return (
     <span className="relative group inline-block ml-1 align-middle">
       <span className="text-[10px] text-gray-300 hover:text-indigo-400 cursor-help border border-gray-200 hover:border-indigo-300 rounded-full w-3.5 h-3.5 inline-flex items-center justify-center transition-colors leading-none select-none">?</span>
-      <div className={`absolute bottom-full left-0 mb-2 hidden group-hover:block z-50 ${wide ? "w-72" : "w-56"} bg-gray-900 text-white text-[11px] leading-relaxed rounded-lg px-3 py-2.5 shadow-xl pointer-events-none`}>
+      {/* Spans, not divs: Tip is used inside <p> in a dozen panels, and a <div>
+          there is invalid DOM that React reports as a hydration error. The
+          hidden/group-hover:block classes drive display, so this renders the
+          same as before. */}
+      <span className={`absolute bottom-full left-0 mb-2 hidden group-hover:block z-50 ${wide ? "w-72" : "w-56"} bg-gray-900 text-white text-[11px] leading-relaxed rounded-lg px-3 py-2.5 shadow-xl pointer-events-none`}>
         {text}
-        <div className="absolute top-full left-4 border-4 border-transparent border-t-gray-900" />
-      </div>
+        <span className="block absolute top-full left-4 border-4 border-transparent border-t-gray-900" />
+      </span>
     </span>
   );
 }

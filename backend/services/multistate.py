@@ -209,7 +209,7 @@ def test_markov_assumption(
         if len(sub) < 30 or sub[event_col].sum() < 5:
             results[f"{from_s}->{to_s}"] = {
                 "status": "Skipped",
-                "reason": "Test için yetersiz geçiş veya gözlem sayısı."
+                "reason": "Too few transitions or events to test the Markov assumption."
             }
             continue
 
@@ -232,7 +232,7 @@ def test_markov_assumption(
         if work["_entry_covariate"].std() < 1e-4:
             results[f"{from_s}->{to_s}"] = {
                 "status": "Skipped",
-                "reason": "Giriş zamanında varyasyon yok (tüm hastalar aynı anda girdi)."
+                "reason": "No variation in entry time (all subjects entered at the same moment)."
             }
             continue
 
@@ -263,14 +263,19 @@ def test_markov_assumption(
                     "p_value": round(p_val, 5),
                     "markov_assumption_violated": bool(is_violated),
                     "interpretation": (
-                        f"Giriş zamanı (entry) p-değeri={p_val:.4f} olarak bulundu. "
-                        f"{'p < 0.05 olduğundan Markov varsayımı İHLAL EDİLMİŞTİR. Clock-reset (Semi-Markov) modeli daha uygun olabilir.' if is_violated else 'p >= 0.05 olduğundan Markov varsayımı geçerlidir.'}"
+                        f"Entry time as a covariate gave p = {p_val:.4f}. "
+                        + (
+                            "Since p < 0.05 the Markov assumption is VIOLATED — a clock-reset "
+                            "(semi-Markov) model may fit better."
+                            if is_violated else
+                            "Since p >= 0.05 the Markov assumption holds."
+                        )
                     )
                 }
             else:
                 results[f"{from_s}->{to_s}"] = {
                     "status": "Error",
-                    "reason": "Giriş zamanı değişkeni tahmin edilemedi."
+                    "reason": "The entry-time covariate could not be estimated."
                 }
         except Exception as e:
             results[f"{from_s}->{to_s}"] = {
@@ -875,6 +880,9 @@ def dynamic_prediction_from_landmark(
         "landmark_time": landmark_time,
         "current_state": current_state,
         "n_at_risk": len(at_risk),
+        # `probs` is indexed by time and to_dict(orient="list") drops the index,
+        # which left the curves with no x-axis for any consumer to plot against.
+        "times": [float(t) for t in probs.index],
         "state_probabilities": probs.to_dict(orient="list"),
         "elos": elos,
         "bootstrap": bootstrap_results,

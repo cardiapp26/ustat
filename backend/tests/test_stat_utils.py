@@ -6,6 +6,7 @@ exported helper functions directly with known inputs/outputs.
 
 Session-id prefix for this module: "tutil".
 """
+
 import sys
 import os
 
@@ -46,17 +47,27 @@ def three_groups(rng):
 # AnalysisResult contract
 # ───────────────────────────────────────────────────────────────────────────────
 
+
 def test_analysis_result_to_dict_strips_empties():
-    res = su.AnalysisResult(test="t-test", statistic=2.5, p=0.01, significant=True,
-                            interpretation="sig")
+    res = su.AnalysisResult(
+        test="t-test", statistic=2.5, p=0.01, significant=True, interpretation="sig"
+    )
     d = res.to_dict()
     assert d["test"] == "t-test"
     assert d["statistic"] == 2.5
     assert d["p"] == 0.01
     assert d["significant"] is True
     # Empty defaults must be stripped out
-    for empty_key in ("effect_sizes", "assumptions", "warnings", "summary",
-                      "posthoc", "export_rows", "extra", "result_text"):
+    for empty_key in (
+        "effect_sizes",
+        "assumptions",
+        "warnings",
+        "summary",
+        "posthoc",
+        "export_rows",
+        "extra",
+        "result_text",
+    ):
         assert empty_key not in d
 
 
@@ -70,6 +81,7 @@ def test_analysis_result_keeps_populated_fields():
 # ───────────────────────────────────────────────────────────────────────────────
 # Effect size calculators
 # ───────────────────────────────────────────────────────────────────────────────
+
 
 def test_cohen_d_shape_and_sign(two_groups):
     g1, g2 = two_groups
@@ -202,17 +214,21 @@ def test_lins_ccc_high_agreement(rng):
 # Magnitude labels
 # ───────────────────────────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("name,val,expected", [
-    ("hedges_g", 0.1, "negligible"),
-    ("hedges_g", 0.3, "small"),
-    ("hedges_g", 0.6, "medium"),
-    ("hedges_g", 1.0, "large"),
-    ("cramers_v", 0.05, "negligible"),
-    ("eta_squared", 0.20, "large"),
-    ("odds_ratio", 1.2, "negligible"),
-    ("odds_ratio", 5.0, "large"),
-    ("unknown_es", 0.5, ""),
-])
+
+@pytest.mark.parametrize(
+    "name,val,expected",
+    [
+        ("hedges_g", 0.1, "negligible"),
+        ("hedges_g", 0.3, "small"),
+        ("hedges_g", 0.6, "medium"),
+        ("hedges_g", 1.0, "large"),
+        ("cramers_v", 0.05, "negligible"),
+        ("eta_squared", 0.20, "large"),
+        ("odds_ratio", 1.2, "negligible"),
+        ("odds_ratio", 5.0, "large"),
+        ("unknown_es", 0.5, ""),
+    ],
+)
 def test_es_magnitude_labels(name, val, expected):
     assert su._es_magnitude(name, val) == expected
 
@@ -220,6 +236,7 @@ def test_es_magnitude_labels(name, val, expected):
 # ───────────────────────────────────────────────────────────────────────────────
 # Multiplicity correction
 # ───────────────────────────────────────────────────────────────────────────────
+
 
 def test_adjust_pvalues_empty():
     assert su.adjust_pvalues([], "holm") == []
@@ -251,6 +268,7 @@ def test_adjust_pvalues_none_passthrough():
 # ───────────────────────────────────────────────────────────────────────────────
 # Pairwise comparison builders
 # ───────────────────────────────────────────────────────────────────────────────
+
 
 def _check_pairwise_shape(results, n_groups, has_padj=True):
     expected_pairs = n_groups * (n_groups - 1) // 2
@@ -308,6 +326,7 @@ def test_dunn_test(three_groups):
 # Assumption checks
 # ───────────────────────────────────────────────────────────────────────────────
 
+
 def test_check_normality_small_normal(rng):
     x = rng.normal(0, 1, 30)
     out = su.check_normality(x, "S")
@@ -360,6 +379,7 @@ def test_check_equal_variances_levene(two_groups):
 # Group summary
 # ───────────────────────────────────────────────────────────────────────────────
 
+
 def test_group_summary_keys_and_order():
     x = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
     out = su.group_summary(x, "G")
@@ -377,6 +397,7 @@ def test_group_summary_keys_and_order():
 # Bootstrap / permutation
 # ───────────────────────────────────────────────────────────────────────────────
 
+
 def test_bootstrap_ci_mean(rng):
     data = rng.normal(10.0, 2.0, 100)
     out = su.bootstrap_ci(data, np.mean, n_boot=300, seed=1)
@@ -388,8 +409,10 @@ def test_bootstrap_ci_mean(rng):
 def test_bootstrap_ci_two_mean_diff(rng):
     x = rng.normal(10.0, 2.0, 80)
     y = rng.normal(8.0, 2.0, 80)
+
     def fn(a, b):
         return float(a.mean() - b.mean())
+
     out = su.bootstrap_ci_two(x, y, fn, n_boot=300, seed=2)
     assert out["ci_low"] <= out["estimate"] <= out["ci_high"]
     assert out["estimate"] > 0  # x mean > y mean
@@ -409,3 +432,32 @@ def test_permutation_test_identical_distribution(rng):
     y = rng.normal(0, 1, 50)
     out = su.permutation_test(x, y, n_perm=500, seed=4)
     assert 0.0 < out["p_permutation"] <= 1.0
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+# Categorical p-value with small-cell rule
+# ───────────────────────────────────────────────────────────────────────────────
+
+
+def test_categorical_p_with_rule_uses_chisquare_when_expected_large():
+    # Balanced 2x3 table: all expected counts well above 5.
+    ct = np.array([[30, 25, 20], [20, 25, 30]])
+    p, test_name = su._categorical_p_with_rule(ct)
+    assert test_name == "Chi-square"
+    assert 0.0 <= p <= 1.0
+
+
+def test_categorical_p_with_rule_falls_back_to_fisher_for_2x2():
+    # Small expected counts in a 2x2 -> Fisher exact.
+    ct = np.array([[1, 9], [8, 2]])
+    p, test_name = su._categorical_p_with_rule(ct)
+    assert test_name == "Fisher"
+    assert 0.0 < p <= 1.0
+
+
+def test_categorical_p_with_rule_falls_back_to_ffh_for_rxC():
+    # 3x3 table with a small expected cell -> Fisher-Freeman-Halton MC.
+    ct = np.array([[0, 8, 12], [1, 10, 9], [2, 7, 11]])
+    p, test_name = su._categorical_p_with_rule(ct)
+    assert test_name == "Fisher-Freeman-Halton (MC)"
+    assert 0.0 < p <= 1.0

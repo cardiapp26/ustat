@@ -1,6 +1,6 @@
 """Robust date parsing for mixed-format columns (SPSS/Excel paste & import).
 
-Ported from the drtr "Excel Tarih Düzeltici" tool. Recognises:
+Ported from the drtr Excel date-repair tool. Recognises:
   * numeric separators — 15.03.2024, 15/03/2024, 15-03-2024, 2024-03-15
   * Turkish & English month names — "5 Ocak 2024", "Jan 2, 2022"
   * Excel serial numbers — 45000 → 2023-07-18 (1899-12-30 epoch, 1900 leap bug)

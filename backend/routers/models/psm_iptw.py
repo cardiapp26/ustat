@@ -204,7 +204,13 @@ def _run_psm(req: PSMRequest):
     X_scaled = scaler.fit_transform(X)
 
     score_method = (req.score_method or "logistic").lower()
-    ps = _fit_propensity_scores(X_scaled, y, score_method, req.random_state)
+    try:
+        ps = _fit_propensity_scores(X_scaled, y, score_method, req.random_state)
+    except ValueError as exc:
+        # score_method is a free-form string on the request; an unrecognised
+        # value makes the propensity fitter raise ValueError. Bad option string
+        # is caller input, so answer 400 with the reason rather than a 500.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     ps_clip = np.clip(ps, 1e-6, 1 - 1e-6)
     logit_ps = np.log(ps_clip / (1.0 - ps_clip))
 
@@ -657,11 +663,16 @@ def _run_iptw(req: IPTWRequest):
 
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
-    ps = _fit_propensity_scores(
-        X_scaled, treat.values,
-        method=(req.score_method or "logistic").lower(),
-        random_state=req.random_state,
-    )
+    try:
+        ps = _fit_propensity_scores(
+            X_scaled, treat.values,
+            method=(req.score_method or "logistic").lower(),
+            random_state=req.random_state,
+        )
+    except ValueError as exc:
+        # Same as the PSM endpoint: score_method is an unconstrained string, so
+        # an unknown value is caller input and deserves a readable 400.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     ps = np.clip(ps, 1e-5, 1.0 - 1e-5)
 
     # Common-support trimming: drop units whose PS falls outside the

@@ -9,6 +9,23 @@ import MissingDataPanel from './MissingDataPanel'
 
 afterEach(() => clearSession())
 
+// MSW + jsdom cannot round-trip multipart File parts: the XHR interceptor
+// re-serializes jsdom FormData through undici, which emits the file as an
+// empty "blob" part, and undici's own multipart parser then throws inside
+// request.formData(). String fields survive intact, so the reference-impute
+// tests assert against the raw multipart text instead (jsdom-only quirk —
+// real browsers post real File bytes and the backend path is unaffected).
+async function readMultipartFields(request: Request): Promise<Record<string, string>> {
+  const raw = await request.text()
+  const fields: Record<string, string> = {}
+  const re = /name="([^"]+)"(?:; filename="[^"]*")?[^\r\n]*\r\n(?:Content-Type: [^\r\n]*\r\n)?\r\n([\s\S]*?)(?=\r\n------|$)/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(raw)) !== null) {
+    fields[m[1]] = m[2]
+  }
+  return fields
+}
+
 // Session with actual missing values so the Overview table renders rows
 // (installSession()'s default preview has no nulls/blanks).
 const columnsWithMissing: ColMeta[] = [
@@ -127,12 +144,13 @@ describe('MissingDataPanel', () => {
         }),
       ),
       http.post('/api/missing_data/external_impute_preview', async ({ request }) => {
-        const fd = await request.formData()
-        expect(fd.get('target')).toBe('LDL')
-        expect(fd.get('reference_target')).toBe('ldl')
-        expect(fd.get('predictors')).toBe(JSON.stringify(['age']))
-        expect(fd.get('predictor_mappings')).toBe(JSON.stringify({ age: 'AGE' }))
-        expect(fd.get('file')).toBeTruthy()
+        const fd = await readMultipartFields(request)
+        expect(fd.target).toBe('LDL')
+        expect(fd.reference_target).toBe('ldl')
+        expect(fd.predictors).toBe(JSON.stringify(['age']))
+        expect(fd.predictor_mappings).toBe(JSON.stringify({ age: 'AGE' }))
+        // File bytes don't survive the jsdom↔undici round-trip; presence is what matters.
+        expect(Object.keys(fd)).toContain('file')
         return HttpResponse.json({
           target: 'LDL',
           reference_target: 'ldl',
@@ -228,8 +246,8 @@ describe('MissingDataPanel', () => {
         }),
       ),
       http.post('/api/missing_data/external_impute_preview', async ({ request }) => {
-        const fd = await request.formData()
-        stratifyBySent = fd.get('stratify_by') as string | null
+        const fd = await readMultipartFields(request)
+        stratifyBySent = fd.stratify_by ?? null
         return HttpResponse.json({
           target: 'LDL',
           reference_target: 'ldl',
@@ -351,6 +369,198 @@ describe('MissingDataPanel', () => {
     )
   })
 
+  it('runs MNAR sensitivity and renders each sub-analysis', async () => {
+    installMissingSession()
+    let sentBody: { session_id: string; columns: string[]; delta_values: number[]; model_type: string } | null = null
+    server.use(
+      http.post('/api/models/mnar_sensitivity', async ({ request }) => {
+        sentBody = (await request.json()) as typeof sentBody
+        return HttpResponse.json({
+          test: 'MNAR Missing Data Sensitivity Analysis',
+          n: 3,
+          columns: ['AGE', 'LDL'],
+          pattern_mixture_model: {
+            method: 'pattern_mixture_delta_adjustment',
+            n_imputations: 5,
+            delta_values: [-1, 0, 1],
+            scenarios: [
+              { delta: -1, pooled_means: { AGE: 51.1111, LDL: 121.2222 } },
+              { delta: 0, pooled_means: { AGE: 52.3333, LDL: 122.4444 } },
+              { delta: 1, pooled_means: { AGE: 53.5555, LDL: 123.6666 } },
+            ],
+            interpretation: 'Delta shifts apply only to originally missing cells.',
+          },
+          model_delta_sensitivity: {
+            model_type: 'logistic',
+            results: [{ delta: 0, log_odds: 0.9191, odds_ratio: 2.507, se: 0.1717 }],
+          },
+          heckman_selection_model: {
+            available: true,
+            n_total: 3,
+            n_observed_outcome: 2,
+            selection_rate: 0.6667,
+            inverse_mills_ratio_p: 0.0321,
+            selection_bias_signal: true,
+            outcome_coefficients: [{ variable: 'inverse_mills_ratio', estimate: 1.2345, se: 0.5432, p: 0.0321 }],
+          },
+          isni: { available: true, indices: [{ variable: 'AGE', isni: 0.7654, high_sensitivity: true }] },
+          mice_convergence_diagnostics: {
+            variables: { AGE: { r_hat_proxy: 1.0808, converged: true } },
+            warning: 'R-hat is approximated from independent chains.',
+          },
+          imputation_model_diagnostics: {
+            checks: [{ variable: 'AGE', available: true, observed_mean: 51.5, imputed_mean: 52.75, ks_p: 0.4321 }],
+          },
+          congeniality_assessment: {
+            congenial: true,
+            analysis_variables_missing_from_imputation: [],
+            passive_variables: [],
+            recommendation: 'Imputation model covers the listed analysis variables.',
+          },
+          passive_imputation: { formulas: {}, preview: {} },
+          survival_specific_imputation: { enabled: false, auxiliary_variables: [] },
+          auxiliary_variable_guidance: {
+            recommended_auxiliary_variables: [
+              { target: 'AGE', candidate: 'LDL', missingness_corr_abs: 0.11, value_corr_abs: 0.22, priority_score: 0.9876 },
+            ],
+            method_note: 'Prioritizes variables associated with missingness.',
+          },
+          survival_mnar_sensitivity: {
+            available: false,
+            reason: 'Survival MNAR not requested or duration/event/predictors missing.',
+          },
+          warnings: ['Potential MICE convergence concern for: LDL.'],
+          assumptions: [
+            { name: 'MNAR scenario analysis', met: true, detail: 'Delta values encode unverifiable assumptions.' },
+          ],
+          result_text: 'MNAR sensitivity analysis ran for 2 variable(s) across 3 delta scenario(s).',
+          r_code: 'library(mice)',
+        })
+      }),
+    )
+
+    const user = userEvent.setup()
+    render(<MissingDataPanel />)
+
+    await user.click(screen.getByRole('tab', { name: /mnar sensitivity/i }))
+    const varList = screen.getByRole('group', { name: /variables to analyse/i })
+    await user.click(within(varList).getByLabelText(/^AGE/))
+    await user.click(within(varList).getByLabelText(/^LDL/))
+    await user.click(screen.getByRole('button', { name: /run mnar sensitivity/i }))
+
+    await waitFor(() =>
+      expect(screen.getByText(/MNAR sensitivity analysis ran for 2 variable\(s\)/)).toBeInTheDocument(),
+    )
+
+    expect(sentBody).toEqual({
+      session_id: 'test-session',
+      columns: ['AGE', 'LDL'],
+      delta_values: [-1, 0, 1],
+      model_type: 'logistic',
+    })
+
+    // Pattern-mixture scenarios
+    expect(screen.getByText('53.5555')).toBeInTheDocument()
+    expect(screen.getByText('121.2222')).toBeInTheDocument()
+    // Model-based delta sensitivity
+    expect(screen.getByText('0.9191')).toBeInTheDocument()
+    // Heckman
+    expect(screen.getByText('1.2345')).toBeInTheDocument()
+    // ISNI
+    expect(screen.getByText('0.7654')).toBeInTheDocument()
+    // MICE convergence
+    expect(screen.getByText('1.0808')).toBeInTheDocument()
+    // Imputation model diagnostics
+    expect(screen.getByText(/observed mean 51\.5 → imputed mean 52\.75/)).toBeInTheDocument()
+    // Congeniality
+    expect(screen.getByText(/Imputation model covers the listed analysis variables\./)).toBeInTheDocument()
+    // Auxiliary guidance
+    expect(screen.getByText('0.9876')).toBeInTheDocument()
+    // Warnings + assumptions + R code
+    expect(screen.getByText('Potential MICE convergence concern for: LDL.')).toBeInTheDocument()
+    expect(screen.getByText(/Delta values encode unverifiable assumptions\./)).toBeInTheDocument()
+    expect(screen.getByText('library(mice)')).toBeInTheDocument()
+  })
+
+  it('shows the reason for every MNAR sub-analysis the backend could not compute', async () => {
+    installMissingSession()
+    server.use(
+      http.post('/api/models/mnar_sensitivity', () =>
+        HttpResponse.json({
+          test: 'MNAR Missing Data Sensitivity Analysis',
+          n: 3,
+          columns: ['AGE'],
+          pattern_mixture_model: {
+            scenarios: [{ delta: 0, pooled_means: { AGE: 52.3333 } }],
+          },
+          model_delta_sensitivity: null,
+          heckman_selection_model: {
+            available: false,
+            reason: 'Selection equation failed: Singular matrix in probit stage.',
+          },
+          isni: { available: false, reason: 'ISNI not requested or outcome/predictors missing.' },
+          mice_convergence_diagnostics: { variables: {}, warning: 'R-hat is approximated.' },
+          imputation_model_diagnostics: {
+            checks: [{ variable: 'AGE', available: false, reason: 'Not enough observed/imputed values.' }],
+          },
+          congeniality_assessment: { congenial: true, recommendation: 'Covered.' },
+          passive_imputation: { formulas: {}, preview: {} },
+          survival_specific_imputation: { enabled: false, auxiliary_variables: [] },
+          auxiliary_variable_guidance: { recommended_auxiliary_variables: [] },
+          survival_mnar_sensitivity: { available: false, reason: 'Need at least 20 complete rows.' },
+          warnings: [],
+          assumptions: [],
+          result_text: 'MNAR sensitivity analysis ran for 1 variable(s).',
+          r_code: 'library(mice)',
+        }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<MissingDataPanel />)
+
+    await user.click(screen.getByRole('tab', { name: /mnar sensitivity/i }))
+    const varList = screen.getByRole('group', { name: /variables to analyse/i })
+    await user.click(within(varList).getByLabelText(/^AGE/))
+    await user.click(screen.getByRole('button', { name: /run mnar sensitivity/i }))
+
+    await waitFor(() =>
+      expect(screen.getByText(/MNAR sensitivity analysis ran for 1 variable\(s\)/)).toBeInTheDocument(),
+    )
+
+    // Both explicitly unavailable blocks surface their own reason.
+    expect(screen.getByText(/Selection equation failed: Singular matrix in probit stage\./)).toBeInTheDocument()
+    expect(screen.getByText(/ISNI not requested or outcome\/predictors missing\./)).toBeInTheDocument()
+    expect(screen.getByText(/Need at least 20 complete rows\./)).toBeInTheDocument()
+    // Per-variable posterior predictive checks carry their own reason too.
+    expect(screen.getByText(/Not enough observed\/imputed values\./)).toBeInTheDocument()
+    // A null block falls back to a readable explanation instead of an empty tile.
+    expect(screen.getByText(/requires an outcome model with predictors/i)).toBeInTheDocument()
+    // Blocks that did compute still render.
+    expect(screen.getByText('52.3333')).toBeInTheDocument()
+  })
+
+  it('shows an MNAR sensitivity error from the backend', async () => {
+    installMissingSession()
+    server.use(
+      http.post('/api/models/mnar_sensitivity', () =>
+        HttpResponse.json({ detail: 'Select at least one variable with missing data.' }, { status: 400 }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<MissingDataPanel />)
+
+    await user.click(screen.getByRole('tab', { name: /mnar sensitivity/i }))
+    const varList = screen.getByRole('group', { name: /variables to analyse/i })
+    await user.click(within(varList).getByLabelText(/^AGE/))
+    await user.click(screen.getByRole('button', { name: /run mnar sensitivity/i }))
+
+    await waitFor(() =>
+      expect(screen.getByText('Select at least one variable with missing data.')).toBeInTheDocument(),
+    )
+  })
+
   it('switches to the Data Cleaning sub-tab', async () => {
     installMissingSession()
     const user = userEvent.setup()
@@ -363,5 +573,64 @@ describe('MissingDataPanel', () => {
       'aria-selected',
       'false',
     )
+  })
+
+  it('sends the outcome model only when both outcome and predictors are chosen', async () => {
+    // Without an outcome model the backend skips model_delta_sensitivity,
+    // Heckman and ISNI, which would leave the Model type selector inert.
+    installMissingSession()
+    const bodies: Record<string, unknown>[] = []
+    server.use(
+      http.post('/api/models/mnar_sensitivity', async ({ request }) => {
+        bodies.push((await request.json()) as Record<string, unknown>)
+        return HttpResponse.json({
+          test: 'MNAR Missing Data Sensitivity Analysis',
+          n: 3,
+          columns: ['AGE'],
+          result_text: 'MNAR sensitivity analysis ran for 1 variable(s).',
+        })
+      }),
+    )
+
+    const user = userEvent.setup()
+    render(<MissingDataPanel />)
+    await user.click(screen.getByRole('tab', { name: /mnar sensitivity/i }))
+
+    const varList = screen.getByRole('group', { name: /variables to analyse/i })
+    await user.click(within(varList).getByLabelText(/^AGE/))
+
+    // 1. Outcome picked but no predictors -> the outcome model must be omitted.
+    const outcomeSelect = screen
+      .getByText(/outcome \(optional\)/i)
+      .closest('label')!
+      .querySelector('select')!
+    await user.selectOptions(outcomeSelect, 'GROUP')
+    await user.click(screen.getByRole('button', { name: /run mnar sensitivity/i }))
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    expect(bodies[0]).not.toHaveProperty('outcome_col')
+    expect(bodies[0]).not.toHaveProperty('predictors')
+
+    // 2. Add a predictor -> now both travel with the request.
+    const predList = screen.getByRole('group', { name: /outcome-model predictors/i })
+    await user.click(within(predList).getByLabelText(/^AGE/))
+    await user.click(screen.getByRole('button', { name: /run mnar sensitivity/i }))
+    await waitFor(() => expect(bodies).toHaveLength(2))
+    expect(bodies[1].outcome_col).toBe('GROUP')
+    expect(bodies[1].predictors).toEqual(['AGE'])
+  })
+
+  it('warns when an outcome is chosen but no predictor is', async () => {
+    installMissingSession()
+    const user = userEvent.setup()
+    render(<MissingDataPanel />)
+    await user.click(screen.getByRole('tab', { name: /mnar sensitivity/i }))
+
+    expect(screen.queryByText(/or the outcome model is ignored/i)).not.toBeInTheDocument()
+    const outcomeSelect = screen
+      .getByText(/outcome \(optional\)/i)
+      .closest('label')!
+      .querySelector('select')!
+    await user.selectOptions(outcomeSelect, 'GROUP')
+    expect(screen.getByText(/or the outcome model is ignored/i)).toBeInTheDocument()
   })
 })

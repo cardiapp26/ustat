@@ -41,13 +41,13 @@ function fmtBytes(b: number): string {
 function fmtAgo(epochMs: number): string {
   const diff = Date.now() - epochMs;
   const sec = Math.floor(diff / 1000);
-  if (sec < 60) return "az önce";
+  if (sec < 60) return "just now";
   const min = Math.floor(sec / 60);
-  if (min < 60) return `${min} dk önce`;
+  if (min < 60) return `${min} min ago`;
   const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr} sa önce`;
+  if (hr < 24) return `${hr} h ago`;
   const day = Math.floor(hr / 24);
-  if (day < 7) return `${day} gün önce`;
+  if (day < 7) return `${day} d ago`;
   const d = new Date(epochMs);
   return d.toLocaleDateString();
 }
@@ -82,7 +82,7 @@ export default function RecentSessionsPanel() {
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   // Cloud sync state — refreshes when the sync motor emits (sign-in/out,
-  // manual sync). Drives the "☁ Drive" badge + "Drive'dan içe aktar" link.
+  // manual sync). Drives the "☁ Drive" badge + the "Import from Drive" link.
   const [cloudOn, setCloudOn] = useState(cloudSync.isSignedIn());
   const [cloudBusy, setCloudBusy] = useState(false);
   useEffect(() => {
@@ -119,7 +119,7 @@ export default function RecentSessionsPanel() {
 
   // Hide the panel entirely when there's nothing to show AND cloud sync isn't
   // connected. When connected, keep it visible even with zero local records so
-  // the "Drive'dan içe aktar" entry point stays reachable (a brand-new device
+  // the "Import from Drive" entry point stays reachable (a brand-new device
   // has no IndexedDB snapshots yet, but Drive may have them).
   if (loaded && items.length === 0 && !cloudOn) return null;
 
@@ -148,7 +148,7 @@ export default function RecentSessionsPanel() {
         }
       } catch { /* non-fatal */ }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Snapshot yüklenemedi");
+      setError(e instanceof Error ? e.message : "Could not load the snapshot");
     } finally {
       setRestoring(null);
     }
@@ -172,20 +172,20 @@ export default function RecentSessionsPanel() {
   };
 
   const onPurgeOne = async (id: string) => {
-    if (!window.confirm("Bu kayıt kalıcı olarak silinsin mi? Bu işlem geri alınamaz.")) return;
+    if (!window.confirm("Delete this session permanently? This cannot be undone.")) return;
     await purgeSession(id);
     void reload();
   };
 
   const onEmptyTrash = async () => {
     if (trashedItems.length === 0) return;
-    if (!window.confirm(`Çöp kutusundaki ${trashedItems.length} kayıt kalıcı olarak silinsin mi? Bu işlem geri alınamaz.`)) return;
+    if (!window.confirm(`Permanently delete ${trashedItems.length} session(s) from the trash? This cannot be undone.`)) return;
     await emptyTrash();
     void reload();
   };
 
   const onClearAll = async () => {
-    if (!window.confirm("Tüm yerel oturum kayıtları silinsin mi? Bu işlem geri alınamaz.")) return;
+    if (!window.confirm("Delete every locally saved session? This cannot be undone.")) return;
     await clearAllRecentSessions();
     void reload();
   };
@@ -199,7 +199,7 @@ export default function RecentSessionsPanel() {
       await cloudSync.syncNow(true);
       await reload();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Drive'dan içe aktarma başarısız");
+      setError(e instanceof Error ? e.message : "Import from Drive failed");
     } finally {
       setCloudBusy(false);
     }
@@ -212,17 +212,17 @@ export default function RecentSessionsPanel() {
       <div className="flex items-center justify-between mb-2 px-1">
         <div className="flex items-center gap-1.5">
           <Clock size={14} className="text-indigo-500" />
-          <h3 className="text-xs font-semibold text-gray-700">Son Çalışmalar</h3>
+          <h3 className="text-xs font-semibold text-gray-700">Recent work</h3>
           {cloudOn && (
             <span
               className="inline-flex items-center gap-0.5 text-[9px] font-bold uppercase tracking-wide bg-sky-50 text-sky-600 px-1.5 py-0.5 rounded border border-sky-200"
-              title="Google Drive senkronizasyonu bağlı — oturumlar cihazlar arası taşınır"
+              title="Google Drive sync is connected — sessions follow you across devices"
             >
               <Cloud size={9} /> Drive
             </span>
           )}
           <span className="text-[10px] text-gray-400 font-normal">
-            (otomatik olarak tarayıcınızda saklanır — sunucuya gönderilmez)
+            (saved automatically in your browser — never sent to the server)
           </span>
         </div>
         <div className="flex items-center gap-2 text-[10px] text-gray-400">
@@ -231,10 +231,10 @@ export default function RecentSessionsPanel() {
               onClick={onImportFromDrive}
               disabled={cloudBusy}
               className="inline-flex items-center gap-1 text-sky-600 hover:text-sky-700 hover:underline underline-offset-2 disabled:opacity-50"
-              title="Google Drive'dan oturum anlık görüntülerini çek"
+              title="Pull session snapshots from Google Drive"
             >
               <CloudDownload size={11} />
-              {cloudBusy ? "İçe aktarılıyor…" : "Drive'dan içe aktar"}
+              {cloudBusy ? "Importing…" : "Import from Drive"}
             </button>
           )}
           {estimate && (
@@ -245,7 +245,7 @@ export default function RecentSessionsPanel() {
                 onClick={onClearAll}
                 className="text-gray-400 hover:text-red-500 underline-offset-2 hover:underline"
               >
-                Tümünü temizle
+                Clear all
               </button>
             </>
           )}
@@ -275,7 +275,7 @@ export default function RecentSessionsPanel() {
               {it.source === "auto" && (
                 <span
                   className="text-[8px] uppercase tracking-wide bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded font-bold flex-shrink-0"
-                  title="Otomatik kayıt"
+                  title="Autosaved"
                 >
                   <Sparkles size={9} className="inline mr-0.5" />Auto
                 </span>
@@ -297,7 +297,7 @@ export default function RecentSessionsPanel() {
 
             {it.activeTab && (
               <p className="text-[10px] text-gray-400 mb-2.5">
-                Kaldığı yer:{" "}
+                Last seen:{" "}
                 <span className="font-semibold text-gray-600">
                   {TAB_LABELS[it.activeTab] ?? it.activeTab}
                 </span>
@@ -311,12 +311,12 @@ export default function RecentSessionsPanel() {
                 className="flex-1 flex items-center justify-center gap-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-[11px] font-semibold px-2.5 py-1.5 rounded-lg transition-colors"
               >
                 <RotateCcw size={11} />
-                {restoring === it.id ? "Yükleniyor…" : "Devam et"}
+                {restoring === it.id ? "Loading…" : "Resume"}
               </button>
               <button
                 onClick={() => onDelete(it.id)}
                 className="text-gray-400 hover:text-red-600 hover:bg-red-50 px-2 py-1.5 rounded-lg transition-colors"
-                title="Çöp kutusuna taşı (30 gün sonra kalıcı silinir)"
+                title="Move to trash (permanently deleted after 30 days)"
               >
                 <Trash2 size={12} />
               </button>
@@ -337,13 +337,13 @@ export default function RecentSessionsPanel() {
           >
             <Trash2 size={14} className="text-gray-500 flex-shrink-0" />
             <span className="text-xs font-semibold text-gray-600">
-              Çöp Kutusu
+              Trash
             </span>
             <span className="text-[10px] text-gray-400 bg-white border border-gray-200 rounded-full px-1.5 py-0.5">
               {trashedItems.length}
             </span>
             <span className="ml-auto text-[10px] text-gray-400">
-              {trashOpen ? "Gizle ▲" : "Göster ▼"}
+              {trashOpen ? "Hide ▲" : "Show ▼"}
             </span>
           </button>
 
@@ -368,7 +368,7 @@ export default function RecentSessionsPanel() {
                       <p className="text-[10px] text-gray-400">
                         Silindi: {fmtAgo(deletedAt)} ·
                         <span className={daysLeft <= 3 ? "text-amber-600 font-semibold" : ""}>
-                          {" "}{daysLeft} gün sonra kalıcı silinir
+                          {" "}deleted permanently in {daysLeft} d
                         </span>
                       </p>
                     </div>
@@ -376,15 +376,15 @@ export default function RecentSessionsPanel() {
                       onClick={() => onRestoreFromTrash(it.id)}
                       disabled={restoring === it.id}
                       className="inline-flex items-center gap-1 text-[10px] font-semibold text-indigo-600 hover:text-indigo-700 bg-indigo-50 hover:bg-indigo-100 px-2 py-1 rounded transition-colors disabled:opacity-50"
-                      title="Geri yükle"
+                      title="Restore"
                     >
                       <RotateCcw size={10} />
-                      Geri Yükle
+                      Restore
                     </button>
                     <button
                       onClick={() => onPurgeOne(it.id)}
                       className="inline-flex items-center text-[10px] font-semibold text-red-600 hover:text-red-700 bg-red-50 hover:bg-red-100 px-2 py-1 rounded transition-colors"
-                      title="Kalıcı sil"
+                      title="Delete permanently"
                     >
                       <Trash2 size={10} />
                     </button>
@@ -395,7 +395,7 @@ export default function RecentSessionsPanel() {
                 onClick={onEmptyTrash}
                 className="w-full mt-1 text-[10px] font-semibold text-red-600 hover:text-red-700 hover:bg-red-50 py-1.5 rounded transition-colors"
               >
-                Çöp Kutusunu Boşalt ({trashedItems.length})
+                Empty trash ({trashedItems.length})
               </button>
             </div>
           )}

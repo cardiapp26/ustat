@@ -12,7 +12,7 @@ from loguru import logger
 from services import store
 from services.category_health import clean_two_level
 from services.dirty_value_guard import coerce_numeric
-from services.stat_utils import sorted_groups
+from services.stat_utils import sorted_groups, _categorical_p_with_rule
 from services.impute import apply_imputation, missing_info
 
 router = APIRouter()
@@ -38,7 +38,9 @@ def _sanitize(obj):
     return obj
 
 
-def _stored_kind(session_id: str, df: pd.DataFrame, col: str, requested: Optional[str] = None) -> Optional[str]:
+def _stored_kind(
+    session_id: str, df: pd.DataFrame, col: str, requested: Optional[str] = None
+) -> Optional[str]:
     if requested:
         return requested
     try:
@@ -67,16 +69,19 @@ def _plausibility_warnings(col: str, series: pd.Series) -> list[dict]:
     if not mask.any():
         return []
     vals = sorted({float(v) for v in numeric[mask].dropna().unique()})
-    return [{
-        "variable": col,
-        "n_implausible": int(mask.sum()),
-        "implausible_values": vals,
-        "rule": rule,
-        "note": "Values were retained for display but should be reviewed.",
-    }]
+    return [
+        {
+            "variable": col,
+            "n_implausible": int(mask.sum()),
+            "implausible_values": vals,
+            "rule": rule,
+            "note": "Values were retained for display but should be reviewed.",
+        }
+    ]
 
 
 # ── 1. Missing Data Summary ─────────────────────────────────────────────────────
+
 
 @router.get("/{session_id}/missing")
 def get_missing(session_id: str, columns: str = Query("")):
@@ -87,13 +92,16 @@ def get_missing(session_id: str, columns: str = Query("")):
     df = _get_df(session_id, allow_missing=True)
     if df is None:
         return {"columns": [], "total_rows": 0}
-    cols = [c.strip() for c in columns.split(",") if c.strip() and c.strip() in df.columns]
+    cols = [
+        c.strip() for c in columns.split(",") if c.strip() and c.strip() in df.columns
+    ]
     if not cols:
         cols = df.columns.tolist()
     return missing_info(df, cols)
 
 
 # ── 2. Descriptive Statistics ──────────────────────────────────────────────────
+
 
 def _normality_test(s_clean: pd.Series) -> tuple[float, str]:
     """Return (p_value, test_name)."""
@@ -105,6 +113,7 @@ def _normality_test(s_clean: pd.Series) -> tuple[float, str]:
         return float(p), "Shapiro-Wilk"
     if n <= 2000:
         from statsmodels.stats.diagnostic import lilliefors as _lilliefors
+
         _, p = _lilliefors(s_clean.values, dist="norm")
         return float(p), "Kolmogorov-Smirnov (Lilliefors)"
 
@@ -112,6 +121,7 @@ def _normality_test(s_clean: pd.Series) -> tuple[float, str]:
     if abs(skewness) <= 1.5:
         return 0.999, "Skewness (CLT bypass)"
     from statsmodels.stats.diagnostic import lilliefors as _lilliefors
+
     _, p = _lilliefors(s_clean.values, dist="norm")
     return float(p), "Kolmogorov-Smirnov (Lilliefors)"
 
@@ -121,7 +131,13 @@ def descriptive(session_id: str, column: Optional[str] = None):
     df = _get_df(session_id)
     overrides = store.get_kind_overrides(session_id) or {}
     num_cols = df.select_dtypes(include="number").columns.tolist()
-    num_cols.extend([c for c, kind in overrides.items() if kind == "numeric" and c in df.columns and c not in num_cols])
+    num_cols.extend(
+        [
+            c
+            for c, kind in overrides.items()
+            if kind == "numeric" and c in df.columns and c not in num_cols
+        ]
+    )
     if column:
         if column not in df.columns or column not in num_cols:
             raise HTTPException(status_code=400, detail="Column not numeric")
@@ -169,6 +185,7 @@ def descriptive(session_id: str, column: Optional[str] = None):
 
 # ── 3. Frequency Table ─────────────────────────────────────────────────────────
 
+
 @router.get("/{session_id}/frequency")
 def frequency(session_id: str, column: Optional[str] = None):
     df = _get_df(session_id)
@@ -185,11 +202,13 @@ def frequency(session_id: str, column: Optional[str] = None):
         vc = s.value_counts(dropna=False)
         categories = []
         for k, v in vc.items():
-            categories.append({
-                "value": str(k) if pd.notna(k) else "Missing",
-                "count": int(v),
-                "pct": round(v / total * 100, 1),
-            })
+            categories.append(
+                {
+                    "value": str(k) if pd.notna(k) else "Missing",
+                    "count": int(v),
+                    "pct": round(v / total * 100, 1),
+                }
+            )
         results[col] = {
             "n": int(s.count()),
             "missing": int(s.isna().sum()),
@@ -199,6 +218,7 @@ def frequency(session_id: str, column: Optional[str] = None):
 
 
 # ── 4. Sparklines ──────────────────────────────────────────────────────────────
+
 
 @router.get("/{session_id}/sparklines")
 def get_sparklines(session_id: str):
@@ -228,6 +248,7 @@ def get_sparklines(session_id: str):
 
 # ── 5. Refresh ─────────────────────────────────────────────────────────────────
 
+
 @router.get("/{session_id}/refresh")
 def refresh_session(session_id: str):
     """Return updated session metadata after in-place operations.
@@ -238,6 +259,7 @@ def refresh_session(session_id: str):
     """
     df = _get_df(session_id)
     from routers.upload import _detect_kind
+
     overrides = store.get_kind_overrides(session_id) or {}
     meta = store.get_metadata(session_id) or {}
     columns = []
@@ -253,16 +275,25 @@ def refresh_session(session_id: str):
             c["display_name"] = m["display_name"]
         columns.append(c)
     preview_df = df.head(2000).replace([np.inf, -np.inf], np.nan)
-    preview = _json.loads(preview_df.to_json(orient="records", default_handler=str, date_format="iso", date_unit="s"))
+    preview = _json.loads(
+        preview_df.to_json(
+            orient="records", default_handler=str, date_format="iso", date_unit="s"
+        )
+    )
     return {"rows": len(df), "columns": columns, "preview": preview}
 
 
 # ── 6. Raw Data Columns ────────────────────────────────────────────────────────
 
+
 @router.get("/{session_id}/raw")
 def get_raw_columns(session_id: str, columns: str = ""):
     df = _get_df(session_id)
-    cols = [c.strip() for c in columns.split(",") if c.strip() in df.columns] if columns else list(df.columns)
+    cols = (
+        [c.strip() for c in columns.split(",") if c.strip() in df.columns]
+        if columns
+        else list(df.columns)
+    )
     cols = [c for c in cols if pd.api.types.is_numeric_dtype(df[c])][:12]
     result = {}
     for col in cols:
@@ -272,6 +303,7 @@ def get_raw_columns(session_id: str, columns: str = ""):
 
 
 # ── 7. Column Summary (QQ + Outliers) ──────────────────────────────────────────
+
 
 @router.get("/{session_id}/column_summary")
 def column_summary(session_id: str, column: str, kind: Optional[str] = None):
@@ -292,29 +324,38 @@ def column_summary(session_id: str, column: str, kind: Optional[str] = None):
         s_clean = coerce_numeric(s).replace([np.inf, -np.inf], np.nan).dropna()
         n_clean = len(s_clean)
         if n_clean < 3:
-            raise HTTPException(status_code=400, detail="Need at least 3 numeric values.")
+            raise HTTPException(
+                status_code=400, detail="Need at least 3 numeric values."
+            )
         n_bins = min(40, max(10, int(np.sqrt(n_clean))))
         counts, edges = np.histogram(s_clean, bins=n_bins)
         histogram = [
-            {"bin_start": float(edges[i]), "bin_end": float(edges[i+1]), "count": int(counts[i])}
+            {
+                "bin_start": float(edges[i]),
+                "bin_end": float(edges[i + 1]),
+                "count": int(counts[i]),
+            }
             for i in range(len(counts))
         ]
 
         (theo, sample), _ = scipy_stats.probplot(s_clean)
         step = max(1, len(theo) // 300)
-        qq = [{"x": float(theo[i]), "y": float(sample[i])} for i in range(0, len(theo), step)]
+        qq = [
+            {"x": float(theo[i]), "y": float(sample[i])}
+            for i in range(0, len(theo), step)
+        ]
 
         p_norm, norm_test_name = _normality_test(s_clean)
         mean_val = float(s_clean.mean())
-        std_val  = float(s_clean.std())
+        std_val = float(s_clean.std())
         q1, q3 = float(s_clean.quantile(0.25)), float(s_clean.quantile(0.75))
         iqr_val = q3 - q1
 
-        fence_low  = q1 - 1.5 * iqr_val
+        fence_low = q1 - 1.5 * iqr_val
         fence_high = q3 + 1.5 * iqr_val
 
         non_out = s_clean[(s_clean >= fence_low) & (s_clean <= fence_high)]
-        whisker_low  = float(non_out.min()) if len(non_out) else float(s_clean.min())
+        whisker_low = float(non_out.min()) if len(non_out) else float(s_clean.min())
         whisker_high = float(non_out.max()) if len(non_out) else float(s_clean.max())
 
         out_mask = (s_clean < fence_low) | (s_clean > fence_high)
@@ -345,7 +386,7 @@ def column_summary(session_id: str, column: str, kind: Optional[str] = None):
                     "z": round(z, 3),
                     "residual": round(residual, 4),
                     "abs_residual": abs(residual),
-                    "qq_x": round(theo_q, 4)
+                    "qq_x": round(theo_q, 4),
                 }
                 all_points_info.append(info)
                 if abs(z) > 2.0:
@@ -357,12 +398,20 @@ def column_summary(session_id: str, column: str, kind: Optional[str] = None):
 
         return {
             "type": "numeric",
-            "n": int(s_clean.count()), "missing": int(s.isna().sum()),
-            "mean": mean_val, "std": std_val,
-            "median": float(s_clean.median()), "q1": q1, "q3": q3,
-            "iqr": float(iqr_val), "min": float(s_clean.min()), "max": float(s_clean.max()),
-            "skewness": float(s_clean.skew()), "kurtosis": float(s_clean.kurtosis()),
-            "whisker_low": whisker_low, "whisker_high": whisker_high,
+            "n": int(s_clean.count()),
+            "missing": int(s.isna().sum()),
+            "mean": mean_val,
+            "std": std_val,
+            "median": float(s_clean.median()),
+            "q1": q1,
+            "q3": q3,
+            "iqr": float(iqr_val),
+            "min": float(s_clean.min()),
+            "max": float(s_clean.max()),
+            "skewness": float(s_clean.skew()),
+            "kurtosis": float(s_clean.kurtosis()),
+            "whisker_low": whisker_low,
+            "whisker_high": whisker_high,
             "outliers": outliers,
             "z_extremes": z_extremes,
             "normality_deviants": normality_deviants,
@@ -372,7 +421,9 @@ def column_summary(session_id: str, column: str, kind: Optional[str] = None):
             "normality_p": float(p_norm),
             "normality_test": norm_test_name,
             "normal": bool(p_norm >= 0.05),
-            "normality_label": "Normally distributed" if p_norm >= 0.05 else "Non-normal distribution",
+            "normality_label": "Normally distributed"
+            if p_norm >= 0.05
+            else "Non-normal distribution",
             "warnings": _plausibility_warnings(column, s),
         }
 
@@ -380,19 +431,24 @@ def column_summary(session_id: str, column: str, kind: Optional[str] = None):
         total = len(s)
         vc = s.value_counts(dropna=False)
         categories = [
-            {"value": str(k) if pd.notna(k) else "Missing",
-             "count": int(v), "pct": round(v / total * 100, 1)}
+            {
+                "value": str(k) if pd.notna(k) else "Missing",
+                "count": int(v),
+                "pct": round(v / total * 100, 1),
+            }
             for k, v in vc.items()
         ]
         return {
             "type": "categorical",
-            "n": int(s.count()), "missing": int(s.isna().sum()),
+            "n": int(s.count()),
+            "missing": int(s.isna().sum()),
             "n_categories": int(s.nunique()),
             "categories": categories,
         }
 
 
 # ── 8. Table 1 (clinical characteristics) ──────────────────────────────────────
+
 
 class Table1Request(BaseModel):
     session_id: str
@@ -409,23 +465,24 @@ class Table1Request(BaseModel):
 
 def _fmt_p(p: float) -> str:
     from services.number_format import format_p
+
     return format_p(p)
 
 
 _STAT_LABELS: dict[str, str] = {
-    "mean_sd":    "Mean ± SD",
+    "mean_sd": "Mean ± SD",
     "median_iqr": "Median [IQR]",
-    "se":         "SE of Mean",
-    "ci95":       "95% CI",
-    "variance":   "Variance",
-    "min_max":    "Min – Max",
-    "n":          "N (non-missing)",
-    "missing":    "Missing",
-    "p10":        "10th Pctl",
-    "p25":        "25th Pctl",
-    "p75":        "75th Pctl",
-    "p90":        "90th Pctl",
-    "p95":        "95th Pctl",
+    "se": "SE of Mean",
+    "ci95": "95% CI",
+    "variance": "Variance",
+    "min_max": "Min – Max",
+    "n": "N (non-missing)",
+    "missing": "Missing",
+    "p10": "10th Pctl",
+    "p25": "25th Pctl",
+    "p75": "75th Pctl",
+    "p90": "90th Pctl",
+    "p95": "95th Pctl",
 }
 
 
@@ -438,7 +495,9 @@ def _f(v: float, d: int = 2) -> str:
 _NATURAL_DECIMALS_CAP = 6  # never auto-detect beyond this many places
 
 
-def _natural_decimals(series: pd.Series, cap: int = _NATURAL_DECIMALS_CAP) -> Optional[int]:
+def _natural_decimals(
+    series: pd.Series, cap: int = _NATURAL_DECIMALS_CAP
+) -> Optional[int]:
     """Smallest number of decimal places that losslessly represents every
     value in the column.
 
@@ -591,7 +650,7 @@ def _fmt_one_stat(
     if stat == "n":
         return str(int(len(a)))
     if stat == "missing":
-        return str(int(a.isna().sum()) if hasattr(a, 'isna') else 0)
+        return str(int(a.isna().sum()) if hasattr(a, "isna") else 0)
     pct_map = {"p10": 0.10, "p25": 0.25, "p75": 0.75, "p90": 0.90, "p95": 0.95}
     if stat in pct_map:
         return fc(a.quantile(pct_map[stat]))
@@ -619,72 +678,32 @@ def _build_stat_rows(
         label = _STAT_LABELS.get(resolved, resolved)
         if resolved == "missing":
             overall_val = str(int(s_col.isna().sum()))
-            grp_vals = {gl: str(int(gs.isna().sum())) for gl, gs in group_series.items()}
+            grp_vals = {
+                gl: str(int(gs.isna().sum())) for gl, gs in group_series.items()
+            }
         else:
             overall_val = _fmt_one_stat(
-                s_all, resolved, df=df, col=col, override=override,
+                s_all,
+                resolved,
+                df=df,
+                col=col,
+                override=override,
             )
             grp_vals = {
                 gl: _fmt_one_stat(
-                    gs.dropna().astype(float), resolved,
-                    df=df, col=col, override=override,
+                    gs.dropna().astype(float),
+                    resolved,
+                    df=df,
+                    col=col,
+                    override=override,
                 )
                 for gl, gs in group_series.items()
             }
 
-        rows_out.append({"label": label, "overall": overall_val, "group_stats": grp_vals})
+        rows_out.append(
+            {"label": label, "overall": overall_val, "group_stats": grp_vals}
+        )
     return rows_out
-
-
-def _fisher_freeman_halton_mc(observed: np.ndarray, n_resamples: int = 5000, seed: int = 42) -> float:
-    obs = np.asarray(observed, dtype=float)
-    if obs.ndim != 2 or obs.sum() <= 0:
-        return float("nan")
-    n_rows, n_cols = obs.shape
-
-    cats_list: list[int] = []
-    grps_list: list[int] = []
-    for i in range(n_rows):
-        for j in range(n_cols):
-            n_ij = int(obs[i, j])
-            if n_ij > 0:
-                cats_list.extend([i] * n_ij)
-                grps_list.extend([j] * n_ij)
-    cats = np.asarray(cats_list, dtype=np.int64)
-    grps = np.asarray(grps_list, dtype=np.int64)
-
-    def _chi(ct: np.ndarray) -> float:
-        rs = ct.sum(axis=1, keepdims=True)
-        cs = ct.sum(axis=0, keepdims=True)
-        total = ct.sum()
-        if total <= 0:
-            return 0.0
-        e = rs * cs / total
-        with np.errstate(divide="ignore", invalid="ignore"):
-            return float(((ct - e) ** 2 / np.where(e > 0, e, 1)).sum())
-
-    obs_chi = _chi(obs)
-    rng = np.random.default_rng(seed)
-    minlength = n_rows * n_cols
-    count = 0
-    for _ in range(n_resamples):
-        perm = rng.permutation(grps)
-        enc = cats * n_cols + perm
-        ct = np.bincount(enc, minlength=minlength).reshape(n_rows, n_cols).astype(float)
-        if _chi(ct) >= obs_chi - 1e-9:
-            count += 1
-    return (count + 1) / (n_resamples + 1)
-
-
-def _categorical_p_with_rule(ct: np.ndarray) -> tuple[float, str]:
-    obs = np.asarray(ct, dtype=float)
-    chi2, p_chi, dof, expected = scipy_stats.chi2_contingency(obs)
-    if (expected < 5).any():
-        if obs.shape == (2, 2):
-            _, p_fisher = scipy_stats.fisher_exact(obs)
-            return float(p_fisher), "Fisher"
-        return _fisher_freeman_halton_mc(obs), "Fisher-Freeman-Halton (MC)"
-    return float(p_chi), "Chi-square"
 
 
 @router.post("/table1")
@@ -744,8 +763,11 @@ def table1(req: Table1Request):
                     group_arrs.append(gs.dropna().astype(float))
 
             per_group_norm: dict[str, dict] = {}
-            if (req.normality_mode == "within_group" and groups is not None
-                    and len(group_arrs) >= 2):
+            if (
+                req.normality_mode == "within_group"
+                and groups is not None
+                and len(group_arrs) >= 2
+            ):
                 for gl, arr in zip(group_labels, group_arrs):
                     if len(arr) >= 3:
                         pg, pg_name = _normality_test(arr)
@@ -762,14 +784,20 @@ def table1(req: Table1Request):
                             "normal": False,
                             "n": int(len(arr)),
                         }
-                normal = (len(per_group_norm) > 0
-                          and all(v["normal"] for v in per_group_norm.values()))
+                normal = len(per_group_norm) > 0 and all(
+                    v["normal"] for v in per_group_norm.values()
+                )
             else:
                 normal = normal_overall
 
             stat_rows = _build_stat_rows(
-                s, group_series, sel_stats, normal,
-                df=df, col=var, override=decimals_override,
+                s,
+                group_series,
+                sel_stats,
+                normal,
+                df=df,
+                col=var,
+                override=decimals_override,
             )
 
             p_value_str: Optional[str] = None
@@ -782,7 +810,9 @@ def table1(req: Table1Request):
                             _, p_t = scipy_stats.ttest_ind(*group_arrs, equal_var=False)
                             test_name_str = "t-test"
                         else:
-                            _, p_t = scipy_stats.mannwhitneyu(*group_arrs, alternative="two-sided")
+                            _, p_t = scipy_stats.mannwhitneyu(
+                                *group_arrs, alternative="two-sided"
+                            )
                             test_name_str = "Mann-Whitney"
                     else:
                         if normal:
@@ -800,6 +830,7 @@ def table1(req: Table1Request):
             smd_val: Optional[float] = None
             if groups is not None and len(group_arrs) >= 2:
                 try:
+
                     def _smd_num_pair(g1, g2) -> Optional[float]:
                         if len(g1) == 0 or len(g2) == 0:
                             return None
@@ -807,7 +838,9 @@ def table1(req: Table1Request):
                         if not np.isfinite(ps) or ps <= 0:
                             return None
                         return float(abs(g1.mean() - g2.mean()) / ps)
+
                     from itertools import combinations as _comb
+
                     pair_smds = []
                     for i, j in _comb(range(len(group_arrs)), 2):
                         s_smd = _smd_num_pair(group_arrs[i], group_arrs[j])
@@ -850,7 +883,11 @@ def table1(req: Table1Request):
             for cat in cats:
                 n_all = int((s.astype(str) == cat).sum())
                 pct_all = round(n_all / total_all * 100, 1) if total_all else 0
-                sub: dict = {"category": cat, "overall": f"{n_all} ({pct_all}%)", "group_stats": {}}
+                sub: dict = {
+                    "category": cat,
+                    "overall": f"{n_all} ({pct_all}%)",
+                    "group_stats": {},
+                }
                 if groups is not None:
                     for g, gl in zip(groups, group_labels):
                         g_s = df[df[req.group_column] == g][var]
@@ -875,7 +912,10 @@ def table1(req: Table1Request):
             cat_smd: Optional[float] = None
             if groups is not None and len(groups) >= 2:
                 try:
-                    def _smd_cat_pair(g1_s: pd.Series, g2_s: pd.Series) -> Optional[float]:
+
+                    def _smd_cat_pair(
+                        g1_s: pd.Series, g2_s: pd.Series
+                    ) -> Optional[float]:
                         all_cats = sorted(set(g1_s.dropna()) | set(g2_s.dropna()))
                         if len(all_cats) < 2:
                             return None
@@ -885,7 +925,7 @@ def table1(req: Table1Request):
                             p2 = (g2_s == target).mean()
                             pooled = np.sqrt((p1 * (1 - p1) + p2 * (1 - p2)) / 2)
                             if pooled <= 0:
-                                  return None
+                                return None
                             return float(abs(p1 - p2) / pooled)
 
                         p1_vec = np.array([(g1_s == c).mean() for c in all_cats[:-1]])
@@ -900,7 +940,10 @@ def table1(req: Table1Request):
                         return float(np.sqrt(diff @ np.linalg.inv(s_pool) @ diff))
 
                     from itertools import combinations as _comb
-                    g_series = [df[df[req.group_column] == g][var].astype(str) for g in groups]
+
+                    g_series = [
+                        df[df[req.group_column] == g][var].astype(str) for g in groups
+                    ]
                     pair_smds = []
                     for i, j in _comb(range(len(g_series)), 2):
                         s_smd = _smd_cat_pair(g_series[i], g_series[j])
@@ -927,17 +970,20 @@ def table1(req: Table1Request):
             }
         rows.append(row)
 
-    return _sanitize({
-        "group_column": req.group_column,
-        "group_labels": group_labels,
-        "group_ns": group_ns,
-        "total_n": len(df),
-        "warnings": warnings,
-        "rows": rows,
-    })
+    return _sanitize(
+        {
+            "group_column": req.group_column,
+            "group_labels": group_labels,
+            "group_ns": group_ns,
+            "total_n": len(df),
+            "warnings": warnings,
+            "rows": rows,
+        }
+    )
 
 
 # ── 9. Weighted Descriptive Statistics ────────────────────────────────────────
+
 
 class WeightedDescriptiveRequest(BaseModel):
     session_id: str
@@ -961,13 +1007,17 @@ def weighted_descriptive(req: WeightedDescriptiveRequest):
     from statsmodels.stats.weightstats import DescrStatsW
 
     df_full = _get_df(req.session_id)
-    for c in [req.weight_col, *req.value_cols] + ([req.group_col] if req.group_col else []):
+    for c in [req.weight_col, *req.value_cols] + (
+        [req.group_col] if req.group_col else []
+    ):
         if c not in df_full.columns:
             raise HTTPException(status_code=400, detail=f"Column '{c}' not found")
     if not req.value_cols:
         raise HTTPException(status_code=422, detail="Select at least one value column.")
 
-    cols = [req.weight_col, *req.value_cols] + ([req.group_col] if req.group_col else [])
+    cols = [req.weight_col, *req.value_cols] + (
+        [req.group_col] if req.group_col else []
+    )
     strategy = req.imputation or "listwise"
     if strategy in ("listwise", "none", "", None):
         df = df_full[cols].copy().reset_index(drop=True)
@@ -982,11 +1032,13 @@ def weighted_descriptive(req: WeightedDescriptiveRequest):
         xv = x[mask].values.astype(float)
         wv = w_all[mask].values.astype(float)
         if len(xv) < 3:
-            results.append({"column": col, "error": "fewer than 3 valid weighted observations"})
+            results.append(
+                {"column": col, "error": "fewer than 3 valid weighted observations"}
+            )
             continue
         d = DescrStatsW(xv, weights=wv, ddof=1)
         lo, hi = d.tconfint_mean(alpha=0.05)
-        kish = float((wv.sum() ** 2) / np.sum(wv ** 2))
+        kish = float((wv.sum() ** 2) / np.sum(wv**2))
         uniq = np.unique(xv)
         row = {
             "column": col,
@@ -1006,13 +1058,19 @@ def weighted_descriptive(req: WeightedDescriptiveRequest):
             p = float(np.sum(wv * xv) / np.sum(wv))
             se_p = float(np.sqrt(p * (1 - p) / kish))
             row["w_proportion"] = round(p, 6)
-            row["w_proportion_ci_low"] = round(max(0.0, p - 1.959963984540054 * se_p), 6)
-            row["w_proportion_ci_high"] = round(min(1.0, p + 1.959963984540054 * se_p), 6)
+            row["w_proportion_ci_low"] = round(
+                max(0.0, p - 1.959963984540054 * se_p), 6
+            )
+            row["w_proportion_ci_high"] = round(
+                min(1.0, p + 1.959963984540054 * se_p), 6
+            )
         results.append(row)
 
     comparison = None
     if req.group_col:
-        group_base = df[df[req.group_col].notna()] if req.group_col in df.columns else df
+        group_base = (
+            df[df[req.group_col].notna()] if req.group_col in df.columns else df
+        )
         groups = sorted_groups(group_base[req.group_col])
         if len(groups) == 2:
             col = req.value_cols[0]
@@ -1020,9 +1078,15 @@ def weighted_descriptive(req: WeightedDescriptiveRequest):
             parts = []
             for g in groups:
                 m = (df[req.group_col] == g) & x.notna() & w_all.notna() & (w_all > 0)
-                parts.append((str(g), x[m].values.astype(float), w_all[m].values.astype(float)))
+                parts.append(
+                    (str(g), x[m].values.astype(float), w_all[m].values.astype(float))
+                )
             if all(len(p[1]) >= 3 for p in parts):
-                from statsmodels.stats.weightstats import CompareMeans, DescrStatsW as _D
+                from statsmodels.stats.weightstats import (
+                    CompareMeans,
+                    DescrStatsW as _D,
+                )
+
                 d1 = _D(parts[0][1], weights=parts[0][2], ddof=1)
                 d2 = _D(parts[1][1], weights=parts[1][2], ddof=1)
                 cm = CompareMeans(d1, d2)
@@ -1031,11 +1095,15 @@ def weighted_descriptive(req: WeightedDescriptiveRequest):
                 lo, hi = cm.tconfint_diff(alpha=0.05, usevar="unequal")
                 comparison = {
                     "variable": col,
-                    "group_a": parts[0][0], "group_b": parts[1][0],
-                    "w_mean_a": round(float(d1.mean), 4), "w_mean_b": round(float(d2.mean), 4),
+                    "group_a": parts[0][0],
+                    "group_b": parts[1][0],
+                    "w_mean_a": round(float(d1.mean), 4),
+                    "w_mean_b": round(float(d2.mean), 4),
                     "diff": round(diff, 4),
-                    "ci_low": round(float(lo), 4), "ci_high": round(float(hi), 4),
-                    "t": round(float(tstat), 4), "df": round(float(dfree), 2),
+                    "ci_low": round(float(lo), 4),
+                    "ci_high": round(float(hi), 4),
+                    "t": round(float(tstat), 4),
+                    "df": round(float(dfree), 2),
                     "p": round(float(pval), 6),
                 }
 
@@ -1043,45 +1111,87 @@ def weighted_descriptive(req: WeightedDescriptiveRequest):
     result_text = (
         f"Weighted descriptive statistics on n = {n_total} rows using '{req.weight_col}' as the "
         f"sampling weight (design-based, weights only). "
-        + (f"Weighted {comparison['variable']}: {comparison['group_a']} = {comparison['w_mean_a']} vs "
-           f"{comparison['group_b']} = {comparison['w_mean_b']}, Δ = {comparison['diff']} "
-           f"(95% CI {comparison['ci_low']}–{comparison['ci_high']}), weighted t-test p = "
-           f"{'<0.001' if comparison['p'] < 0.001 else round(comparison['p'], 3)}."
-           if comparison else "")
+        + (
+            f"Weighted {comparison['variable']}: {comparison['group_a']} = {comparison['w_mean_a']} vs "
+            f"{comparison['group_b']} = {comparison['w_mean_b']}, Δ = {comparison['diff']} "
+            f"(95% CI {comparison['ci_low']}–{comparison['ci_high']}), weighted t-test p = "
+            f"{'<0.001' if comparison['p'] < 0.001 else round(comparison['p'], 3)}."
+            if comparison
+            else ""
+        )
     )
 
-    export_rows = [["Variable", "n", "ESS", "Weighted mean", "Weighted SD", "95% CI low", "95% CI high", "Weighted median"]]
+    export_rows = [
+        [
+            "Variable",
+            "n",
+            "ESS",
+            "Weighted mean",
+            "Weighted SD",
+            "95% CI low",
+            "95% CI high",
+            "Weighted median",
+        ]
+    ]
     for r in results:
         if "error" in r:
             continue
-        export_rows.append([r["column"], r["n"], r["ess_kish"], r["w_mean"], r["w_sd"], r["ci_low"], r["ci_high"], r["w_median"]])
+        export_rows.append(
+            [
+                r["column"],
+                r["n"],
+                r["ess_kish"],
+                r["w_mean"],
+                r["w_sd"],
+                r["ci_low"],
+                r["ci_high"],
+                r["w_median"],
+            ]
+        )
 
     try:
-        store.log_action(req.session_id, "weighted_descriptive", {
-            "weight_col": req.weight_col, "n_value_cols": len(req.value_cols),
-            "group_col": req.group_col,
-        })
+        store.log_action(
+            req.session_id,
+            "weighted_descriptive",
+            {
+                "weight_col": req.weight_col,
+                "n_value_cols": len(req.value_cols),
+                "group_col": req.group_col,
+            },
+        )
     except Exception:
         logger.exception("Logging weighted descriptive action failed")
 
-    return _sanitize({
-        "test": "Weighted descriptive statistics",
-        "weight_col": req.weight_col,
-        "n": n_total,
-        "results": results,
-        "comparison": comparison,
-        "assumptions": [
-            {"name": "Weights-only design", "met": True,
-             "detail": "Design-based estimation with sampling weights. Strata / cluster (full complex survey) not modelled — SEs assume independent weighted observations."},
-            {"name": "Effective sample size", "met": True,
-             "detail": "Kish's ESS = (Σw)² / Σw² reported per variable; large weight variation shrinks ESS and widens CIs."},
-        ],
-        "result_text": result_text,
-        "export_rows": export_rows,
-        "r_code": (
-            "library(survey)\n"
-            f"des <- svydesign(ids = ~1, weights = ~{req.weight_col}, data = data)\n"
-            f"svymean(~{' + '.join(req.value_cols)}, des)\n"
-            + (f"svyttest({req.value_cols[0]} ~ {req.group_col}, des)\n" if req.group_col else "")
-        ),
-    })
+    return _sanitize(
+        {
+            "test": "Weighted descriptive statistics",
+            "weight_col": req.weight_col,
+            "n": n_total,
+            "results": results,
+            "comparison": comparison,
+            "assumptions": [
+                {
+                    "name": "Weights-only design",
+                    "met": True,
+                    "detail": "Design-based estimation with sampling weights. Strata / cluster (full complex survey) not modelled — SEs assume independent weighted observations.",
+                },
+                {
+                    "name": "Effective sample size",
+                    "met": True,
+                    "detail": "Kish's ESS = (Σw)² / Σw² reported per variable; large weight variation shrinks ESS and widens CIs.",
+                },
+            ],
+            "result_text": result_text,
+            "export_rows": export_rows,
+            "r_code": (
+                "library(survey)\n"
+                f"des <- svydesign(ids = ~1, weights = ~{req.weight_col}, data = data)\n"
+                f"svymean(~{' + '.join(req.value_cols)}, des)\n"
+                + (
+                    f"svyttest({req.value_cols[0]} ~ {req.group_col}, des)\n"
+                    if req.group_col
+                    else ""
+                )
+            ),
+        }
+    )
