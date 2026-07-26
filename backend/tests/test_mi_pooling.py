@@ -90,3 +90,6 @@ def test_rmst_mice_pools_group_covariate():
     assert len(j["rmst_by_group"]) == 2
     assert all("fmi" in v and v["fmi"] > 0 for v in j["rmst_by_group"].values())
     assert j["contrasts"] and j["contrasts"][0]["fmi"] > 0
+    contrast = j["contrasts"][0]
+    assert contrast["p_raw"] is not None
+    assert contrast["p"] == round(contrast["p_raw"], 6)

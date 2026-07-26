@@ -225,15 +225,25 @@ def _fine_gray_fit(df: pd.DataFrame, duration: str, event: str,
 
 
 
-def _rmst_one_group(t: np.ndarray, e: np.ndarray, tau: float) -> Dict[str, float]:
+def _two_sided_normal_p(z: float) -> float:
+    """Return a numerically stable two-sided standard-normal p-value."""
+    from scipy.stats import norm
+
+    tail = float(norm.sf(abs(z)))
+    if tail > 0:
+        return 2 * tail
+    return float(math.exp(math.log(2.0) + float(norm.logsf(abs(z)))))
+
+
+def _rmst_one_group_raw(t: np.ndarray, e: np.ndarray, tau: float) -> Dict[str, float]:
     """KM-based RMST estimator with Greenwood-style SE.
 
     Algorithm:
       1. Fit KaplanMeierFitter on (t, e).
-      2. Trapezoidal-rule integrate S(u) from 0 to τ.
-      3. SE via the integral of Greenwood's variance:
-           Var[RMST(τ)] = Σ_k  [∫_{t_k}^{min(t_{k+1}, τ)} S(u) du]^2  * d_k / (n_k (n_k - d_k))
-         which is the Klein & Moeschberger (2003) eqn 4.5.1 / Hosmer-Lemeshow form.
+      2. Integrate the right-continuous KM step function from 0 to τ.
+      3. SE via Greenwood's variance:
+           Var[RMST(τ)] = Σ_j A_j² d_j / (n_j (n_j - d_j)),
+           where A_j = ∫_{t_j}^{τ} S(u) du.
       4. 95% CI = Wald on RMST.
     """
     from lifelines import KaplanMeierFitter
@@ -261,7 +271,7 @@ def _rmst_one_group(t: np.ndarray, e: np.ndarray, tau: float) -> Dict[str, float
     d_arr = et["observed"].values.astype(float)
     n_arr = et["at_risk"].values.astype(float)
 
-    # Trapezoid pieces between consecutive step points, capped at tau.
+    # KM step-function rectangles between consecutive time points, capped at tau.
     pieces_t: List[float] = []  # left edges
     pieces_h: List[float] = []  # heights (S at left edge)
     pieces_w: List[float] = []  # widths (capped at tau)
@@ -290,7 +300,10 @@ def _rmst_one_group(t: np.ndarray, e: np.ndarray, tau: float) -> Dict[str, float
         n_j = n_arr[j]
         if d_j <= 0 or n_j - d_j <= 0:
             continue
-        idx = np.searchsorted(pieces_t_arr, tj, side="right")
+        # Include the interval that starts at the event time.  Greenwood's
+        # RMST variance uses the remaining area from t_j through tau; using
+        # side="right" dropped that first interval and understated the SE.
+        idx = np.searchsorted(pieces_t_arr, tj, side="left")
         area_before = cum_area[idx] if idx < len(cum_area) else total_area
         A_j = total_area - area_before
         se_var += (A_j ** 2) * d_j / (n_j * (n_j - d_j))
@@ -302,11 +315,28 @@ def _rmst_one_group(t: np.ndarray, e: np.ndarray, tau: float) -> Dict[str, float
     return {
         "n": n,
         "n_events": n_events,
-        "rmst": round(float(rmst), 4),
-        "se": round(se, 4),
-        "ci_low": round(float(rmst - z95 * se), 4),
-        "ci_high": round(float(rmst + z95 * se), 4),
+        "rmst": float(rmst),
+        "se": se,
+        "ci_low": float(rmst - z95 * se),
+        "ci_high": float(rmst + z95 * se),
     }
+
+
+def _format_rmst_result(result: Dict[str, float]) -> Dict[str, float]:
+    """Round an internal RMST estimate for the public response contract."""
+    return {
+        "n": int(result["n"]),
+        "n_events": int(result["n_events"]),
+        "rmst": round(result["rmst"], 4),
+        "se": round(result["se"], 4),
+        "ci_low": round(result["ci_low"], 4),
+        "ci_high": round(result["ci_high"], 4),
+    }
+
+
+def _rmst_one_group(t: np.ndarray, e: np.ndarray, tau: float) -> Dict[str, float]:
+    """Return the public, four-decimal RMST result for one group."""
+    return _format_rmst_result(_rmst_one_group_raw(t, e, tau))
 
 
 
@@ -1697,7 +1727,14 @@ def _rmst_mi_pool(df_full, req, n_imputations: int = 10):
         e = d[req.event_col].to_numpy(dtype=int)
         gvals = d[gc].to_numpy()
         gs = sorted(pd.unique(d[gc].dropna()).tolist(), key=lambda x: (isinstance(x, str), x))
-        rg = {str(g): _rmst_one_group(t[gvals == g], e[gvals == g], float(req.tau)) for g in gs}
+        rg = {
+            str(g): _rmst_one_group_raw(
+                t[gvals == g],
+                e[gvals == g],
+                float(req.tau),
+            )
+            for g in gs
+        }
         for k, v in rg.items():
             counts.setdefault(k, []).append((v["n"], v["n_events"]))
         per_rmst.append({k: (v["rmst"], v["se"]) for k, v in rg.items()})
@@ -1726,6 +1763,7 @@ def _rmst_mi_pool(df_full, req, n_imputations: int = 10):
         contrasts.append({"group_a": a, "group_b": b, "delta_rmst": round(pv["coef"], 4),
                           "se": round(pv["se"], 4), "z": round(pv["t"], 4),
                           "p": round(pv["p"], 6) if pv["p"] is not None else None,
+                          "p_raw": pv["p"],
                           "ci_low": round(pv["ci_low"], 4), "ci_high": round(pv["ci_high"], 4),
                           "fmi": pv["fmi"]})
     note = (f"RMST and ΔRMST pooled across {len(imp.imputed_datasets)} imputations of the "
@@ -1778,22 +1816,32 @@ def fit_rmst(req):
         groups = sorted(df[req.group_col].dropna().unique().tolist(), key=lambda x: (isinstance(x, str), x))
 
     rmst_by_group: Dict[str, dict] = {}
+    raw_rmst_by_group: Dict[str, dict] = {}
     if not groups:
-        rmst_by_group["All"] = _rmst_one_group(t_all, e_all, float(req.tau))
+        raw_rmst_by_group["All"] = _rmst_one_group_raw(
+            t_all, e_all, float(req.tau)
+        )
+        rmst_by_group["All"] = _format_rmst_result(
+            raw_rmst_by_group["All"]
+        )
     else:
         for g in groups:
             mask = df[req.group_col] == g
-            rmst_by_group[str(g)] = _rmst_one_group(t_all[mask], e_all[mask], float(req.tau))
+            raw_rmst_by_group[str(g)] = _rmst_one_group_raw(
+                t_all[mask], e_all[mask], float(req.tau)
+            )
+            rmst_by_group[str(g)] = _format_rmst_result(
+                raw_rmst_by_group[str(g)]
+            )
 
     # Pairwise contrasts when groups present
     contrasts: List[dict] = []
     if len(groups) >= 2:
-        from scipy.stats import norm
         z95 = 1.959963984540054
         for i in range(len(groups)):
             for j in range(i + 1, len(groups)):
-                a = rmst_by_group[str(groups[i])]
-                b = rmst_by_group[str(groups[j])]
+                a = raw_rmst_by_group[str(groups[i])]
+                b = raw_rmst_by_group[str(groups[j])]
                 diff = a["rmst"] - b["rmst"]
                 se = float(np.sqrt(a["se"] ** 2 + b["se"] ** 2))
                 if se <= 0:
@@ -1802,7 +1850,7 @@ def fit_rmst(req):
                     z = None
                 else:
                     z = diff / se
-                    p = float(2 * (1 - norm.cdf(abs(z))))
+                    p = _two_sided_normal_p(z)
                     lo = diff - z95 * se
                     hi = diff + z95 * se
                 contrasts.append({
@@ -1812,6 +1860,7 @@ def fit_rmst(req):
                     "se": round(se, 4),
                     "z": round(z, 4) if z is not None else None,
                     "p": round(p, 6) if p is not None else None,
+                    "p_raw": p,
                     "ci_low": round(lo, 4),
                     "ci_high": round(hi, 4),
                 })
