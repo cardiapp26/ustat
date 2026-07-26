@@ -474,7 +474,7 @@ export default function HelpModal({ onClose }: { onClose: () => void }) {
             <ShieldCheck size={13} className="text-emerald-600" />
             <span>Data stays in your local browser session; only anonymized vectors are sent to the compute service.</span>
           </div>
-          <span className="font-semibold text-slate-400">uSTAT v3.2.0 Guide</span>
+          <span className="font-semibold text-slate-400">uSTAT v3.3.0 Guide</span>
         </div>
 
       </div>

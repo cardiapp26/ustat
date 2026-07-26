@@ -13,12 +13,24 @@ repository-code: "https://github.com/afstudy20-gif/ustat"
 url: "https://ustat.drtr.uk"
 abstract: >-
   uSTAT is a free, browser-based statistical analysis platform aimed at
-  clinicians, biostatisticians, and medical researchers. It provides
-  hypothesis tests, regression (GLM/Cox/RCS), survival analysis, propensity
-  score matching with Austin 2011 gold-standard diagnostics, method
-  agreement, ROC + decision-curve analysis, Table 1, power calculations,
-  and reproducible session round-trip — all running in memory on the
-  server with a 30-minute TTL and no persistent storage.
+  clinicians, biostatisticians, and medical researchers. It spans hypothesis
+  testing, regression (linear, logistic, Firth, ordinal, Poisson, negative
+  binomial, GEE, mixed models, restricted cubic splines), and survival
+  analysis including Cox with time-varying covariates, Kaplan-Meier,
+  Fine-Gray competing risks, RMST, landmark analysis, shared frailty,
+  recurrent events, and multi-state models with dynamic prediction.
+  Causal-inference tools cover propensity score matching with Austin 2011
+  diagnostics, IPTW, instrumental variables, mediation, difference-in-
+  differences, regression discontinuity, and sensitivity analysis for
+  unmeasured confounding. It also provides diagnostic accuracy (ROC with
+  DeLong comparison, calibration, decision-curve analysis, NRI/IDI),
+  method agreement, meta-analysis, missing-data handling with MICE and MNAR
+  sensitivity, factor analysis, machine learning, time series, Bayesian
+  tests, Table 1, and power calculations. Reported statistics are
+  cross-validated against SciPy, statsmodels, and lifelines, and every
+  analysis emits publication-ready methods text plus the equivalent R code.
+  Data are held in memory on the server with a short TTL and no persistent
+  storage by default.
 keywords:
   - biostatistics
   - clinical-statistics
@@ -29,16 +41,22 @@ keywords:
   - cox-regression
   - kaplan-meier
   - logistic-regression
+  - competing-risks
+  - multi-state-models
+  - causal-inference
+  - meta-analysis
+  - missing-data
   - ROC
   - decision-curve-analysis
   - hypothesis-testing
+  - reproducible-research
   - data-analysis
   - python
   - fastapi
   - react
 license: "MIT"
-version: "1.9.27"
-date-released: "2026-05-16"
+version: "3.3.0"
+date-released: "2026-07-26"
 preferred-citation:
   type: software
   title: "uSTAT — Browser-based Statistical Analysis Platform"
