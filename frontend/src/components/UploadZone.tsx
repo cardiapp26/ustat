@@ -442,7 +442,7 @@ export default function UploadZone() {
         <span className="text-gray-200">·</span>
         <a href="/security" target="_blank" rel="noreferrer" className="hover:text-indigo-500">Security</a>
         <span className="text-gray-200">·</span>
-        <a href="https://github.com/afstudy20-gif/wiz3" target="_blank" rel="noreferrer" className="hover:text-indigo-500">Source</a>
+        <a href="https://github.com/afstudy20-gif/ustat" target="_blank" rel="noreferrer" className="hover:text-indigo-500">Source</a>
       </div>
 
     </div>

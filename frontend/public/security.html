@@ -32,7 +32,7 @@
   </nav>
 
   <h1>Security</h1>
-  <p class="lead">Last updated: 2026-05-14 · Source repo: <a href="https://github.com/afstudy20-gif/wiz3">github.com/afstudy20-gif/wiz3</a></p>
+  <p class="lead">Last updated: 2026-05-14 · Source repo: <a href="https://github.com/afstudy20-gif/ustat">github.com/afstudy20-gif/ustat</a></p>
 
   <h2>1. Architecture</h2>
   <ul>
@@ -73,7 +73,7 @@
     <li><code>sys.meta_path</code> import allowlist (numpy / pandas / scipy / statsmodels / lifelines / sklearn / matplotlib / seaborn + safe stdlib) — explicit deny-list for socket, http, subprocess, ctypes, os, shutil, pickle, ...</li>
     <li>Linux: <code>unshare --user --net</code> when available — strips the network namespace</li>
     <li>Matplotlib forced to <code>Agg</code> backend</li>
-    <li>Rate limits: per-session, per-IP, global, concurrency semaphore — all env-configurable (see <a href="https://github.com/afstudy20-gif/wiz3/blob/main/backend/SECURITY.md">SECURITY.md</a>)</li>
+    <li>Rate limits: per-session, per-IP, global, concurrency semaphore — all env-configurable (see <a href="https://github.com/afstudy20-gif/ustat/blob/main/backend/SECURITY.md">SECURITY.md</a>)</li>
     <li>Audit log (<code>backend/logs/code_runner.jsonl</code>): timestamp, IP, session, SHA-256 of code, first 200 chars, duration, exit code — dataset never logged</li>
   </ul>
 
@@ -102,7 +102,7 @@
 
   <h3 style="font-size:14px;margin-top:14px;">"Files never touch disk" — verify on a self-hosted run</h3>
   <p>Clone the repo, start the backend with <code>strace</code> or <code>fs.watcher</code> attached, and upload a file. No <code>open(..., O_WRONLY)</code> call hits a path under <code>/app</code>. Quick demo on Linux:</p>
-  <pre>git clone https://github.com/afstudy20-gif/wiz3 &amp;&amp; cd wiz3/backend
+  <pre>git clone https://github.com/afstudy20-gif/ustat &amp;&amp; cd ustat/backend
 python -m venv .venv &amp;&amp; source .venv/bin/activate
 pip install -r requirements.txt
 strace -e trace=openat -f -- uvicorn main:app --port 8000 \
@@ -112,10 +112,10 @@ strace -e trace=openat -f -- uvicorn main:app --port 8000 \
   <h3 style="font-size:14px;margin-top:14px;">Source-side verification</h3>
   <p>The relevant lines:</p>
   <ul>
-    <li><a href="https://github.com/afstudy20-gif/wiz3/blob/main/backend/services/store.py" target="_blank" rel="noreferrer"><code>services/store.py</code></a> — the in-RAM dict, the TTL cleaner, and the eviction policy.</li>
-    <li><a href="https://github.com/afstudy20-gif/wiz3/blob/main/backend/routers/upload.py" target="_blank" rel="noreferrer"><code>routers/upload.py</code></a> — the upload handler. No <code>open(..., "w")</code>, no <code>to_csv()</code>, no <code>shutil.copy</code>.</li>
-    <li><a href="https://github.com/afstudy20-gif/wiz3/blob/main/backend/middleware/security_headers.py" target="_blank" rel="noreferrer"><code>middleware/security_headers.py</code></a> — every header value above is set by this file.</li>
-    <li><a href="https://github.com/afstudy20-gif/wiz3/blob/main/.github/workflows/security-scan.yml" target="_blank" rel="noreferrer"><code>.github/workflows/security-scan.yml</code></a> — the CI scan workflow.</li>
+    <li><a href="https://github.com/afstudy20-gif/ustat/blob/main/backend/services/store.py" target="_blank" rel="noreferrer"><code>services/store.py</code></a> — the in-RAM dict, the TTL cleaner, and the eviction policy.</li>
+    <li><a href="https://github.com/afstudy20-gif/ustat/blob/main/backend/routers/upload.py" target="_blank" rel="noreferrer"><code>routers/upload.py</code></a> — the upload handler. No <code>open(..., "w")</code>, no <code>to_csv()</code>, no <code>shutil.copy</code>.</li>
+    <li><a href="https://github.com/afstudy20-gif/ustat/blob/main/backend/middleware/security_headers.py" target="_blank" rel="noreferrer"><code>middleware/security_headers.py</code></a> — every header value above is set by this file.</li>
+    <li><a href="https://github.com/afstudy20-gif/ustat/blob/main/.github/workflows/security-scan.yml" target="_blank" rel="noreferrer"><code>.github/workflows/security-scan.yml</code></a> — the CI scan workflow.</li>
   </ul>
 
   <h2>7. Automated security checks</h2>
@@ -132,7 +132,7 @@ strace -e trace=openat -f -- uvicorn main:app --port 8000 \
   <p>Please do not test for vulnerabilities against the production instance with anything other than read-only requests. Use a local fork for invasive testing.</p>
 
   <h2>8. Source code</h2>
-  <p>The full source is published at <a href="https://github.com/afstudy20-gif/wiz3">github.com/afstudy20-gif/wiz3</a>. Pull requests welcome.</p>
+  <p>The full source is published at <a href="https://github.com/afstudy20-gif/ustat">github.com/afstudy20-gif/ustat</a>. Pull requests welcome.</p>
 
   <h2>9. Contact</h2>
   <p><a href="mailto:security@drtr.uk">security@drtr.uk</a></p>

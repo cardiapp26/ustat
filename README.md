@@ -7,6 +7,7 @@
 **Free, browser-based SPSS / R / Stata alternative for clinicians and researchers.**
 
 [![Live](https://img.shields.io/badge/live-ustat.drtr.uk-4f46e5?style=flat-square)](https://ustat.drtr.uk)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21610852.svg)](https://doi.org/10.5281/zenodo.21610852)
 [![Security scan](https://img.shields.io/badge/CI-bandit%20%2B%20pip--audit%20%2B%20semgrep-22c55e?style=flat-square)](.github/workflows/security-scan.yml)
 [![No medical device](https://img.shields.io/badge/not-a%20medical%20device-dc2626?style=flat-square)](frontend/public/terms.html)
 
@@ -394,19 +395,26 @@ Pull requests welcome. Before opening one:
 
 If you publish results obtained with uSTAT, please cite the tool:
 
-> Hoşoğlu Y. *uSTAT — browser-based statistical analysis platform.*
-> https://ustat.drtr.uk (accessed YYYY-MM-DD).
+> Hoşoğlu Y, Hoşoğlu A. *uSTAT — browser-based statistical analysis platform.*
+> Version 3.3.0. Zenodo; 2026. doi:10.5281/zenodo.21610852
 
 BibTeX:
 
 ```bibtex
 @software{ustat,
-  author  = {Hoşoğlu, Yusuf},
-  title   = {uSTAT — browser-based statistical analysis platform},
-  url     = {https://ustat.drtr.uk},
-  year    = {2026}
+  author    = {Hoşoğlu, Yusuf and Hoşoğlu, Ayşe},
+  title     = {uSTAT — browser-based statistical analysis platform},
+  version   = {3.3.0},
+  doi       = {10.5281/zenodo.21610852},
+  url       = {https://ustat.drtr.uk},
+  publisher = {Zenodo},
+  year      = {2026}
 }
 ```
+
+`10.5281/zenodo.21610852` is the concept DOI — it always resolves to the most
+recent release. To cite the exact version you ran, use that release's own DOI
+(v3.3.0 is `10.5281/zenodo.21610853`), which is listed on the Zenodo record.
 
 ---
 

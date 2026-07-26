@@ -11,6 +11,14 @@ authors:
     family-names: Hoşoğlu
 repository-code: "https://github.com/afstudy20-gif/ustat"
 url: "https://ustat.drtr.uk"
+doi: 10.5281/zenodo.21610852
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.21610852
+    description: "Concept DOI — always resolves to the latest release"
+  - type: doi
+    value: 10.5281/zenodo.21610853
+    description: "Archived snapshot of version 3.3.0"
 abstract: >-
   uSTAT is a free, browser-based statistical analysis platform aimed at
   clinicians, biostatisticians, and medical researchers. It spans hypothesis
@@ -66,5 +74,7 @@ preferred-citation:
     - given-names: Ayşe
       family-names: Hoşoğlu
   year: 2026
+  version: "3.3.0"
+  doi: 10.5281/zenodo.21610852
   url: "https://ustat.drtr.uk"
   repository-code: "https://github.com/afstudy20-gif/ustat"

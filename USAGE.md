@@ -337,7 +337,7 @@ The matched cohort from PSM is also stored as a session under
 | **Code tab is missing**                                                                    | The deployment owner has not set `ENABLE_CODE_RUNNER=1`. Off by default in production. |
 
 If something else breaks, open an issue at
-<https://github.com/afstudy20-gif/wiz3/issues> with the steps to reproduce,
+<https://github.com/afstudy20-gif/ustat/issues> with the steps to reproduce,
 the browser console output, and (if relevant) a minimal anonymised dataset.
 
 ---

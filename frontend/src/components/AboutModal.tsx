@@ -2,6 +2,9 @@ import { X } from "lucide-react";
 
 const VERSION = "3.3.0";
 const BUILD = 330;
+// Zenodo concept DOI — resolves to the most recent release, so it does not
+// need bumping per version. Each release also gets its own version DOI.
+const CONCEPT_DOI = "10.5281/zenodo.21610852";
 
 const CHANGELOG = [
   { ver: "3.3.0", date: "2026-07-26", notes: "Statistical-correctness release. Several reported numbers were wrong and are now fixed, each with a regression test: (1) the independent t-test reported the pooled df (n1+n2-2) even when t and p came from Welch, so the reported triple was internally inconsistent - p could not be recovered from the reported t and df; df now follows the test that produced it and a df_method field states which was used. (2) The equal_var request field was accepted and then ignored - Levene alone chose Student vs Welch; a method: auto|student|welch parameter now drives the choice (precedence method > equal_var > Levene) and the response reports variance_assumption and how it was selected. (3) The generated R snippet hardcoded var.equal = TRUE even for a Welch result, so it did not reproduce the reported numbers; it now matches the test that ran. (4) Levene's assumption text claimed 'using Welch correction' for one-way ANOVA, whose omnibus F is the classic equal-variance f_oneway - only the post-hoc switches to Games-Howell; each caller now states what it actually applies. (5) Cochran-Armitage ordered word-labelled exposures alphabetically with no warning, so Low/Medium/High became High/Low/Medium and the trend reversed (Z = -4.02 'decreasing' where the truth was +6.71 'increasing', both significant); adds an explicit level_order field, a warning on the alphabetical fallback, and a UI control. (6) rotation='promax' was a guaranteed 500 - np.diag on a 2-D array returns a read-only view, so the zero-guard assignment always raised; one of the three advertised rotations had never worked. (7) EFA was fitted on raw columns while KMO, Bartlett and the eigenvalues used the correlation matrix, so communalities came back above 1 and uniqueness negative; standardising first makes them proportions again and scale-invariant. (8) The joint model counted measurement rows as subjects, inflating n, the BIC sample size and fitting the Cox part on duplicated subjects (AIC 34004 -> 1689). (9) The survival ML benchmark scored the boosted model on its own training rows and presented that beside the Cox value (apparent 0.954 vs cross-validated 0.472); apparent figures are now labelled, an overfitting warning fires, and the UI leads with the cross-validated number. (10) Log-rank returned only p and now carries chi2 and df. (11) RMST Greenwood SE and contrast p corrected. Error contracts: five endpoints turned user-input problems into 500s with no detail (survival external validation, ML benchmark, PSM, IPTW, frailty convergence) and now return a readable 400. Newly reachable from the UI, all previously backend-only: shared frailty, NRI/IDI reclassification, external validation (survival), MNAR sensitivity, the causal-sensitivity suite, the survival ML benchmark, integrated external-validation + DCA, and multi-state models with landmark dynamic prediction. Performance: opening a 1000 x 125 sheet took ~6s; the grid now virtualises rows (first row 5046ms -> 1367ms, DOM nodes 255,759 -> 13,953). New: an LLM agent that drives the statistics API (POST /api/agent/run). Testing: reference cross-validation against SciPy / statsmodels / lifelines for the statistics a manuscript cites, plus first-ever coverage for DeLong ROC comparison, multi-curve and combined ROC, PCA/EFA, Cochran-Armitage, permutation importance and DataTable - which is how the promax and communality defects were found. Backend 823 -> 962 tests, frontend 309 -> 339. All user-facing text is now English." },
@@ -315,7 +318,23 @@ export default function AboutModal({ onClose }: { onClose: () => void }) {
             <span className="text-indigo-300">·</span>
             <a href="/.well-known/security.txt" target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline">security.txt</a>
             <span className="text-indigo-300">·</span>
-            <a href="https://github.com/afstudy20-gif/wiz3" target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline">Source (GitHub)</a>
+            <a href="https://github.com/afstudy20-gif/ustat" target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline">Source (GitHub)</a>
+          </div>
+
+          {/* ── How to cite ─────────────────────────────────────────────────── */}
+          <div className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 space-y-1">
+            <p className="font-semibold text-gray-900 uppercase tracking-wider text-[10px]">How to cite</p>
+            <p className="text-[11px] text-gray-700 leading-relaxed">
+              Hoşoğlu Y, Hoşoğlu A. uSTAT — browser-based statistical analysis platform.
+              Version {VERSION}. Zenodo; 2026.{" "}
+              <a href={`https://doi.org/${CONCEPT_DOI}`} target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline">
+                doi:{CONCEPT_DOI}
+              </a>
+            </p>
+            <p className="text-[10px] text-gray-500">
+              That DOI always resolves to the latest release. To cite the exact version you ran,
+              use its own DOI from the Zenodo record.
+            </p>
           </div>
 
           {/* ── Validation status (prominent) ──────────────────────────────── */}
@@ -398,7 +417,7 @@ export default function AboutModal({ onClose }: { onClose: () => void }) {
           {/* ── Privacy & Data Handling ────────────────────────────────────── */}
           <Section title="Privacy & data handling">
             <p className="text-xs text-gray-700 leading-relaxed">
-              uSTAT is a <strong>server-side</strong> application: your file is sent to our backend, parsed in RAM, and bound to a session ID. It is <strong>never written to disk</strong> and is automatically discarded 30 minutes after your last activity (<code>SESSION_TTL_SECONDS = 1800</code> in <code>backend/services/store.py</code>). No account, no persistent identifiers, no logs of your data. Stack and code are <a href="https://github.com/afstudy20-gif/wiz3" className="text-indigo-600 hover:underline" target="_blank" rel="noreferrer">public on GitHub</a> for independent review.
+              uSTAT is a <strong>server-side</strong> application: your file is sent to our backend, parsed in RAM, and bound to a session ID. It is <strong>never written to disk</strong> and is automatically discarded 30 minutes after your last activity (<code>SESSION_TTL_SECONDS = 1800</code> in <code>backend/services/store.py</code>). No account, no persistent identifiers, no logs of your data. Stack and code are <a href="https://github.com/afstudy20-gif/ustat" className="text-indigo-600 hover:underline" target="_blank" rel="noreferrer">public on GitHub</a> for independent review.
             </p>
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mt-2 space-y-1.5">
               <p className="text-xs font-semibold text-amber-900 flex items-center gap-1.5">
@@ -416,7 +435,7 @@ export default function AboutModal({ onClose }: { onClose: () => void }) {
               <a href="/terms.html" target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline">Terms of Use →</a>
               <a href="/security.html" target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline">Security Overview →</a>
               <a href="/.well-known/security.txt" target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline">security.txt →</a>
-              <a href="https://github.com/afstudy20-gif/wiz3" target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline">Source (GitHub) →</a>
+              <a href="https://github.com/afstudy20-gif/ustat" target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline">Source (GitHub) →</a>
             </div>
             <p className="text-[10px] text-gray-500 mt-2">
               Vulnerability disclosure: <a href="mailto:security@drtr.uk?subject=%5BuSTAT-security%5D" className="text-indigo-600 hover:underline">security@drtr.uk</a> (use the <code>[uSTAT-security]</code> subject prefix). We acknowledge within 5 business days. General contact: <a href="mailto:contact@drtr.uk" className="text-indigo-600 hover:underline">contact@drtr.uk</a>.
@@ -426,8 +445,10 @@ export default function AboutModal({ onClose }: { onClose: () => void }) {
           {/* ── Changelog ──────────────────────────────────────────────────── */}
           <Section title="Changelog">
             <div className="space-y-2">
+              {/* Four version numbers (2.2.0-2.5.0) were each used twice, so
+                  ver alone is not a unique key — pair it with the date. */}
               {CHANGELOG.map((entry, i) => (
-                <div key={entry.ver} className={`flex gap-3 text-xs ${i === 0 ? "text-gray-800" : "text-gray-500"}`}>
+                <div key={`${entry.ver}-${entry.date}`} className={`flex gap-3 text-xs ${i === 0 ? "text-gray-800" : "text-gray-500"}`}>
                   <div className="flex-shrink-0 w-24 flex items-start gap-1.5">
                     <span className={`font-mono font-semibold ${i === 0 ? "text-indigo-600" : ""}`}>v{entry.ver}</span>
                     {i === 0 && <span className="text-[8px] bg-green-100 text-green-700 px-1 rounded font-semibold">NEW</span>}
