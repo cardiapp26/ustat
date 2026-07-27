@@ -278,6 +278,12 @@ function DataTableBody({ session }: { session: Session }) {
   const [renameVal, setRenameVal] = useState("");
   const renameRef = useRef<HTMLInputElement>(null);
 
+  // Hover tooltip for a truncated column name. The header is narrow and long
+  // names are clipped, so the full text is otherwise unreadable anywhere. It
+  // is position:fixed because the grid scrolls inside overflow-auto, which
+  // would clip anything positioned within the cell.
+  const [nameTip, setNameTip] = useState<{ text: string; x: number; y: number } | null>(null);
+
   // Right-click context menu (columns)
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; col: string } | null>(null);
   const [openSub, setOpenSub] = useState<string | null>(null);  // expanded submenu group
@@ -1782,6 +1788,22 @@ function DataTableBody({ session }: { session: Session }) {
                                   : "text-gray-700"
                               }`}
                               onDoubleClick={() => startRename(col.name)}
+                              onMouseEnter={(e) => {
+                                const el = e.currentTarget;
+                                // Only when the text is actually clipped —
+                                // a tooltip repeating a fully visible name is
+                                // noise.
+                                if (el.scrollWidth <= el.clientWidth) return;
+                                const r = el.getBoundingClientRect();
+                                setNameTip({
+                                  text: col.label && col.label !== col.name
+                                    ? `${col.name} — ${col.label}`
+                                    : col.name,
+                                  x: r.left,
+                                  y: r.bottom + 6,
+                                });
+                              }}
+                              onMouseLeave={() => setNameTip(null)}
                               title={col.analysis_excluded ? "Excluded from analysis · double-click to rename" : "Double-click to rename"}>
                               {col.name}
                             </span>
@@ -2557,6 +2579,22 @@ function DataTableBody({ session }: { session: Session }) {
           >
             ✕
           </button>
+        </div>
+      )}
+
+      {/* Full column name for a header whose text is clipped. Fixed-position
+          and pointer-events-none so it can escape the grid's scroll clipping
+          without ever swallowing a click meant for the header. */}
+      {nameTip && (
+        <div
+          role="tooltip"
+          className="fixed z-50 pointer-events-none max-w-sm rounded-lg bg-gray-900/95 px-2.5 py-1.5 text-xs text-white shadow-lg"
+          style={{
+            left: Math.min(nameTip.x, window.innerWidth - 320),
+            top: nameTip.y,
+          }}
+        >
+          {nameTip.text}
         </div>
       )}
     </div>

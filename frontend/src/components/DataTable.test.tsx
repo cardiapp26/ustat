@@ -64,3 +64,62 @@ describe('DataTable row virtualisation', () => {
     expect(bodyRows()).toBe(0)
   })
 })
+
+describe('DataTable column-name tooltip', () => {
+  /** jsdom reports 0 for both widths, so truncation has to be simulated. */
+  function withClippedText(clipped: boolean) {
+    const proto = window.HTMLElement.prototype
+    const scroll = Object.getOwnPropertyDescriptor(proto, 'scrollWidth')
+    const client = Object.getOwnPropertyDescriptor(proto, 'clientWidth')
+    Object.defineProperty(proto, 'scrollWidth', { configurable: true, get: () => (clipped ? 300 : 100) })
+    Object.defineProperty(proto, 'clientWidth', { configurable: true, get: () => 100 })
+    return () => {
+      if (scroll) Object.defineProperty(proto, 'scrollWidth', scroll)
+      if (client) Object.defineProperty(proto, 'clientWidth', client)
+    }
+  }
+
+  const longName = 'Cardiac death-follow up (in-hospital and 30 day)'
+
+  function sessionWithLongName(): Session {
+    const columns: ColMeta[] = [{ name: longName, dtype: 'int64', kind: 'categorical' }]
+    return makeSession({ columns, preview: [{ [longName]: 1 }], rows: 1 })
+  }
+
+  it('shows the full name when the header text is clipped', async () => {
+    const restore = withClippedText(true)
+    try {
+      installSession(sessionWithLongName())
+      const { default: userEvent } = await import('@testing-library/user-event')
+      const user = userEvent.setup()
+      render(<DataTable />)
+
+      expect(screen.queryByRole('tooltip')).toBeNull()
+      // Grab the header span first: once the tooltip opens it carries the
+      // same text, so a fresh query would match both.
+      const header = screen.getByText(longName)
+      await user.hover(header)
+      expect(screen.getByRole('tooltip')).toHaveTextContent(longName)
+
+      await user.unhover(header)
+      expect(screen.queryByRole('tooltip')).toBeNull()
+    } finally {
+      restore()
+    }
+  })
+
+  it('stays quiet when the name already fits', async () => {
+    const restore = withClippedText(false)
+    try {
+      installSession(sessionWithLongName())
+      const { default: userEvent } = await import('@testing-library/user-event')
+      const user = userEvent.setup()
+      render(<DataTable />)
+
+      await user.hover(screen.getByText(longName))
+      expect(screen.queryByRole('tooltip')).toBeNull()
+    } finally {
+      restore()
+    }
+  })
+})
