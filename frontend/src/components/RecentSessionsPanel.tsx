@@ -13,7 +13,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { Clock, Database, RotateCcw, Trash2, Copy, Sparkles, FileText, HardDrive, Cloud, CloudDownload } from "lucide-react";
+import { Clock, Database, RotateCcw, Trash2, Copy, Pencil, Sparkles, FileText, HardDrive, Cloud, CloudDownload } from "lucide-react";
 import api from "../api";
 import { useStore } from "../store";
 import {
@@ -28,6 +28,8 @@ import {
   getStorageEstimate,
   clearAllRecentSessions,
   duplicateRecentSession,
+  renameRecentSession,
+  upsertRecentSession,
   TRASH_TTL_MS,
   type RecentSessionMeta,
 } from "../lib/sessionDb";
@@ -75,12 +77,15 @@ const TAB_LABELS: Record<string, string> = {
 export default function RecentSessionsPanel() {
   const setSession = useStore((s) => s.setSession);
   const setActiveTab = useStore((s) => s.setActiveTab);
+  const activeSessionId = useStore((s) => s.session?.session_id ?? null);
   const [items, setItems] = useState<RecentSessionMeta[]>([]);
   const [trashedItems, setTrashedItems] = useState<RecentSessionMeta[]>([]);
   const [trashOpen, setTrashOpen] = useState(false);
   const [estimate, setEstimate] = useState<{ count: number; bytes: number; capCount: number; capBytes: number } | null>(null);
   const [restoring, setRestoring] = useState<string | null>(null);
   const [duplicating, setDuplicating] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   // Cloud sync state — refreshes when the sync motor emits (sign-in/out,
@@ -158,11 +163,55 @@ export default function RecentSessionsPanel() {
 
   const onDuplicate = async (id: string) => {
     setDuplicating(id);
+    setError(null);
     try {
+      // A card holds the last autosaved snapshot, which for the session the
+      // user currently has open can trail their edits by up to the autosave
+      // interval — long enough that rows they just deleted reappear in the
+      // copy. Refresh that one row from the server first so the copy is of
+      // what they are actually looking at. Cards for other sessions have no
+      // live state to refresh; their stored snapshot is all there is.
+      const row = items.find((r) => r.id === id);
+      if (row?.serverSessionId && row.serverSessionId === activeSessionId) {
+        const res = await api.get(`/api/sessions/${row.serverSessionId}/save_session`);
+        const payload = typeof res.data === "string" ? res.data : JSON.stringify(res.data);
+        await upsertRecentSession({
+          serverSessionId: row.serverSessionId,
+          name: row.name,
+          payload,
+          nRows: row.nRows,
+          nCols: row.nCols,
+          activeTab: row.activeTab,
+          source: "manual",
+        });
+      }
       await duplicateRecentSession(id);
       await reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not duplicate the session");
     } finally {
       setDuplicating(null);
+    }
+  };
+
+  const startRename = (id: string, current: string) => {
+    setRenamingId(id);
+    setRenameDraft(current);
+    setError(null);
+  };
+
+  const commitRename = async () => {
+    if (!renamingId) return;
+    const id = renamingId;
+    const next = renameDraft.trim();
+    const current = items.find((r) => r.id === id)?.name;
+    setRenamingId(null);
+    if (!next || next === current) return;
+    try {
+      await renameRecentSession(id, next);
+      await reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Rename failed");
     }
   };
 
@@ -277,12 +326,27 @@ export default function RecentSessionsPanel() {
             <div className="flex items-start justify-between mb-2 gap-2">
               <div className="flex items-center gap-1.5 min-w-0 flex-1">
                 <FileText size={13} className="text-indigo-500 flex-shrink-0" />
-                <span
-                  className="text-xs font-semibold text-gray-800 truncate"
-                  title={it.name}
-                >
-                  {it.name}
-                </span>
+                {renamingId === it.id ? (
+                  <input
+                    autoFocus
+                    className="text-xs font-semibold text-gray-800 border border-indigo-400 rounded px-1 py-0.5 w-full focus:outline-none"
+                    value={renameDraft}
+                    onChange={(e) => setRenameDraft(e.target.value)}
+                    onBlur={commitRename}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void commitRename();
+                      if (e.key === "Escape") setRenamingId(null);
+                    }}
+                  />
+                ) : (
+                  <span
+                    className="text-xs font-semibold text-gray-800 truncate cursor-text"
+                    title={`${it.name}\nDouble-click to rename`}
+                    onDoubleClick={() => startRename(it.id, it.name)}
+                  >
+                    {it.name}
+                  </span>
+                )}
               </div>
               {it.source === "auto" && (
                 <span
@@ -324,6 +388,13 @@ export default function RecentSessionsPanel() {
               >
                 <RotateCcw size={11} />
                 {restoring === it.id ? "Loading…" : "Resume"}
+              </button>
+              <button
+                onClick={() => startRename(it.id, it.name)}
+                className="text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 px-2 py-1.5 rounded-lg transition-colors"
+                title="Rename"
+              >
+                <Pencil size={12} />
               </button>
               <button
                 onClick={() => onDuplicate(it.id)}
