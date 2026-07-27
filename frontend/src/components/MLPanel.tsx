@@ -307,6 +307,20 @@ export default function MLPanel() {
 
   return (
     <div className="space-y-3">
+      {/* This panel has not been through the validation the rest of the app
+          has. Say so where the user is about to act on a number, not only in
+          the docs. */}
+      <div className="bg-amber-50 border-l-4 border-amber-500 rounded-r-lg p-3">
+        <p className="text-xs font-semibold text-amber-900 flex items-center gap-1.5">
+          <span aria-hidden="true">🚧</span> Under development
+        </p>
+        <p className="text-xs text-amber-800 mt-1 leading-relaxed">
+          Machine learning is not yet tested to the standard of the other panels and its
+          output has not been checked against a reference implementation. Treat any figure
+          here as exploratory — do not report it without verifying it in an established
+          package first.
+        </p>
+      </div>
       <ThreeCol
         storageKey="MLPanel"
         left={

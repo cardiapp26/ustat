@@ -35,6 +35,15 @@ const baseResult = {
 }
 
 describe('MLPanel', () => {
+  it('warns that the panel is under development before any result is shown', () => {
+    installSession()
+    render(<MLPanel />)
+    expect(screen.getByText(/under development/i)).toBeInTheDocument()
+    expect(
+      screen.getByText(/do not report it without verifying it in an established package/i),
+    ).toBeInTheDocument()
+  })
+
   it('renders without crashing when there is no active session', () => {
     clearSession()
     const { container } = render(<MLPanel />)

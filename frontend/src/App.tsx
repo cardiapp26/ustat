@@ -429,12 +429,18 @@ function ModelsCombo() {
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       <div className="flex gap-1 px-4 pt-2 pb-1 bg-tint border-b border-line flex-shrink-0">
-        {([["regression", "Regression"], ["survival", "Survival Advanced"], ["rcs", "Restricted Cubic Spline"], ["ml", "Machine Learning"], ["timeseries", "Time Series"], ["validation", "Validation (internal / external)"]] as const).map(([id, label]) => (
+        {([["regression", "Regression"], ["survival", "Survival Advanced"], ["rcs", "Restricted Cubic Spline"], ["ml", "Machine Learning", "dev"], ["timeseries", "Time Series"], ["validation", "Validation (internal / external)"]] as const).map(([id, label, badge]) => (
           <button key={id} onClick={() => setSub(id)}
-            className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+            className={`px-3 py-1 rounded-md text-xs font-medium transition-colors inline-flex items-center gap-1.5 ${
               sub === id ? "bg-surface text-ink-600 shadow-card border border-line" : "text-slate-500 hover:text-slate-700 hover:bg-chip"
             }`}>
             {label}
+            {badge && (
+              <span className="text-[8px] font-bold uppercase px-1 py-0.5 rounded bg-amber-100 text-amber-700 border border-amber-300"
+                title="Under development — not yet tested to the standard of the other panels">
+                {badge}
+              </span>
+            )}
           </button>
         ))}
       </div>
