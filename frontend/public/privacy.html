@@ -47,7 +47,7 @@
   <ul>
     <li>It is parsed in RAM by the backend and bound to a session identifier (<code>session_id</code>).</li>
     <li>It is <b>never written to disk</b>. The dataframe lives only in process memory.</li>
-    <li>It is automatically cleared from memory <b>30 minutes after your last activity</b> (configurable: <code>SESSION_TTL_SECONDS = 1800</code> in <code>backend/services/store.py</code>).</li>
+    <li>It is automatically cleared from memory <b>30 minutes after your last activity</b> — enforced by a reaper thread that runs every 30 seconds regardless of traffic, so the limit holds on an idle server too. The operator can shorten it with the <code>SESSION_TTL_SECONDS</code> environment variable (default 1800; see <code>backend/services/store.py</code>).</li>
     <li>If the server is restarted, all in-memory data is lost — there is no persistent storage.</li>
   </ul>
   <p>

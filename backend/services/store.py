@@ -152,11 +152,31 @@ def _autosave_worker() -> None:
             pass  # Autosave must never crash the request-handling thread.
 
 
+def _reaper_worker() -> None:
+    """Expire sessions on a timer, independent of request traffic.
+
+    _cleanup_old_sessions() is otherwise only reached from save(), so on a
+    server nobody is currently uploading to, an expired session stayed in RAM
+    indefinitely — the Privacy page promises it is cleared 30 minutes after
+    the user's last activity, and without this thread that promise held only
+    if some other user happened to upload a file.
+    """
+    while True:
+        time.sleep(REAPER_INTERVAL_SECONDS)
+        try:
+            _cleanup_old_sessions(force=True)
+        except Exception:
+            pass  # Reaping must never take down the process.
+
+
 # Only spin up the disk-flush thread when the operator has opted in. Off by
 # default → the thread never runs and no session data is written to disk.
 if DISK_CACHE_ENABLED:
     _autosave_thread = threading.Thread(target=_autosave_worker, daemon=True)
     _autosave_thread.start()
+
+# The reaper thread is started at the bottom of this module, once
+# _cleanup_old_sessions and the TTL constants it reads are defined.
 
 
 def load_persisted_sessions() -> None:
@@ -209,17 +229,30 @@ def purge_session(session_id: str) -> None:
     with _lock:
         _purge_locked(session_id)
 
-# Session configuration
-SESSION_TTL_SECONDS = 1800  # 30 minutes
-MAX_SESSIONS = 20  # Limit concurrent sessions
+# Session configuration. The TTL is a privacy guarantee stated on the public
+# Privacy and Security pages, so it is read from the environment rather than
+# being a constant those pages describe as "configurable" without it being so.
+SESSION_TTL_SECONDS = int(os.environ.get("SESSION_TTL_SECONDS", str(30 * 60)))
+MAX_SESSIONS = int(os.environ.get("MAX_SESSIONS", "20"))  # concurrent sessions
 _last_cleanup = time.time()
 
+# How often the reaper thread below wakes. Must stay well under the TTL, and
+# under the 60s interval at which an open browser tab refreshes its session,
+# or a live session could be reaped between two heartbeats.
+REAPER_INTERVAL_SECONDS = 30
 
-def _cleanup_old_sessions() -> None:
-    """Remove sessions older than TTL, keeping only the most recent MAX_SESSIONS."""
+
+def _cleanup_old_sessions(force: bool = False) -> None:
+    """Remove sessions older than TTL, keeping only the most recent MAX_SESSIONS.
+
+    force=True skips the once-a-minute throttle. The throttle exists to keep
+    this cheap on the request path (save() calls it); the reaper thread has no
+    such concern and must not be silently skipped because a request happened
+    to run the cleanup moments earlier.
+    """
     global _last_cleanup
     now = time.time()
-    if now - _last_cleanup < 60:  # Cleanup every 60 seconds max
+    if not force and now - _last_cleanup < 60:  # Cleanup every 60 seconds max
         return
 
     _last_cleanup = now
@@ -623,3 +656,9 @@ def get_df(session_id: str) -> "pd.DataFrame":
     if df is None:
         raise HTTPException(status_code=404, detail="Session not found")
     return df
+
+
+# Started last, so _cleanup_old_sessions and the TTL constants it reads are
+# already bound by the time the thread's first tick fires.
+_reaper_thread = threading.Thread(target=_reaper_worker, daemon=True, name="session-reaper")
+_reaper_thread.start()

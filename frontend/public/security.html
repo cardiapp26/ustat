@@ -44,7 +44,7 @@
   <h2>2. Data handling</h2>
   <ul>
     <li>Uploaded files are parsed in RAM. They are <b>never written to disk</b>.</li>
-    <li>Backend session TTL is <b>30 minutes of inactivity</b> (<code>SESSION_TTL_SECONDS = 1800</code> in <code>backend/services/store.py</code>). Expired sessions are evicted by an in-process cleaner.</li>
+    <li>Backend session TTL is <b>30 minutes of inactivity</b> (<code>SESSION_TTL_SECONDS = 1800</code> in <code>backend/services/store.py</code>). A background reaper thread checks every 30 seconds and evicts expired sessions whether or not any request is in flight, so an idle server clears them on the same schedule as a busy one.</li>
     <li>Maximum concurrent sessions is capped (<code>MAX_SESSIONS = 20</code>); oldest are evicted on overflow.</li>
     <li>No long-term storage. No backup. No replication.</li>
   </ul>
