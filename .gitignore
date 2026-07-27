@@ -59,3 +59,7 @@ src-tauri/binaries/
 # Hypothesis
 .hypothesis/
 
+
+# QA agent logs and caches — fixtures below are tracked, these are not
+qa/logs/
+qa/__pycache__/
