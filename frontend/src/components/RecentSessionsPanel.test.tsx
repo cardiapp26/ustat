@@ -20,6 +20,7 @@ vi.mock('../lib/sessionDb', () => ({
   subscribeSessions: vi.fn(() => () => {}),
   getStorageEstimate: vi.fn(),
   clearAllRecentSessions: vi.fn(),
+  duplicateRecentSession: vi.fn(),
 }))
 
 vi.mock('../lib/cloudSync', () => ({
@@ -151,5 +152,24 @@ describe('RecentSessionsPanel', () => {
     render(<RecentSessionsPanel />)
 
     await waitFor(() => expect(screen.getByText(/import from drive/i)).toBeInTheDocument())
+  })
+
+  it('duplicates a session without touching the original', async () => {
+    mockLists([baseMeta])
+    vi.mocked(sessionDb.duplicateRecentSession).mockResolvedValue({
+      ...baseMeta, id: 'sess-2', name: 'patients.csv (copy)',
+    })
+    const user = userEvent.setup()
+    render(<RecentSessionsPanel />)
+    await screen.findByText('patients.csv')
+
+    await user.click(screen.getByTitle(/duplicate/i))
+
+    await waitFor(() =>
+      expect(sessionDb.duplicateRecentSession).toHaveBeenCalledWith('sess-1'),
+    )
+    // The copy must not be made by trashing or overwriting the source.
+    expect(sessionDb.trashSession).not.toHaveBeenCalled()
+    expect(sessionDb.purgeSession).not.toHaveBeenCalled()
   })
 })

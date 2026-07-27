@@ -13,7 +13,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { Clock, Database, RotateCcw, Trash2, Sparkles, FileText, HardDrive, Cloud, CloudDownload } from "lucide-react";
+import { Clock, Database, RotateCcw, Trash2, Copy, Sparkles, FileText, HardDrive, Cloud, CloudDownload } from "lucide-react";
 import api from "../api";
 import { useStore } from "../store";
 import {
@@ -27,6 +27,7 @@ import {
   subscribeSessions,
   getStorageEstimate,
   clearAllRecentSessions,
+  duplicateRecentSession,
   TRASH_TTL_MS,
   type RecentSessionMeta,
 } from "../lib/sessionDb";
@@ -79,6 +80,7 @@ export default function RecentSessionsPanel() {
   const [trashOpen, setTrashOpen] = useState(false);
   const [estimate, setEstimate] = useState<{ count: number; bytes: number; capCount: number; capBytes: number } | null>(null);
   const [restoring, setRestoring] = useState<string | null>(null);
+  const [duplicating, setDuplicating] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   // Cloud sync state — refreshes when the sync motor emits (sign-in/out,
@@ -151,6 +153,16 @@ export default function RecentSessionsPanel() {
       setError(e instanceof Error ? e.message : "Could not load the snapshot");
     } finally {
       setRestoring(null);
+    }
+  };
+
+  const onDuplicate = async (id: string) => {
+    setDuplicating(id);
+    try {
+      await duplicateRecentSession(id);
+      await reload();
+    } finally {
+      setDuplicating(null);
     }
   };
 
@@ -312,6 +324,14 @@ export default function RecentSessionsPanel() {
               >
                 <RotateCcw size={11} />
                 {restoring === it.id ? "Loading…" : "Resume"}
+              </button>
+              <button
+                onClick={() => onDuplicate(it.id)}
+                disabled={duplicating === it.id}
+                className="text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 disabled:opacity-50 px-2 py-1.5 rounded-lg transition-colors"
+                title="Duplicate — makes an independent copy you can edit without touching this one"
+              >
+                <Copy size={12} />
               </button>
               <button
                 onClick={() => onDelete(it.id)}

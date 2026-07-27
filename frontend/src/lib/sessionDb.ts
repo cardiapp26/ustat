@@ -39,6 +39,11 @@ export interface RecentSessionMeta {
   // moved to the Trash bin at that epoch ms. After TRASH_TTL_MS it is purged
   // permanently (local + Drive) by purgeExpiredTrash().
   deletedAt?: number | null;
+  // Set on rows the user deliberately created with Duplicate. A copy is
+  // byte-identical to its source, so it matches the rows x cols x bytes
+  // fingerprint dedupeByName() uses and would otherwise delete the original
+  // the moment the list was next read.
+  userCopy?: boolean;
 }
 
 /** Full record stored in IndexedDB — extends the metadata with the
@@ -155,6 +160,11 @@ async function dedupeByName(): Promise<void> {
   const seenFp = new Set<string>();
   const stale: string[] = [];
   for (const r of rows) {
+    // A user-made copy is exempt in both directions: it is never deleted as
+    // stale, and it never claims the fingerprint slot — otherwise, being the
+    // newer row, it would shadow the original it was copied from and the
+    // dedupe would silently delete the source.
+    if (r.userCopy) continue;
     const nameKey = r.name || r.id;
     const fpKey = `${r.nRows ?? "?"}x${r.nCols ?? "?"}:${r.sizeBytes}`;
     // Name is the primary identity. A real fingerprint collision (two
@@ -284,6 +294,44 @@ export async function clearAllRecentSessions(): Promise<void> {
  *  any callers that still want immediate removal rather than trash. */
 export async function deleteRecentSession(id: string): Promise<void> {
   await getDb().sessions.delete(id);
+}
+
+/** Copy a saved session into a new, independent row.
+ *
+ *  Deliberately does NOT go through upsertRecentSession: that function
+ *  dedupes by serverSessionId and then by name, so a copy made through it
+ *  would match the original and overwrite the very row being duplicated.
+ *  The copy is written directly with a fresh id, a free name, and no
+ *  serverSessionId — it is a snapshot on disk, not a second handle on the
+ *  live server session, which would otherwise let edits in one leak into
+ *  the other's autosave.
+ */
+export async function duplicateRecentSession(
+  id: string,
+): Promise<RecentSessionMeta | undefined> {
+  const db = getDb();
+  const source = await db.sessions.get(id);
+  if (!source) return undefined;
+
+  const taken = new Set((await db.sessions.toArray()).map((s) => s.name));
+  const base = `${source.name} (copy)`;
+  let name = base;
+  for (let i = 2; taken.has(name); i++) name = `${source.name} (copy ${i})`;
+
+  const rec: RecentSessionRecord = {
+    ...source,
+    id: newLocalId(),
+    serverSessionId: undefined,
+    name,
+    savedAt: Date.now(),
+    source: "manual",
+    userCopy: true,
+  };
+  await db.sessions.put(rec);
+  await pruneToCap();
+  const { payload: _ignored, ...meta } = rec;
+  void _ignored;
+  return meta;
 }
 
 /** Upsert a session blob, deduping so the same logical file occupies a
