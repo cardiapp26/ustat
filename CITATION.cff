@@ -33,8 +33,11 @@ abstract: >-
   unmeasured confounding. It also provides diagnostic accuracy (ROC with
   DeLong comparison, calibration, decision-curve analysis, NRI/IDI),
   method agreement, meta-analysis, missing-data handling with MICE and MNAR
-  sensitivity, factor analysis, machine learning, time series, Bayesian
-  tests, Table 1, and power calculations. A defined set of core tests
+  sensitivity, factor analysis, time series, Bayesian tests, Table 1, and
+  power calculations. Tree-ensemble machine learning is present but marked
+  under development: it has not been checked against a reference
+  implementation and its output should be treated as exploratory. A defined
+  set of core tests
   (t-test, Mann-Whitney, Kruskal-Wallis, one-way ANOVA, correlation,
   chi-square, Fisher, logistic odds ratios, Cox hazard ratios and log-rank)
   is checked for numerical agreement with the SciPy, statsmodels and
@@ -44,8 +47,11 @@ abstract: >-
   covers correct use of those libraries rather than constituting independent
   validation of the methods themselves. Every analysis emits
   publication-ready methods text plus the equivalent R code.
-  Data are held in memory on the server with a short TTL and no persistent
-  storage by default.
+  Statistical computation runs server-side, so an uploaded dataset is held
+  in the backend's process memory; it is not written to disk in the default
+  configuration and is cleared 30 minutes after the user's last activity by
+  a reaper thread that runs irrespective of traffic. Both the retention
+  period and the opt-in disk cache are set by environment variable.
 keywords:
   - biostatistics
   - clinical-statistics
