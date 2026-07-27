@@ -1,11 +1,26 @@
-"""Cross-validate uSTAT's headline statistics against reference implementations.
+"""Check uSTAT's headline statistics against the routines that produce them.
 
 A user found the Welch-df defect by comparing uSTAT against R: the reported
 `df` did not belong to the test that produced `t` and `p`. These tests guard
-that whole class of defect for the statistics a manuscript actually cites —
-each reported number is checked against scipy / statsmodels / lifelines, and
-where a test reports a statistic, its df and its p, the three are also checked
-for internal consistency (p recomputed from the reported statistic and df).
+that whole class of defect for the statistics a manuscript actually cites.
+
+Two distinct checks, with distinct strength:
+
+1. Numerical agreement with scipy / statsmodels / lifelines. uSTAT *computes*
+   with those libraries, so this is not independent validation of the methods
+   — it verifies that the right data reaches the right routine and that the
+   right field comes back out. That is exactly the class the Welch-df defect
+   belonged to, and it is worth guarding, but do not describe it as
+   independent or as validating the statistical methods themselves.
+2. Internal consistency: where a test reports a statistic, its df and its p,
+   p is recomputed from the reported statistic and df. This one does not
+   depend on the reference library at all and would catch a reported triple
+   that cannot be reconciled.
+
+Independent validation means a separate implementation — R was used for that,
+and its scope is stated in the software article, not here. This file holds
+eleven test functions (twelve collected cases; correlation is parametrised
+over Pearson and Spearman); the application exposes far more analyses.
 """
 import numpy as np
 import pandas as pd

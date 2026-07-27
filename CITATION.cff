@@ -28,15 +28,22 @@ abstract: >-
   Fine-Gray competing risks, RMST, landmark analysis, shared frailty,
   recurrent events, and multi-state models with dynamic prediction.
   Causal-inference tools cover propensity score matching with Austin 2011
-  diagnostics, IPTW, instrumental variables, mediation, difference-in-
-  differences, regression discontinuity, and sensitivity analysis for
+  diagnostics, IPTW, instrumental variables, mediation,
+  difference-in-differences, regression discontinuity, and sensitivity for
   unmeasured confounding. It also provides diagnostic accuracy (ROC with
   DeLong comparison, calibration, decision-curve analysis, NRI/IDI),
   method agreement, meta-analysis, missing-data handling with MICE and MNAR
   sensitivity, factor analysis, machine learning, time series, Bayesian
-  tests, Table 1, and power calculations. Reported statistics are
-  cross-validated against SciPy, statsmodels, and lifelines, and every
-  analysis emits publication-ready methods text plus the equivalent R code.
+  tests, Table 1, and power calculations. A defined set of core tests
+  (t-test, Mann-Whitney, Kruskal-Wallis, one-way ANOVA, correlation,
+  chi-square, Fisher, logistic odds ratios, Cox hazard ratios and log-rank)
+  is checked for numerical agreement with the SciPy, statsmodels and
+  lifelines routines used to compute them, and reported test statistics are
+  additionally verified to be internally consistent, so that the quoted p
+  can be recovered from the quoted statistic and degrees of freedom. This
+  covers correct use of those libraries rather than constituting independent
+  validation of the methods themselves. Every analysis emits
+  publication-ready methods text plus the equivalent R code.
   Data are held in memory on the server with a short TTL and no persistent
   storage by default.
 keywords:
