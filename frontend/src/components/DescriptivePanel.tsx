@@ -855,6 +855,7 @@ export default function DescriptivePanel() {
   const [dropIdx,  setDropIdx]  = useState<number | null>(null);
   const [colMeta, setColMeta] = useState<ColMeta[]>([]);
   const [sparklines, setSparklines] = useState<Record<string, SparkData>>({});
+  const [nameTip, setNameTip] = useState<{ text: string; x: number; y: number } | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [summary, setSummary] = useState<ColumnSummary | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
@@ -1122,7 +1123,25 @@ export default function DescriptivePanel() {
                       ${KIND_STYLE[c.kind]?.cls ?? "bg-gray-100 text-gray-500"}`}>
                     {KIND_STYLE[c.kind]?.label ?? "?"}
                   </span>
-                  <span className="text-xs text-gray-700 truncate">{c.name}</span>
+                  {/* The list is narrow, so long names are clipped. Show the
+                      full one on hover — same behaviour as the data grid's
+                      header, and only when the text is actually cut off. */}
+                  <span
+                    className="text-xs text-gray-700 truncate"
+                    onMouseEnter={(e) => {
+                      const el = e.currentTarget;
+                      if (el.scrollWidth <= el.clientWidth) return;
+                      const r = el.getBoundingClientRect();
+                      setNameTip({
+                        text: c.label && c.label !== c.name ? `${c.name} — ${c.label}` : c.name,
+                        x: r.left,
+                        y: r.bottom + 6,
+                      });
+                    }}
+                    onMouseLeave={() => setNameTip(null)}
+                  >
+                    {c.name}
+                  </span>
                 </div>
                 {sparklines[c.name] ? (
                   <div className="flex-shrink-0 ml-1">
@@ -1393,6 +1412,19 @@ export default function DescriptivePanel() {
           </>
         )}
       </div>
+
+      {/* Full column name for a list entry whose text is clipped. Fixed and
+          pointer-events-none so it escapes the list's own scroll clipping
+          without intercepting the click that selects the column. */}
+      {nameTip && (
+        <div
+          role="tooltip"
+          className="fixed z-50 pointer-events-none max-w-sm rounded-lg bg-gray-900/95 px-2.5 py-1.5 text-xs text-white shadow-lg"
+          style={{ left: Math.min(nameTip.x, window.innerWidth - 320), top: nameTip.y }}
+        >
+          {nameTip.text}
+        </div>
+      )}
     </div>
   );
 }
