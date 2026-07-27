@@ -32,19 +32,19 @@
   </nav>
 
   <h1>Security</h1>
-  <p class="lead">Last updated: 2026-05-14 · Source repo: <a href="https://github.com/afstudy20-gif/ustat">github.com/afstudy20-gif/ustat</a></p>
+  <p class="lead">Last updated: 2026-07-27 · Source repo: <a href="https://github.com/afstudy20-gif/ustat">github.com/afstudy20-gif/ustat</a></p>
 
   <h2>1. Architecture</h2>
   <ul>
-    <li>All statistical computation runs on the <b>backend</b> (FastAPI + Python on Render).</li>
+    <li>All statistical computation runs on the <b>backend</b> (FastAPI + Python). The dataset has to reach the server because that is where pandas, SciPy, statsmodels and lifelines run — nothing is computed in your browser.</li>
     <li>The frontend is a static React build — it does NOT process the dataset.</li>
-    <li>TLS is terminated by Render at the edge. HSTS is set to one year with subdomain include.</li>
+    <li>TLS is terminated by the reverse proxy in front of the container. HSTS is set to one year with subdomain include.</li>
   </ul>
 
   <h2>2. Data handling</h2>
   <ul>
-    <li>Uploaded files are parsed in RAM. They are <b>never written to disk</b>.</li>
-    <li>Backend session TTL is <b>30 minutes of inactivity</b> (<code>SESSION_TTL_SECONDS = 1800</code> in <code>backend/services/store.py</code>). A background reaper thread checks every 30 seconds and evicts expired sessions whether or not any request is in flight, so an idle server clears them on the same schedule as a busy one.</li>
+    <li>Uploaded files are parsed in RAM. They are <b>never written to disk</b> in the default configuration, which is what this instance runs. There is one opt-in exception: an operator who sets <code>SESSION_DISK_CACHE=1</code> gets session snapshots pickled to a volume so sessions survive a restart. It ships off (<code>SESSION_DISK_CACHE=0</code> in <code>docker-compose.yml</code>), and when off the disk-flush thread never starts at all.</li>
+    <li>Backend session TTL is <b>30 minutes of inactivity</b> (<code>SESSION_TTL_SECONDS</code> in <code>backend/services/store.py</code>, default 1800 seconds, overridable by environment variable). A background reaper thread checks every 30 seconds and evicts expired sessions whether or not any request is in flight, so an idle server clears them on the same schedule as a busy one.</li>
     <li>Maximum concurrent sessions is capped (<code>MAX_SESSIONS = 20</code>); oldest are evicted on overflow.</li>
     <li>No long-term storage. No backup. No replication.</li>
   </ul>
@@ -107,7 +107,7 @@ python -m venv .venv &amp;&amp; source .venv/bin/activate
 pip install -r requirements.txt
 strace -e trace=openat -f -- uvicorn main:app --port 8000 \
     2&gt;&amp;1 | grep -E 'O_WRONLY|O_CREAT' | grep -v site-packages</pre>
-  <p>The only writes you should see are framework / static-file caching outside the <code>uploads/</code> path — there is no <code>uploads/</code> path. <code>services/store.py</code> keeps everything in process RAM and evicts after <code>SESSION_TTL_SECONDS = 1800</code> of inactivity.</p>
+  <p>The only writes you should see are framework / static-file caching outside the <code>uploads/</code> path — there is no <code>uploads/</code> path. <code>services/store.py</code> keeps everything in process RAM and evicts after <code>SESSION_TTL_SECONDS</code> (default 1800) of inactivity. If you run this check with <code>SESSION_DISK_CACHE=1</code> you <em>will</em> see writes — that is the opt-in snapshot path described above, and it is off by default.</p>
 
   <h3 style="font-size:14px;margin-top:14px;">Source-side verification</h3>
   <p>The relevant lines:</p>

@@ -26,7 +26,7 @@
   </nav>
 
   <h1>Privacy Policy</h1>
-  <p class="lead">Last updated: 2026-05-14 · Version 1.0</p>
+  <p class="lead">Last updated: 2026-07-27 · Version 1.1</p>
 
   <h2>1. Who we are</h2>
   <p>
@@ -46,7 +46,7 @@
   </p>
   <ul>
     <li>It is parsed in RAM by the backend and bound to a session identifier (<code>session_id</code>).</li>
-    <li>It is <b>never written to disk</b>. The dataframe lives only in process memory.</li>
+    <li>It is <b>never written to disk</b>. The dataframe lives only in process memory. (Self-hosters have an opt-in setting, <code>SESSION_DISK_CACHE=1</code>, that snapshots sessions to a volume so they survive a restart. It is off by default and off on this instance.)</li>
     <li>It is automatically cleared from memory <b>30 minutes after your last activity</b> — enforced by a reaper thread that runs every 30 seconds regardless of traffic, so the limit holds on an idle server too. The operator can shorten it with the <code>SESSION_TTL_SECONDS</code> environment variable (default 1800; see <code>backend/services/store.py</code>).</li>
     <li>If the server is restarted, all in-memory data is lost — there is no persistent storage.</li>
   </ul>
@@ -71,7 +71,7 @@
 
   <h2>4. What we log</h2>
   <ul>
-    <li><b>Web server access log</b>: standard HTTP metadata (IP, path, status, timestamp). Retained by Render for up to 30 days.</li>
+    <li><b>Web server access log</b>: standard HTTP metadata (IP, path, status, timestamp). These are the container's standard output, captured by the host's log driver on the server the instance runs on. They are not shipped to any third party. Retention is whatever the host is configured to keep — uSTAT sets no fixed period. The log records the request line, so <b>column names</b> passed as URL parameters (e.g. <code>?column=HbA1c</code>) do appear in it. Cell values do not: the dataset is uploaded as a request body and analysis parameters are sent as JSON bodies, neither of which is logged.</li>
     <li><b>Code runner audit log</b> (only when <code>ENABLE_CODE_RUNNER=1</code>): timestamp, IP, <code>session_id</code>, SHA-256 prefix of the submitted code, first 200 characters, duration, exit code. Your dataset is <b>never</b> logged.</li>
   </ul>
   <p>uSTAT loads <strong>no third-party analytics, advertising, or visitor-tracking scripts</strong>.</p>
