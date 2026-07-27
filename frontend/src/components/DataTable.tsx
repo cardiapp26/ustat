@@ -1672,17 +1672,22 @@ function DataTableBody({ session }: { session: Session }) {
             {/* Column headers */}
             <tr className="bg-gray-50 border-b border-gray-200">
               <th
-                className="px-1 py-2 text-center text-gray-400 text-xs font-normal border-r border-gray-200 select-none sticky left-0 bg-gray-50 z-20"
+                className="px-1 py-2 text-center text-gray-400 text-xs font-normal border-r border-gray-200 select-none sticky left-0 bg-gray-50 z-20 align-top"
                 style={{ width: HASH_COL_W, minWidth: HASH_COL_W, maxWidth: HASH_COL_W }}
                 title="Select / clear all visible rows"
               >
-                <input
-                  type="checkbox"
-                  className={`h-3 w-3 align-middle accent-indigo-500 cursor-pointer transition-opacity ${checkedRows.size > 0 ? "opacity-100" : "opacity-30 hover:opacity-100"}`}
-                  checked={allRowsChecked}
-                  ref={(el) => { if (el) el.indeterminate = checkedRows.size > 0 && !allRowsChecked; }}
-                  onChange={toggleAllRows}
-                />
+                {/* h-5 matches the sort button, so this sits on the same line as
+                    the column names rather than centring against the tallest
+                    header (the ones carrying a missing-value badge). */}
+                <span className="flex h-5 items-center justify-center">
+                  <input
+                    type="checkbox"
+                    className={`h-3 w-3 accent-indigo-500 cursor-pointer transition-opacity ${checkedRows.size > 0 ? "opacity-100" : "opacity-30 hover:opacity-100"}`}
+                    checked={allRowsChecked}
+                    ref={(el) => { if (el) el.indeterminate = checkedRows.size > 0 && !allRowsChecked; }}
+                    onChange={toggleAllRows}
+                  />
+                </span>
               </th>
               {columns.map((col, colIdx) => {
                 const isSorted = sortCol === col.name;
@@ -1737,7 +1742,7 @@ function DataTableBody({ session }: { session: Session }) {
                     }}
                     onDragEnd={() => { setDragIdx(null); setDropIdx(null); }}
                     onContextMenu={(e) => { e.preventDefault(); setColRangeInput(""); setCtxMenu({ x: e.clientX, y: e.clientY, col: col.name }); }}
-                    className={`px-2 py-2 border-r border-gray-200
+                    className={`px-2 py-2 border-r border-gray-200 align-top
                       ${frozen ? "sticky bg-gray-50 z-20" : "min-w-[130px] max-w-[200px]"}
                       ${!frozen && checkedCols.has(col.name) ? "bg-indigo-100/60" : ""}
                       ${renameCol === col.name || frozen ? "" : "cursor-grab active:cursor-grabbing select-none"}
