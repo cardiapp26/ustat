@@ -35,6 +35,14 @@ export const getHistogram = (data: object) => api.post("/api/charts/histogram", 
 export const getScatter = (data: object) => api.post("/api/charts/scatter", data);
 export const getBoxplot = (data: object) => api.post("/api/charts/boxplot", data);
 export const getPairedBox = (data: object) => api.post("/api/charts/paired_box", data);
+export const getDumbbell = (data: object) => api.post("/api/charts/dumbbell", data);
+export const getCompareMeans = (data: object) => api.post("/api/charts/compare_means", data);
+export const getErrorPlot = (data: object) => api.post("/api/charts/errorplot", data);
+export const getEcdf = (data: object) => api.post("/api/charts/ecdf", data);
+export const getPie = (data: object) => api.post("/api/charts/pie", data);
+export const getBalloon = (data: object) => api.post("/api/charts/balloon", data);
+export const getSummaryStats = (data: object) => api.post("/api/charts/summary_stats", data);
+export const getFacet = (data: object) => api.post("/api/charts/facet", data);
 export const getBar = (data: object) => api.post("/api/charts/bar", data);
 export const runSubgroupBar = (data: object) => api.post("/api/charts/subgroup_bar", data);
 export const runScoreComposite = (data: object) => api.post("/api/charts/score_composite", data);

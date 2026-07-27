@@ -11,7 +11,12 @@ from services.dirty_value_guard import (
     mask_sentinels,
     plausibility_max_for_column,
 )
-from services.stat_utils import sorted_groups, _categorical_p_with_rule
+from services.stat_utils import (
+    sorted_groups,
+    _categorical_p_with_rule,
+    pairwise_t_tests,
+    pairwise_wilcoxon,
+)
 
 router = APIRouter()
 
@@ -59,6 +64,21 @@ class ChartRequest(BaseModel):
     color: Optional[str] = None
     shape: Optional[str] = None
     bins: int = 20
+    # Scatter-only. Log axes are what make an agreement plot readable when the
+    # values span orders of magnitude (p-values, concentrations, counts).
+    log_x: bool = False
+    log_y: bool = False
+    # Confidence ellipse per group (ggpubr's stat_conf_ellipse) and marginal
+    # histograms (ggscatterhist). Both describe the cloud rather than the fit.
+    ellipse: bool = False
+    ellipse_level: float = 0.95
+    marginal: bool = False
+    marginal_bins: int = 24
+    # y = x reference. Only meaningful when both axes carry the same quantity —
+    # a reported value against a recomputed one, a method against a reference.
+    identity_line: bool = False
+    # Column whose value labels each point (e.g. the variable name per row).
+    label: Optional[str] = None
 
 
 @router.post("/histogram")
@@ -106,6 +126,8 @@ def scatter(req: ChartRequest):
         needed.append(req.color)
     if req.shape and req.shape not in needed:
         needed.append(req.shape)
+    if req.label and req.label not in needed:
+        needed.append(req.label)
 
     for col in needed:
         if col not in df.columns:
@@ -128,16 +150,74 @@ def scatter(req: ChartRequest):
     x_numeric = df[req.x].dtype.kind in ("f", "i", "u")
     y_numeric = df[req.y].dtype.kind in ("f", "i", "u")
 
+    # A log axis cannot show zero or negative values. Drop them here rather
+    # than letting the browser silently omit the points, and say how many went
+    # — a scatter quietly missing a third of its data is worse than an error.
+    axis_warnings: list[dict] = []
+    if req.log_x or req.log_y:
+        if not (x_numeric and y_numeric):
+            raise HTTPException(
+                status_code=400,
+                detail="Log axes require both axes to be numeric.",
+            )
+        before = len(sub)
+        keep = pd.Series(True, index=sub.index)
+        if req.log_x:
+            keep &= sub[req.x].astype(float) > 0
+        if req.log_y:
+            keep &= sub[req.y].astype(float) > 0
+        sub = sub[keep]
+        dropped = before - len(sub)
+        if dropped:
+            axes = " and ".join(
+                [a for a, on in ((req.x, req.log_x), (req.y, req.log_y)) if on]
+            )
+            axis_warnings.append(
+                {
+                    "type": "log_axis_nonpositive",
+                    "n_dropped": int(dropped),
+                    "message": (
+                        f"{dropped} of {before} points had a zero or negative value on "
+                        f"{axes} and cannot be placed on a log axis. They are omitted."
+                    ),
+                }
+            )
+        if len(sub) < 2:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Fewer than 2 points remain with positive values on the log axis — "
+                    "nothing can be drawn. Turn the log axis off, or filter the data."
+                ),
+            )
+
     reg: dict = {}
     if x_numeric and y_numeric:
-        x_arr = sub[req.x].astype(float).tolist()
-        y_arr = sub[req.y].astype(float).tolist()
+        # Fit in the space the reader sees. On a log axis a fit computed from
+        # raw values renders as a curve that matches no visible trend, so the
+        # transformed variables are fitted and the space is reported.
+        x_raw = sub[req.x].astype(float)
+        y_raw = sub[req.y].astype(float)
+        fit_x = np.log10(x_raw) if req.log_x else x_raw
+        fit_y = np.log10(y_raw) if req.log_y else y_raw
+        space = (
+            "log10-log10" if req.log_x and req.log_y
+            else "log10-x" if req.log_x
+            else "log10-y" if req.log_y
+            else "linear"
+        )
         try:
-            slope, intercept, r, p, se = scipy_stats.linregress(x_arr, y_arr)
+            slope, intercept, r, p, se = scipy_stats.linregress(
+                fit_x.tolist(), fit_y.tolist()
+            )
             if np.isnan(r) or np.isinf(r):
                 raise ValueError("degenerate")
-            line_x = [float(sub[req.x].min()), float(sub[req.x].max())]
-            line_y = [float(slope * lx + intercept) for lx in line_x]
+            fit_lo, fit_hi = float(fit_x.min()), float(fit_x.max())
+            line_fit_x = [fit_lo, fit_hi]
+            line_fit_y = [float(slope * lx + intercept) for lx in line_fit_x]
+            # Back-transform so the frontend plots in data coordinates.
+            line_x = [float(10**v) if req.log_x else float(v) for v in line_fit_x]
+            line_y = [float(10**v) if req.log_y else float(v) for v in line_fit_y]
             reg = {
                 "slope": float(slope),
                 "intercept": float(intercept),
@@ -147,6 +227,7 @@ def scatter(req: ChartRequest):
                 "se": float(se),
                 "line_x": line_x,
                 "line_y": line_y,
+                "space": space,
             }
         except Exception:
             reg = {
@@ -173,6 +254,105 @@ def scatter(req: ChartRequest):
             "note": "Regression requires two numeric axes",
         }
 
+    # y = x over the span both axes share, so the line stops where the data
+    # stops instead of stretching the plot to an empty corner.
+    identity: dict = {}
+    if req.identity_line:
+        if not (x_numeric and y_numeric):
+            raise HTTPException(
+                status_code=400,
+                detail="A y = x reference line requires both axes to be numeric.",
+            )
+        lo = min(float(sub[req.x].min()), float(sub[req.y].min()))
+        hi = max(float(sub[req.x].max()), float(sub[req.y].max()))
+        if lo == hi:
+            identity = {"line_x": [], "line_y": [], "note": "Degenerate range"}
+        else:
+            identity = {"line_x": [lo, hi], "line_y": [lo, hi]}
+            n_below = int((sub[req.y].astype(float) < sub[req.x].astype(float)).sum())
+            identity["n_below"] = n_below
+            identity["n_above"] = int(len(sub) - n_below)
+
+    # Confidence ellipses. The 2-df chi-square quantile is what makes this a
+    # containment region for a bivariate normal rather than a decorative oval;
+    # groups with fewer than 3 points or a singular covariance get none.
+    ellipses: list[dict] = []
+    if req.ellipse:
+        if not (x_numeric and y_numeric):
+            raise HTTPException(
+                status_code=400,
+                detail="A confidence ellipse requires both axes to be numeric.",
+            )
+        if not (0 < req.ellipse_level < 1):
+            raise HTTPException(
+                status_code=400, detail="ellipse_level must be between 0 and 1"
+            )
+        radius = float(np.sqrt(scipy_stats.chi2.ppf(req.ellipse_level, df=2)))
+        theta = np.linspace(0, 2 * np.pi, 100)
+        circle = np.vstack([np.cos(theta), np.sin(theta)])
+        buckets = (
+            {str(g): sub[sub[req.color] == g] for g in sorted_groups(sub[req.color])}
+            if req.color
+            else {"All": sub}
+        )
+        for name, rows in buckets.items():
+            pts = rows[[req.x, req.y]].astype(float).to_numpy()
+            if len(pts) < 3:
+                ellipses.append(
+                    {"group": name, "x": [], "y": [], "note": "needs at least 3 points"}
+                )
+                continue
+            cov = np.cov(pts, rowvar=False)
+            centre = pts.mean(axis=0)
+            try:
+                vals, vecs = np.linalg.eigh(cov)
+            except np.linalg.LinAlgError:
+                ellipses.append(
+                    {"group": name, "x": [], "y": [], "note": "singular covariance"}
+                )
+                continue
+            if np.any(vals <= 0):
+                ellipses.append(
+                    {"group": name, "x": [], "y": [], "note": "degenerate spread"}
+                )
+                continue
+            transform = vecs @ np.diag(np.sqrt(vals)) * radius
+            pathpts = (transform @ circle).T + centre
+            ellipses.append(
+                {
+                    "group": name,
+                    "n": int(len(pts)),
+                    "x": [float(v) for v in pathpts[:, 0]],
+                    "y": [float(v) for v in pathpts[:, 1]],
+                }
+            )
+
+    # Marginal histograms — ggscatterhist. Counts only; the frontend places them.
+    marginal: dict = {}
+    if req.marginal:
+        if not (x_numeric and y_numeric):
+            raise HTTPException(
+                status_code=400,
+                detail="Marginal histograms require both axes to be numeric.",
+            )
+        if not (3 <= req.marginal_bins <= 200):
+            raise HTTPException(
+                status_code=400, detail="marginal_bins must be between 3 and 200"
+            )
+        for axis, col in (("x", req.x), ("y", req.y)):
+            counts, edges = np.histogram(
+                sub[col].astype(float).to_numpy(), bins=req.marginal_bins
+            )
+            marginal[axis] = [
+                {
+                    "centre": float((edges[i] + edges[i + 1]) / 2),
+                    "x0": float(edges[i]),
+                    "x1": float(edges[i + 1]),
+                    "count": int(c),
+                }
+                for i, c in enumerate(counts)
+            ]
+
     # Serialize points safely (NaN → null via json round-trip)
     points = _json.loads(
         sub.to_json(
@@ -187,6 +367,803 @@ def scatter(req: ChartRequest):
         "points": points,
         "regression": reg,
         "color": req.color,
+        "shape": req.shape,
+        "label": req.label,
+        "log_x": req.log_x,
+        "log_y": req.log_y,
+        "identity": identity,
+        "ellipses": ellipses,
+        "ellipse_level": req.ellipse_level if req.ellipse else None,
+        "marginal": marginal,
+        "warnings": axis_warnings,
+    }
+
+
+STAR_CUTOFFS = ((1e-4, "****"), (1e-3, "***"), (1e-2, "**"), (5e-2, "*"))
+
+
+def _stars(p: float) -> str:
+    """ggpubr's convention: **** <=1e-4, *** <=1e-3, ** <=1e-2, * <=0.05, else ns."""
+    if p is None or not np.isfinite(p):
+        return "ns"
+    for cutoff, mark in STAR_CUTOFFS:
+        if p <= cutoff:
+            return mark
+    return "ns"
+
+
+class CompareMeansRequest(BaseModel):
+    session_id: str
+    y: str                                   # the numeric variable being compared
+    group: str                               # the categorical axis
+    method: str = "auto"                     # auto | t | welch | wilcoxon
+    p_adjust: str = "holm"                   # holm | bonferroni | fdr | none
+    ref_group: Optional[str] = None          # compare everything against this level
+    label: str = "stars"                     # stars | p
+
+
+@router.post("/compare_means")
+def compare_means(req: CompareMeansRequest):
+    """Pairwise group comparisons, positioned for drawing as brackets on a plot.
+
+    The equivalent of ggpubr's stat_compare_means. Two things it does that a
+    bare p-value list does not: it says which test produced each number and
+    why, and it reports the adjusted p separately from the raw one so a figure
+    cannot silently show unadjusted values from a dozen comparisons.
+    """
+    df = _get_df(req.session_id)
+    for col in (req.y, req.group):
+        if col not in df.columns:
+            raise HTTPException(status_code=400, detail=f"Column '{col}' not found")
+    if req.method not in {"auto", "t", "welch", "wilcoxon"}:
+        raise HTTPException(
+            status_code=400,
+            detail=f"method must be auto, t, welch or wilcoxon — got '{req.method}'",
+        )
+    if req.p_adjust not in {"holm", "bonferroni", "fdr", "none"}:
+        raise HTTPException(
+            status_code=400,
+            detail=f"p_adjust must be holm, bonferroni, fdr or none — got '{req.p_adjust}'",
+        )
+    if req.label not in {"stars", "p"}:
+        raise HTTPException(
+            status_code=400, detail=f"label must be stars or p — got '{req.label}'"
+        )
+
+    sub = df[[req.y, req.group]].copy()
+    sub[req.y] = coerce_numeric(sub[req.y]).replace([np.inf, -np.inf], np.nan)
+    sub = sub.dropna()
+
+    groups: dict[str, np.ndarray] = {}
+    for name in sorted_groups(sub[req.group]):
+        vals = sub.loc[sub[req.group] == name, req.y].astype(float).to_numpy()
+        if len(vals) >= 2:
+            groups[str(name)] = vals
+
+    if len(groups) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Need at least two levels of '{req.group}' with 2 or more non-missing "
+                f"'{req.y}' values; found {len(groups)}."
+            ),
+        )
+    if req.ref_group is not None and req.ref_group not in groups:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Reference group '{req.ref_group}' is not one of the usable levels: "
+                + ", ".join(groups)
+            ),
+        )
+
+    # Test choice. "auto" screens every group for normality and falls to the
+    # rank test if any fails — the same rule a careful analyst applies by hand,
+    # stated here so the figure legend can repeat it.
+    chosen, why = req.method, "requested"
+    if req.method == "auto":
+        normal = True
+        for vals in groups.values():
+            if len(vals) < 3:
+                normal = False
+                break
+            if float(np.std(vals, ddof=1)) == 0:
+                continue
+            if scipy_stats.shapiro(vals[:5000]).pvalue < 0.05:
+                normal = False
+                break
+        chosen = "welch" if normal else "wilcoxon"
+        why = (
+            "auto: all groups passed Shapiro-Wilk"
+            if normal
+            else "auto: at least one group failed Shapiro-Wilk"
+        )
+
+    if chosen == "wilcoxon":
+        rows = pairwise_wilcoxon(groups, correction=req.p_adjust)
+        test_name = "Mann-Whitney U"
+    else:
+        rows = pairwise_t_tests(
+            groups, correction=req.p_adjust, equal_var=(chosen == "t")
+        )
+        test_name = "Student t-test" if chosen == "t" else "Welch t-test"
+
+    if req.ref_group is not None:
+        rows = [
+            r for r in rows if req.ref_group in (r["group1"], r["group2"])
+        ]
+        if not rows:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No comparisons involve reference group '{req.ref_group}'.",
+            )
+
+    # Bracket geometry. Height is left to the caller (it depends on the axis),
+    # but the ordering — shortest span lowest — is what keeps them from
+    # crossing, so it belongs with the data.
+    order = {name: i for i, name in enumerate(groups)}
+    for r in rows:
+        r["x1"] = order[r["group1"]]
+        r["x2"] = order[r["group2"]]
+        r["span"] = abs(r["x2"] - r["x1"])
+        shown = r["p"] if req.p_adjust == "none" else r["p_adj"]
+        r["p_shown"] = float(shown)
+        r["stars"] = _stars(float(shown))
+        r["label"] = (
+            r["stars"] if req.label == "stars"
+            else ("p < 0.001" if shown < 1e-3 else f"p = {shown:.3f}")
+        )
+    rows.sort(key=lambda r: (r["span"], min(r["x1"], r["x2"])))
+    for level, r in enumerate(rows):
+        r["level"] = level  # stacking order, bottom-up
+
+    # Omnibus, so a figure with three or more groups can carry the overall test
+    # rather than implying the pairwise set is the whole analysis.
+    arrays = list(groups.values())
+    omnibus: dict = {}
+    if len(arrays) >= 3:
+        if chosen == "wilcoxon":
+            h, p_om = scipy_stats.kruskal(*arrays)
+            omnibus = {"test": "Kruskal-Wallis", "statistic": float(h), "p": float(p_om)}
+        else:
+            f, p_om = scipy_stats.f_oneway(*arrays)
+            omnibus = {
+                "test": "One-way ANOVA",
+                "statistic": float(f),
+                "p": float(p_om),
+                "note": (
+                    "Classic equal-variance F. It is not Welch-corrected even when the "
+                    "pairwise tests are."
+                ),
+            }
+
+    return {
+        "type": "compare_means",
+        "y": req.y,
+        "group": req.group,
+        "levels": list(groups),
+        "n_per_group": {k: int(len(v)) for k, v in groups.items()},
+        "test": test_name,
+        "test_selected_by": why,
+        "p_adjust": req.p_adjust,
+        "p_shown_is_adjusted": req.p_adjust != "none",
+        "comparisons": rows,
+        "omnibus": omnibus,
+    }
+
+
+class FacetRequest(BaseModel):
+    session_id: str
+    kind: str                      # boxplot | scatter
+    x: str
+    y: Optional[str] = None        # scatter only
+    facet: str                     # the column split into panels
+    color: Optional[str] = None
+    max_panels: int = 12
+
+
+@router.post("/facet")
+def facet(req: FacetRequest):
+    """Split one plot into a panel per level — ggpubr's facet().
+
+    Panels share the data-driven axis range, computed here across all of them,
+    because per-panel autoscaling is what makes small multiples lie: two
+    panels look alike while their axes differ by an order of magnitude.
+    """
+    df = _get_df(req.session_id)
+    if req.kind not in {"boxplot", "scatter"}:
+        raise HTTPException(
+            status_code=400, detail="kind must be boxplot or scatter"
+        )
+    needed = [req.x, req.facet]
+    if req.kind == "scatter":
+        if not req.y:
+            raise HTTPException(status_code=400, detail="scatter facets need a y column")
+        needed.append(req.y)
+    if req.color:
+        needed.append(req.color)
+    for col in needed:
+        if col not in df.columns:
+            raise HTTPException(status_code=400, detail=f"Column '{col}' not found")
+    if req.max_panels < 1:
+        raise HTTPException(status_code=400, detail="max_panels must be at least 1")
+
+    sub = df[list(dict.fromkeys(needed))].copy()
+    numeric_cols = [req.x] if req.kind == "boxplot" else [req.x, req.y]
+    for col in numeric_cols:
+        sub[col] = coerce_numeric(sub[col]).replace([np.inf, -np.inf], np.nan)
+    sub = sub.dropna(subset=numeric_cols + [req.facet])
+    if sub.empty:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No rows remain after dropping missing values in '{req.facet}'.",
+        )
+
+    levels = sorted_groups(sub[req.facet])
+    dropped_panels = 0
+    if len(levels) > req.max_panels:
+        dropped_panels = len(levels) - req.max_panels
+        levels = levels[: req.max_panels]
+
+    panels = []
+    for lv in levels:
+        block = sub[sub[req.facet] == lv]
+        if block.empty:
+            continue
+        if req.kind == "boxplot":
+            groups = []
+            names = sorted_groups(block[req.color]) if req.color else ["All"]
+            for gname in names:
+                vals = (
+                    block[block[req.color] == gname] if req.color else block
+                )[req.x].astype(float).tolist()
+                if vals:
+                    groups.append({"group": str(gname), "values": vals})
+            panels.append({"panel": str(lv), "n": int(len(block)), "groups": groups})
+        else:
+            panels.append(
+                {
+                    "panel": str(lv),
+                    "n": int(len(block)),
+                    "x": block[req.x].astype(float).tolist(),
+                    "y": block[req.y].astype(float).tolist(),
+                    "color": (
+                        block[req.color].astype(str).tolist() if req.color else None
+                    ),
+                }
+            )
+
+    shared: dict = {
+        "x": [float(sub[req.x].min()), float(sub[req.x].max())],
+    }
+    if req.kind == "scatter":
+        shared["y"] = [float(sub[req.y].min()), float(sub[req.y].max())]
+
+    warnings: list[dict] = []
+    if dropped_panels:
+        warnings.append(
+            {
+                "type": "panels_truncated",
+                "n_dropped": dropped_panels,
+                "message": (
+                    f"'{req.facet}' has {dropped_panels} more levels than the "
+                    f"{req.max_panels}-panel limit; those panels are not drawn."
+                ),
+            }
+        )
+
+    return {
+        "type": "facet",
+        "kind": req.kind,
+        "x": req.x,
+        "y": req.y,
+        "facet": req.facet,
+        "color": req.color,
+        "panels": panels,
+        "shared_range": shared,
+        "warnings": warnings,
+    }
+
+
+class PieRequest(BaseModel):
+    session_id: str
+    category: str
+    value: Optional[str] = None   # omit to count rows
+    sort: str = "value"           # value | category
+    max_slices: int = 12          # the rest are folded into "Other"
+
+
+@router.post("/pie")
+def pie(req: PieRequest):
+    """Composition of one categorical variable — ggpubr's ggpie / ggdonutchart.
+
+    Percentages are returned alongside counts because a pie without them is
+    hard to read past three slices, and a long tail of thin slices is folded
+    into a named "Other" rather than drawn as unreadable slivers.
+    """
+    df = _get_df(req.session_id)
+    if req.category not in df.columns:
+        raise HTTPException(status_code=400, detail=f"Column '{req.category}' not found")
+    if req.value and req.value not in df.columns:
+        raise HTTPException(status_code=400, detail=f"Column '{req.value}' not found")
+    if req.sort not in {"value", "category"}:
+        raise HTTPException(status_code=400, detail="sort must be value or category")
+    if req.max_slices < 2:
+        raise HTTPException(status_code=400, detail="max_slices must be at least 2")
+
+    sub = df[[req.category] + ([req.value] if req.value else [])].copy()
+    if req.value:
+        sub[req.value] = coerce_numeric(sub[req.value]).replace(
+            [np.inf, -np.inf], np.nan
+        )
+        sub = sub.dropna()
+        if (sub[req.value] < 0).any():
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"'{req.value}' contains negative values. A pie chart divides a "
+                    "whole into parts, which negative quantities cannot do."
+                ),
+            )
+        agg = sub.groupby(req.category, dropna=True)[req.value].sum()
+    else:
+        sub = sub.dropna()
+        agg = sub[req.category].value_counts()
+
+    if agg.empty or float(agg.sum()) <= 0:
+        raise HTTPException(
+            status_code=400, detail=f"Nothing to plot for '{req.category}'."
+        )
+
+    agg = agg.sort_values(ascending=False) if req.sort == "value" else agg.sort_index()
+    folded = 0
+    if len(agg) > req.max_slices:
+        keep = agg.iloc[: req.max_slices - 1]
+        folded = int(len(agg) - len(keep))
+        other = float(agg.iloc[req.max_slices - 1 :].sum())
+        agg = pd.concat([keep, pd.Series({"Other": other})])
+
+    total = float(agg.sum())
+    slices = [
+        {
+            "label": str(k),
+            "value": float(v),
+            "percent": float(v) / total * 100.0,
+        }
+        for k, v in agg.items()
+    ]
+    return {
+        "type": "pie",
+        "category": req.category,
+        "value": req.value,
+        "measure": "sum" if req.value else "count",
+        "total": total,
+        "slices": slices,
+        "n_folded_into_other": folded,
+    }
+
+
+class BalloonRequest(BaseModel):
+    session_id: str
+    row: str
+    col: str
+
+
+@router.post("/balloon")
+def balloon(req: BalloonRequest):
+    """Contingency table as sized, coloured dots — ggpubr's ggballoonplot.
+
+    Size carries the count and colour carries the standardised residual, so a
+    cell that is merely large is visually distinct from one that departs from
+    independence. Without the residual the plot only restates the marginals.
+    """
+    df = _get_df(req.session_id)
+    for col in (req.row, req.col):
+        if col not in df.columns:
+            raise HTTPException(status_code=400, detail=f"Column '{col}' not found")
+    if req.row == req.col:
+        raise HTTPException(
+            status_code=400, detail="Row and column variables must differ."
+        )
+
+    sub = df[[req.row, req.col]].dropna()
+    if sub.empty:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No rows have both '{req.row}' and '{req.col}' present.",
+        )
+    ct = pd.crosstab(sub[req.row], sub[req.col])
+    if ct.shape[0] < 2 or ct.shape[1] < 2:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "A balloon plot needs at least two levels on each axis; "
+                f"got {ct.shape[0]} x {ct.shape[1]}."
+            ),
+        )
+
+    observed = ct.to_numpy(dtype=float)
+    chi2, p, dof, expected = scipy_stats.chi2_contingency(observed)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        resid = np.where(expected > 0, (observed - expected) / np.sqrt(expected), 0.0)
+
+    cells = []
+    for i, r in enumerate(ct.index):
+        for j, c in enumerate(ct.columns):
+            cells.append(
+                {
+                    "row": str(r),
+                    "col": str(c),
+                    "count": int(observed[i, j]),
+                    "expected": float(expected[i, j]),
+                    "residual": float(resid[i, j]),
+                }
+            )
+
+    min_expected = float(expected.min())
+    warnings: list[dict] = []
+    if min_expected < 5:
+        warnings.append(
+            {
+                "type": "low_expected_count",
+                "min_expected": min_expected,
+                "message": (
+                    f"The smallest expected count is {min_expected:.2f}. The chi-square "
+                    "approximation is unreliable below 5; treat the p-value with care."
+                ),
+            }
+        )
+
+    return {
+        "type": "balloon",
+        "row": req.row,
+        "col": req.col,
+        "rows": [str(r) for r in ct.index],
+        "cols": [str(c) for c in ct.columns],
+        "cells": cells,
+        "n": int(observed.sum()),
+        "chi2": float(chi2),
+        "df": int(dof),
+        "p": float(p),
+        "warnings": warnings,
+    }
+
+
+class SummaryStatsRequest(BaseModel):
+    session_id: str
+    y: str
+    group: Optional[str] = None
+
+
+@router.post("/summary_stats")
+def summary_stats(req: SummaryStatsRequest):
+    """Per-group descriptives to print under a plot — ggpubr's ggsummarystats."""
+    df = _get_df(req.session_id)
+    if req.y not in df.columns:
+        raise HTTPException(status_code=400, detail=f"Column '{req.y}' not found")
+    if req.group and req.group not in df.columns:
+        raise HTTPException(status_code=400, detail=f"Column '{req.group}' not found")
+
+    cols = [req.y] + ([req.group] if req.group else [])
+    sub = df[cols].copy()
+    sub[req.y] = coerce_numeric(sub[req.y]).replace([np.inf, -np.inf], np.nan)
+    # Missing counts are per group and are reported, not silently dropped: "n"
+    # in a figure caption means the rows that contributed to it.
+    levels = sorted_groups(sub[req.group]) if req.group else ["All"]
+    rows = []
+    for name in levels:
+        block = sub[sub[req.group] == name] if req.group else sub
+        vals = block[req.y].dropna().astype(float).to_numpy()
+        if len(vals) == 0:
+            continue
+        q1, med, q3 = (float(v) for v in np.percentile(vals, [25, 50, 75]))
+        rows.append(
+            {
+                "group": str(name),
+                "n": int(len(vals)),
+                "n_missing": int(len(block) - len(vals)),
+                "mean": float(np.mean(vals)),
+                "sd": float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0,
+                "median": med,
+                "q1": q1,
+                "q3": q3,
+                "iqr": q3 - q1,
+                "min": float(np.min(vals)),
+                "max": float(np.max(vals)),
+            }
+        )
+    if not rows:
+        raise HTTPException(
+            status_code=400, detail=f"No non-missing numeric values in '{req.y}'."
+        )
+    return {"type": "summary_stats", "y": req.y, "group": req.group, "rows": rows}
+
+
+class ErrorPlotRequest(BaseModel):
+    session_id: str
+    y: str
+    group: Optional[str] = None
+    centre: str = "mean"       # mean | median
+    spread: str = "ci"         # sd | se | ci | iqr
+    ci_level: float = 0.95
+
+
+@router.post("/errorplot")
+def errorplot(req: ErrorPlotRequest):
+    """Centre and spread per group — ggpubr's ggerrorplot.
+
+    Which spread is drawn changes what the figure claims: SD describes the
+    sample, SE and CI describe the estimate, and they differ by sqrt(n). The
+    choice is returned so the caption can name it instead of leaving the
+    reader to guess from the whisker length.
+    """
+    df = _get_df(req.session_id)
+    if req.y not in df.columns:
+        raise HTTPException(status_code=400, detail=f"Column '{req.y}' not found")
+    if req.group and req.group not in df.columns:
+        raise HTTPException(status_code=400, detail=f"Column '{req.group}' not found")
+    if req.centre not in {"mean", "median"}:
+        raise HTTPException(status_code=400, detail="centre must be mean or median")
+    if req.spread not in {"sd", "se", "ci", "iqr"}:
+        raise HTTPException(status_code=400, detail="spread must be sd, se, ci or iqr")
+    if not (0 < req.ci_level < 1):
+        raise HTTPException(status_code=400, detail="ci_level must be between 0 and 1")
+    if req.centre == "median" and req.spread in {"sd", "se", "ci"}:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "A median with an SD, SE or CI whisker mixes two different summaries. "
+                "Pair median with iqr, or mean with sd / se / ci."
+            ),
+        )
+    if req.centre == "mean" and req.spread == "iqr":
+        raise HTTPException(
+            status_code=400,
+            detail="An IQR whisker belongs with the median, not the mean.",
+        )
+
+    cols = [req.y] + ([req.group] if req.group else [])
+    sub = df[cols].copy()
+    sub[req.y] = coerce_numeric(sub[req.y]).replace([np.inf, -np.inf], np.nan)
+    sub = sub.dropna()
+
+    levels = sorted_groups(sub[req.group]) if req.group else ["All"]
+    rows = []
+    for name in levels:
+        vals = (
+            sub.loc[sub[req.group] == name, req.y] if req.group else sub[req.y]
+        ).astype(float).to_numpy()
+        if len(vals) == 0:
+            continue
+        n = int(len(vals))
+        if req.centre == "median":
+            centre = float(np.median(vals))
+            q1, q3 = (float(v) for v in np.percentile(vals, [25, 75]))
+            lo, hi = q1, q3
+        else:
+            centre = float(np.mean(vals))
+            sd = float(np.std(vals, ddof=1)) if n > 1 else 0.0
+            se = sd / np.sqrt(n) if n > 0 else 0.0
+            if req.spread == "sd":
+                lo, hi = centre - sd, centre + sd
+            elif req.spread == "se":
+                lo, hi = centre - se, centre + se
+            else:  # ci — t-based, so small groups get the wider interval they deserve
+                if n > 1:
+                    tcrit = float(scipy_stats.t.ppf(0.5 + req.ci_level / 2, n - 1))
+                    lo, hi = centre - tcrit * se, centre + tcrit * se
+                else:
+                    lo = hi = centre
+        rows.append(
+            {
+                "group": str(name),
+                "n": n,
+                "centre": centre,
+                "lower": float(lo),
+                "upper": float(hi),
+            }
+        )
+
+    if not rows:
+        raise HTTPException(
+            status_code=400, detail=f"No non-missing numeric values in '{req.y}'."
+        )
+
+    spread_label = {
+        "sd": "mean ± SD",
+        "se": "mean ± SE",
+        "ci": f"mean with {int(round(req.ci_level * 100))}% CI",
+        "iqr": "median with IQR",
+    }[req.spread]
+    return {
+        "type": "errorplot",
+        "y": req.y,
+        "group": req.group,
+        "centre": req.centre,
+        "spread": req.spread,
+        "ci_level": req.ci_level,
+        "spread_label": spread_label,
+        "rows": rows,
+    }
+
+
+class EcdfRequest(BaseModel):
+    session_id: str
+    x: str
+    group: Optional[str] = None
+
+
+@router.post("/ecdf")
+def ecdf(req: EcdfRequest):
+    """Empirical cumulative distribution — ggpubr's ggecdf.
+
+    Shows the whole distribution without the binning choice a histogram
+    forces, and lets two groups be compared at every quantile at once, which
+    is what a Kolmogorov-Smirnov statistic measures.
+    """
+    df = _get_df(req.session_id)
+    if req.x not in df.columns:
+        raise HTTPException(status_code=400, detail=f"Column '{req.x}' not found")
+    if req.group and req.group not in df.columns:
+        raise HTTPException(status_code=400, detail=f"Column '{req.group}' not found")
+
+    cols = [req.x] + ([req.group] if req.group else [])
+    sub = df[cols].copy()
+    sub[req.x] = coerce_numeric(sub[req.x]).replace([np.inf, -np.inf], np.nan)
+    sub = sub.dropna()
+    if len(sub) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Need at least 2 non-missing numeric values in '{req.x}'.",
+        )
+
+    levels = sorted_groups(sub[req.group]) if req.group else ["All"]
+    curves = []
+    arrays: dict[str, np.ndarray] = {}
+    for name in levels:
+        vals = (
+            sub.loc[sub[req.group] == name, req.x] if req.group else sub[req.x]
+        ).astype(float).to_numpy()
+        if len(vals) == 0:
+            continue
+        xs = np.sort(vals)
+        ys = np.arange(1, len(xs) + 1) / len(xs)
+        arrays[str(name)] = xs
+        curves.append(
+            {
+                "group": str(name),
+                "n": int(len(xs)),
+                "x": [float(v) for v in xs],
+                "y": [float(v) for v in ys],
+            }
+        )
+
+    # With exactly two groups the vertical gap between the curves *is* the KS
+    # statistic, so reporting it turns the picture into a test.
+    ks: dict = {}
+    if len(arrays) == 2:
+        a, b = list(arrays.values())
+        stat, p = scipy_stats.ks_2samp(a, b)
+        ks = {
+            "test": "Two-sample Kolmogorov-Smirnov",
+            "statistic": float(stat),
+            "p": float(p),
+            "note": "D is the largest vertical distance between the two curves.",
+        }
+
+    return {
+        "type": "ecdf",
+        "x": req.x,
+        "group": req.group,
+        "curves": curves,
+        "ks": ks,
+    }
+
+
+class DumbbellRequest(BaseModel):
+    session_id: str
+    category: str          # one row per level — the variable names down the axis
+    start: str             # open marker: the reference / expected value
+    end: str               # filled marker: the observed / recomputed value
+    group: Optional[str] = None   # optional colour band per row
+    sort: str = "gap"      # gap | end | start | category
+
+
+@router.post("/dumbbell")
+def dumbbell(req: DumbbellRequest):
+    """Paired values per category, drawn as two markers joined by a line.
+
+    The shape answers "how far apart are these two numbers, for each of these
+    things, ranked" — an expected value against an observed one, a figure
+    implied by a reported statistic against one computed from the raw data. A
+    grouped bar chart can carry the same numbers but buries the gap, which is
+    the quantity of interest.
+    """
+    df = _get_df(req.session_id)
+
+    needed = [req.category, req.start, req.end]
+    if req.group and req.group not in needed:
+        needed.append(req.group)
+    for col in needed:
+        if col not in df.columns:
+            raise HTTPException(status_code=400, detail=f"Column '{col}' not found")
+
+    if req.sort not in {"gap", "end", "start", "category"}:
+        raise HTTPException(
+            status_code=400,
+            detail=f"sort must be one of gap, end, start, category — got '{req.sort}'",
+        )
+
+    sub = df[needed].copy()
+    for col in (req.start, req.end):
+        sub[col] = coerce_numeric(sub[col]).replace([np.inf, -np.inf], np.nan)
+    sub = sub.dropna(subset=[req.category, req.start, req.end])
+
+    if sub.empty:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No rows have all of '{req.category}', '{req.start}' and '{req.end}' "
+                "present and numeric."
+            ),
+        )
+
+    # One marker pair per category. Collapsing duplicates silently would draw a
+    # plot that looks fine and means something else, so name them instead.
+    dupes = sub[req.category].astype(str).value_counts()
+    repeated = dupes[dupes > 1]
+    if len(repeated) > 0:
+        shown = ", ".join(str(v) for v in repeated.index[:5])
+        more = "" if len(repeated) <= 5 else f" (and {len(repeated) - 5} more)"
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"A dumbbell chart draws one row per '{req.category}' value, but "
+                f"these appear more than once: {shown}{more}. Aggregate the data "
+                "first, or pick a column with one row per category."
+            ),
+        )
+
+    sub["_gap"] = sub[req.end].astype(float) - sub[req.start].astype(float)
+    sort_key = {
+        "gap": sub["_gap"].abs(),
+        "end": sub[req.end].astype(float),
+        "start": sub[req.start].astype(float),
+        "category": sub[req.category].astype(str),
+    }[req.sort]
+    sub = sub.assign(_k=sort_key).sort_values(
+        "_k", ascending=(req.sort == "category")
+    )
+
+    rows = [
+        {
+            "category": str(r[req.category]),
+            "start": float(r[req.start]),
+            "end": float(r[req.end]),
+            "gap": float(r["_gap"]),
+            "group": (str(r[req.group]) if req.group else None),
+        }
+        for _, r in sub.iterrows()
+    ]
+
+    gaps = np.array([r["gap"] for r in rows], dtype=float)
+    return {
+        "type": "dumbbell",
+        "category": req.category,
+        "start": req.start,
+        "end": req.end,
+        "group": req.group,
+        "sort": req.sort,
+        "rows": rows,
+        "summary": {
+            "n": len(rows),
+            "mean_gap": float(np.mean(gaps)),
+            "median_abs_gap": float(np.median(np.abs(gaps))),
+            "max_abs_gap": float(np.max(np.abs(gaps))),
+            "largest_gap_category": rows[int(np.argmax(np.abs(gaps)))]["category"],
+            "n_end_above_start": int((gaps > 0).sum()),
+            "n_end_below_start": int((gaps < 0).sum()),
+        },
     }
 
 

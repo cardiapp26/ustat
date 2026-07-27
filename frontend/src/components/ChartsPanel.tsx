@@ -2,7 +2,7 @@ import { useState, useRef } from "react";
 import { useStore, isNumericKind, isCategoricalKind, type Session } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
 import { usePlotLayout, usePalette, useTraceDefaults } from "../plotStyle";
-import { getHistogram, getScatter, getBoxplot, getBar, getPairedBox } from "../api";
+import { getHistogram, getScatter, getBoxplot, getBar, getPairedBox, getDumbbell, getCompareMeans, getErrorPlot, getEcdf, getPie, getBalloon, getSummaryStats, getFacet } from "../api";
 import type { PlotData, PlotLayout, PlotCaptureHandle } from "../lib/plotTypes";
 import TitledPlot from "./TitledPlot";
 
@@ -26,6 +26,39 @@ function ChartsPanelBody({ session }: { session: Session }) {
   const [color, setColor] = usePersistedPanelState<string>("charts", "color", "");
   const [pairId, setPairId] = usePersistedPanelState<string>("charts", "pairId", session.columns[0]?.name ?? "");
   const [bins, setBins] = usePersistedPanelState<number>("charts", "bins", 20);
+  // Agreement-plot options (scatter): log axes for values spanning orders of
+  // magnitude, y = x when both axes carry the same quantity, and a per-point
+  // label so the outliers can be named on the figure.
+  const [logX, setLogX] = usePersistedPanelState<boolean>("charts", "logX", false);
+  const [logY, setLogY] = usePersistedPanelState<boolean>("charts", "logY", false);
+  const [identityLine, setIdentityLine] = usePersistedPanelState<boolean>("charts", "identityLine", false);
+  const [labelCol, setLabelCol] = usePersistedPanelState<string>("charts", "labelCol", "");
+  // Dumbbell: two numeric columns per category, drawn as a gap.
+  const [dbStart, setDbStart] = usePersistedPanelState<string>("charts", "dbStart", numCols[0] ?? "");
+  const [dbEnd, setDbEnd] = usePersistedPanelState<string>("charts", "dbEnd", numCols[1] ?? "");
+  const [dbSort, setDbSort] = usePersistedPanelState<string>("charts", "dbSort", "gap");
+  // Significance brackets over box / violin / bar — ggpubr's stat_compare_means.
+  const [showBrackets, setShowBrackets] = usePersistedPanelState<boolean>("charts", "showBrackets", false);
+  const [cmpMethod, setCmpMethod] = usePersistedPanelState<string>("charts", "cmpMethod", "auto");
+  const [cmpAdjust, setCmpAdjust] = usePersistedPanelState<string>("charts", "cmpAdjust", "holm");
+  const [cmpLabel, setCmpLabel] = usePersistedPanelState<string>("charts", "cmpLabel", "stars");
+  const [showPoints, setShowPoints] = usePersistedPanelState<boolean>("charts", "showPoints", false);
+  // Error plot / ECDF
+  const [errCentre, setErrCentre] = usePersistedPanelState<string>("charts", "errCentre", "mean");
+  const [errSpread, setErrSpread] = usePersistedPanelState<string>("charts", "errSpread", "ci");
+  // Scatter cloud description (ellipse / marginal) and marker shape.
+  const [ellipse, setEllipse] = usePersistedPanelState<boolean>("charts", "ellipse", false);
+  const [marginal, setMarginal] = usePersistedPanelState<boolean>("charts", "marginal", false);
+  const [shapeCol, setShapeCol] = usePersistedPanelState<string>("charts", "shapeCol", "");
+  // Pie / donut, balloon, facet
+  const [pieValue, setPieValue] = usePersistedPanelState<string>("charts", "pieValue", "");
+  const [donut, setDonut] = usePersistedPanelState<boolean>("charts", "donut", false);
+  const [balloonCol, setBalloonCol] = usePersistedPanelState<string>("charts", "balloonCol", "");
+  const [facetCol, setFacetCol] = usePersistedPanelState<string>("charts", "facetCol", "");
+  const [facetKind, setFacetKind] = usePersistedPanelState<string>("charts", "facetKind", "boxplot");
+  const [showSummary, setShowSummary] = usePersistedPanelState<boolean>("charts", "showSummary", false);
+  const [summary, setSummary] = useState<Record<string, unknown> | null>(null);
+  const [comparisons, setComparisons] = useState<Record<string, unknown> | null>(null);
   const [plotData, setPlotData] = useState<Record<string, unknown> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -40,17 +73,90 @@ function ChartsPanelBody({ session }: { session: Session }) {
       if (!color) { setError("Select a Group/Color column with exactly two levels (e.g. treatment status)."); return; }
       if (!pairId) { setError("Select a Pair ID column linking each matched pair (e.g. match_set_id)."); return; }
     }
+    if (chartType === "dumbbell") {
+      if (!x) { setError("Select the Category column — one row per level (e.g. the variable name)."); return; }
+      if (!dbStart || !dbEnd) { setError("Select both value columns: the open marker and the filled one."); return; }
+      if (dbStart === dbEnd) { setError("The two value columns must differ — a dumbbell shows the gap between them."); return; }
+    }
+    if (chartType === "ecdf" || chartType === "errorplot") {
+      if (!x) { setError("Select the numeric variable to summarise."); return; }
+    }
+    if (chartType === "balloon" && (!x || !balloonCol)) {
+      setError("Select both a row and a column variable — a balloon plot is a cross-tabulation."); return;
+    }
+    if (chartType === "balloon" && x === balloonCol) {
+      setError("Row and column variables must differ."); return;
+    }
+    if (chartType === "facet" && !facetCol) {
+      setError("Select the column to split into panels."); return;
+    }
     setLoading(true);
     setError(null);
+    setComparisons(null);
+    setSummary(null);
     try {
       const base = { session_id: session.session_id, x, bins };
       let res;
       if (chartType === "histogram") res = await getHistogram(base);
-      else if (chartType === "scatter") res = await getScatter({ ...base, y, color: color || undefined });
+      else if (chartType === "scatter") res = await getScatter({
+        ...base, y, color: color || undefined,
+        log_x: logX, log_y: logY, identity_line: identityLine,
+        label: labelCol || undefined, shape: shapeCol || undefined,
+        ellipse, marginal,
+      });
       else if (chartType === "boxplot" || chartType === "violin") res = await getBoxplot({ ...base, color: color || undefined });
       else if (chartType === "paired") res = await getPairedBox({ session_id: session.session_id, y: x, group: color, pair_id: pairId });
+      else if (chartType === "dumbbell") res = await getDumbbell({
+        session_id: session.session_id, category: x,
+        start: dbStart, end: dbEnd, group: color || undefined, sort: dbSort,
+      });
+      else if (chartType === "errorplot") res = await getErrorPlot({
+        session_id: session.session_id, y: x, group: color || undefined,
+        centre: errCentre, spread: errSpread,
+      });
+      else if (chartType === "ecdf") res = await getEcdf({
+        session_id: session.session_id, x, group: color || undefined,
+      });
+      else if (chartType === "pie") res = await getPie({
+        session_id: session.session_id, category: x, value: pieValue || undefined,
+      });
+      else if (chartType === "balloon") res = await getBalloon({
+        session_id: session.session_id, row: x, col: balloonCol,
+      });
+      else if (chartType === "facet") res = await getFacet({
+        session_id: session.session_id, kind: facetKind, x,
+        y: facetKind === "scatter" ? y : undefined,
+        facet: facetCol, color: color || undefined,
+      });
       else res = await getBar({ ...base, y: y || undefined, color: color || undefined });
       setPlotData(res.data);
+
+      // The summary table is a separate result printed under the plot, so a
+      // failure there must not cost the user the chart.
+      if (showSummary && ["boxplot", "violin", "errorplot", "ecdf"].includes(chartType)) {
+        try {
+          const s = await getSummaryStats({
+            session_id: session.session_id, y: x, group: color || undefined,
+          });
+          setSummary(s.data);
+        } catch { /* the chart stands on its own */ }
+      }
+
+      // Brackets are a second call: the comparison is a statistical result in
+      // its own right, and a failure there must not lose the plot the user
+      // already has.
+      if (showBrackets && color && (chartType === "boxplot" || chartType === "violin")) {
+        try {
+          const cmp = await getCompareMeans({
+            session_id: session.session_id, y: x, group: color,
+            method: cmpMethod, p_adjust: cmpAdjust, label: cmpLabel,
+          });
+          setComparisons(cmp.data);
+        } catch (e: unknown) {
+          const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+          setError(`Chart drawn, but the comparisons failed: ${detail ?? "unknown error"}`);
+        }
+      }
 
       // Auto-generate beautiful defaults
       const xMeta = session.columns.find((c) => c.name === x);
@@ -86,6 +192,22 @@ function ChartsPanelBody({ session }: { session: Session }) {
         autoTitle = `Matched-pair ${xLabelText} by ${colorLabelText}`;
         autoX = colorLabelText;
         autoY = xLabelText;
+      } else if (chartType === "errorplot") {
+        autoTitle = colorLabelText ? `${xLabelText} by ${colorLabelText}` : xLabelText;
+        autoX = colorLabelText || "Overall";
+        autoY = xLabelText;
+      } else if (chartType === "ecdf") {
+        autoTitle = colorLabelText ? `Cumulative distribution of ${xLabelText} by ${colorLabelText}` : `Cumulative distribution of ${xLabelText}`;
+        autoX = xLabelText;
+        autoY = "Cumulative proportion";
+      } else if (chartType === "dumbbell") {
+        const startMeta = session.columns.find((c) => c.name === dbStart);
+        const endMeta = session.columns.find((c) => c.name === dbEnd);
+        const startText = startMeta?.label || dbStart;
+        const endText = endMeta?.label || dbEnd;
+        autoTitle = `${endText} vs ${startText}, by ${xLabelText}`;
+        autoX = `${startText} (open) → ${endText} (filled)`;
+        autoY = xLabelText;
       }
 
       setCustomTitle(autoTitle);
@@ -100,7 +222,9 @@ function ChartsPanelBody({ session }: { session: Session }) {
   };
 
   const chartRef = useRef<PlotCaptureHandle | null>(null);
-  const traces = plotData ? buildTraces(plotData, chartType, pal, td, session) : null;
+  const traces = plotData ? buildTraces(plotData, chartType, pal, td, session, showPoints, donut ? 0.45 : 0) : null;
+  const brackets = buildBrackets(plotData, comparisons);
+  const marginalAxes = marginalLayout(plotData);
 
   return (
     <div className="flex gap-4 h-full">
@@ -108,11 +232,15 @@ function ChartsPanelBody({ session }: { session: Session }) {
       <div className="w-60 flex-shrink-0 space-y-4 overflow-y-auto pr-1" style={{ maxHeight: "calc(100vh - 120px)" }}>
         <div className="panel space-y-3 bg-white border border-gray-200 shadow-sm rounded-2xl p-4">
           <h3 className="text-sm font-semibold text-gray-700">Chart Type</h3>
-          {["histogram", "scatter", "boxplot", "violin", "bar", "paired"].map((t) => (
+          {["histogram", "scatter", "boxplot", "violin", "bar", "paired", "dumbbell", "errorplot", "ecdf", "pie", "balloon", "facet"].map((t) => (
             <label key={t} className="flex items-center gap-2 cursor-pointer">
               <input type="radio" name="chartType" value={t} checked={chartType === t}
                 onChange={() => setChartType(t)} className="accent-indigo-500" />
-              <span className="text-sm text-gray-700 capitalize">{t === "paired" ? "Paired box" : t}</span>
+              <span className="text-sm text-gray-700 capitalize">
+                {t === "paired" ? "Paired box" : t === "errorplot" ? "Error plot"
+                  : t === "ecdf" ? "ECDF" : t === "pie" ? (donut ? "Donut" : "Pie")
+                  : t === "balloon" ? "Balloon" : t === "facet" ? "Facet grid" : t}
+              </span>
             </label>
           ))}
         </div>
@@ -120,13 +248,52 @@ function ChartsPanelBody({ session }: { session: Session }) {
         <div className="panel space-y-3 bg-white border border-gray-200 shadow-sm rounded-2xl p-4">
           <h3 className="text-sm font-semibold text-gray-700">Variables</h3>
           <div>
-            <label className="text-xs text-gray-400 block mb-1">{chartType === "paired" ? "Outcome (Y)" : "X axis"}</label>
+            <label className="text-xs text-gray-400 block mb-1">
+              {chartType === "paired" ? "Outcome (Y)"
+                : chartType === "dumbbell" ? "Category (one row each)"
+                : chartType === "pie" ? "Category"
+                : chartType === "balloon" ? "Rows"
+                : "X axis"}
+            </label>
             <select className="select w-full" value={x} onChange={(e) => setX(e.target.value)}>
-              {(chartType === "boxplot" || chartType === "violin" || chartType === "paired" ? numCols : [...numCols, ...catCols]).map((c) => (
+              {(chartType === "boxplot" || chartType === "violin" || chartType === "paired"
+                || chartType === "errorplot" || chartType === "ecdf" || chartType === "facet" ? numCols
+                : chartType === "dumbbell" || chartType === "pie" || chartType === "balloon" ? [...catCols, ...numCols]
+                : [...numCols, ...catCols]).map((c) => (
                 <option key={c}>{c}</option>
               ))}
             </select>
+            {chartType === "dumbbell" && (
+              <p className="text-[10px] text-gray-400 mt-1">
+                Must have exactly one row per value — e.g. a variable-name column.
+              </p>
+            )}
           </div>
+          {chartType === "dumbbell" && (
+            <>
+              <div>
+                <label className="text-xs text-gray-400 block mb-1">Open marker (reference)</label>
+                <select className="select w-full" value={dbStart} onChange={(e) => setDbStart(e.target.value)}>
+                  {numCols.map((c) => <option key={c}>{c}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-gray-400 block mb-1">Filled marker (observed)</label>
+                <select className="select w-full" value={dbEnd} onChange={(e) => setDbEnd(e.target.value)}>
+                  {numCols.map((c) => <option key={c}>{c}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-gray-400 block mb-1">Order rows by</label>
+                <select className="select w-full" value={dbSort} onChange={(e) => setDbSort(e.target.value)}>
+                  <option value="gap">Gap (largest first)</option>
+                  <option value="end">Observed value</option>
+                  <option value="start">Reference value</option>
+                  <option value="category">Category name</option>
+                </select>
+              </div>
+            </>
+          )}
           {(chartType === "scatter" || chartType === "bar") && (
             <div>
               <label className="text-xs text-gray-400 block mb-1">Y axis</label>
@@ -153,6 +320,190 @@ function ChartsPanelBody({ session }: { session: Session }) {
                 {session.columns.map((c) => <option key={c.name}>{c.name}</option>)}
               </select>
               <p className="text-[10px] text-gray-400 mt-1">Links each matched pair — e.g. PSM's <code>match_set_id</code>, or a case-number column.</p>
+            </div>
+          )}
+          {chartType === "pie" && (
+            <>
+              <div>
+                <label className="text-xs text-gray-400 block mb-1">Slice size</label>
+                <select className="select w-full" value={pieValue} onChange={(e) => setPieValue(e.target.value)}>
+                  <option value="">Row count</option>
+                  {numCols.map((c) => <option key={c}>{c}</option>)}
+                </select>
+                <p className="text-[10px] text-gray-400 mt-1">
+                  A summed column must be non-negative — a pie splits a whole into parts.
+                </p>
+              </div>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={donut} onChange={(e) => setDonut(e.target.checked)} className="accent-indigo-500" />
+                <span className="text-xs text-gray-600">Donut (hollow centre)</span>
+              </label>
+            </>
+          )}
+          {chartType === "balloon" && (
+            <div>
+              <label className="text-xs text-gray-400 block mb-1">Columns</label>
+              <select className="select w-full" value={balloonCol} onChange={(e) => setBalloonCol(e.target.value)}>
+                <option value="">— select —</option>
+                {[...catCols, ...numCols].map((c) => <option key={c}>{c}</option>)}
+              </select>
+              <p className="text-[10px] text-gray-400 mt-1">
+                Dot area is the count; colour is the standardised residual, so cells that
+                depart from independence stand out from cells that are merely large.
+              </p>
+            </div>
+          )}
+          {chartType === "facet" && (
+            <>
+              <div>
+                <label className="text-xs text-gray-400 block mb-1">Panel type</label>
+                <select className="select w-full" value={facetKind} onChange={(e) => setFacetKind(e.target.value)}>
+                  <option value="boxplot">Box plot</option>
+                  <option value="scatter">Scatter</option>
+                </select>
+              </div>
+              {facetKind === "scatter" && (
+                <div>
+                  <label className="text-xs text-gray-400 block mb-1">Y axis</label>
+                  <select className="select w-full" value={y} onChange={(e) => setY(e.target.value)}>
+                    {numCols.map((c) => <option key={c}>{c}</option>)}
+                  </select>
+                </div>
+              )}
+              <div>
+                <label className="text-xs text-gray-400 block mb-1">Split into panels by</label>
+                <select className="select w-full" value={facetCol} onChange={(e) => setFacetCol(e.target.value)}>
+                  <option value="">— select —</option>
+                  {catCols.map((c) => <option key={c}>{c}</option>)}
+                </select>
+                <p className="text-[10px] text-gray-400 mt-1">
+                  Every panel gets the same axis range, so panels can be compared by eye.
+                </p>
+              </div>
+            </>
+          )}
+          {chartType === "errorplot" && (
+            <>
+              <div>
+                <label className="text-xs text-gray-400 block mb-1">Centre</label>
+                <select className="select w-full" value={errCentre} onChange={(e) => setErrCentre(e.target.value)}>
+                  <option value="mean">Mean</option>
+                  <option value="median">Median</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-gray-400 block mb-1">Whisker</label>
+                <select className="select w-full" value={errSpread} onChange={(e) => setErrSpread(e.target.value)}>
+                  <option value="ci">95% CI (precision of the mean)</option>
+                  <option value="se">SE (precision of the mean)</option>
+                  <option value="sd">SD (spread of the sample)</option>
+                  <option value="iqr">IQR (with median)</option>
+                </select>
+                <p className="text-[10px] text-gray-400 mt-1">
+                  SD describes the data; SE and CI describe how well the mean is pinned down.
+                  They differ by √n, so say which one the figure shows.
+                </p>
+              </div>
+            </>
+          )}
+          {(chartType === "boxplot" || chartType === "violin") && (
+            <div className="pt-2 border-t border-gray-100 space-y-2">
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Comparisons</p>
+              <label className="flex items-center gap-2 cursor-pointer" title="Draws every raw observation over the box. A box alone hides the sample size and any clustering; with small clinical samples showing the points is now expected.">
+                <input type="checkbox" checked={showPoints} onChange={(e) => setShowPoints(e.target.checked)} className="accent-indigo-500" />
+                <span className="text-xs text-gray-600">Show every point</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer" title="Adds a significance bracket over each pair of groups, like ggpubr's stat_compare_means. Needs a Color / Group column.">
+                <input type="checkbox" checked={showBrackets} onChange={(e) => setShowBrackets(e.target.checked)} className="accent-indigo-500" />
+                <span className="text-xs text-gray-600">Significance brackets</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer" title="Prints n, mean ± SD, median and IQR per group under the chart — ggpubr's ggsummarystats.">
+                <input type="checkbox" checked={showSummary} onChange={(e) => setShowSummary(e.target.checked)} className="accent-indigo-500" />
+                <span className="text-xs text-gray-600">Summary table below</span>
+              </label>
+              {showBrackets && (
+                <div className="space-y-2 pl-1">
+                  <div>
+                    <label className="text-xs text-gray-400 block mb-1">Test</label>
+                    <select className="select w-full" value={cmpMethod} onChange={(e) => setCmpMethod(e.target.value)}>
+                      <option value="auto">Auto (Shapiro-Wilk decides)</option>
+                      <option value="welch">Welch t-test</option>
+                      <option value="t">Student t-test</option>
+                      <option value="wilcoxon">Mann-Whitney U</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-400 block mb-1">Correct for multiplicity</label>
+                    <select className="select w-full" value={cmpAdjust} onChange={(e) => setCmpAdjust(e.target.value)}>
+                      <option value="holm">Holm</option>
+                      <option value="fdr">Benjamini-Hochberg (FDR)</option>
+                      <option value="bonferroni">Bonferroni</option>
+                      <option value="none">None (raw p)</option>
+                    </select>
+                    {cmpAdjust === "none" && (
+                      <p className="text-[10px] text-amber-700 mt-1">
+                        Every extra pair raises the chance of a false star. Say in the caption
+                        that these are unadjusted.
+                      </p>
+                    )}
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-400 block mb-1">Label</label>
+                    <select className="select w-full" value={cmpLabel} onChange={(e) => setCmpLabel(e.target.value)}>
+                      <option value="stars">Stars (*, **, ***)</option>
+                      <option value="p">p-value</option>
+                    </select>
+                  </div>
+                  {!color && (
+                    <p className="text-[10px] text-amber-700">
+                      Select a Color / Group column — brackets compare its levels.
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+          {chartType === "scatter" && (
+            <div className="pt-2 border-t border-gray-100 space-y-2">
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Agreement options</p>
+              <label className="flex items-center gap-2 cursor-pointer" title="Use when the values span orders of magnitude — p-values, concentrations, counts. Zero and negative values cannot be shown and are dropped with a warning.">
+                <input type="checkbox" checked={logX} onChange={(e) => setLogX(e.target.checked)} className="accent-indigo-500" />
+                <span className="text-xs text-gray-600">Log X axis</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer" title="Same as above for the vertical axis. The fit is recomputed in log space so it stays a straight line.">
+                <input type="checkbox" checked={logY} onChange={(e) => setLogY(e.target.checked)} className="accent-indigo-500" />
+                <span className="text-xs text-gray-600">Log Y axis</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer" title="Draws y = x. Only meaningful when both axes carry the same quantity — a reported value against a recomputed one, or a method against a reference. Points off the line are the disagreements.">
+                <input type="checkbox" checked={identityLine} onChange={(e) => setIdentityLine(e.target.checked)} className="accent-indigo-500" />
+                <span className="text-xs text-gray-600">y = x reference line</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer" title="Draws the region expected to contain 95% of a bivariate normal cloud, per group. It describes the spread, not the fit.">
+                <input type="checkbox" checked={ellipse} onChange={(e) => setEllipse(e.target.checked)} className="accent-indigo-500" />
+                <span className="text-xs text-gray-600">95% confidence ellipse</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer" title="Adds a histogram along each axis, so the marginal distribution of each variable is visible alongside their joint behaviour.">
+                <input type="checkbox" checked={marginal} onChange={(e) => setMarginal(e.target.checked)} className="accent-indigo-500" />
+                <span className="text-xs text-gray-600">Marginal histograms</span>
+              </label>
+              <div>
+                <label className="text-xs text-gray-400 block mb-1">Marker shape by</label>
+                <select className="select w-full" value={shapeCol} onChange={(e) => setShapeCol(e.target.value)}>
+                  <option value="">None</option>
+                  {catCols.map((c) => <option key={c}>{c}</option>)}
+                </select>
+                <p className="text-[10px] text-gray-400 mt-1">
+                  Survives printing in greyscale and is readable without colour vision.
+                </p>
+              </div>
+              <div>
+                <label className="text-xs text-gray-400 block mb-1">Point labels</label>
+                <select className="select w-full" value={labelCol} onChange={(e) => setLabelCol(e.target.value)}>
+                  <option value="">None</option>
+                  {session.columns.map((c) => <option key={c.name}>{c.name}</option>)}
+                </select>
+                <p className="text-[10px] text-gray-400 mt-1">Names each point on the figure — use it to call out the rows that miss the line.</p>
+              </div>
             </div>
           )}
           {chartType === "histogram" && (
@@ -219,22 +570,148 @@ function ChartsPanelBody({ session }: { session: Session }) {
             chartType === "boxplot" ? "Compares distributions across groups. The box shows Q1–Q3 (IQR), the line is the median, whiskers extend to 1.5×IQR. Points beyond whiskers are outliers." :
             chartType === "violin" ? "Combines a box plot with a kernel density estimate. The wider the violin, the more data points at that value. Better than box plots for showing bimodal or skewed distributions." :
             chartType === "paired" ? "Matched-pair comparison: a box per group plus a line connecting each pair's two values (e.g. PSM-matched cohorts). Pair ID must link exactly one row per group — PSM's match_set_id or any per-case ID column works." :
+            chartType === "pie" ? "Composition of a single categorical variable. Readers judge angles poorly, so percentages are printed on each slice and a long tail of thin wedges is folded into 'Other'. If the point is to compare categories rather than show shares of a whole, a bar chart reads more accurately." :
+            chartType === "balloon" ? "A cross-tabulation drawn as dots: area is the cell count, colour is the standardised residual (observed − expected, scaled). The residual is what makes this more than a restatement of the marginals — it shows which cells actually depart from independence. The χ² test appears below; watch for the warning when an expected count falls under 5." :
+            chartType === "facet" ? "One panel per level of a grouping variable — small multiples. Every panel shares a single axis range computed across all of them, because per-panel autoscaling makes different distributions look identical. Panels beyond the limit are dropped with a warning rather than quietly omitted." :
+            chartType === "errorplot" ? "Centre and spread per group, without the box. Pick the whisker deliberately: SD says how spread the observations are, SE and CI say how precisely the mean is estimated. They differ by a factor of √n, so an SE plot looks far tighter than an SD plot on identical data — journals ask which one you used." :
+            chartType === "ecdf" ? "The empirical cumulative distribution: for each value on the x axis, the proportion of observations at or below it. Unlike a histogram it involves no binning choice, so it cannot be made to tell a different story by changing bin width. With exactly two groups the largest vertical gap between the curves is the Kolmogorov-Smirnov D, reported below the chart." :
+            chartType === "dumbbell" ? "Two values per category, joined by a line — the line length is the point. Use it to compare a reference against an observation across many variables at once: an expected effect size against the one computed from the raw data, a baseline against follow-up, model A against model B. Rows are ranked so the largest disagreement sits at the top. Needs exactly one row per category." :
             "Shows counts or aggregated values for categories. Use for comparing frequencies across groups. Add a Color variable for stacked/grouped comparisons."
           }</p>
+          {chartType === "scatter" && (
+            <p className="text-xs text-gray-600 leading-relaxed mt-2 pt-2 border-t border-gray-200">
+              For an <strong>agreement plot</strong> — a reported value against a recomputed one —
+              turn on both log axes and the y = x line, and set Point labels to the variable name.
+              Points below the line are the ones reported smaller than they should be.
+            </p>
+          )}
         </div>
+
+        {/* Backend warnings (e.g. points a log axis cannot show) */}
+        {Array.isArray(plotData?.warnings) && (plotData.warnings as unknown[]).length > 0 && (
+          <div className="panel bg-amber-50 border border-amber-200 p-3 rounded-2xl">
+            {(plotData.warnings as Array<{ message: string }>).map((w, i) => (
+              <p key={i} className="text-xs text-amber-800 leading-relaxed">{w.message}</p>
+            ))}
+          </div>
+        )}
+
+        {/* Balloon plot: the test behind the colours */}
+        {plotData?.type === "balloon" && (
+          <div className="panel bg-gray-50 border-gray-200 p-4 rounded-2xl">
+            <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Independence</p>
+            <p className="text-xs text-gray-600 leading-relaxed">
+              χ² = {Number(plotData.chi2).toFixed(2)}, df = {String(plotData.df)},{" "}
+              p = {Number(plotData.p) < 1e-4 ? Number(plotData.p).toExponential(2) : Number(plotData.p).toFixed(4)}{" "}
+              (n = {String(plotData.n)}). Blue cells hold more observations than independence predicts,
+              red fewer; a residual beyond ±2 is the usual threshold for calling a cell a contributor.
+            </p>
+          </div>
+        )}
+
+        {/* Summary table under the plot — ggsummarystats */}
+        {summary && (
+          <div className="panel bg-white border border-gray-200 p-3 rounded-2xl overflow-x-auto">
+            <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Summary</p>
+            <table className="text-[11px] w-full">
+              <thead>
+                <tr className="text-gray-400 text-left">
+                  <th className="pr-2 font-medium">Group</th>
+                  <th className="pr-2 font-medium">n</th>
+                  <th className="pr-2 font-medium">Mean ± SD</th>
+                  <th className="pr-2 font-medium">Median (IQR)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(summary.rows as Array<Record<string, number | string>>).map((r) => (
+                  <tr key={String(r.group)} className="text-gray-700 border-t border-gray-100">
+                    <td className="pr-2 py-0.5">{String(r.group)}</td>
+                    <td className="pr-2 py-0.5">
+                      {String(r.n)}{Number(r.n_missing) > 0 && <span className="text-amber-600"> (+{String(r.n_missing)} missing)</span>}
+                    </td>
+                    <td className="pr-2 py-0.5">{Number(r.mean).toFixed(2)} ± {Number(r.sd).toFixed(2)}</td>
+                    <td className="pr-2 py-0.5">
+                      {Number(r.median).toFixed(2)} ({Number(r.q1).toFixed(2)}–{Number(r.q3).toFixed(2)})
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* What the stars actually mean — a figure legend the user can copy */}
+        {comparisons && (
+          <div className="panel bg-gray-50 border-gray-200 p-4 rounded-2xl">
+            <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Comparisons</p>
+            <p className="text-xs text-gray-600 leading-relaxed">
+              {String(comparisons.test)} ({String(comparisons.test_selected_by)}).{" "}
+              {comparisons.p_shown_is_adjusted
+                ? `p-values adjusted for ${(comparisons.comparisons as unknown[]).length} comparisons (${String(comparisons.p_adjust)}).`
+                : `p-values are unadjusted across ${(comparisons.comparisons as unknown[]).length} comparisons.`}
+              {(comparisons.omnibus as { test?: string; p?: number })?.test && (
+                <> Omnibus {String((comparisons.omnibus as { test: string }).test)}{" "}
+                  p = {Number((comparisons.omnibus as { p: number }).p).toExponential(2)}.</>
+              )}
+            </p>
+            <p className="text-[10px] text-gray-500 mt-1">
+              **** ≤ 0.0001 · *** ≤ 0.001 · ** ≤ 0.01 · * ≤ 0.05 · ns otherwise.
+            </p>
+          </div>
+        )}
+
+        {/* Dumbbell summary — the numbers behind the picture */}
+        {plotData?.type === "dumbbell" && (() => {
+          const s = plotData.summary as Record<string, number | string>;
+          return (
+            <div className="panel bg-gray-50 border-gray-200 p-4 rounded-2xl">
+              <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Gaps</p>
+              <p className="text-xs text-gray-600 leading-relaxed">
+                {s.n} categories · median absolute gap {Number(s.median_abs_gap).toFixed(3)} ·
+                largest {Number(s.max_abs_gap).toFixed(3)} at <strong>{String(s.largest_gap_category)}</strong>.
+                {" "}{s.n_end_above_start} above the reference, {s.n_end_below_start} below.
+              </p>
+            </div>
+          );
+        })()}
       </div>
 
       {/* Plot area */}
       <div className="flex-1 panel min-h-0 relative bg-white border border-gray-200 shadow-sm rounded-2xl p-4 overflow-y-auto">
         {traces ? (
           <TitledPlot
+            // Remount when the chart type changes so the height below is
+            // applied; without it the first mount's height sticks.
+            key={chartType}
             plotRefOut={chartRef}
             storageKey={`charts:${chartType}:${x}`}
             data={traces}
             layout={{
               ...layout,
-              xaxis: { ...(layout.xaxis as PlotLayout), ...pairedXAxisOverride(chartType, plotData, session) },
-              yaxis: { ...(layout.yaxis as PlotLayout) },
+              // A dumbbell needs one legible label per row. At a fixed height
+              // Plotly starts dropping tick labels past ~15 rows, which leaves
+              // markers the reader cannot attribute to anything.
+              ...(plotData?.type === "dumbbell"
+                ? { height: Math.min(1400, Math.max(360, 26 * ((plotData.rows as unknown[])?.length ?? 0) + 140)) }
+                : {}),
+              xaxis: {
+                ...(layout.xaxis as PlotLayout),
+                ...pairedXAxisOverride(chartType, plotData, session),
+                ...(plotData?.log_x ? { type: "log" } : {}),
+                ...(marginalAxes.xDomain ? { domain: marginalAxes.xDomain } : {}),
+              },
+              yaxis: {
+                ...(layout.yaxis as PlotLayout),
+                ...(plotData?.log_y ? { type: "log" } : {}),
+                // Category order comes from the trace arrays, not alphabetical.
+                ...(plotData?.type === "dumbbell" ? { type: "category", automargin: true } : {}),
+                ...(marginalAxes.yDomain ? { domain: marginalAxes.yDomain } : {}),
+              },
+              ...(brackets.shapes.length
+                ? { shapes: brackets.shapes, annotations: brackets.annotations }
+                : {}),
+              ...facetLayout(plotData),
+              ...marginalAxes.extra,
             }}
             config={{ responsive: true, displayModeBar: true, displaylogo: false }}
             defaultTitle={customTitle || (plotData?.x ? String(plotData.x) : "")}
@@ -252,12 +729,148 @@ function ChartsPanelBody({ session }: { session: Session }) {
   );
 }
 
+/** Domains that shrink the scatter to make room for the marginal strips.
+ *
+ *  Returns only the extra axes plus the domains; the caller merges the domain
+ *  into the main axis objects rather than replacing them, so a log scale or
+ *  any other axis setting survives.
+ */
+function marginalLayout(plotData: Record<string, unknown> | null): {
+  xDomain?: number[];
+  yDomain?: number[];
+  extra: Record<string, unknown>;
+} {
+  const marg = (plotData?.marginal ?? {}) as Record<string, unknown[]>;
+  if (!plotData || plotData.type !== "scatter") return { extra: {} };
+  const hasX = Array.isArray(marg.x) && marg.x.length > 0;
+  const hasY = Array.isArray(marg.y) && marg.y.length > 0;
+  if (!hasX && !hasY) return { extra: {} };
+  const main = 0.82;
+  return {
+    xDomain: [0, hasY ? main : 1],
+    yDomain: [0, hasX ? main : 1],
+    extra: {
+      xaxis2: { domain: [main + 0.02, 1], anchor: "y", showticklabels: false },
+      yaxis2: { domain: [main + 0.02, 1], anchor: "x", showticklabels: false },
+      bargap: 0.05,
+    },
+  };
+}
+
+/** Grid of subplots for a faceted chart, with one shared axis range.
+ *
+ *  Every panel is given the same range, computed by the backend across all of
+ *  them. Letting Plotly autoscale each panel is the classic small-multiples
+ *  error: two panels look alike while their axes differ tenfold.
+ */
+function facetLayout(plotData: Record<string, unknown> | null): Record<string, unknown> {
+  if (!plotData || plotData.type !== "facet") return {};
+  const panels = (plotData.panels as Array<Record<string, unknown>>) ?? [];
+  if (!panels.length) return {};
+  const shared = (plotData.shared_range ?? {}) as { x?: number[]; y?: number[] };
+  const cols = Math.min(3, panels.length);
+  const rows = Math.ceil(panels.length / cols);
+  const kind = String(plotData.kind);
+  const pad = 0.06;
+  const out: Record<string, unknown> = {
+    height: Math.max(360, rows * 260 + 120),
+    annotations: [] as Record<string, unknown>[],
+    showlegend: kind === "boxplot",
+  };
+  const anns = out.annotations as Record<string, unknown>[];
+
+  panels.forEach((p, i) => {
+    const r = Math.floor(i / cols);
+    const c = i % cols;
+    const x0 = c / cols + pad / 2;
+    const x1 = (c + 1) / cols - pad / 2;
+    const yTop = 1 - r / rows - pad / 2;
+    const yBot = 1 - (r + 1) / rows + pad / 2;
+    const suffix = i === 0 ? "" : String(i + 1);
+    out[`xaxis${suffix}`] = {
+      domain: [x0, x1],
+      anchor: `y${suffix}`,
+      ...(kind === "scatter" && shared.x ? { range: shared.x } : {}),
+    };
+    out[`yaxis${suffix}`] = {
+      domain: [yBot, yTop],
+      anchor: `x${suffix}`,
+      ...(shared.y ? { range: shared.y } : shared.x && kind === "boxplot" ? { range: shared.x } : {}),
+    };
+    anns.push({
+      text: `${String(p.panel)} (n=${p.n})`,
+      x: (x0 + x1) / 2,
+      y: yTop,
+      xref: "paper",
+      yref: "paper",
+      showarrow: false,
+      yanchor: "bottom",
+      font: { size: 11 },
+    });
+  });
+  return out;
+}
+
+/** Significance brackets over a grouped plot, as Plotly shapes + annotations.
+ *
+ *  Positions come from the data, not the axis range, so the brackets clear the
+ *  tallest whisker rather than floating at a guessed height. Each level is one
+ *  step higher; the backend already ordered them shortest-span-first so short
+ *  brackets sit under long ones instead of crossing them.
+ */
+function buildBrackets(
+  plotData: Record<string, unknown> | null,
+  comparisons: Record<string, unknown> | null,
+): { shapes: Record<string, unknown>[]; annotations: Record<string, unknown>[] } {
+  const empty = { shapes: [], annotations: [] };
+  if (!plotData || !comparisons) return empty;
+  const groups = plotData.groups as Array<{ values: number[] }> | undefined;
+  const rows = comparisons.comparisons as Array<Record<string, number | string>> | undefined;
+  if (!groups?.length || !rows?.length) return empty;
+
+  const all = groups.flatMap((g) => g.values.map(Number)).filter(Number.isFinite);
+  if (!all.length) return empty;
+  const top = Math.max(...all);
+  const bottom = Math.min(...all);
+  const span = top - bottom || Math.abs(top) || 1;
+  const step = span * 0.09;
+  const base = top + step * 0.6;
+  const tick = step * 0.22;
+
+  const shapes: Record<string, unknown>[] = [];
+  const annotations: Record<string, unknown>[] = [];
+  rows.forEach((r) => {
+    const yTop = base + step * Number(r.level);
+    const x1 = Number(r.x1);
+    const x2 = Number(r.x2);
+    // Three segments: two short verticals and the horizontal joining them.
+    shapes.push(
+      { type: "line", xref: "x", yref: "y", x0: x1, x1: x1, y0: yTop - tick, y1: yTop, line: { color: "#4b5563", width: 1 } },
+      { type: "line", xref: "x", yref: "y", x0: x2, x1: x2, y0: yTop - tick, y1: yTop, line: { color: "#4b5563", width: 1 } },
+      { type: "line", xref: "x", yref: "y", x0: x1, x1: x2, y0: yTop, y1: yTop, line: { color: "#4b5563", width: 1 } },
+    );
+    annotations.push({
+      x: (x1 + x2) / 2,
+      y: yTop,
+      xref: "x",
+      yref: "y",
+      text: String(r.label),
+      showarrow: false,
+      yanchor: "bottom",
+      font: { size: 11, color: "#374151" },
+    });
+  });
+  return { shapes, annotations };
+}
+
 function buildTraces(
   d: Record<string, unknown> | null,
   chartType: string,
   C: string[],
   td: { lineWidth: number; markerSize: number; markerOpacity: number },
   session: Session,
+  showPoints = false,
+  donutHole = 0,
 ): PlotData[] | null {
   if (!d) return null;
 
@@ -296,41 +909,287 @@ function buildTraces(
     const regression = d.regression as { line_x: unknown; line_y: unknown; r2: number };
     const xKey = String(d.x);
     const yKey = String(d.y);
+    const labelKey = d.label ? String(d.label) : null;
+    // Labels ride on the markers; hover keeps them legible when they collide.
+    const textFor = (rows: Array<Record<string, unknown>>) =>
+      labelKey ? rows.map((p) => String(p[labelKey] ?? "")) : undefined;
+    const markerMode = labelKey ? "markers+text" : "markers";
+    // Confidence ellipses come back as closed polygons, one per group.
+    const ellipseTraces: PlotData[] = ((d.ellipses as Array<Record<string, unknown>>) ?? [])
+      .filter((e) => Array.isArray(e.x) && (e.x as unknown[]).length > 0)
+      .map((e, i) => ({
+        type: "scatter", mode: "lines",
+        x: e.x, y: e.y,
+        line: { color: C[i % C.length], width: 1.5, dash: "dot" },
+        name: `${String(e.group)} ${Math.round(Number(d.ellipse_level ?? 0.95) * 100)}% ellipse`,
+        hoverinfo: "name",
+      } as PlotData));
+    // Marker shape by a second column — distinguishable in print and for
+    // readers who cannot separate the palette by colour alone.
+    const SHAPES = ["circle", "diamond", "square", "triangle-up", "cross", "x", "star"];
+    const shapeKey = d.shape ? String(d.shape) : null;
+    const shapeLevels = shapeKey
+      ? [...new Set(points.map((p) => String(p[shapeKey])))]
+      : [];
+    const symbolFor = (rows: Array<Record<string, unknown>>) =>
+      shapeKey ? rows.map((p) => SHAPES[shapeLevels.indexOf(String(p[shapeKey])) % SHAPES.length]) : undefined;
+    // Marginal histograms live on their own axes: one strip above the plot for
+    // x, one to the right for y. Bars, not densities — the counts are what the
+    // backend computed and a KDE would imply smoothing nobody asked for.
+    const marg = (d.marginal ?? {}) as {
+      x?: Array<Record<string, number>>;
+      y?: Array<Record<string, number>>;
+    };
+    const marginalTraces: PlotData[] = [];
+    if (marg.x?.length) {
+      marginalTraces.push({
+        type: "bar",
+        x: marg.x.map((b) => b.centre),
+        y: marg.x.map((b) => b.count),
+        marker: { color: C[0], opacity: 0.55 },
+        xaxis: "x", yaxis: "y2",
+        showlegend: false,
+        hovertemplate: "%{y} points<extra></extra>",
+      } as PlotData);
+    }
+    if (marg.y?.length) {
+      marginalTraces.push({
+        type: "bar",
+        orientation: "h",
+        y: marg.y.map((b) => b.centre),
+        x: marg.y.map((b) => b.count),
+        marker: { color: C[0], opacity: 0.55 },
+        xaxis: "x2", yaxis: "y",
+        showlegend: false,
+        hovertemplate: "%{x} points<extra></extra>",
+      } as PlotData);
+    }
+    const identity = (d.identity ?? {}) as { line_x?: unknown[]; line_y?: unknown[] };
+    const identityTrace: PlotData[] =
+      identity.line_x && (identity.line_x as unknown[]).length
+        ? [{
+            type: "scatter", mode: "lines",
+            x: identity.line_x, y: identity.line_y,
+            line: { color: "#6b7280", width: 1.5 },
+            name: "y = x",
+            hoverinfo: "name",
+          } as PlotData]
+        : [];
     if (d.color) {
       const colorKey = String(d.color);
       const colorLabels = valueLabelsFor(d.color);
       const groups = [...new Set(points.map((p) => p[colorKey]))];
       return [
-        ...groups.map((g, i) => ({
-          type: "scatter",
-          mode: "markers",
-          name: colorLabels[String(g)] ?? String(g),
-          x: points.filter((p) => p[colorKey] === g).map((p) => p[xKey]),
-          y: points.filter((p) => p[colorKey] === g).map((p) => p[yKey]),
-          marker: { color: C[i % C.length], size: td.markerSize, opacity: td.markerOpacity },
-        })),
+        ...groups.map((g, i) => {
+          const rows = points.filter((p) => p[colorKey] === g);
+          return {
+            type: "scatter",
+            mode: markerMode,
+            name: colorLabels[String(g)] ?? String(g),
+            x: rows.map((p) => p[xKey]),
+            y: rows.map((p) => p[yKey]),
+            text: textFor(rows),
+            textposition: "top center",
+            textfont: { size: 9 },
+            marker: { color: C[i % C.length], size: td.markerSize, opacity: td.markerOpacity, symbol: symbolFor(rows) },
+          } as PlotData;
+        }),
         {
           type: "scatter", mode: "lines",
           x: regression.line_x, y: regression.line_y,
           line: { color: "#374151", width: 1.5, dash: "dash" },
           name: `Fit (R²=${regression.r2.toFixed(3)})`,
-        },
+        } as PlotData,
+        ...identityTrace,
+        ...ellipseTraces,
+        ...marginalTraces,
       ];
     }
     return [
       {
-        type: "scatter", mode: "markers",
+        type: "scatter", mode: markerMode,
         x: points.map((p) => p[xKey]),
         y: points.map((p) => p[yKey]),
+        text: textFor(points),
+        textposition: "top center",
+        textfont: { size: 9 },
         marker: { color: C[0], size: td.markerSize, opacity: td.markerOpacity },
         name: yKey,
-      },
+      } as PlotData,
       {
         type: "scatter", mode: "lines",
         x: regression.line_x, y: regression.line_y,
         line: { color: C[1], width: td.lineWidth },
         name: `Fit (R²=${regression.r2.toFixed(3)})`,
+      } as PlotData,
+      ...identityTrace,
+      ...ellipseTraces,
+      ...marginalTraces,
+    ];
+  }
+
+  if (d.type === "pie") {
+    const slices = (d.slices as Array<Record<string, unknown>>) ?? [];
+    return [{
+      type: "pie",
+      labels: slices.map((s) => String(s.label)),
+      values: slices.map((s) => Number(s.value)),
+      // Percentages on the slices: a pie is hard to read past three wedges,
+      // and the number is what the reader is trying to recover anyway.
+      textinfo: "label+percent",
+      hole: donutHole,
+      marker: { colors: slices.map((_, i) => C[i % C.length]) },
+      hovertemplate: `%{label}: %{value} (%{percent})<extra></extra>`,
+    } as PlotData];
+  }
+
+  if (d.type === "balloon") {
+    const cells = (d.cells as Array<Record<string, unknown>>) ?? [];
+    const counts = cells.map((c) => Number(c.count));
+    const maxCount = Math.max(...counts, 1);
+    const resid = cells.map((c) => Number(c.residual));
+    const maxAbsResid = Math.max(...resid.map(Math.abs), 1);
+    return [{
+      type: "scatter",
+      mode: "markers",
+      x: cells.map((c) => String(c.col)),
+      y: cells.map((c) => String(c.row)),
+      marker: {
+        // Area, not diameter, tracks the count — sizing by diameter
+        // exaggerates large cells by the square.
+        size: counts.map((n) => 6 + 42 * Math.sqrt(n / maxCount)),
+        color: resid,
+        cmin: -maxAbsResid,
+        cmax: maxAbsResid,
+        colorscale: "RdBu",
+        reversescale: true,
+        showscale: true,
+        colorbar: { title: { text: "Std. residual" }, thickness: 12 },
+        line: { color: "#9ca3af", width: 1 },
       },
+      text: cells.map(
+        (c) => `n = ${c.count}<br>expected ${Number(c.expected).toFixed(1)}<br>residual ${Number(c.residual).toFixed(2)}`,
+      ),
+      hovertemplate: "%{y} × %{x}<br>%{text}<extra></extra>",
+    } as PlotData];
+  }
+
+  if (d.type === "facet") {
+    const panels = (d.panels as Array<Record<string, unknown>>) ?? [];
+    const kind = String(d.kind);
+    const traces: PlotData[] = [];
+    panels.forEach((p, pi) => {
+      const axis = pi === 0 ? "" : String(pi + 1);
+      if (kind === "boxplot") {
+        const groups = (p.groups as Array<Record<string, unknown>>) ?? [];
+        groups.forEach((g, gi) => {
+          traces.push({
+            type: "box",
+            y: g.values,
+            name: String(g.group),
+            legendgroup: String(g.group),
+            showlegend: pi === 0,
+            marker: { color: C[gi % C.length] },
+            xaxis: `x${axis}`,
+            yaxis: `y${axis}`,
+          } as PlotData);
+        });
+      } else {
+        traces.push({
+          type: "scatter",
+          mode: "markers",
+          x: p.x,
+          y: p.y,
+          name: String(p.panel),
+          showlegend: false,
+          marker: { color: C[pi % C.length], size: td.markerSize, opacity: td.markerOpacity },
+          xaxis: `x${axis}`,
+          yaxis: `y${axis}`,
+        } as PlotData);
+      }
+    });
+    return traces;
+  }
+
+  if (d.type === "errorplot") {
+    const rows = (d.rows as Array<Record<string, unknown>>) ?? [];
+    return [{
+      type: "scatter",
+      mode: "markers",
+      x: rows.map((r) => String(r.group)),
+      y: rows.map((r) => Number(r.centre)),
+      error_y: {
+        type: "data",
+        symmetric: false,
+        array: rows.map((r) => Number(r.upper) - Number(r.centre)),
+        arrayminus: rows.map((r) => Number(r.centre) - Number(r.lower)),
+        thickness: 1.5,
+        width: 6,
+      },
+      marker: { color: C[0], size: td.markerSize + 2 },
+      name: String(d.spread_label ?? ""),
+      hovertemplate: rows.map((r) => `${String(r.group)} (n=${r.n})<extra></extra>`),
+    } as PlotData];
+  }
+
+  if (d.type === "ecdf") {
+    const curves = (d.curves as Array<Record<string, unknown>>) ?? [];
+    return curves.map((c, i) => ({
+      type: "scatter",
+      mode: "lines",
+      // A step shape is the honest rendering: the ECDF jumps at each
+      // observation and is flat between them.
+      line: { shape: "hv", color: C[i % C.length], width: td.lineWidth },
+      x: c.x,
+      y: c.y,
+      name: `${String(c.group)} (n=${c.n})`,
+    } as PlotData));
+  }
+
+  if (d.type === "dumbbell") {
+    const rows = (d.rows as Array<Record<string, unknown>>) ?? [];
+    // Plotly stacks the first category at the bottom; the backend ranks worst
+    // first, so reverse to put the largest gap at the top of the figure.
+    const ordered = [...rows].reverse();
+    const cats = ordered.map((r) => String(r.category));
+    const starts = ordered.map((r) => Number(r.start));
+    const ends = ordered.map((r) => Number(r.end));
+    const groupKey = d.group ? String(d.group) : null;
+    const groupsSeen = groupKey ? [...new Set(ordered.map((r) => String(r.group)))] : [];
+    const colorOf = (i: number) =>
+      groupKey ? C[groupsSeen.indexOf(String(ordered[i].group)) % C.length] : C[0];
+
+    // One connector per row: a separate two-point trace, so each can take the
+    // colour of its own group rather than one colour for the whole set.
+    const connectors: PlotData[] = ordered.map((r, i) => ({
+      type: "scatter",
+      mode: "lines",
+      x: [Number(r.start), Number(r.end)],
+      y: [String(r.category), String(r.category)],
+      line: { color: colorOf(i), width: 2 },
+      showlegend: false,
+      hoverinfo: "skip",
+    } as PlotData));
+
+    return [
+      ...connectors,
+      {
+        type: "scatter", mode: "markers",
+        x: starts, y: cats,
+        marker: {
+          color: "#ffffff", size: td.markerSize + 2,
+          line: { color: ordered.map((_, i) => colorOf(i)), width: 2 },
+        },
+        name: String(d.start),
+        hovertemplate: `%{y}<br>${String(d.start)}: %{x}<extra></extra>`,
+      } as PlotData,
+      {
+        type: "scatter", mode: "markers",
+        x: ends, y: cats,
+        marker: { color: ordered.map((_, i) => colorOf(i)), size: td.markerSize + 2 },
+        name: String(d.end),
+        hovertemplate: `%{y}<br>${String(d.end)}: %{x}<extra></extra>`,
+      } as PlotData,
     ];
   }
 
@@ -357,8 +1216,15 @@ function buildTraces(
       type: "box",
       y: g.values,
       name: colorLabels[String(g.group)] ?? g.group,
-      marker: { color: C[i % C.length] },
-      boxpoints: groups[0].values.length < 500 ? "outliers" : false,
+      marker: { color: C[i % C.length], size: showPoints ? 4 : undefined, opacity: showPoints ? 0.55 : undefined },
+      // "Show every point" is the modern default for small clinical samples —
+      // a box alone hides n and any clustering. Above ~500 the overplotting
+      // costs more than it tells, so the outliers-only view stays.
+      boxpoints: showPoints
+        ? (groups[0].values.length < 500 ? "all" : "outliers")
+        : (groups[0].values.length < 500 ? "outliers" : false),
+      jitter: showPoints ? 0.35 : undefined,
+      pointpos: showPoints ? 0 : undefined,
       text: g.row_indices?.map((idx) => `Row ${idx + 1}`),
       hovertemplate: "%{y}<br>%{text}<extra>%{fullData.name}</extra>",
     }));
