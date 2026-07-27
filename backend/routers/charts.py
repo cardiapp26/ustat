@@ -552,6 +552,594 @@ def compare_means(req: CompareMeansRequest):
     }
 
 
+class LinePlotRequest(BaseModel):
+    session_id: str
+    x: str                       # the ordered axis — visit, dose, time point
+    y: str
+    group: Optional[str] = None
+    centre: str = "mean"         # mean | median
+    spread: str = "ci"           # ci | se | sd | iqr | none
+    ci_level: float = 0.95
+
+
+@router.post("/lineplot")
+def lineplot(req: LinePlotRequest):
+    """Group means across an ordered axis, with a band — cnsplots' lineplot.
+
+    The repeated-measures figure: one line per arm across visits. Each point
+    carries the n behind it, because in longitudinal data the n almost always
+    falls over time and a line that thins out looks identical to one that does
+    not.
+    """
+    df = _get_df(req.session_id)
+    for col in (req.x, req.y):
+        if col not in df.columns:
+            raise HTTPException(status_code=400, detail=f"Column '{col}' not found")
+    if req.group and req.group not in df.columns:
+        raise HTTPException(status_code=400, detail=f"Column '{req.group}' not found")
+    if req.centre not in {"mean", "median"}:
+        raise HTTPException(status_code=400, detail="centre must be mean or median")
+    if req.spread not in {"ci", "se", "sd", "iqr", "none"}:
+        raise HTTPException(
+            status_code=400, detail="spread must be ci, se, sd, iqr or none"
+        )
+    if req.centre == "median" and req.spread in {"ci", "se", "sd"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Pair median with iqr (or none); ci / se / sd describe a mean.",
+        )
+    if req.centre == "mean" and req.spread == "iqr":
+        raise HTTPException(
+            status_code=400, detail="An IQR band belongs with the median."
+        )
+
+    cols = [req.x, req.y] + ([req.group] if req.group else [])
+    sub = df[list(dict.fromkeys(cols))].copy()
+    sub[req.y] = coerce_numeric(sub[req.y]).replace([np.inf, -np.inf], np.nan)
+    sub = sub.dropna(subset=[req.x, req.y])
+    if sub.empty:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No rows have both '{req.x}' and a numeric '{req.y}'.",
+        )
+
+    x_levels = sorted_groups(sub[req.x])
+    series = []
+    for gname in (sorted_groups(sub[req.group]) if req.group else ["All"]):
+        block = sub[sub[req.group] == gname] if req.group else sub
+        pts = []
+        for xv in x_levels:
+            vals = block.loc[block[req.x] == xv, req.y].astype(float).to_numpy()
+            if len(vals) == 0:
+                continue
+            n = int(len(vals))
+            if req.centre == "median":
+                centre = float(np.median(vals))
+                if req.spread == "iqr":
+                    lo, hi = (float(v) for v in np.percentile(vals, [25, 75]))
+                else:
+                    lo = hi = centre
+            else:
+                centre = float(np.mean(vals))
+                sd = float(np.std(vals, ddof=1)) if n > 1 else 0.0
+                se = sd / np.sqrt(n) if n else 0.0
+                if req.spread == "sd":
+                    lo, hi = centre - sd, centre + sd
+                elif req.spread == "se":
+                    lo, hi = centre - se, centre + se
+                elif req.spread == "ci" and n > 1:
+                    t = float(scipy_stats.t.ppf(0.5 + req.ci_level / 2, n - 1))
+                    lo, hi = centre - t * se, centre + t * se
+                else:
+                    lo = hi = centre
+            pts.append(
+                {"x": str(xv), "n": n, "centre": centre,
+                 "lower": float(lo), "upper": float(hi)}
+            )
+        if pts:
+            series.append({"group": str(gname), "points": pts})
+
+    # A shrinking n is the thing readers miss in a longitudinal line.
+    warnings: list[dict] = []
+    for s in series:
+        ns = [p["n"] for p in s["points"]]
+        if ns and min(ns) < max(ns) * 0.5:
+            warnings.append(
+                {
+                    "type": "attrition",
+                    "group": s["group"],
+                    "message": (
+                        f"'{s['group']}' falls from n = {max(ns)} to n = {min(ns)} "
+                        "across the axis. Later points rest on far fewer observations."
+                    ),
+                }
+            )
+
+    return {
+        "type": "lineplot",
+        "x": req.x, "y": req.y, "group": req.group,
+        "centre": req.centre, "spread": req.spread,
+        "x_levels": [str(v) for v in x_levels],
+        "series": series,
+        "warnings": warnings,
+    }
+
+
+class SlopePlotRequest(BaseModel):
+    session_id: str
+    before: str
+    after: str
+    group: Optional[str] = None
+    label: Optional[str] = None
+    test: str = "auto"           # auto | paired_t | wilcoxon | none
+
+
+@router.post("/slopeplot")
+def slopeplot(req: SlopePlotRequest):
+    """Before-and-after, one line per subject — cnsplots' slopeplot.
+
+    Rows missing either measurement are excluded and counted: a paired
+    comparison computed on whoever happened to have both values is a different
+    analysis from the one the figure implies.
+    """
+    df = _get_df(req.session_id)
+    for col in (req.before, req.after):
+        if col not in df.columns:
+            raise HTTPException(status_code=400, detail=f"Column '{col}' not found")
+    for col in (req.group, req.label):
+        if col and col not in df.columns:
+            raise HTTPException(status_code=400, detail=f"Column '{col}' not found")
+    if req.before == req.after:
+        raise HTTPException(
+            status_code=400, detail="The two measurements must be different columns."
+        )
+    if req.test not in {"auto", "paired_t", "wilcoxon", "none"}:
+        raise HTTPException(
+            status_code=400, detail="test must be auto, paired_t, wilcoxon or none"
+        )
+
+    cols = [req.before, req.after] + [c for c in (req.group, req.label) if c]
+    sub = df[list(dict.fromkeys(cols))].copy()
+    for col in (req.before, req.after):
+        sub[col] = coerce_numeric(sub[col]).replace([np.inf, -np.inf], np.nan)
+    complete = sub.dropna(subset=[req.before, req.after])
+    n_incomplete = int(len(sub) - len(complete))
+    if len(complete) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Fewer than 2 rows have both measurements; there is nothing to pair."
+            ),
+        )
+
+    pairs = [
+        {
+            "before": float(r[req.before]),
+            "after": float(r[req.after]),
+            "change": float(r[req.after] - r[req.before]),
+            "group": str(r[req.group]) if req.group else None,
+            "label": str(r[req.label]) if req.label else None,
+        }
+        for _, r in complete.iterrows()
+    ]
+
+    b = complete[req.before].astype(float).to_numpy()
+    a = complete[req.after].astype(float).to_numpy()
+    diff = a - b
+    chosen, why = req.test, "requested"
+    if req.test == "auto":
+        normal = len(diff) >= 3 and (
+            float(np.std(diff, ddof=1)) == 0
+            or scipy_stats.shapiro(diff[:5000]).pvalue >= 0.05
+        )
+        chosen = "paired_t" if normal else "wilcoxon"
+        why = (
+            "auto: the differences passed Shapiro-Wilk"
+            if normal
+            else "auto: the differences failed Shapiro-Wilk"
+        )
+
+    test_result: dict = {}
+    if chosen == "paired_t":
+        t, p = scipy_stats.ttest_rel(a, b)
+        test_result = {
+            "test": "Paired t-test", "statistic": float(t), "p": float(p),
+            "df": int(len(diff) - 1), "selected_by": why,
+        }
+    elif chosen == "wilcoxon":
+        if np.all(diff == 0):
+            test_result = {
+                "test": "Wilcoxon signed-rank", "statistic": None, "p": None,
+                "selected_by": why,
+                "note": "Every difference is zero; the test is undefined.",
+            }
+        else:
+            w, p = scipy_stats.wilcoxon(a, b)
+            test_result = {
+                "test": "Wilcoxon signed-rank", "statistic": float(w),
+                "p": float(p), "selected_by": why,
+            }
+
+    warnings: list[dict] = []
+    if n_incomplete:
+        warnings.append(
+            {
+                "type": "incomplete_pairs",
+                "n_dropped": n_incomplete,
+                "message": (
+                    f"{n_incomplete} rows lack one of the two measurements and are "
+                    f"excluded. The comparison covers {len(complete)} complete pairs."
+                ),
+            }
+        )
+
+    return {
+        "type": "slopeplot",
+        "before": req.before, "after": req.after,
+        "group": req.group, "label": req.label,
+        "pairs": pairs,
+        "n_pairs": len(pairs),
+        "n_incomplete": n_incomplete,
+        "mean_change": float(np.mean(diff)),
+        "median_change": float(np.median(diff)),
+        "n_increased": int((diff > 0).sum()),
+        "n_decreased": int((diff < 0).sum()),
+        "n_unchanged": int((diff == 0).sum()),
+        "test_result": test_result,
+        "warnings": warnings,
+    }
+
+
+class SankeyRequest(BaseModel):
+    session_id: str
+    stages: List[str]            # two or more columns, read left to right
+    value: Optional[str] = None  # omit to count rows
+    min_flow: int = 0            # drop links thinner than this
+
+
+@router.post("/sankey")
+def sankey(req: SankeyRequest):
+    """Flow between successive states — cnsplots' sankeyplot.
+
+    Stage names are prefixed with their column, so a level that appears at two
+    stages ("Alive" at baseline and at follow-up) becomes two nodes rather
+    than one node with a loop back into itself.
+    """
+    df = _get_df(req.session_id)
+    if len(req.stages) < 2:
+        raise HTTPException(
+            status_code=400, detail="A Sankey needs at least two stage columns."
+        )
+    if len(set(req.stages)) != len(req.stages):
+        raise HTTPException(
+            status_code=400, detail="Each stage column must be listed only once."
+        )
+    for col in req.stages + ([req.value] if req.value else []):
+        if col not in df.columns:
+            raise HTTPException(status_code=400, detail=f"Column '{col}' not found")
+    if req.min_flow < 0:
+        raise HTTPException(status_code=400, detail="min_flow cannot be negative")
+
+    cols = list(dict.fromkeys(req.stages + ([req.value] if req.value else [])))
+    sub = df[cols].copy()
+    if req.value:
+        sub[req.value] = coerce_numeric(sub[req.value]).replace(
+            [np.inf, -np.inf], np.nan
+        )
+    sub = sub.dropna()
+    if sub.empty:
+        raise HTTPException(
+            status_code=400,
+            detail="No rows have every stage present.",
+        )
+
+    node_index: dict[str, int] = {}
+    labels: list[str] = []
+    stage_of: list[int] = []
+
+    def node(stage_i: int, level: str) -> int:
+        key = f"{req.stages[stage_i]}={level}"
+        if key not in node_index:
+            node_index[key] = len(labels)
+            labels.append(str(level))
+            stage_of.append(stage_i)
+        return node_index[key]
+
+    links = []
+    dropped = 0
+    for i in range(len(req.stages) - 1):
+        src_col, dst_col = req.stages[i], req.stages[i + 1]
+        if req.value:
+            grouped = sub.groupby([src_col, dst_col], dropna=True)[req.value].sum()
+        else:
+            grouped = sub.groupby([src_col, dst_col], dropna=True).size()
+        for (s, t), v in grouped.items():
+            if float(v) <= req.min_flow:
+                dropped += 1
+                continue
+            links.append(
+                {
+                    "source": node(i, str(s)),
+                    "target": node(i + 1, str(t)),
+                    "value": float(v),
+                    "from": str(s),
+                    "to": str(t),
+                    "stage": i,
+                }
+            )
+
+    if not links:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No flows survive the min_flow threshold; nothing would be drawn."
+            ),
+        )
+
+    return {
+        "type": "sankey",
+        "stages": req.stages,
+        "value": req.value,
+        "measure": "sum" if req.value else "count",
+        "labels": labels,
+        "node_stage": stage_of,
+        "links": links,
+        "n_rows": int(len(sub)),
+        "n_links_dropped": dropped,
+    }
+
+
+class StackPlotRequest(BaseModel):
+    session_id: str
+    x: str                    # the axis category
+    fill: str                 # what is stacked within each bar
+    value: Optional[str] = None
+    normalize: bool = False   # each bar to 100%
+
+
+@router.post("/stackplot")
+def stackplot(req: StackPlotRequest):
+    """Composition within each category — cnsplots' stackplot.
+
+    Counts and percentages both come back. A 100% stacked bar hides how many
+    observations each bar rests on, so the raw n per bar is returned even in
+    normalised mode and is meant to be shown.
+    """
+    df = _get_df(req.session_id)
+    for col in (req.x, req.fill):
+        if col not in df.columns:
+            raise HTTPException(status_code=400, detail=f"Column '{col}' not found")
+    if req.value and req.value not in df.columns:
+        raise HTTPException(status_code=400, detail=f"Column '{req.value}' not found")
+    if req.x == req.fill:
+        raise HTTPException(
+            status_code=400, detail="The axis and the stacked variable must differ."
+        )
+
+    cols = [req.x, req.fill] + ([req.value] if req.value else [])
+    sub = df[list(dict.fromkeys(cols))].copy()
+    if req.value:
+        sub[req.value] = coerce_numeric(sub[req.value]).replace(
+            [np.inf, -np.inf], np.nan
+        )
+        sub = sub.dropna()
+        if (sub[req.value] < 0).any():
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"'{req.value}' contains negative values; a stacked bar cannot "
+                    "represent them as parts of a total."
+                ),
+            )
+        table = sub.pivot_table(
+            index=req.x, columns=req.fill, values=req.value, aggfunc="sum", fill_value=0
+        )
+    else:
+        sub = sub.dropna()
+        table = pd.crosstab(sub[req.x], sub[req.fill])
+
+    if table.empty:
+        raise HTTPException(status_code=400, detail="Nothing to stack.")
+
+    totals = table.sum(axis=1)
+    series = [
+        {
+            "fill": str(col),
+            "x": [str(i) for i in table.index],
+            "value": [float(v) for v in table[col]],
+            "percent": [
+                float(v) / float(t) * 100.0 if t else 0.0
+                for v, t in zip(table[col], totals)
+            ],
+        }
+        for col in table.columns
+    ]
+    return {
+        "type": "stackplot",
+        "x": req.x, "fill": req.fill, "value": req.value,
+        "normalize": req.normalize,
+        "measure": "sum" if req.value else "count",
+        "x_levels": [str(i) for i in table.index],
+        "totals": {str(i): float(t) for i, t in totals.items()},
+        "series": series,
+    }
+
+
+class RidgePlotRequest(BaseModel):
+    session_id: str
+    x: str
+    group: str
+    points: int = 200
+
+
+@router.post("/ridgeplot")
+def ridgeplot(req: RidgePlotRequest):
+    """One density per group, stacked — cnsplots' ridgeplot.
+
+    Every group is evaluated on the same grid, so the curves are comparable;
+    per-group grids would make distributions of different width look alike.
+    Densities are scaled to a common peak for legibility, and the n is
+    returned because a smooth curve over six observations looks as
+    authoritative as one over six hundred.
+    """
+    df = _get_df(req.session_id)
+    for col in (req.x, req.group):
+        if col not in df.columns:
+            raise HTTPException(status_code=400, detail=f"Column '{col}' not found")
+    if not (20 <= req.points <= 1000):
+        raise HTTPException(status_code=400, detail="points must be between 20 and 1000")
+
+    sub = df[[req.x, req.group]].copy()
+    sub[req.x] = coerce_numeric(sub[req.x]).replace([np.inf, -np.inf], np.nan)
+    sub = sub.dropna()
+    if sub.empty:
+        raise HTTPException(
+            status_code=400, detail=f"No numeric values in '{req.x}'."
+        )
+
+    lo, hi = float(sub[req.x].min()), float(sub[req.x].max())
+    if lo == hi:
+        raise HTTPException(
+            status_code=400,
+            detail=f"'{req.x}' is constant; a density curve cannot be drawn.",
+        )
+    pad = (hi - lo) * 0.05
+    grid = np.linspace(lo - pad, hi + pad, req.points)
+
+    ridges = []
+    warnings: list[dict] = []
+    for name in sorted_groups(sub[req.group]):
+        vals = sub.loc[sub[req.group] == name, req.x].astype(float).to_numpy()
+        n = int(len(vals))
+        if n < 3 or float(np.std(vals, ddof=1)) == 0:
+            warnings.append(
+                {
+                    "type": "no_density",
+                    "group": str(name),
+                    "message": (
+                        f"'{name}' has {n} values with no usable spread; no curve is "
+                        "drawn for it."
+                    ),
+                }
+            )
+            continue
+        dens = scipy_stats.gaussian_kde(vals)(grid)
+        ridges.append(
+            {
+                "group": str(name),
+                "n": n,
+                "x": [float(v) for v in grid],
+                "density": [float(v) for v in dens],
+                "peak": float(dens.max()),
+                "median": float(np.median(vals)),
+            }
+        )
+    if not ridges:
+        raise HTTPException(
+            status_code=400,
+            detail="No group has enough spread for a density curve.",
+        )
+    thin = [r["group"] for r in ridges if r["n"] < 10]
+    if thin:
+        warnings.append(
+            {
+                "type": "thin_groups",
+                "message": (
+                    "Fewer than 10 observations in: " + ", ".join(thin)
+                    + ". A smooth curve there is mostly the kernel, not the data."
+                ),
+            }
+        )
+    return {
+        "type": "ridgeplot",
+        "x": req.x, "group": req.group,
+        "ridges": ridges,
+        "max_peak": max(r["peak"] for r in ridges),
+        "warnings": warnings,
+    }
+
+
+class SetsRequest(BaseModel):
+    session_id: str
+    columns: List[str]        # membership columns, read as truthy
+    max_sets: int = 6
+
+
+@router.post("/sets")
+def sets(req: SetsRequest):
+    """Overlap between membership columns — Venn and UpSet.
+
+    Returns every non-empty intersection with its exclusive size, which is
+    what both a Venn region and an UpSet bar show. Set count is capped
+    because the number of regions doubles with each column.
+    """
+    df = _get_df(req.session_id)
+    if len(req.columns) < 2:
+        raise HTTPException(status_code=400, detail="Give at least two columns.")
+    if len(set(req.columns)) != len(req.columns):
+        raise HTTPException(status_code=400, detail="Columns must be distinct.")
+    if len(req.columns) > req.max_sets:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{len(req.columns)} sets would make {2 ** len(req.columns) - 1} "
+                f"regions; the limit is {req.max_sets} columns."
+            ),
+        )
+    for col in req.columns:
+        if col not in df.columns:
+            raise HTTPException(status_code=400, detail=f"Column '{col}' not found")
+
+    truthy = {"1", "1.0", "true", "yes", "y", "evet", "var", "positive", "pos"}
+
+    def as_member(series: pd.Series) -> np.ndarray:
+        numeric = coerce_numeric(series)
+        if numeric.notna().sum() >= max(1, int(0.8 * len(series))):
+            return (numeric.fillna(0) != 0).to_numpy()
+        return series.astype(str).str.strip().str.lower().isin(truthy).to_numpy()
+
+    masks = {c: as_member(df[c]) for c in req.columns}
+    sizes = {c: int(m.sum()) for c, m in masks.items()}
+    empty = [c for c, s in sizes.items() if s == 0]
+    if len(empty) == len(req.columns):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No column has any member. Values are read as truthy when numeric "
+                "and non-zero, or one of: " + ", ".join(sorted(truthy))
+            ),
+        )
+
+    from itertools import combinations
+
+    intersections = []
+    n_cols = len(req.columns)
+    for size in range(1, n_cols + 1):
+        for combo in combinations(req.columns, size):
+            mask = np.ones(len(df), dtype=bool)
+            for c in req.columns:
+                mask &= masks[c] if c in combo else ~masks[c]
+            count = int(mask.sum())
+            if count:
+                intersections.append(
+                    {"sets": list(combo), "degree": size, "count": count}
+                )
+    intersections.sort(key=lambda r: (-r["count"], r["degree"]))
+
+    return {
+        "type": "sets",
+        "columns": req.columns,
+        "set_sizes": sizes,
+        "n_rows": int(len(df)),
+        "n_in_no_set": int(len(df) - sum(r["count"] for r in intersections)),
+        "intersections": intersections,
+        "empty_columns": empty,
+        # A Venn stays readable to three sets; past that the UpSet form is the
+        # honest rendering rather than an unreadable ellipse pile.
+        "renderable_as_venn": n_cols <= 3,
+    }
+
+
 class FacetRequest(BaseModel):
     session_id: str
     kind: str                      # boxplot | scatter

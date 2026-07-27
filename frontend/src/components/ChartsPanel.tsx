@@ -2,7 +2,7 @@ import { useState, useRef } from "react";
 import { useStore, isNumericKind, isCategoricalKind, type Session } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
 import { usePlotLayout, usePalette, useTraceDefaults } from "../plotStyle";
-import { getHistogram, getScatter, getBoxplot, getBar, getPairedBox, getDumbbell, getCompareMeans, getErrorPlot, getEcdf, getPie, getBalloon, getSummaryStats, getFacet } from "../api";
+import { getHistogram, getScatter, getBoxplot, getBar, getPairedBox, getDumbbell, getCompareMeans, getErrorPlot, getEcdf, getPie, getBalloon, getSummaryStats, getFacet, getLinePlot, getSlopePlot, getSankey, getStackPlot, getRidgePlot, getSets } from "../api";
 import type { PlotData, PlotLayout, PlotCaptureHandle } from "../lib/plotTypes";
 import TitledPlot from "./TitledPlot";
 
@@ -57,6 +57,16 @@ function ChartsPanelBody({ session }: { session: Session }) {
   const [facetCol, setFacetCol] = usePersistedPanelState<string>("charts", "facetCol", "");
   const [facetKind, setFacetKind] = usePersistedPanelState<string>("charts", "facetKind", "boxplot");
   const [showSummary, setShowSummary] = usePersistedPanelState<boolean>("charts", "showSummary", false);
+  // cnsplots shapes: line over an ordered axis, before/after slopes, flow,
+  // stacked composition, stacked densities, set overlap.
+  const [lineY, setLineY] = usePersistedPanelState<string>("charts", "lineY", numCols[0] ?? "");
+  const [slopeBefore, setSlopeBefore] = usePersistedPanelState<string>("charts", "slopeBefore", numCols[0] ?? "");
+  const [slopeAfter, setSlopeAfter] = usePersistedPanelState<string>("charts", "slopeAfter", numCols[1] ?? "");
+  const [stage2, setStage2] = usePersistedPanelState<string>("charts", "stage2", "");
+  const [stage3, setStage3] = usePersistedPanelState<string>("charts", "stage3", "");
+  const [fillCol, setFillCol] = usePersistedPanelState<string>("charts", "fillCol", "");
+  const [stackNormalize, setStackNormalize] = usePersistedPanelState<boolean>("charts", "stackNormalize", false);
+  const [setCols, setSetCols] = usePersistedPanelState<string[]>("charts", "setCols", []);
   const [summary, setSummary] = useState<Record<string, unknown> | null>(null);
   const [comparisons, setComparisons] = useState<Record<string, unknown> | null>(null);
   const [plotData, setPlotData] = useState<Record<string, unknown> | null>(null);
@@ -90,6 +100,23 @@ function ChartsPanelBody({ session }: { session: Session }) {
     if (chartType === "facet" && !facetCol) {
       setError("Select the column to split into panels."); return;
     }
+    if (chartType === "slopeplot") {
+      if (!slopeBefore || !slopeAfter) { setError("Select both the before and after measurements."); return; }
+      if (slopeBefore === slopeAfter) { setError("The two measurements must be different columns."); return; }
+    }
+    if (chartType === "sankey" && !stage2) {
+      setError("A Sankey needs at least two stages — select the second one."); return;
+    }
+    if (chartType === "stackplot") {
+      if (!fillCol) { setError("Select what to stack inside each bar."); return; }
+      if (fillCol === x) { setError("The axis and the stacked variable must differ."); return; }
+    }
+    if (chartType === "ridgeplot" && !color) {
+      setError("Select a Color / Group column — a ridge plot draws one density per group."); return;
+    }
+    if (chartType === "sets" && setCols.length < 2) {
+      setError("Tick at least two membership columns."); return;
+    }
     setLoading(true);
     setError(null);
     setComparisons(null);
@@ -122,6 +149,28 @@ function ChartsPanelBody({ session }: { session: Session }) {
       });
       else if (chartType === "balloon") res = await getBalloon({
         session_id: session.session_id, row: x, col: balloonCol,
+      });
+      else if (chartType === "lineplot") res = await getLinePlot({
+        session_id: session.session_id, x, y: lineY, group: color || undefined,
+        centre: errCentre, spread: errSpread === "iqr" && errCentre === "mean" ? "ci" : errSpread,
+      });
+      else if (chartType === "slopeplot") res = await getSlopePlot({
+        session_id: session.session_id, before: slopeBefore, after: slopeAfter,
+        group: color || undefined,
+      });
+      else if (chartType === "sankey") res = await getSankey({
+        session_id: session.session_id,
+        stages: [x, stage2, ...(stage3 ? [stage3] : [])],
+      });
+      else if (chartType === "stackplot") res = await getStackPlot({
+        session_id: session.session_id, x, fill: fillCol,
+        value: pieValue || undefined, normalize: stackNormalize,
+      });
+      else if (chartType === "ridgeplot") res = await getRidgePlot({
+        session_id: session.session_id, x, group: color,
+      });
+      else if (chartType === "sets") res = await getSets({
+        session_id: session.session_id, columns: setCols,
       });
       else if (chartType === "facet") res = await getFacet({
         session_id: session.session_id, kind: facetKind, x,
@@ -232,14 +281,17 @@ function ChartsPanelBody({ session }: { session: Session }) {
       <div className="w-60 flex-shrink-0 space-y-4 overflow-y-auto pr-1" style={{ maxHeight: "calc(100vh - 120px)" }}>
         <div className="panel space-y-3 bg-white border border-gray-200 shadow-sm rounded-2xl p-4">
           <h3 className="text-sm font-semibold text-gray-700">Chart Type</h3>
-          {["histogram", "scatter", "boxplot", "violin", "bar", "paired", "dumbbell", "errorplot", "ecdf", "pie", "balloon", "facet"].map((t) => (
+          {["histogram", "scatter", "boxplot", "violin", "bar", "paired", "dumbbell", "errorplot", "ecdf", "pie", "balloon", "facet", "lineplot", "slopeplot", "sankey", "stackplot", "ridgeplot", "sets"].map((t) => (
             <label key={t} className="flex items-center gap-2 cursor-pointer">
               <input type="radio" name="chartType" value={t} checked={chartType === t}
                 onChange={() => setChartType(t)} className="accent-indigo-500" />
               <span className="text-sm text-gray-700 capitalize">
                 {t === "paired" ? "Paired box" : t === "errorplot" ? "Error plot"
                   : t === "ecdf" ? "ECDF" : t === "pie" ? (donut ? "Donut" : "Pie")
-                  : t === "balloon" ? "Balloon" : t === "facet" ? "Facet grid" : t}
+                  : t === "balloon" ? "Balloon" : t === "facet" ? "Facet grid"
+                  : t === "lineplot" ? "Line (over visits)" : t === "slopeplot" ? "Slope (before / after)"
+                  : t === "sankey" ? "Sankey (flow)" : t === "stackplot" ? "Stacked bar"
+                  : t === "ridgeplot" ? "Ridge" : t === "sets" ? "Set overlap" : t}
               </span>
             </label>
           ))}
@@ -253,12 +305,20 @@ function ChartsPanelBody({ session }: { session: Session }) {
                 : chartType === "dumbbell" ? "Category (one row each)"
                 : chartType === "pie" ? "Category"
                 : chartType === "balloon" ? "Rows"
+                : chartType === "lineplot" ? "Ordered axis (visit / time)"
+                : chartType === "sankey" ? "Stage 1"
+                : chartType === "stackplot" ? "Bars (axis category)"
+                : chartType === "ridgeplot" ? "Value"
+                : chartType === "sets" ? "— use the tick list below —"
                 : "X axis"}
             </label>
             <select className="select w-full" value={x} onChange={(e) => setX(e.target.value)}>
               {(chartType === "boxplot" || chartType === "violin" || chartType === "paired"
-                || chartType === "errorplot" || chartType === "ecdf" || chartType === "facet" ? numCols
-                : chartType === "dumbbell" || chartType === "pie" || chartType === "balloon" ? [...catCols, ...numCols]
+                || chartType === "errorplot" || chartType === "ecdf" || chartType === "facet"
+                || chartType === "ridgeplot" ? numCols
+                : chartType === "dumbbell" || chartType === "pie" || chartType === "balloon"
+                || chartType === "lineplot" || chartType === "sankey" || chartType === "stackplot"
+                  ? [...catCols, ...numCols]
                 : [...numCols, ...catCols]).map((c) => (
                 <option key={c}>{c}</option>
               ))}
@@ -320,6 +380,107 @@ function ChartsPanelBody({ session }: { session: Session }) {
                 {session.columns.map((c) => <option key={c.name}>{c.name}</option>)}
               </select>
               <p className="text-[10px] text-gray-400 mt-1">Links each matched pair — e.g. PSM's <code>match_set_id</code>, or a case-number column.</p>
+            </div>
+          )}
+          {chartType === "lineplot" && (
+            <div>
+              <label className="text-xs text-gray-400 block mb-1">Value (Y)</label>
+              <select className="select w-full" value={lineY} onChange={(e) => setLineY(e.target.value)}>
+                {numCols.map((c) => <option key={c}>{c}</option>)}
+              </select>
+              <p className="text-[10px] text-gray-400 mt-1">
+                Each point carries its n on hover — in longitudinal data the n usually falls.
+              </p>
+            </div>
+          )}
+          {chartType === "slopeplot" && (
+            <>
+              <div>
+                <label className="text-xs text-gray-400 block mb-1">Before</label>
+                <select className="select w-full" value={slopeBefore} onChange={(e) => setSlopeBefore(e.target.value)}>
+                  {numCols.map((c) => <option key={c}>{c}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-gray-400 block mb-1">After</label>
+                <select className="select w-full" value={slopeAfter} onChange={(e) => setSlopeAfter(e.target.value)}>
+                  {numCols.map((c) => <option key={c}>{c}</option>)}
+                </select>
+                <p className="text-[10px] text-gray-400 mt-1">
+                  Rows missing either value are excluded and counted below the chart.
+                </p>
+              </div>
+            </>
+          )}
+          {chartType === "sankey" && (
+            <>
+              <div>
+                <label className="text-xs text-gray-400 block mb-1">Stage 2</label>
+                <select className="select w-full" value={stage2} onChange={(e) => setStage2(e.target.value)}>
+                  <option value="">— select —</option>
+                  {[...catCols, ...numCols].map((c) => <option key={c}>{c}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-gray-400 block mb-1">Stage 3 (optional)</label>
+                <select className="select w-full" value={stage3} onChange={(e) => setStage3(e.target.value)}>
+                  <option value="">None</option>
+                  {[...catCols, ...numCols].map((c) => <option key={c}>{c}</option>)}
+                </select>
+              </div>
+            </>
+          )}
+          {chartType === "stackplot" && (
+            <>
+              <div>
+                <label className="text-xs text-gray-400 block mb-1">Stack within each bar</label>
+                <select className="select w-full" value={fillCol} onChange={(e) => setFillCol(e.target.value)}>
+                  <option value="">— select —</option>
+                  {[...catCols, ...numCols].map((c) => <option key={c}>{c}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-gray-400 block mb-1">Bar height</label>
+                <select className="select w-full" value={pieValue} onChange={(e) => setPieValue(e.target.value)}>
+                  <option value="">Row count</option>
+                  {numCols.map((c) => <option key={c}>{c}</option>)}
+                </select>
+              </div>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={stackNormalize} onChange={(e) => setStackNormalize(e.target.checked)} className="accent-indigo-500" />
+                <span className="text-xs text-gray-600">Scale every bar to 100%</span>
+              </label>
+              {stackNormalize && (
+                <p className="text-[10px] text-amber-700">
+                  A 100% bar hides how many rows it rests on. The per-bar n is printed below.
+                </p>
+              )}
+            </>
+          )}
+          {chartType === "sets" && (
+            <div>
+              <label className="text-xs text-gray-400 block mb-1">Membership columns</label>
+              <div className="max-h-48 overflow-y-auto border border-gray-200 rounded p-2 space-y-1">
+                {session.columns.map((c) => (
+                  <label key={c.name} className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="accent-indigo-500"
+                      checked={setCols.includes(c.name)}
+                      onChange={(e) =>
+                        setSetCols(e.target.checked
+                          ? [...setCols, c.name]
+                          : setCols.filter((n) => n !== c.name))
+                      }
+                    />
+                    <span className="text-xs text-gray-700 truncate">{c.name}</span>
+                  </label>
+                ))}
+              </div>
+              <p className="text-[10px] text-gray-400 mt-1">
+                Read as members when numeric and non-zero, or yes / true / evet / var.
+                Up to 6 columns — regions double with each one.
+              </p>
             </div>
           )}
           {chartType === "pie" && (
@@ -570,6 +731,12 @@ function ChartsPanelBody({ session }: { session: Session }) {
             chartType === "boxplot" ? "Compares distributions across groups. The box shows Q1–Q3 (IQR), the line is the median, whiskers extend to 1.5×IQR. Points beyond whiskers are outliers." :
             chartType === "violin" ? "Combines a box plot with a kernel density estimate. The wider the violin, the more data points at that value. Better than box plots for showing bimodal or skewed distributions." :
             chartType === "paired" ? "Matched-pair comparison: a box per group plus a line connecting each pair's two values (e.g. PSM-matched cohorts). Pair ID must link exactly one row per group — PSM's match_set_id or any per-case ID column works." :
+            chartType === "lineplot" ? "Group means across an ordered axis — the repeated-measures figure: one line per arm across visits, with a band for the uncertainty. Each point's n is on hover, and a warning appears when a group loses half its subjects along the axis, because a thinning line looks identical to a stable one." :
+            chartType === "slopeplot" ? "Before and after, one line per subject. Shows what a mean change conceals: whether everyone moved a little or a few moved a lot, and who moved the other way. Rows missing either measurement are excluded and counted — a paired test run on whoever happened to have both values is a different analysis from the one the figure implies." :
+            chartType === "sankey" ? "Flow between successive states — treatment lines, stage transitions, care pathways. A level appearing at two stages becomes two separate nodes, so 'Medical → Medical' reads as staying put rather than as a loop." :
+            chartType === "stackplot" ? "Composition within each bar. Useful when the parts matter as much as the total. Scaling every bar to 100% makes the shares comparable but hides how many rows each bar rests on, so the per-bar n is printed below the chart." :
+            chartType === "ridgeplot" ? "One density curve per group, stacked. Good for comparing the shape of many distributions at once — shifts, skew, bimodality — where a box plot would show only quartiles. Every group is evaluated on the same grid so widths are comparable, and groups too small to smooth are named rather than drawn." :
+            chartType === "sets" ? "How membership columns overlap. Each bar is an exclusive region: rows in exactly that combination and no other, which is what a Venn region means too. Up to three sets a Venn is readable; past that these bars are the honest rendering." :
             chartType === "pie" ? "Composition of a single categorical variable. Readers judge angles poorly, so percentages are printed on each slice and a long tail of thin wedges is folded into 'Other'. If the point is to compare categories rather than show shares of a whole, a bar chart reads more accurately." :
             chartType === "balloon" ? "A cross-tabulation drawn as dots: area is the cell count, colour is the standardised residual (observed − expected, scaled). The residual is what makes this more than a restatement of the marginals — it shows which cells actually depart from independence. The χ² test appears below; watch for the warning when an expected count falls under 5." :
             chartType === "facet" ? "One panel per level of a grouping variable — small multiples. Every panel shares a single axis range computed across all of them, because per-panel autoscaling makes different distributions look identical. Panels beyond the limit are dropped with a warning rather than quietly omitted." :
@@ -593,6 +760,49 @@ function ChartsPanelBody({ session }: { session: Session }) {
             {(plotData.warnings as Array<{ message: string }>).map((w, i) => (
               <p key={i} className="text-xs text-amber-800 leading-relaxed">{w.message}</p>
             ))}
+          </div>
+        )}
+
+        {/* Slope plot: the paired test and how many pairs it rests on */}
+        {plotData?.type === "slopeplot" && (() => {
+          const t = (plotData.test_result ?? {}) as { test?: string; p?: number | null; selected_by?: string; note?: string };
+          return (
+            <div className="panel bg-gray-50 border-gray-200 p-4 rounded-2xl">
+              <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Change</p>
+              <p className="text-xs text-gray-600 leading-relaxed">
+                {String(plotData.n_pairs)} complete pairs · mean change {Number(plotData.mean_change).toFixed(2)},
+                median {Number(plotData.median_change).toFixed(2)} · {String(plotData.n_decreased)} down,
+                {" "}{String(plotData.n_increased)} up, {String(plotData.n_unchanged)} unchanged.
+                {t.test && (
+                  <> {t.test} ({t.selected_by}):{" "}
+                    {t.p == null ? t.note : `p = ${t.p < 1e-4 ? t.p.toExponential(2) : t.p.toFixed(4)}`}</>
+                )}
+              </p>
+            </div>
+          );
+        })()}
+
+        {/* Stacked bar: the denominator a 100% bar hides */}
+        {plotData?.type === "stackplot" && Boolean(plotData.normalize) && (
+          <div className="panel bg-gray-50 border-gray-200 p-4 rounded-2xl">
+            <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Rows per bar</p>
+            <p className="text-xs text-gray-600 leading-relaxed">
+              {Object.entries(plotData.totals as Record<string, number>)
+                .map(([k, v]) => `${k}: ${v}`).join(" · ")}
+            </p>
+          </div>
+        )}
+
+        {/* Set overlap: what the bars leave out */}
+        {plotData?.type === "sets" && (
+          <div className="panel bg-gray-50 border-gray-200 p-4 rounded-2xl">
+            <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Sets</p>
+            <p className="text-xs text-gray-600 leading-relaxed">
+              {Object.entries(plotData.set_sizes as Record<string, number>)
+                .map(([k, v]) => `${k}: ${v}`).join(" · ")}.
+              {" "}{String(plotData.n_in_no_set)} of {String(plotData.n_rows)} rows belong to no set.
+              {!plotData.renderable_as_venn && " Too many sets for a Venn; shown as exclusive-region bars."}
+            </p>
           </div>
         )}
 
@@ -712,6 +922,10 @@ function ChartsPanelBody({ session }: { session: Session }) {
                 : {}),
               ...facetLayout(plotData),
               ...marginalAxes.extra,
+              ...(plotData?.type === "stackplot" ? { barmode: "stack" } : {}),
+              ...(plotData?.type === "ridgeplot"
+                ? { yaxis: { showticklabels: false, title: { text: "" } } }
+                : {}),
             }}
             config={{ responsive: true, displayModeBar: true, displaylogo: false }}
             defaultTitle={customTitle || (plotData?.x ? String(plotData.x) : "")}
@@ -1026,6 +1240,136 @@ function buildTraces(
       ...ellipseTraces,
       ...marginalTraces,
     ];
+  }
+
+  if (d.type === "lineplot") {
+    const series = (d.series as Array<Record<string, unknown>>) ?? [];
+    const out: PlotData[] = [];
+    series.forEach((s, i) => {
+      const pts = (s.points as Array<Record<string, number | string>>) ?? [];
+      const xs = pts.map((p) => String(p.x));
+      const hasBand = pts.some((p) => Number(p.upper) !== Number(p.lower));
+      if (hasBand) {
+        // One closed polygon per group: up the uppers, back down the lowers.
+        out.push({
+          type: "scatter", mode: "lines",
+          x: [...xs, ...[...xs].reverse()],
+          y: [...pts.map((p) => Number(p.upper)), ...[...pts].reverse().map((p) => Number(p.lower))],
+          fill: "toself",
+          fillcolor: C[i % C.length] + "22",
+          line: { width: 0 },
+          hoverinfo: "skip",
+          showlegend: false,
+        } as PlotData);
+      }
+      out.push({
+        type: "scatter", mode: "lines+markers",
+        x: xs,
+        y: pts.map((p) => Number(p.centre)),
+        line: { color: C[i % C.length], width: td.lineWidth },
+        marker: { color: C[i % C.length], size: td.markerSize },
+        name: String(s.group),
+        // n per point, because attrition is the thing a line hides.
+        text: pts.map((p) => `n = ${p.n}`),
+        hovertemplate: "%{x}: %{y:.3g}<br>%{text}<extra>%{fullData.name}</extra>",
+      } as PlotData);
+    });
+    return out;
+  }
+
+  if (d.type === "slopeplot") {
+    const pairs = (d.pairs as Array<Record<string, unknown>>) ?? [];
+    const groups = [...new Set(pairs.map((p) => String(p.group ?? "All")))];
+    const colourOf = (p: Record<string, unknown>) =>
+      C[groups.indexOf(String(p.group ?? "All")) % C.length];
+    // One two-point trace per subject; legend carries the group, not 200 lines.
+    const lines: PlotData[] = pairs.map((p, i) => ({
+      type: "scatter", mode: "lines+markers",
+      x: [String(d.before), String(d.after)],
+      y: [Number(p.before), Number(p.after)],
+      line: { color: colourOf(p), width: 1 },
+      marker: { color: colourOf(p), size: 5 },
+      opacity: 0.5,
+      name: String(p.group ?? "All"),
+      legendgroup: String(p.group ?? "All"),
+      showlegend: groups.indexOf(String(p.group ?? "All")) === i
+        || pairs.findIndex((q) => String(q.group ?? "All") === String(p.group ?? "All")) === i,
+      hovertemplate: `%{x}: %{y:.3g}${p.label ? `<br>${String(p.label)}` : ""}<extra></extra>`,
+    } as PlotData));
+    return lines;
+  }
+
+  if (d.type === "sankey") {
+    const links = (d.links as Array<Record<string, number | string>>) ?? [];
+    return [{
+      type: "sankey",
+      orientation: "h",
+      node: {
+        label: d.labels,
+        pad: 14,
+        thickness: 14,
+        color: ((d.labels as string[]) ?? []).map((_, i) => C[i % C.length]),
+        line: { color: "#e5e7eb", width: 1 },
+      },
+      link: {
+        source: links.map((l) => Number(l.source)),
+        target: links.map((l) => Number(l.target)),
+        value: links.map((l) => Number(l.value)),
+        color: links.map((l) => C[Number(l.source) % C.length] + "44"),
+      },
+    } as PlotData];
+  }
+
+  if (d.type === "stackplot") {
+    const series = (d.series as Array<Record<string, unknown>>) ?? [];
+    const usePct = Boolean(d.normalize);
+    return series.map((s, i) => ({
+      type: "bar",
+      x: d.x_levels,
+      y: usePct ? s.percent : s.value,
+      name: String(s.fill),
+      marker: { color: C[i % C.length] },
+      hovertemplate: usePct
+        ? "%{x} · %{fullData.name}: %{y:.1f}%<extra></extra>"
+        : "%{x} · %{fullData.name}: %{y}<extra></extra>",
+    } as PlotData));
+  }
+
+  if (d.type === "ridgeplot") {
+    const ridges = (d.ridges as Array<Record<string, unknown>>) ?? [];
+    const maxPeak = Number(d.max_peak) || 1;
+    const step = 1.0;
+    // Drawn top-down so the first group sits at the top, as ridgelines read.
+    return [...ridges].reverse().map((r, i) => {
+      const dens = (r.density as number[]).map((v) => (v / maxPeak) * step * 0.95 + i * step);
+      const baseline = i * step;
+      return {
+        type: "scatter", mode: "lines",
+        x: r.x,
+        y: dens,
+        fill: "tonexty",
+        fillcolor: C[(ridges.length - 1 - i) % C.length] + "55",
+        line: { color: C[(ridges.length - 1 - i) % C.length], width: 1.2 },
+        name: `${String(r.group)} (n=${r.n})`,
+        // A flat trace beneath gives `tonexty` something to fill against.
+        customdata: [baseline],
+        hovertemplate: `${String(r.group)}<extra></extra>`,
+      } as PlotData;
+    });
+  }
+
+  if (d.type === "sets") {
+    const inter = (d.intersections as Array<Record<string, unknown>>) ?? [];
+    // UpSet form: one bar per exclusive region, labelled by the sets it spans.
+    return [{
+      type: "bar",
+      x: inter.map((r) => (r.sets as string[]).join(" ∩ ")),
+      y: inter.map((r) => Number(r.count)),
+      marker: { color: inter.map((r) => C[(Number(r.degree) - 1) % C.length]) },
+      text: inter.map((r) => String(r.count)),
+      textposition: "outside",
+      hovertemplate: "%{x}<br>%{y} rows<extra></extra>",
+    } as PlotData];
   }
 
   if (d.type === "pie") {
