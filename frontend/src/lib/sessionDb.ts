@@ -44,6 +44,11 @@ export interface RecentSessionMeta {
   // fingerprint dedupeByName() uses and would otherwise delete the original
   // the moment the list was next read.
   userCopy?: boolean;
+  // Hash of the payload, used to recognise the same dataset saved under two
+  // names. It replaces a rows x cols x bytes fingerprint, which matched — and
+  // therefore deleted — genuinely different files that happened to share a
+  // shape and a serialised length.
+  contentHash?: string;
 }
 
 /** Full record stored in IndexedDB — extends the metadata with the
@@ -159,30 +164,49 @@ async function dedupeByName(): Promise<void> {
   const seenNames = new Set<string>();
   const seenFp = new Set<string>();
   const stale: string[] = [];
+  const backfill: RecentSessionRecord[] = [];
   for (const r of rows) {
     // A user-made copy is exempt in both directions: it is never deleted as
-    // stale, and it never claims the fingerprint slot — otherwise, being the
-    // newer row, it would shadow the original it was copied from and the
-    // dedupe would silently delete the source.
+    // stale, and it never claims a slot — otherwise, being the newer row, it
+    // would shadow the original it was copied from and the dedupe would
+    // silently delete the source.
     if (r.userCopy) continue;
     const nameKey = r.name || r.id;
-    const fpKey = `${r.nRows ?? "?"}x${r.nCols ?? "?"}:${r.sizeBytes}`;
-    // Name is the primary identity. A real fingerprint collision (two
-    // genuinely different files that happen to share rows×cols×bytes) is
-    // vanishingly rare, and even then we'd just keep the newest snapshot —
-    // acceptable for a local recents list.
+    // Content identity. Rows written before this field existed get it filled
+    // in on the first pass, so the cost is paid once rather than per read.
+    let hash = r.contentHash;
+    if (!hash) {
+      hash = djb2(r.payload);
+      backfill.push({ ...r, contentHash: hash });
+    }
+    // Name is the primary identity; an identical payload catches the same
+    // file saved under two names. Both are exact — the old rows x cols x
+    // bytes fingerprint was not, and deleted files that merely looked alike.
     const dupeByName = seenNames.has(nameKey);
-    const dupeByFp = r.nRows != null && r.nCols != null && seenFp.has(fpKey);
-    if (dupeByName || dupeByFp) {
+    const dupeByContent = seenFp.has(hash);
+    if (dupeByName || dupeByContent) {
       stale.push(r.id);   // older (rows already sorted newest-first)
     } else {
       seenNames.add(nameKey);
-      if (r.nRows != null && r.nCols != null) seenFp.add(fpKey);
+      seenFp.add(hash);
     }
+  }
+  const survivors = backfill.filter((r) => !stale.includes(r.id));
+  if (survivors.length) {
+    await db.sessions.bulkPut(survivors);
   }
   if (stale.length) {
     await db.sessions.bulkDelete(stale);
   }
+}
+
+/** djb2 over the payload. Not cryptographic — it only has to separate two
+ *  different session blobs, and a collision costs one extra row in a local
+ *  recents list, never a deletion of unrelated data. */
+function djb2(s: string): string {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
 }
 
 /** List ACTIVE records (deletedAt null/undefined), newest first. */
@@ -306,6 +330,32 @@ export async function deleteRecentSession(id: string): Promise<void> {
  *  live server session, which would otherwise let edits in one leak into
  *  the other's autosave.
  */
+/** Rename a saved session.
+ *
+ *  The name is an identity the dedupe keys on, so a rename onto a name that
+ *  already exists would make the next list read delete one of them. Refused
+ *  instead, with the clash named.
+ */
+export async function renameRecentSession(
+  id: string,
+  nextName: string,
+): Promise<RecentSessionMeta> {
+  const db = getDb();
+  const rec = await db.sessions.get(id);
+  if (!rec) throw new Error("Session not found");
+  const name = nextName.trim();
+  if (!name) throw new Error("The name cannot be empty");
+  const clash = await db.sessions.where("name").equals(name).first();
+  if (clash && clash.id !== id) {
+    throw new Error(`"${name}" is already used by another saved session`);
+  }
+  const updated: RecentSessionRecord = { ...rec, name };
+  await db.sessions.put(updated);
+  const { payload: _ignored, ...meta } = updated;
+  void _ignored;
+  return meta;
+}
+
 export async function duplicateRecentSession(
   id: string,
 ): Promise<RecentSessionMeta | undefined> {
@@ -326,6 +376,7 @@ export async function duplicateRecentSession(
     savedAt: Date.now(),
     source: "manual",
     userCopy: true,
+    contentHash: source.contentHash ?? djb2(source.payload),
   };
   await db.sessions.put(rec);
   await pruneToCap();
@@ -376,6 +427,7 @@ export async function upsertRecentSession(input: {
     activeTab: input.activeTab,
     savedAt: Date.now(),
     source: input.source,
+    contentHash: djb2(input.payload),
   };
   await db.sessions.put(rec);
   await pruneToCap();
@@ -423,6 +475,7 @@ export async function upsertRecentSessionRaw(input: {
     activeTab: input.activeTab,
     savedAt: input.savedAt,
     source: input.source,
+    contentHash: djb2(input.payload),
   };
   await db.sessions.put(rec);
   await pruneToCap();
