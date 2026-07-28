@@ -1796,7 +1796,7 @@ function DataTableBody({ session }: { session: Session }) {
                     }}
                     onDragEnd={() => { setDragIdx(null); setDropIdx(null); }}
                     onContextMenu={(e) => { e.preventDefault(); setColRangeInput(""); setCtxMenu({ x: e.clientX, y: e.clientY, col: col.name }); }}
-                    className={`px-2 py-2 border-r border-gray-200 align-top
+                    className={`relative px-2 py-2 border-r border-gray-200 align-top
                       ${frozen ? "sticky bg-gray-50 z-20" : "min-w-[130px] max-w-[200px]"}
                       ${!frozen && checkedCols.has(col.name) ? "bg-indigo-100/60" : ""}
                       ${renameCol === col.name || frozen ? "" : "cursor-grab active:cursor-grabbing select-none"}
@@ -1805,10 +1805,20 @@ function DataTableBody({ session }: { session: Session }) {
                     style={frozen ? { left: frozenLeft(colIdx), width: FROZEN_COL_W, minWidth: FROZEN_COL_W, maxWidth: FROZEN_COL_W } : undefined}
                     title="Ctrl/Cmd+Shift+click selects the visible column"
                   >
+                    {/* Drag handle, pulled out of the flow and pinned to the
+                        top edge. Inline it pushed the type badge and the name
+                        right by its own width, so headers no longer lined up
+                        with each other or with the cells below. */}
+                    <span
+                      className="absolute top-0 left-1/2 -translate-x-1/2 text-gray-300 text-[8px] leading-none cursor-grab select-none"
+                      title="Drag to reorder"
+                      aria-hidden="true"
+                    >
+                      ⠿
+                    </span>
                     <div className="flex flex-col gap-1">
                       <div className="flex items-center gap-1 justify-between">
                         <div className="flex items-center gap-1.5 min-w-0">
-                          <span className="text-gray-300 text-[8px] flex-shrink-0 cursor-grab" title="Drag to reorder">⠿</span>
                           <button
                             onClick={() => cycleKind(col.name)}
                             title={`Type: ${col.kind} — click to change`}
