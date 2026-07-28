@@ -948,9 +948,27 @@ def table1(req: Table1Request):
             p_chi_raw: Optional[float] = None
             if groups is not None:
                 try:
-                    ct = pd.crosstab(df[var].astype(str), df[req.group_column])
+                    # Drop incomplete pairs BEFORE stringifying. astype(str)
+                    # turns NaN into the literal "nan", which pd.crosstab then
+                    # counts as a real category: the test gained a row, a
+                    # degree of freedom and the missing rows themselves, so it
+                    # measured association with missingness. The displayed
+                    # categories come from value_counts(dropna=True), so the
+                    # extra row never appeared — the printed table and the
+                    # printed p described different tables.
+                    pairs = df[[var, req.group_column]].dropna()
+                    ct = pd.crosstab(
+                        pairs[var].astype(str), pairs[req.group_column]
+                    )
                     p_chi_raw, test_name = _categorical_p_with_rule(ct.values)
                     p_val = _fmt_p(float(p_chi_raw))
+                    n_test = int(ct.values.sum())
+                    if n_test < len(df):
+                        warnings.append(
+                            f"'{var}': the test uses {n_test} of {len(df)} rows; "
+                            "the rest are missing the variable or the grouping "
+                            "column."
+                        )
                 except Exception:
                     logger.exception("Categorical test failed in Table 1")
                     p_val = "N/A"

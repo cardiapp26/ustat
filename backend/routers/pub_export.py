@@ -178,7 +178,15 @@ def _run_table1_analysis(req: TableDocxRequest) -> dict:
             test_name = None
             if groups is not None:
                 try:
-                    ct = pd.crosstab(df[var].astype(str), df[req.group_column])
+                    # Drop incomplete pairs before stringifying: astype(str)
+                    # renders NaN as "nan", which crosstab counts as a real
+                    # category. The exported table would then carry a p from a
+                    # table with an extra row that the table itself never
+                    # showed. Same defect as in the Table 1 endpoint.
+                    pairs = df[[var, req.group_column]].dropna()
+                    ct = pd.crosstab(
+                        pairs[var].astype(str), pairs[req.group_column]
+                    )
                     chi2, p_chi, dof, expected = scipy_stats.chi2_contingency(ct)
                     if ct.shape == (2, 2) and (expected < 5).any():
                         _, p_chi = scipy_stats.fisher_exact(ct.values)
