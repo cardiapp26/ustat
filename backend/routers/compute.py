@@ -306,6 +306,20 @@ def transform_compute(session_id: str, req: TransformRequest):
 
     if req.source_col not in df.columns:
         raise HTTPException(status_code=422, detail=f"Column '{req.source_col}' not found")
+    if new_col == req.source_col:
+        # Writing the result back over its own input destroys the input. The
+        # UI used to suggest exactly this name for the transforms it had no
+        # prefix for (tertile, quartile, median split), so one click replaced
+        # the source column with its own groups and the original values were
+        # gone. There is no reading of this that the user wants.
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"'{new_col}' is the source column. Writing the result there "
+                "would replace the values the transform is computed from. "
+                "Give the result its own column name."
+            ),
+        )
     if req.transform not in TRANSFORMS:
         raise HTTPException(status_code=422, detail=f"Unknown transform '{req.transform}'. Valid: {list(TRANSFORMS.keys())}")
 

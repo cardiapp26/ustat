@@ -76,6 +76,7 @@ const TAB_LABELS: Record<string, string> = {
 
 export default function RecentSessionsPanel() {
   const setSession = useStore((s) => s.setSession);
+  const setLocalSessionId = useStore((s) => s.setLocalSessionId);
   const setActiveTab = useStore((s) => s.setActiveTab);
   const activeSessionId = useStore((s) => s.session?.session_id ?? null);
   const [items, setItems] = useState<RecentSessionMeta[]>([]);
@@ -143,6 +144,12 @@ export default function RecentSessionsPanel() {
       form.append("file", blob, `${rec.name || "session"}.json`);
       const res = await api.post("/api/sessions/load_session", form);
       setSession(res.data);
+      // Pin the row this came from. setSession has just cleared it, so this
+      // has to follow. Without it autosave has only the fresh server id and
+      // the filename inside the blob to go on — and for a duplicate that
+      // filename is still the original's, so the edits landed on the
+      // original and the copy never moved past the state it was copied in.
+      setLocalSessionId(rec.id);
       // Restore the user's last tab, falling back to Data.
       if (rec.activeTab) setActiveTab(rec.activeTab);
       // Re-hydrate column-decimal overrides the same way UploadZone

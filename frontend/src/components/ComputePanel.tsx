@@ -373,10 +373,14 @@ function FormulaTab({
 function TransformTab({
   sessionId,
   numCols,
+  allCols,
   onResult,
 }: {
   sessionId: string;
   numCols: ColMeta[];
+  // Every column, not just the numeric ones: a name clash with a text column
+  // overwrites it just as thoroughly.
+  allCols: ColMeta[];
   onResult: (r: ComputeResult) => void;
 }) {
   const [srcCol, setSrcCol] = usePersistedPanelState<string>("compute_transform", "srcCol", numCols[0]?.name ?? "");
@@ -388,15 +392,29 @@ function TransformTab({
 
   const selectedT = TRANSFORMS.find((t) => t.id === transform);
 
-  // Auto-suggest new column name
+  // Auto-suggest new column name.
+  //
+  // The prefix map used to have no entry for tertile, quartile or median
+  // split, and the fallback was the empty string — so for those three the
+  // suggested name WAS the source column, and one click on Apply replaced the
+  // variable with its own groups. Every transform now carries a prefix, and
+  // the fallback derives one from the transform id rather than from nothing.
   useEffect(() => {
     if (!srcCol) return;
     const prefixMap: Record<string, string> = {
       ln: "Ln_", log10: "Log10_", sqrt: "Sqrt_",
       square: "Sq_", exp: "Exp_", abs: "Abs_", zscore: "Z_",
+      tertile: "Tert_", quartile: "Quart_", median_split: "MedSplit_",
     };
-    setNewCol((prefixMap[transform] ?? "") + srcCol);
+    const prefix = prefixMap[transform] ?? `${transform}_`;
+    setNewCol(prefix + srcCol);
   }, [srcCol, transform, setNewCol]);
+
+  // Typing a name that already exists is allowed — replacing a column you
+  // computed a moment ago is a normal correction — but it has to be visible
+  // before the click, not discovered afterwards.
+  const clashes = newCol.trim() !== "" && allCols.some((c) => c.name === newCol.trim());
+  const isSource = newCol.trim() === srcCol;
 
   const run = async () => {
     if (!srcCol || !newCol.trim()) return;
@@ -414,18 +432,18 @@ function TransformTab({
     <div className="max-w-lg space-y-4">
       <div className="panel space-y-4">
         <div className="space-y-1">
-          <label className="text-xs text-gray-500">Source variable</label>
-          <select className="select w-full" value={srcCol} onChange={(e) => setSrcCol(e.target.value)}>
+          <label className="text-xs text-gray-500" htmlFor="transform-src">Source variable</label>
+          <select id="transform-src" className="select w-full" value={srcCol} onChange={(e) => setSrcCol(e.target.value)}>
             {numCols.map((c) => <option key={c.name}>{c.name}</option>)}
           </select>
         </div>
 
         <div className="space-y-1">
-          <label className="text-xs text-gray-500 flex items-center">
+          <label className="text-xs text-gray-500 flex items-center" htmlFor="transform-kind">
             Transformation
             <Tip wide text="Logarithmic transforms are recommended for right-skewed biomarkers (Troponin, CRP, NT-proBNP) before regression analysis. Z-score standardises to mean=0, SD=1 for comparing across different scales." />
           </label>
-          <select className="select w-full" value={transform} onChange={(e) => setTransform(e.target.value)}>
+          <select id="transform-kind" className="select w-full" value={transform} onChange={(e) => setTransform(e.target.value)}>
             {TRANSFORMS.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
           </select>
           {selectedT?.note && (
@@ -434,15 +452,31 @@ function TransformTab({
         </div>
 
         <div className="space-y-1">
-          <label className="text-xs text-gray-500">New column name</label>
+          <label className="text-xs text-gray-500" htmlFor="transform-newcol">New column name</label>
           <input
-            className="select w-full font-mono"
+            id="transform-newcol"
+            className={`select w-full font-mono ${isSource ? "border-red-400" : clashes ? "border-amber-400" : ""}`}
             value={newCol}
             onChange={(e) => setNewCol(e.target.value)}
           />
+          {isSource ? (
+            <p className="text-[11px] text-red-600">
+              This is the source column — the result would replace the values it
+              is computed from. Give it a different name.
+            </p>
+          ) : clashes ? (
+            <p className="text-[11px] text-amber-600">
+              ⚠ <span className="font-mono">{newCol.trim()}</span> already exists
+              and will be replaced.
+            </p>
+          ) : null}
         </div>
 
-        <button className="btn-primary w-full" onClick={run} disabled={loading || !srcCol || !newCol.trim()}>
+        <button
+          className="btn-primary w-full"
+          onClick={run}
+          disabled={loading || !srcCol || !newCol.trim() || isSource}
+        >
           {loading ? "Applying…" : "Apply Transform"}
         </button>
 
@@ -1302,7 +1336,7 @@ export default function ComputePanel() {
         {tab === "Transform" && (
           numCols.length === 0
             ? <p className="text-gray-400 text-sm">No numeric columns available for transformation.</p>
-            : <TransformTab sessionId={sid} numCols={numCols} onResult={handleResult} />
+            : <TransformTab sessionId={sid} numCols={numCols} allCols={allCols} onResult={handleResult} />
         )}
         {tab === "Recode" && (
           <RecodeTab sessionId={sid} columns={allCols} onResult={handleResult} />

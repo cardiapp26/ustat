@@ -134,6 +134,28 @@ async function pruneToCap(): Promise<void> {
 
 /** Generate a local id. Avoids importing a uuid library — Dexie just
  *  needs uniqueness within this store. */
+/** A save timestamp that never repeats.
+ *
+ *  savedAt orders the list, decides which row the dedupe keeps, and drives
+ *  the cloud-sync last-write-wins clock — but two writes inside the same
+ *  millisecond got the same value, and ids are random UUIDs, so there was no
+ *  second key to break the tie: which of two rows survived was a coin flip.
+ *  Nudging the clock forward by a millisecond keeps the value a real time to
+ *  the user and makes "the newest row wins" true. */
+let lastStamp = 0;
+function nextSavedAt(): number {
+  const now = Date.now();
+  lastStamp = now > lastStamp ? now : lastStamp + 1;
+  return lastStamp;
+}
+
+/** Keep the monotonic clock ahead of a timestamp minted elsewhere (a Drive
+ *  snapshot carries the time it was taken), so the next local save still
+ *  sorts after it. */
+function observeStamp(at: number): void {
+  if (at > lastStamp) lastStamp = at;
+}
+
 function newLocalId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
@@ -263,7 +285,7 @@ export async function trashSession(id: string): Promise<void> {
  *  card reappears at the top of the Recent list and is re-pushed to Drive
  *  as active (tombstone cleared). */
 export async function restoreSession(id: string): Promise<void> {
-  await getDb().sessions.update(id, { deletedAt: null, savedAt: Date.now() });
+  await getDb().sessions.update(id, { deletedAt: null, savedAt: nextSavedAt() });
 }
 
 /** Permanently delete a single record from IndexedDB (hard delete). Used
@@ -356,6 +378,24 @@ export async function renameRecentSession(
   return meta;
 }
 
+/** Rewrite the `filename` a session blob carries, leaving everything else
+ *  byte-for-byte alone. Returns the payload untouched if it is not the JSON
+ *  object we expect — a copy with a stale name beats a copy that fails to
+ *  restore. */
+function withFilename(payload: string, filename: string): string {
+  try {
+    const parsed = JSON.parse(payload);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return payload;
+    // Only rewrite a name that is actually there. A blob with no filename has
+    // nothing to misdirect the restore, and adding a key would change bytes
+    // for no reason.
+    if (!("filename" in parsed)) return payload;
+    return JSON.stringify({ ...parsed, filename });
+  } catch {
+    return payload;
+  }
+}
+
 export async function duplicateRecentSession(
   id: string,
 ): Promise<RecentSessionMeta | undefined> {
@@ -368,15 +408,23 @@ export async function duplicateRecentSession(
   let name = base;
   for (let i = 2; taken.has(name); i++) name = `${source.name} (copy ${i})`;
 
+  // The blob carries its own filename, and that is what the server reports
+  // when the copy is resumed — so without this the copy opened under the
+  // original's name in the header, and renaming it there would collide with
+  // the original. Give the copy the name it is listed under.
+  const payload = withFilename(source.payload, name);
+
   const rec: RecentSessionRecord = {
     ...source,
     id: newLocalId(),
     serverSessionId: undefined,
     name,
-    savedAt: Date.now(),
+    payload,
+    sizeBytes: payload.length,
+    savedAt: nextSavedAt(),
     source: "manual",
     userCopy: true,
-    contentHash: source.contentHash ?? djb2(source.payload),
+    contentHash: djb2(payload),
   };
   await db.sessions.put(rec);
   await pruneToCap();
@@ -399,6 +447,16 @@ export async function duplicateRecentSession(
  *       identity)
  */
 export async function upsertRecentSession(input: {
+  /** The row this session was resumed from, when there is one.
+   *
+   *  Both fallbacks below can misfire on a duplicate. The server id is minted
+   *  fresh on every restore, so it never matches; the name comes from inside
+   *  the blob, and a copy's blob still carried the original's filename — so
+   *  the name pass matched the ORIGINAL row and autosave wrote the copy's
+   *  edits there. The copy stayed at the state it was duplicated in, which is
+   *  what the user saw on reopening it. When the caller knows which row is
+   *  open, that row is the answer and no matching is needed. */
+  localId?: string;
   serverSessionId: string;
   name: string;
   payload: string;
@@ -408,10 +466,10 @@ export async function upsertRecentSession(input: {
   source: "auto" | "manual";
 }): Promise<RecentSessionMeta> {
   const db = getDb();
-  let existing =
-    input.serverSessionId
-      ? await db.sessions.where("serverSessionId").equals(input.serverSessionId).first()
-      : undefined;
+  let existing = input.localId ? await db.sessions.get(input.localId) : undefined;
+  if (!existing && input.serverSessionId) {
+    existing = await db.sessions.where("serverSessionId").equals(input.serverSessionId).first();
+  }
   if (!existing && input.name) {
     existing = await db.sessions.where("name").equals(input.name).first();
   }
@@ -419,14 +477,20 @@ export async function upsertRecentSession(input: {
   const rec: RecentSessionRecord = {
     id,
     serverSessionId: input.serverSessionId,
-    name: input.name,
+    // A row that was resumed keeps the name on its card. Autosave passes the
+    // dataset filename, which would otherwise rename the card on every save
+    // and undo a rename a minute after the user made it.
+    name: input.localId && existing ? existing.name : input.name,
     payload: input.payload,
     sizeBytes: input.payload.length,
     nRows: input.nRows,
     nCols: input.nCols,
     activeTab: input.activeTab,
-    savedAt: Date.now(),
+    savedAt: nextSavedAt(),
     source: input.source,
+    // A copy stays exempt from the name dedupe for its whole life, not just
+    // until its first autosave.
+    userCopy: existing?.userCopy,
     contentHash: djb2(input.payload),
   };
   await db.sessions.put(rec);
@@ -475,8 +539,12 @@ export async function upsertRecentSessionRaw(input: {
     activeTab: input.activeTab,
     savedAt: input.savedAt,
     source: input.source,
+    userCopy: existing?.userCopy,
     contentHash: djb2(input.payload),
   };
+  // The Drive snapshot brings its own clock; keep ours ahead of it so the
+  // next local save still sorts after what was just pulled in.
+  observeStamp(input.savedAt);
   await db.sessions.put(rec);
   await pruneToCap();
   const { payload: _ignored, ...meta } = rec;

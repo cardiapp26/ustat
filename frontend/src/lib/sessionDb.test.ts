@@ -136,3 +136,94 @@ describe('dedupe on list', () => {
     expect(rows[0].name).toBe('data (1).csv')
   })
 })
+
+describe('editing a duplicate', () => {
+  /** What a session blob really looks like: it carries its own filename, and
+   *  that is the name the server hands back on restore — not the name of the
+   *  card the user clicked. */
+  function blobNamed(filename: string, seed: string): string {
+    return JSON.stringify({ filename, data: [seed] })
+  }
+
+  it('gives the copy its own filename so the header stops saying the original', async () => {
+    const src = await upsertRecentSession({
+      serverSessionId: 'srv-1',
+      name: 'patients.csv',
+      payload: blobNamed('patients.csv', 'a'),
+      source: 'auto',
+    })
+    const copy = await duplicateRecentSession(src.id)
+    const stored = await getRecentSession(copy!.id)
+    expect(JSON.parse(stored!.payload).filename).toBe('patients.csv (copy)')
+  })
+
+  it('writes edits made in the copy to the copy, not to the original', async () => {
+    // The bug: resuming a copy mints a fresh server id and reports the
+    // filename stored inside the blob — the ORIGINAL's name. Autosave then
+    // missed on the server id, matched the original by name, and wrote the
+    // copy's edits onto the original. The copy stayed frozen at the moment it
+    // was duplicated, which is what the user saw when they reopened it.
+    const src = await upsertRecentSession({
+      serverSessionId: 'srv-1',
+      name: 'patients.csv',
+      payload: blobNamed('patients.csv', 'original'),
+      source: 'auto',
+    })
+    const copy = await duplicateRecentSession(src.id)
+
+    // Resume the copy, edit it, let autosave fire. Restoring pins the local
+    // row, so the name the server reports cannot misdirect the write.
+    await upsertRecentSession({
+      localId: copy!.id,
+      serverSessionId: 'srv-2-fresh',
+      name: 'patients.csv',
+      payload: blobNamed('patients.csv', 'edited-in-the-copy'),
+      source: 'auto',
+    })
+
+    const after = await getRecentSession(copy!.id)
+    expect(JSON.parse(after!.payload).data[0]).toBe('edited-in-the-copy')
+
+    const original = await getRecentSession(src.id)
+    expect(JSON.parse(original!.payload).data[0]).toBe('original')
+  })
+
+  it('keeps the card name the user gave the row', async () => {
+    // Autosave passes the dataset filename as the name. Applied to a pinned
+    // row it would rename the card on every save, undoing a rename a minute
+    // after the user made it.
+    const src = await upsertRecentSession({
+      serverSessionId: 'srv-1',
+      name: 'my working copy',
+      payload: blobNamed('patients.csv', 'a'),
+      source: 'auto',
+    })
+    await upsertRecentSession({
+      localId: src.id,
+      serverSessionId: 'srv-1',
+      name: 'patients.csv',
+      payload: blobNamed('patients.csv', 'b'),
+      source: 'auto',
+    })
+    expect((await getRecentSession(src.id))!.name).toBe('my working copy')
+  })
+
+  it('keeps the copy exempt from dedupe after it has been saved once', async () => {
+    const src = await upsertRecentSession({
+      serverSessionId: 'srv-1',
+      name: 'patients.csv',
+      payload: blobNamed('patients.csv', 'a'),
+      source: 'auto',
+    })
+    const copy = await duplicateRecentSession(src.id)
+    await upsertRecentSession({
+      localId: copy!.id,
+      serverSessionId: 'srv-2',
+      name: 'patients.csv',
+      payload: blobNamed('patients.csv', 'a'),
+      source: 'auto',
+    })
+    await listRecentSessions()
+    expect(await getRecentSession(copy!.id)).toBeTruthy()
+  })
+})

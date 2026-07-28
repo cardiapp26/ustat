@@ -101,6 +101,15 @@ export interface CaseFilter {
 interface AppState {
   session: Session | null;
   originalSession: Session | null;
+  /** The Recent-work row this session was resumed from, when it was.
+   *
+   *  Autosave has to know which saved row to write back to. It cannot work
+   *  that out from the session itself: the server id is minted fresh on every
+   *  restore, and the filename inside a duplicate's blob is still the
+   *  original's — which sent the copy's edits to the original row and left
+   *  the copy frozen at the moment it was duplicated. */
+  localSessionId: string | null;
+  setLocalSessionId: (id: string | null) => void;
   activeTab: string;
   showGrid: boolean;
   plotTheme: PlotTheme;
@@ -189,6 +198,8 @@ const loadTheme = (): PlotTheme => {
 export const useStore = create<AppState>((set) => ({
   session: null,
   originalSession: null,
+  localSessionId: null,
+  setLocalSessionId: (id) => set({ localSessionId: id }),
   setOriginalSession: (s) => set({ originalSession: s }),
   renameSession: (rawName: string) => {
     const name = (rawName || "").trim();
@@ -226,6 +237,10 @@ export const useStore = create<AppState>((set) => ({
     }
     return {
       session: s,
+      // A different session_id means a different dataset is open. Whoever
+      // opened it says which saved row it belongs to, if any; until then it
+      // belongs to none, so autosave falls back to matching.
+      localSessionId: null,
       activeTab: "data",
       table1Result: null,
       caseFilter: s.case_filter ?? null,

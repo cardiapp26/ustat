@@ -120,4 +120,53 @@ describe('ComputePanel', () => {
     const cols = useStore.getState().session?.columns.map((c) => c.name)
     expect(cols).toContain('BMI')
   })
+
+  it('Transform tab: never suggests the source column as the output name', async () => {
+    // Reported: applying a tertile replaced the variable it was computed
+    // from. The prefix map had no entry for tertile, quartile or median
+    // split and fell back to an empty string, so the suggested name WAS the
+    // source column.
+    installSession(computeSession())
+    const user = userEvent.setup()
+    render(<ComputePanel />)
+    await user.click(screen.getByRole('button', { name: /Transform$/ }))
+
+    const nameBox = () => screen.getByLabelText('New column name') as HTMLInputElement
+    const transformSelect = screen.getByLabelText(/Transformation/)
+
+    for (const t of ['tertile', 'quartile', 'median_split', 'ln', 'zscore']) {
+      await user.selectOptions(transformSelect, t)
+      await waitFor(() => expect(nameBox().value).not.toBe('WEIGHT'))
+      expect(nameBox().value).toContain('WEIGHT')
+    }
+  })
+
+  it('Transform tab: refuses to apply when the output name is the source', async () => {
+    installSession(computeSession())
+    const user = userEvent.setup()
+    render(<ComputePanel />)
+    await user.click(screen.getByRole('button', { name: /Transform$/ }))
+
+    const nameBox = screen.getByLabelText('New column name')
+    await user.clear(nameBox)
+    await user.type(nameBox, 'WEIGHT')
+
+    expect(screen.getByText(/source column/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /apply transform/i })).toBeDisabled()
+  })
+
+  it('Transform tab: warns before replacing a different existing column', async () => {
+    installSession(computeSession())
+    const user = userEvent.setup()
+    render(<ComputePanel />)
+    await user.click(screen.getByRole('button', { name: /Transform$/ }))
+
+    const nameBox = screen.getByLabelText('New column name')
+    await user.clear(nameBox)
+    await user.type(nameBox, 'HEIGHT')
+
+    expect(screen.getByText(/already exists and will be replaced/i)).toBeInTheDocument()
+    // Replacing a column you just computed is legitimate, so this stays live.
+    expect(screen.getByRole('button', { name: /apply transform/i })).toBeEnabled()
+  })
 })

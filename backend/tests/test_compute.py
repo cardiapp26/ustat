@@ -793,3 +793,36 @@ def test_unique_values_not_found(client, synth):
     sid = _fresh(synth, "unique_miss")
     r = client.get(f"{BASE}/{sid}/unique/NOPE")
     assert r.status_code == 404, r.text
+
+
+def test_transform_refuses_to_write_over_its_own_source(client):
+    """Reported: applying a tertile replaced the variable it was computed from.
+
+    The UI had no name prefix for tertile, quartile or median split, so the
+    suggested "New column name" was the source column itself and one click
+    destroyed the original values.
+    """
+    sid = make_session(
+        pd.DataFrame({"Hasta no": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]}),
+        "tcomp_tf_self_overwrite",
+    )
+    r = client.post(
+        f"{BASE}/{sid}/transform",
+        json={"source_col": "Hasta no", "transform": "tertile", "new_col": "Hasta no"},
+    )
+    assert r.status_code == 422, r.text
+    assert "source column" in r.json()["detail"]
+    # The original values are still there.
+    assert store.get(sid)["Hasta no"].tolist() == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+
+
+def test_transform_still_writes_to_a_new_column(client):
+    sid = make_session(pd.DataFrame({"X": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]}), "tcomp_tf_ok")
+    r = client.post(
+        f"{BASE}/{sid}/transform",
+        json={"source_col": "X", "transform": "tertile", "new_col": "Tert_X"},
+    )
+    assert r.status_code == 200, r.text
+    df = store.get(sid)
+    assert df["X"].tolist() == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+    assert df["Tert_X"].dropna().min() >= 1

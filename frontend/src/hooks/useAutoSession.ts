@@ -45,6 +45,10 @@ export function useAutoSession({ onStatus }: AutoSaveDeps = {}): void {
   // Pull only the bits that should *retrigger* the debounce. Anything
   // that mutates per-render (e.g. functions) would defeat the timer.
   const sessionId = useStore((s) => s.session?.session_id ?? null);
+  // The saved row this session was resumed from, when there is one. Neither
+  // the server id (fresh on every restore) nor the filename (a duplicate's
+  // blob still names the original) identifies the row to write back to.
+  const localId   = useStore((s) => s.localSessionId);
   const filename  = useStore((s) => s.session?.filename ?? null);
   const nRows     = useStore((s) => s.session?.rows ?? null);
   const nCols     = useStore((s) => s.session?.columns.length ?? null);
@@ -102,6 +106,7 @@ export function useAutoSession({ onStatus }: AutoSaveDeps = {}): void {
         }
         lastSavedHashRef.current = hash;
         await upsertRecentSession({
+          localId: localId ?? undefined,
           serverSessionId: sessionId,
           name: filename ?? "Untitled",
           payload,
@@ -145,5 +150,5 @@ export function useAutoSession({ onStatus }: AutoSaveDeps = {}): void {
       clearInterval(interval);
       window.removeEventListener("beforeunload", onBeforeUnload);
     };
-  }, [sessionId, filename, nRows, nCols, activeTab, caseFilter, valueLabelSig, dataVersion]);
+  }, [sessionId, localId, filename, nRows, nCols, activeTab, caseFilter, valueLabelSig, dataVersion]);
 }
