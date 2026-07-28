@@ -116,6 +116,44 @@ export default function UpdatePrompt() {
     }
   };
 
+  // ── Browser reload ──────────────────────────────────────────────────
+  const [reloading, setReloading] = useState(false);
+
+  /** Navigate away from the cached shell. The query parameter makes the
+   *  navigation request miss any precached match for the current URL. */
+  const hardReload = () => {
+    const url = new URL(location.href);
+    url.searchParams.set("_v", Date.now().toString(36));
+    location.replace(url.toString());
+  };
+
+  const handleBrowserUpdate = async () => {
+    setReloading(true);
+    if (fallbackStale) {
+      hardReload();
+      return;
+    }
+    try {
+      await updateServiceWorker(true);
+    } catch {
+      /* fall through to the forced reload below */
+    }
+    // updateServiceWorker() is supposed to activate the waiting worker and
+    // reload the page itself. When the worker is stuck in "waiting" — or the
+    // promise resolves without the controller ever changing — nothing happens
+    // and the button looks dead, which is what users hit. If we are still
+    // here shortly after, drop the workers and reload by hand.
+    window.setTimeout(async () => {
+      try {
+        const regs = (await navigator.serviceWorker?.getRegistrations?.()) ?? [];
+        await Promise.all(regs.map((r) => r.unregister().catch(() => false)));
+      } catch {
+        /* not fatal — the reload below still picks up new assets */
+      }
+      hardReload();
+    }, 1500);
+  };
+
   const showRefresh = (!isTauri && (needRefresh || fallbackStale)) || (isTauri && !!tauriUpdate);
   const showOffline = !isTauri && offlineReady && !needRefresh;
 
@@ -171,28 +209,22 @@ export default function UpdatePrompt() {
                   if (isTauri) {
                     void handleTauriUpdate();
                   } else {
-                    if (fallbackStale) {
-                      const url = new URL(location.href);
-                      url.searchParams.set("_v", Date.now().toString(36));
-                      location.replace(url.toString());
-                      return;
-                    }
-                    void updateServiceWorker(true);
+                    void handleBrowserUpdate();
                   }
                 }}
-                disabled={tauriUpdating}
+                disabled={tauriUpdating || reloading}
                 className="flex-1 flex items-center justify-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold px-3 py-2 rounded-lg shadow-sm transition-colors disabled:bg-indigo-400"
               >
-                {tauriUpdating ? (
+                {tauriUpdating || reloading ? (
                   <RefreshCw size={14} className="animate-spin" />
                 ) : isTauri ? (
                   <Download size={14} />
                 ) : (
                   <RefreshCw size={14} />
                 )}
-                {tauriUpdating ? "Updating..." : isTauri ? "Download & Install" : "Reload to update"}
+                {tauriUpdating ? "Updating..." : reloading ? "Reloading…" : isTauri ? "Download & Install" : "Reload to update"}
               </button>
-              {!tauriUpdating && (
+              {!tauriUpdating && !reloading && (
                 <button
                   onClick={() => {
                     if (isTauri) {
