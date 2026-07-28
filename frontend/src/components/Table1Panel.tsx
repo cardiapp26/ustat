@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { useStore, type Session } from "../store";
 import api from "../api";
 import ResultExporter from "./ResultExporter";
-import { fmtP } from "../lib/format";
+import { fmtP, warningText } from "../lib/format";
 
 // ── Stat definitions ──────────────────────────────────────────────────────────
 
@@ -73,6 +73,9 @@ interface T1Result {
   group_ns: Record<string, number>;
   total_n: number;
   rows: T1Row[];
+  // Mixed shapes on purpose: the category cleaner returns structured dicts,
+  // the test rules return prose. warningText() renders either.
+  warnings?: unknown[];
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -680,6 +683,19 @@ function Table1PanelBody({ session }: { session: Session }) {
 
         {result && (
           <div className="p-4">
+            {/* A blank p-value is the one cell that cannot explain itself.
+                The reason it is blank — a constant column, a level only one
+                arm has, values excluded as missing — arrives here, so show it
+                above the table rather than only in the payload. */}
+            {(result.warnings?.length ?? 0) > 0 && (
+              <div className="mb-3 space-y-1">
+                {(result.warnings ?? []).map((w, i) => (
+                  <p key={i} className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-800 leading-relaxed">
+                    ⚠ {warningText(w)}
+                  </p>
+                ))}
+              </div>
+            )}
             <div className="rounded-xl border border-gray-200 overflow-hidden shadow-sm">
               <table className="w-full text-sm border-collapse">
                 <thead>

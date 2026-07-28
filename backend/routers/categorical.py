@@ -8,7 +8,9 @@ from typing import List, Optional
 
 from services import store
 from services.category_health import clean_two_level
-from services.stat_utils import cohens_h, adjust_pvalues, kendalls_w, sorted_groups
+from services.stat_utils import (
+    cohens_h, adjust_pvalues, kendalls_w, sorted_groups, sanitize_nonfinite,
+)
 
 router = APIRouter()
 
@@ -34,6 +36,42 @@ def _clean_binary_frame(df: pd.DataFrame, columns: List[str]) -> tuple[pd.DataFr
     return work.dropna(), warnings
 
 
+def _binary_success(col: pd.Series, name: str) -> tuple[int, str, list]:
+    """Count successes in a column that must actually be binary.
+
+    These tests are defined on a two-outcome variable. The code used to fall
+    back to "count the most frequent value" for anything that was not 0/1, so
+    a three-level column was silently collapsed into "the commonest level vs
+    everything else" and a proportion test was reported for a variable that
+    had no proportion to test. Say no instead, and name what was found.
+    """
+    obs = col.dropna()
+    if obs.empty:
+        raise HTTPException(400, f"No non-null values in '{name}'.")
+    uniq = list(pd.unique(obs))
+    if set(uniq).issubset({0, 1, 0.0, 1.0, True, False}):
+        return int((obs.astype(float) == 1).sum()), "1", []
+    if len(uniq) != 2:
+        shown = ", ".join(repr(str(v)) for v in sorted(map(str, uniq))[:6])
+        raise HTTPException(
+            422,
+            f"'{name}' has {len(uniq)} distinct values ({shown}"
+            + (", …" if len(uniq) > 6 else "")
+            + "). This test needs a binary variable — recode it to two "
+              "outcomes, or use a chi-square test of independence instead.",
+        )
+    # A genuine two-level variable. Order is fixed so "success" does not
+    # change with the sample.
+    levels = sorted(map(str, uniq))
+    success = levels[1]
+    return (
+        int((obs.astype(str) == success).sum()),
+        success,
+        [f"'{name}' is not coded 0/1; '{success}' was counted as the event "
+         f"and '{levels[0]}' as the non-event."],
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # 1. BINOMIAL TEST
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -55,15 +93,7 @@ def binomial_test(req: BinomialRequest):
         raise HTTPException(400, "No non-null values in column.")
 
     n = len(col)
-    # Count successes: if binary (0/1), count 1s; otherwise count most frequent value
-    unique_vals = col.unique()
-    if set(unique_vals).issubset({0, 1, 0.0, 1.0, True, False}):
-        k = int((col.astype(float) == 1).sum())
-        success_label = "1"
-    else:
-        most_frequent = col.value_counts().idxmax()
-        k = int((col == most_frequent).sum())
-        success_label = str(most_frequent)
+    k, success_label, binary_warnings = _binary_success(col, req.column)
 
     result = sp.binomtest(k, n, req.expected_proportion)
     p = float(result.pvalue)
@@ -141,14 +171,7 @@ def one_proportion_ztest(req: OneProportionRequest):
         raise HTTPException(400, "No non-null values in column.")
 
     n = len(col)
-    unique_vals = col.unique()
-    if set(unique_vals).issubset({0, 1, 0.0, 1.0, True, False}):
-        k = int((col.astype(float) == 1).sum())
-        success_label = "1"
-    else:
-        most_frequent = col.value_counts().idxmax()
-        k = int((col == most_frequent).sum())
-        success_label = str(most_frequent)
+    k, success_label, binary_warnings = _binary_success(col, req.column)
 
     z_stat, p = proportions_ztest(k, n, value=req.null_proportion)
     z_stat = float(z_stat)
@@ -235,18 +258,14 @@ def two_proportions_ztest(req: TwoProportionsRequest):
     g1_data = sub[sub[req.group_column] == groups[0]][req.column]
     g2_data = sub[sub[req.group_column] == groups[1]][req.column]
 
-    # Count successes (value == 1 or most frequent overall)
     all_vals = sub[req.column]
-    unique_vals = all_vals.unique()
-    if set(unique_vals).issubset({0, 1, 0.0, 1.0, True, False}):
+    _, success_label, binary_warnings = _binary_success(all_vals, req.column)
+    if success_label == "1":
         k1 = int((g1_data.astype(float) == 1).sum())
         k2 = int((g2_data.astype(float) == 1).sum())
-        success_label = "1"
     else:
-        most_frequent = all_vals.value_counts().idxmax()
-        k1 = int((g1_data == most_frequent).sum())
-        k2 = int((g2_data == most_frequent).sum())
-        success_label = str(most_frequent)
+        k1 = int((g1_data.astype(str) == success_label).sum())
+        k2 = int((g2_data.astype(str) == success_label).sum())
 
     n1, n2 = len(g1_data), len(g2_data)
     p1, p2 = k1 / n1 if n1 > 0 else 0, k2 / n2 if n2 > 0 else 0
@@ -327,8 +346,18 @@ def mcnemar_test(req: McnemarRequest):
         raise HTTPException(400, f"Expected 2x2 table from binary variables, got {ct.shape}.")
 
     table = ct.values
-    a, b = table[0]
-    c, d = table[1]
+    # crosstab sorts its levels ascending, so row/column 0 is the LOW level.
+    # The cells used to be unpacked as a, b, c, d and then labelled "a (both
+    # +)", "b (+ to -)" and so on — every label was the wrong way round, and
+    # the discordant odds ratio printed beside them was the reciprocal of what
+    # the text claimed. The p-value is symmetric in the two discordant cells
+    # and was never affected; the reported direction was.
+    neg_level, pos_level = (str(v) for v in ct.index)
+    both_neg = int(table[0][0])
+    neg_to_pos = int(table[0][1])   # low on col1, high on col2
+    pos_to_neg = int(table[1][0])   # high on col1, low on col2
+    both_pos = int(table[1][1])
+    a, b, c, d = both_pos, pos_to_neg, neg_to_pos, both_neg
 
     # Use exact test when discordant pairs < 25
     exact = bool((b + c) < 25)
@@ -338,7 +367,7 @@ def mcnemar_test(req: McnemarRequest):
     sig = bool(p < req.alpha)
     ps = _p_str(p)
 
-    # Effect size: odds ratio of discordant pairs
+    # Odds of moving positive -> negative against negative -> positive.
     or_val = float(b / c) if c > 0 else float('inf')
     or_str = f"{or_val:.3f}" if np.isfinite(or_val) else "Inf"
     es = {"name": "odds_ratio_discordant", "value": round(or_val, 4) if np.isfinite(or_val) else None,
@@ -347,7 +376,7 @@ def mcnemar_test(req: McnemarRequest):
         from services.stat_utils import _es_magnitude
         es["magnitude"] = _es_magnitude("odds_ratio", or_val)
 
-    return {
+    return sanitize_nonfinite({
         "test": "McNemar's test",
         "statistic": round(stat, 4), "p": p,
         "exact": exact,
@@ -355,6 +384,15 @@ def mcnemar_test(req: McnemarRequest):
         "effect_sizes": [es],
         "assumptions": [],
         "contingency_table": {"a": int(a), "b": int(b), "c": int(c), "d": int(d)},
+        # The cells named by what they actually are, so the direction cannot
+        # be misread off the letters.
+        "cells": {
+            "levels": {"negative": neg_level, "positive": pos_level},
+            "both_positive": both_pos,
+            "positive_to_negative": pos_to_neg,
+            "negative_to_positive": neg_to_pos,
+            "both_negative": both_neg,
+        },
         "summary": {
             "discordant_b": int(b), "discordant_c": int(c),
             "concordant_a": int(a), "concordant_d": int(d),
@@ -368,7 +406,9 @@ def mcnemar_test(req: McnemarRequest):
         "result_text": (
             f"McNemar's test ({'exact' if exact else 'asymptotic'}) assessed the change between "
             f"{req.col1} and {req.col2} (n = {len(sub)} pairs). "
-            f"Discordant pairs: b = {b}, c = {c}. "
+            f"Discordant pairs: {req.col1} '{pos_level}' -> {req.col2} "
+            f"'{neg_level}' = {pos_to_neg}; {req.col1} '{neg_level}' -> "
+            f"{req.col2} '{pos_level}' = {neg_to_pos}. "
             f"The result was {'statistically significant' if sig else 'not statistically significant'} "
             f"(statistic = {stat:.3f}, p = {ps}). "
             f"Odds ratio of discordant pairs = {or_str}."
@@ -378,14 +418,14 @@ def mcnemar_test(req: McnemarRequest):
             ["Test statistic", round(stat, 4)],
             ["p", round(p, 6)],
             ["Exact test", exact],
-            ["a (both +)", int(a)],
-            ["b (+ to -)", int(b)],
-            ["c (- to +)", int(c)],
-            ["d (both -)", int(d)],
-            ["OR (b/c)", or_str],
+            [f"Both '{pos_level}'", both_pos],
+            [f"'{pos_level}' -> '{neg_level}'", pos_to_neg],
+            [f"'{neg_level}' -> '{pos_level}'", neg_to_pos],
+            [f"Both '{neg_level}'", both_neg],
+            ["OR (discordant)", or_str],
         ],
         "r_code": "mcnemar.test(table)",
-    }
+    })
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -414,8 +454,28 @@ def cochran_q_test(req: CochranQRequest):
     if len(sub) < 5:
         raise HTTPException(400, "Need at least 5 complete subjects.")
 
-    # Convert to binary matrix
-    mat = sub.values.astype(float)
+    # Cochran's Q is defined on 0/1 outcomes. The matrix used to be cast to
+    # float with no check at all, so continuous columns produced a negative Q
+    # and "proportions" above 1 — arithmetic that looks like a result.
+    mat = sub.apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+    if not np.isfinite(mat).all():
+        raise HTTPException(
+            422,
+            "Cochran's Q needs numeric 0/1 columns; some values could not be "
+            "read as numbers.",
+        )
+    offenders = [
+        c for c in req.columns
+        if not set(np.unique(sub[c].astype(float))).issubset({0.0, 1.0})
+    ]
+    if offenders:
+        raise HTTPException(
+            422,
+            "Cochran's Q compares binary outcomes across conditions, but "
+            + ", ".join(f"'{c}'" for c in offenders)
+            + " hold values other than 0 and 1. Recode them to 0/1, or use "
+              "repeated-measures ANOVA / Friedman for continuous outcomes.",
+        )
     n, k = mat.shape
 
     # Manual Cochran's Q calculation
@@ -573,19 +633,39 @@ def mantel_haenszel_test(req: MantelHaenszelRequest):
     sig = bool(p < req.alpha)
     ps = _p_str(p)
 
-    # Common odds ratio
+    # Common odds ratio. A stratum with a zero cell sends the pooled estimate
+    # to infinity, and one infinite number used to make the whole response
+    # unserialisable — the global handler turned it into a 400 and the valid
+    # CMH statistic and p-value went with it. Report the estimate as absent
+    # and name the strata responsible, rather than losing the test.
     try:
         common_or = float(st.oddsratio_pooled)
-        or_str = f"{common_or:.3f}"
     except Exception:
         common_or = None
-        or_str = "N/A"
+    if common_or is not None and not np.isfinite(common_or):
+        zero_cell = [
+            info["stratum"] for info, tab in zip(stratum_info, tables)
+            if float(np.asarray(tab).min()) == 0
+        ]
+        warnings.append(
+            "The common odds ratio is not finite because "
+            + (f"stratum/strata {', '.join(zero_cell)} contain "
+               if zero_cell else "a stratum contains ")
+            + "a zero cell. The CMH test itself is unaffected and is reported "
+            "above; collapse or drop the empty strata for an interpretable "
+            "common odds ratio."
+        )
+        common_or = None
+    or_str = f"{common_or:.3f}" if common_or is not None else "N/A"
 
-    return {
+    return sanitize_nonfinite({
         "test": "Cochran-Mantel-Haenszel test",
         "statistic": round(stat, 4), "p": p,
         "significant": sig,
-        "effect_sizes": [{"name": "common_odds_ratio", "value": round(common_or, 4) if common_or else None,
+        # `if common_or` (not `is not None`) reported an odds ratio of exactly
+        # 0 as absent.
+        "effect_sizes": [{"name": "common_odds_ratio",
+                          "value": round(common_or, 4) if common_or is not None else None,
                           "ci_low": None, "ci_high": None, "magnitude": ""}],
         "assumptions": [],
         "summary": {
@@ -615,7 +695,7 @@ def mantel_haenszel_test(req: MantelHaenszelRequest):
             ["Total n", int(len(sub))],
         ],
         "r_code": "mantelhaen.test(table_array)",
-    }
+    })
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

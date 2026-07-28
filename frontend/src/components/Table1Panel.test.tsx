@@ -151,4 +151,55 @@ describe('Table1Panel', () => {
       expect(screen.getByText('No variables selected for analysis')).toBeInTheDocument(),
     )
   })
+
+  it('shows why a p-value is blank instead of leaving an unexplained dash', async () => {
+    // A blank p is the one cell that cannot explain itself: a constant
+    // column, a level only one arm has, or rows excluded as missing all
+    // produce it. The backend says which; the panel used to drop the message.
+    installSession()
+    server.use(
+      http.post('/api/stats/table1', () =>
+        HttpResponse.json({
+          ...T1_RESULT_GROUPED,
+          warnings: [
+            "'SITE': no p-value \u2014 only one category \u2014 nothing to compare.",
+            {
+              variable: 'STATUS',
+              dropped_levels: [{ level: 'unknown', n: 4 }],
+              note: "'STATUS': 4 row(s) hold a value that reads as missing.",
+            },
+          ],
+          rows: [
+            {
+              variable: 'SITE',
+              type: 'categorical',
+              overall_n: 3,
+              p_value: null,
+              test: null,
+              group_stats: {},
+              sub_rows: [
+                {
+                  category: 'central',
+                  overall: '3 (100.0%)',
+                  group_stats: { A: '2 (100.0%)', B: '1 (100.0%)' },
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<Table1Panel />)
+    await user.selectOptions(screen.getByRole('combobox'), 'GROUP')
+    await user.click(screen.getByRole('button', { name: /generate table/i }))
+
+    await waitFor(() =>
+      expect(screen.getByText(/only one category/)).toBeInTheDocument(),
+    )
+    // The structured warning must render as prose, not "[object Object]".
+    expect(screen.getByText(/reads as missing/)).toBeInTheDocument()
+    expect(screen.queryByText(/\[object Object\]/)).not.toBeInTheDocument()
+  })
 })

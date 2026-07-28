@@ -4,12 +4,13 @@ import pandas as pd
 from scipy import stats as sp
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 
 from services import store
 from services.stat_utils import (
     cohen_d_paired, matched_rank_biserial, kendalls_w, partial_eta_squared,
     check_normality, group_summary, adjust_pvalues,
+    sanitize_nonfinite, sphericity,
 )
 
 router = APIRouter()
@@ -63,7 +64,7 @@ def paired_ttest(req: PairedTTestRequest):
     sd_diff = float(d.std(ddof=1))
     ps = _p_str(p)
 
-    return {
+    return sanitize_nonfinite({
         "test": "Paired-samples t-test",
         "t": round(float(t_stat), 4), "df": n - 1, "p": float(p),
         "significant": sig,
@@ -96,7 +97,7 @@ def paired_ttest(req: PairedTTestRequest):
             ["Magnitude", es["magnitude"]],
         ],
         "r_code": f't.test(data${req.col1}, data${req.col2}, paired = TRUE)',
-    }
+    })
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -127,10 +128,17 @@ def wilcoxon_signed_rank(req: WilcoxonSRRequest):
 
     w_stat, p = sp.wilcoxon(x1, x2, alternative="two-sided")
     sig = bool(p < req.alpha)
-    es = matched_rank_biserial(float(w_stat), len(nonzero))
+    # The two-sided SciPy statistic is min(W+, W-), which carries no
+    # direction: differences that were all positive and differences that were
+    # all negative both give W = 0, and feeding that to the rank-biserial
+    # formula returned r = -1 for both. The effect size needs the sum of the
+    # POSITIVE signed ranks.
+    abs_ranks = sp.rankdata(np.abs(nonzero))
+    w_plus = float(abs_ranks[nonzero > 0].sum())
+    es = matched_rank_biserial(w_plus, len(nonzero))
     ps = _p_str(p)
 
-    return {
+    return sanitize_nonfinite({
         "test": "Wilcoxon signed-rank test",
         "W": round(float(w_stat), 4), "p": float(p), "n_nonzero": len(nonzero),
         "significant": sig,
@@ -157,7 +165,7 @@ def wilcoxon_signed_rank(req: WilcoxonSRRequest):
             ["95% CI upper", es["ci_high"]],
         ],
         "r_code": f'wilcox.test(data${req.col1}, data${req.col2}, paired = TRUE)',
-    }
+    })
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -210,7 +218,7 @@ def friedman(req: FriedmanRequest):
             ph["significant"] = adj[idx] < req.alpha
             ph["correction"] = "holm"
 
-    return {
+    return sanitize_nonfinite({
         "test": "Friedman test",
         "chi2": round(float(chi2), 4), "df": k - 1, "p": float(p),
         "significant": sig,
@@ -235,7 +243,7 @@ def friedman(req: FriedmanRequest):
             ["k (conditions)", k],
         ],
         "r_code": 'friedman.test(y ~ timepoint | subject, data = data_long)',
-    }
+    })
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -287,19 +295,46 @@ def rm_anova(req: RMAnovaRequest):
     es = partial_eta_squared(F_val, df_num, df_den)
     ps = _p_str(p_val)
 
-    # Sphericity check
+    # Sphericity. The code here used to read `res.epsilon` off the AnovaRM
+    # result, which has no such attribute — so eps was always None, the block
+    # never fired, and nothing about sphericity ever reached the user. With
+    # three or more levels an unmet sphericity assumption makes the
+    # uncorrected F anticonservative, so the epsilons are computed here and
+    # the corrected p-values are reported alongside the uncorrected one.
     assumptions = []
+    sphericity_out = None
+    corrected = []
     if k > 2:
-        # GG epsilon if available
-        try:
-            eps = float(res.epsilon) if hasattr(res, 'epsilon') else None
-        except Exception:
-            eps = None
-        if eps and eps < 0.75:
-            assumptions.append({"name": "Sphericity (Greenhouse-Geisser)", "met": False,
-                                "detail": f"\u03B5 = {eps:.3f} < 0.75 — GG correction recommended"})
-        elif eps:
-            assumptions.append({"name": "Sphericity", "met": True, "detail": f"\u03B5 = {eps:.3f}"})
+        wide = sub.pivot_table(
+            index=req.subject_col, columns=req.within_col, values=req.value_col
+        ).dropna()
+        if len(wide) >= 3:
+            sphericity_out = sphericity(wide.to_numpy())
+            for label, key in (("Greenhouse-Geisser", "gg"), ("Huynh-Feldt", "hf")):
+                eps = float(sphericity_out[key])
+                dfn, dfd = df_num * eps, df_den * eps
+                corrected.append({
+                    "correction": label,
+                    "epsilon": round(eps, 4),
+                    "df_num": round(dfn, 3),
+                    "df_den": round(dfd, 3),
+                    "p": float(sp.f.sf(F_val, dfn, dfd)),
+                })
+            gg = float(sphericity_out["gg"])
+            mp = sphericity_out.get("mauchly_p")
+            met = mp is None or mp >= 0.05
+            detail = (
+                f"Mauchly W = {sphericity_out['mauchly_w']:.4f}, p = {mp:.4f}; "
+                if mp is not None else ""
+            ) + f"Greenhouse-Geisser \u03B5 = {gg:.3f}"
+            if not met:
+                detail += (
+                    " \u2014 sphericity rejected; use the corrected p-value "
+                    f"({corrected[0]['p']:.4g} with GG) rather than the "
+                    "uncorrected one."
+                )
+            assumptions.append({"name": "Sphericity (Mauchly)", "met": bool(met),
+                                "detail": detail})
 
     # Post-hoc: pairwise paired t-tests with Holm
     posthoc = []
@@ -314,26 +349,50 @@ def rm_anova(req: RMAnovaRequest):
                 if len(common) < 3:
                     continue
                 t, pv = sp.ttest_rel(g1.loc[common].values, g2.loc[common].values)
-                posthoc.append({
+                # A pair whose differences are all identical has zero variance,
+                # so SciPy returns t = inf. That single value used to make the
+                # entire response unserialisable and the global handler turned
+                # it into a 400 — the valid omnibus result went with it. Report
+                # the pair with its difference and say why there is no t.
+                row = {
                     "group1": str(levels[i]), "group2": str(levels[j]),
-                    "statistic": round(float(t), 4), "p": round(float(pv), 6),
                     "mean_diff": round(float(g1.loc[common].mean() - g2.loc[common].mean()), 4),
-                })
-                raw_ps.append(float(pv))
+                }
+                if np.isfinite(t) and np.isfinite(pv):
+                    row["statistic"] = round(float(t), 4)
+                    row["p"] = round(float(pv), 6)
+                    raw_ps.append(float(pv))
+                else:
+                    row["statistic"] = None
+                    row["p"] = None
+                    row["note"] = (
+                        "Every subject changed by the same amount between these "
+                        "two levels, so the difference has no variance and a "
+                        "paired t cannot be computed."
+                    )
+                posthoc.append(row)
         if raw_ps:
             adj = adjust_pvalues(raw_ps, "holm")
-            for idx, ph in enumerate(posthoc):
-                ph["p_adj"] = round(adj[idx], 6)
-                ph["significant"] = adj[idx] < req.alpha
+            it = iter(adj)
+            for ph in posthoc:
+                if ph.get("p") is None:
+                    ph["p_adj"] = None
+                    ph["significant"] = None
+                    continue
+                a = next(it)
+                ph["p_adj"] = round(a, 6)
+                ph["significant"] = a < req.alpha
                 ph["correction"] = "holm"
 
     n_subj = sub[req.subject_col].nunique()
-    return {
+    return sanitize_nonfinite({
         "test": "Repeated-measures ANOVA",
         "F": round(F_val, 4), "df_num": df_num, "df_den": df_den, "p": float(p_val),
         "significant": sig,
         "effect_sizes": [es],
         "assumptions": assumptions,
+        "sphericity": sphericity_out,
+        "corrected": corrected,
         "posthoc": posthoc,
         "posthoc_method": "Pairwise paired t-tests (Holm correction)" if posthoc else None,
         "summary": {str(lv): group_summary(sub[sub[req.within_col] == lv][req.value_col].values, str(lv))
@@ -355,7 +414,7 @@ def rm_anova(req: RMAnovaRequest):
             ["k conditions", k],
         ],
         "r_code": f'library(ez)\nezANOVA(data = data, dv = .({req.value_col}), wid = .({req.subject_col}), within = .({req.within_col}))',
-    }
+    })
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -373,7 +432,31 @@ class MixedAnovaRequest(BaseModel):
 
 @router.post("/mixed_anova")
 def mixed_anova(req: MixedAnovaRequest):
-    """Mixed ANOVA via OLS with Type II SS (within × between interaction)."""
+    """Split-plot mixed ANOVA: each effect against its own error term.
+
+    The previous implementation fitted a plain factorial OLS —
+    ``Y ~ C(within) * C(between)`` — with no subject term at all, despite
+    describing the subject as a random effect. Every repeated observation of
+    the same person was treated as an independent case, so all three effects
+    were tested against a single pooled residual. That deflates the
+    between-subject test, which has to be judged against variation BETWEEN
+    subjects rather than within them.
+
+    On the audit fixture the arm effect came out F = 8.07, p = 0.0098 —
+    significant — where the correct split-plot test gives F = 2.72, p = 0.14.
+    The clinical reading reversed.
+
+    The design has two error strata and each effect belongs to one of them:
+
+      * the between-subjects effect is tested against subject-to-subject
+        variation inside each arm, which is exactly a one-way ANOVA on each
+        subject's own mean;
+      * the within-subjects effect and the interaction are tested against the
+        residual of a model that has already absorbed each subject's level.
+
+    For balanced complete data this reproduces R's
+    ``aov(y ~ a*b + Error(subject/b))`` and ``ez::ezANOVA``.
+    """
     import statsmodels.formula.api as smf
     from statsmodels.stats.anova import anova_lm
 
@@ -390,42 +473,128 @@ def mixed_anova(req: MixedAnovaRequest):
     if len(sub) < 12:
         raise HTTPException(400, "Need at least 12 rows for mixed ANOVA.")
 
-    # OLS-based mixed ANOVA: Y ~ C(within) * C(between) with subject as random
-    # For simplicity, use fixed-effects factorial; note: this is approximate for mixed designs
-    formula = f"Q('{req.value_col}') ~ C(Q('{req.within_col}')) * C(Q('{req.between_col}'))"
+    warnings: List[str] = []
+    sub = sub.copy()
+    for c in (req.subject_col, req.within_col, req.between_col):
+        sub[c] = sub[c].astype(str)
+
+    # A subject belongs to exactly one between-subjects level. Anything else
+    # is not a split plot and the error strata would not mean what they say.
+    arms_per_subject = sub.groupby(req.subject_col)[req.between_col].nunique()
+    crossed = arms_per_subject[arms_per_subject > 1].index.tolist()
+    if crossed:
+        raise HTTPException(
+            400,
+            f"'{req.between_col}' is meant to be between-subjects, but "
+            f"{len(crossed)} subject(s) appear under more than one of its "
+            f"levels (e.g. {crossed[0]}). Check the subject and group columns.",
+        )
+
+    within_levels = sorted(sub[req.within_col].unique().tolist())
+    if len(within_levels) < 2:
+        raise HTTPException(400, "The within-subjects factor needs at least 2 levels.")
+    if sub[req.between_col].nunique() < 2:
+        raise HTTPException(400, "The between-subjects factor needs at least 2 levels.")
+
+    dupes = int(sub.duplicated(subset=[req.subject_col, req.within_col]).sum())
+    if dupes:
+        raise HTTPException(
+            400,
+            f"{dupes} subject x {req.within_col} combination(s) appear more than "
+            "once. Mixed ANOVA needs one value per subject per level.",
+        )
+
+    # A subject missing a level contributes nothing to the within stratum.
+    level_counts = sub.groupby(req.subject_col)[req.within_col].nunique()
+    complete = level_counts[level_counts == len(within_levels)].index
+    dropped = int(len(level_counts) - len(complete))
+    if dropped:
+        warnings.append(
+            f"{dropped} subject(s) lack a value at every level of "
+            f"'{req.within_col}' and were excluded; the analysis uses "
+            f"{len(complete)} complete subject(s)."
+        )
+    sub = sub[sub[req.subject_col].isin(complete)]
+    if sub[req.subject_col].nunique() < 3:
+        raise HTTPException(400, "Need at least 3 subjects with complete data.")
+
+    subj_means = (
+        sub.groupby([req.subject_col, req.between_col], as_index=False)[req.value_col]
+        .mean()
+    )
+    if int(subj_means.groupby(req.between_col)[req.subject_col].nunique().min()) < 2:
+        raise HTTPException(
+            400,
+            f"Each level of '{req.between_col}' needs at least 2 subjects to "
+            "estimate between-subject error.",
+        )
+
+    v, w, b, s = req.value_col, req.within_col, req.between_col, req.subject_col
     try:
-        model = smf.ols(formula, data=sub).fit()
-        aov = anova_lm(model, typ=2)
+        # Stratum 1 - between subjects. One row per subject, so the residual
+        # is genuine subject-to-subject variation.
+        between_aov = anova_lm(
+            smf.ols(f"Q('{v}') ~ C(Q('{b}'))", data=subj_means).fit(), typ=2
+        )
+        # Stratum 2 - within subjects. The subject dummies absorb each
+        # person's own level, leaving the residual that the within effect and
+        # the interaction are properly judged against. The between main effect
+        # is collinear with those dummies and drops out here by design; it was
+        # tested in stratum 1.
+        # The between main effect is written out so the interaction is the
+        # genuine (a-1)(b-1) contrast. Without it the interaction term absorbs
+        # the between effect too and comes out with an extra degree of freedom
+        # (3 instead of 2 on the audit fixture, F 175.5 instead of 0.78). The
+        # C(between) row this produces is aliased with the subject dummies and
+        # is judged against the wrong error term, so it is ignored here - the
+        # between effect comes from stratum 1.
+        within_aov = anova_lm(
+            smf.ols(
+                f"Q('{v}') ~ C(Q('{s}')) + C(Q('{w}')) * C(Q('{b}'))",
+                data=sub,
+            ).fit(),
+            typ=2,
+        )
     except Exception as exc:
         raise HTTPException(400, f"Mixed ANOVA failed: {exc}")
 
-    # Parse each effect row
-    effects = []
-    for idx_name, row in aov.iterrows():
-        name = str(idx_name)
-        if name == "Residual":
-            continue
-        F_val = float(row["F"]) if not np.isnan(row["F"]) else 0
-        p_val = float(row["PR(>F)"]) if not np.isnan(row["PR(>F)"]) else 1
-        df_n = int(row["df"])
-        df_d = int(aov.loc["Residual", "df"])
-        sig = bool(p_val < req.alpha)
-        es = partial_eta_squared(F_val, df_n, df_d)
+    def _effect(aov, term: str, label: str, stratum: str) -> Optional[dict]:
+        if term not in aov.index:
+            return None
+        row = aov.loc[term]
+        f_val = float(row["F"])
+        p_val = float(row["PR(>F)"])
+        if not np.isfinite(f_val) or not np.isfinite(p_val):
+            return None
+        df_n = int(round(float(row["df"])))
+        df_d = int(round(float(aov.loc["Residual", "df"])))
+        return {
+            "term": label,
+            "F": round(f_val, 4),
+            "df_num": df_n,
+            "df_den": df_d,
+            # Not rounded to 6 dp: a strongly significant within-subject
+            # effect (3.3e-12 on the audit fixture) would print as 0.0.
+            "p": p_val,
+            "significant": bool(p_val < req.alpha),
+            "effect_size": partial_eta_squared(f_val, df_n, df_d),
+            "error_stratum": stratum,
+        }
 
-        # Clean term name
-        if req.within_col in name and req.between_col in name:
-            label = f"{req.within_col} \u00D7 {req.between_col} (interaction)"
-        elif req.within_col in name:
-            label = req.within_col
-        elif req.between_col in name:
-            label = req.between_col
-        else:
-            label = name
-
-        effects.append({
-            "term": label, "F": round(F_val, 4), "df_num": df_n, "df_den": df_d,
-            "p": round(float(p_val), 6), "significant": sig, "effect_size": es,
-        })
+    effects = [
+        e for e in (
+            _effect(between_aov, f"C(Q('{b}'))", b, f"between subjects ({s})"),
+            _effect(within_aov, f"C(Q('{w}'))", w, f"within subjects ({w} x {s})"),
+            _effect(
+                within_aov,
+                f"C(Q('{w}')):C(Q('{b}'))",
+                f"{w} \u00D7 {b} (interaction)",
+                f"within subjects ({w} x {s})",
+            ),
+        ) if e is not None
+    ]
+    if not effects:
+        raise HTTPException(400, "Mixed ANOVA produced no estimable effects.")
 
     n_subj = sub[req.subject_col].nunique()
     k_within = sub[req.within_col].nunique()
@@ -440,12 +609,22 @@ def mixed_anova(req: MixedAnovaRequest):
             f"(F({e['df_num']},{e['df_den']}) = {e['F']:.2f}, p = {ps}, partial \u03B7\u00B2 = {e['effect_size']['value']:.3f})"
         )
 
-    return {
+    return sanitize_nonfinite({
         "test": "Mixed ANOVA (within × between)",
         "effects": effects,
         "significant": any(e["significant"] for e in effects),
         "effect_sizes": [e["effect_size"] for e in effects],
-        "assumptions": [],
+        "warnings": warnings,
+        "assumptions": [
+            {"name": "Error strata", "met": True,
+             "detail": ("Each effect is tested against its own error term: the "
+                        "between-subjects effect against subject-to-subject "
+                        "variation, the within-subjects effect and the "
+                        "interaction against the subject x within residual.")},
+            {"name": "Complete cases", "met": not warnings,
+             "detail": (warnings[0] if warnings else
+                        "Every subject has a value at every within-subjects level.")},
+        ],
         "summary": {
             "within_levels": sorted(sub[req.within_col].unique().tolist()),
             "between_levels": sorted(sub[req.between_col].unique().tolist()),
@@ -466,4 +645,4 @@ def mixed_anova(req: MixedAnovaRequest):
             f'ezANOVA(data = data, dv = .({req.value_col}), wid = .({req.subject_col}), '
             f'within = .({req.within_col}), between = .({req.between_col}))'
         ),
-    }
+    })

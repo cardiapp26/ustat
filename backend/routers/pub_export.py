@@ -8,7 +8,12 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from services import store
-from services.stat_utils import sorted_groups
+from services.stat_utils import (
+    sorted_groups,
+    _categorical_p_with_rule,
+    check_equal_variances,
+    looks_continuous,
+)
 from services.number_format import format_p
 
 try:
@@ -97,7 +102,7 @@ def _run_table1_analysis(req: TableDocxRequest) -> dict:
         elif provided_kind in ("categorical", "text", "boolean"):
             is_num = False
         else:
-            is_num = pd.api.types.is_numeric_dtype(s) and s.nunique() > 10
+            is_num = looks_continuous(s)
 
         if is_num:
             s_all = s.dropna().astype(float)
@@ -132,8 +137,18 @@ def _run_table1_analysis(req: TableDocxRequest) -> dict:
                     try:
                         if len(groups) == 2:
                             if normal:
-                                _, p_t = scipy_stats.ttest_ind(*arrs, equal_var=False)
-                                test_name = "t-test"
+                                # Same Student-vs-Welch rule as the on-screen
+                                # Table 1 and /api/stats/ttest, so the exported
+                                # manuscript cannot carry a different p than the
+                                # table the user approved.
+                                lev = check_equal_variances(
+                                    [a.to_numpy() for a in arrs], list(group_labels)
+                                )
+                                use_welch = not lev["met"]
+                                _, p_t = scipy_stats.ttest_ind(
+                                    *arrs, equal_var=not use_welch
+                                )
+                                test_name = "t-test (Welch)" if use_welch else "t-test"
                             else:
                                 _, p_t = scipy_stats.mannwhitneyu(*arrs, alternative="two-sided")
                                 test_name = "Mann\u2013Whitney"
@@ -187,13 +202,18 @@ def _run_table1_analysis(req: TableDocxRequest) -> dict:
                     ct = pd.crosstab(
                         pairs[var].astype(str), pairs[req.group_column]
                     )
-                    chi2, p_chi, dof, expected = scipy_stats.chi2_contingency(ct)
-                    if ct.shape == (2, 2) and (expected < 5).any():
-                        _, p_chi = scipy_stats.fisher_exact(ct.values)
-                        test_name = "Fisher"
+                    # Use the same rule as the Table 1 endpoint rather than a
+                    # second copy of it. The copy here only fell back to Fisher
+                    # for 2×2, so a sparse r×c table got a plain chi-square in
+                    # the exported manuscript and a Fisher-Freeman-Halton p on
+                    # screen — two different numbers for the same table.
+                    p_chi, reason = _categorical_p_with_rule(ct.values)
+                    if p_chi is None:
+                        p_str = None
+                        test_name = None
                     else:
-                        test_name = "Chi-square"
-                    p_str = format_p(p_chi)
+                        test_name = reason
+                        p_str = format_p(p_chi)
                 except Exception:
                     p_str = "N/A"
 

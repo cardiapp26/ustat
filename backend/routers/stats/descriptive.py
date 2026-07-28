@@ -16,7 +16,12 @@ from services.dirty_value_guard import (
     flag_sentinels,
     plausibility_max_for_column,
 )
-from services.stat_utils import sorted_groups, _categorical_p_with_rule
+from services.stat_utils import (
+    sorted_groups,
+    _categorical_p_with_rule,
+    check_equal_variances,
+    looks_continuous,
+)
 from services.impute import apply_imputation, missing_info
 
 router = APIRouter()
@@ -364,7 +369,7 @@ def column_summary(session_id: str, column: str, kind: Optional[str] = None):
     elif resolved_kind in ("categorical", "text", "boolean"):
         is_num = False
     else:
-        is_num = pd.api.types.is_numeric_dtype(s) and s.nunique() > 10
+        is_num = looks_continuous(s)
 
     if is_num:
         s_clean = coerce_numeric(s).replace([np.inf, -np.inf], np.nan).dropna()
@@ -790,7 +795,7 @@ def table1(req: Table1Request):
         elif provided_kind in ("categorical", "text", "boolean"):
             is_num = False
         else:
-            is_num = pd.api.types.is_numeric_dtype(s) and s.nunique() > 10
+            is_num = looks_continuous(s)
 
         if is_num:
             s = coerce_numeric(s).replace([np.inf, -np.inf], np.nan)
@@ -849,12 +854,36 @@ def table1(req: Table1Request):
             p_value_str: Optional[str] = None
             test_name_str: Optional[str] = None
             significant = False
-            if groups is not None and len(group_arrs) >= 2:
+            # A parametric test needs a variance in each group. With one
+            # observation in a group scipy returns nan, which used to be
+            # printed as an em dash beside a confident "t-test (Welch)" label.
+            thin = [
+                gl for gl, arr in zip(group_labels, group_arrs) if len(arr) < 2
+            ]
+            if groups is not None and normal and thin:
+                warnings.append(
+                    f"'{var}': no p-value — group(s) "
+                    + ", ".join(repr(g) for g in thin)
+                    + " have fewer than 2 values with this variable recorded."
+                )
+            elif groups is not None and len(group_arrs) >= 2:
                 try:
                     if len(groups) == 2:
                         if normal:
-                            _, p_t = scipy_stats.ttest_ind(*group_arrs, equal_var=False)
-                            test_name_str = "t-test"
+                            # Pick Student vs Welch the same way /api/stats/ttest
+                            # does. Table 1 used to force equal_var=False and
+                            # label the row plain "t-test", so opening the same
+                            # pair in the Tests tab — which lets Levene decide —
+                            # could print a different p for the same two columns
+                            # with nothing to explain the gap.
+                            lev = check_equal_variances(
+                                list(group_arrs), list(group_labels)
+                            )
+                            use_welch = not lev["met"]
+                            _, p_t = scipy_stats.ttest_ind(
+                                *group_arrs, equal_var=not use_welch
+                            )
+                            test_name_str = "t-test (Welch)" if use_welch else "t-test"
                         else:
                             _, p_t = scipy_stats.mannwhitneyu(
                                 *group_arrs, alternative="two-sided"
@@ -928,7 +957,7 @@ def table1(req: Table1Request):
             sub_rows = []
             for cat in cats:
                 n_all = int((s.astype(str) == cat).sum())
-                pct_all = round(n_all / total_all * 100, 1) if total_all else 0
+                pct_all = round(n_all / total_all * 100, 1) if total_all else 0.0
                 sub: dict = {
                     "category": cat,
                     "overall": f"{n_all} ({pct_all}%)",
@@ -939,7 +968,7 @@ def table1(req: Table1Request):
                         g_s = df[df[req.group_column] == g][var]
                         n_g = int((g_s.astype(str) == cat).sum())
                         t_g = g_s.count()
-                        pct_g = round(n_g / t_g * 100, 1) if t_g else 0
+                        pct_g = round(n_g / t_g * 100, 1) if t_g else 0.0
                         sub["group_stats"][gl] = f"{n_g} ({pct_g}%)"
                 sub_rows.append(sub)
 
@@ -960,15 +989,25 @@ def table1(req: Table1Request):
                     ct = pd.crosstab(
                         pairs[var].astype(str), pairs[req.group_column]
                     )
-                    p_chi_raw, test_name = _categorical_p_with_rule(ct.values)
-                    p_val = _fmt_p(float(p_chi_raw))
-                    n_test = int(ct.values.sum())
-                    if n_test < len(df):
-                        warnings.append(
-                            f"'{var}': the test uses {n_test} of {len(df)} rows; "
-                            "the rest are missing the variable or the grouping "
-                            "column."
-                        )
+                    p_chi_raw, reason = _categorical_p_with_rule(ct.values)
+                    if p_chi_raw is None:
+                        # A one-row or one-column table has no association to
+                        # test. Saying so beats printing the p = 1.000 that
+                        # chi2_contingency returns at dof 0, which reads as a
+                        # tested, non-significant result.
+                        p_val = None
+                        test_name = None
+                        warnings.append(f"'{var}': no p-value — {reason.lower()}.")
+                    else:
+                        test_name = reason
+                        p_val = _fmt_p(float(p_chi_raw))
+                        n_test = int(ct.values.sum())
+                        if n_test < len(df):
+                            warnings.append(
+                                f"'{var}': the test uses {n_test} of {len(df)} "
+                                "rows; the rest are missing the variable or the "
+                                "grouping column."
+                            )
                 except Exception:
                     logger.exception("Categorical test failed in Table 1")
                     p_val = "N/A"
@@ -1005,8 +1044,13 @@ def table1(req: Table1Request):
 
                     from itertools import combinations as _comb
 
+                    # dropna before astype(str): otherwise NaN becomes the
+                    # string "nan", the .dropna() inside _smd_cat_pair no
+                    # longer sees it, and missingness enters the SMD as a
+                    # category of its own.
                     g_series = [
-                        df[df[req.group_column] == g][var].astype(str) for g in groups
+                        df[df[req.group_column] == g][var].dropna().astype(str)
+                        for g in groups
                     ]
                     pair_smds = []
                     for i, j in _comb(range(len(g_series)), 2):

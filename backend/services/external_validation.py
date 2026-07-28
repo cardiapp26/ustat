@@ -66,6 +66,18 @@ def _weighted_mean(x: np.ndarray, w: np.ndarray) -> float:
     return float(np.sum(w * x) / max(np.sum(w), 1e-12))
 
 
+def _numeric_share(raw: pd.Series, coerced: pd.Series) -> float:
+    """Share of the recorded values that parse as numbers.
+
+    Measured over the non-missing entries only, so a column's type never
+    depends on how complete it is.
+    """
+    observed = raw.notna()
+    if not observed.any():
+        return 0.0
+    return float(coerced[observed].notna().mean())
+
+
 def _standardized_mean_difference(dev: np.ndarray, val: np.ndarray) -> float:
     dev = np.asarray(dev, dtype=float)
     val = np.asarray(val, dtype=float)
@@ -140,10 +152,21 @@ def transportability_analysis(
     for col in covariate_cols:
         if col not in dev_df.columns or col not in val_df.columns:
             continue
-        dev_num = pd.to_numeric(dev_df[col], errors="coerce")
-        val_num = pd.to_numeric(val_df[col], errors="coerce")
-        if dev_num.notna().mean() >= 0.7 and val_num.notna().mean() >= 0.7:
+        dev_col = dev_df[col]
+        val_col = val_df[col]
+        dev_num = pd.to_numeric(dev_col, errors="coerce")
+        val_num = pd.to_numeric(val_col, errors="coerce")
+        # Whether a covariate is numeric is a question about the values that
+        # are there, not about how many are missing. The rule used to be
+        # notna().mean() >= 0.7 over the whole column, so a lab value recorded
+        # for only half the validation cohort was analysed as a categorical:
+        # every distinct measurement became its own level, and the largest
+        # level shift came out near 1/n — "no shift" for a covariate that may
+        # have moved a long way.
+        if _numeric_share(dev_col, dev_num) >= 0.7 and _numeric_share(val_col, val_num) >= 0.7:
             smd = _standardized_mean_difference(dev_num.dropna().to_numpy(), val_num.dropna().to_numpy())
+            dev_missing = float(dev_num.isna().mean()) if len(dev_num) else 0.0
+            val_missing = float(val_num.isna().mean()) if len(val_num) else 0.0
             covariate_rows.append({
                 "covariate": col,
                 "type": "numeric",
@@ -151,17 +174,40 @@ def transportability_analysis(
                 "val_mean": round(float(val_num.mean()), 5),
                 "standardized_mean_difference": round(smd, 5),
                 "flag_large_shift": bool(abs(smd) > 0.1),
+                # The means and the SMD come from the non-missing rows only,
+                # so state how many rows that was.
+                "n_dev": int(dev_num.notna().sum()),
+                "n_val": int(val_num.notna().sum()),
+                "dev_missing_rate": round(dev_missing, 5),
+                "val_missing_rate": round(val_missing, 5),
+                "missingness_shift": round(val_missing - dev_missing, 5),
+                "flag_missingness_shift": bool(abs(val_missing - dev_missing) > 0.1),
             })
         else:
-            dev_props = dev_df[col].astype(str).value_counts(normalize=True)
-            val_props = val_df[col].astype(str).value_counts(normalize=True)
+            # Drop missing before stringifying. astype(str) renders NaN as the
+            # literal "nan", which value_counts then reports as a level: a
+            # cohort that merely recorded this covariate less often would show
+            # up as a distribution shift, and normalising over the full length
+            # would shrink every real level's proportion by the missing rate.
+            # Missingness is a genuine transport concern, so it is reported —
+            # as its own number, not smuggled in as a category.
+            dev_props = dev_col.dropna().astype(str).value_counts(normalize=True)
+            val_props = val_col.dropna().astype(str).value_counts(normalize=True)
             levels = sorted(set(dev_props.index) | set(val_props.index))
             max_abs = max(abs(float(val_props.get(k, 0)) - float(dev_props.get(k, 0))) for k in levels) if levels else 0.0
+            dev_missing = float(dev_col.isna().mean()) if len(dev_col) else 0.0
+            val_missing = float(val_col.isna().mean()) if len(val_col) else 0.0
             covariate_rows.append({
                 "covariate": col,
                 "type": "categorical",
                 "max_absolute_level_shift": round(max_abs, 5),
                 "flag_large_shift": bool(max_abs > 0.1),
+                "n_dev": int(dev_col.notna().sum()),
+                "n_val": int(val_col.notna().sum()),
+                "dev_missing_rate": round(dev_missing, 5),
+                "val_missing_rate": round(val_missing, 5),
+                "missingness_shift": round(val_missing - dev_missing, 5),
+                "flag_missingness_shift": bool(abs(val_missing - dev_missing) > 0.1),
             })
 
     weights = estimate_transport_weights(dev_df, val_df, covariate_cols)
@@ -177,17 +223,31 @@ def transportability_analysis(
         if len(risk):
             baseline_shift["validation_predicted_risk_mean"] = round(float(_prediction_to_probability(risk.to_numpy()).mean()), 5)
 
+    shifted_missingness = [
+        r["covariate"] for r in covariate_rows if r.get("flag_missingness_shift")
+    ]
+    transport_warnings = [
+        "Large covariate shift can make unweighted external validation pessimistic or optimistic.",
+        "Very small effective sample size after IPTW indicates weak overlap/positivity problems.",
+    ]
+    if shifted_missingness:
+        transport_warnings.append(
+            "The two cohorts record these covariates at different rates: "
+            + ", ".join(shifted_missingness)
+            + ". Shift is measured on the rows that have a value, so a cohort "
+            "that simply collects a covariate less often will not show up as a "
+            "distribution shift — but it still limits transportability."
+        )
+
     return {
         "framework": "Steingrimsson-style external validity: covariate shift, outcome shift, and transport-weighted validation.",
         "covariate_shift": covariate_rows,
         "n_large_covariate_shifts": int(sum(1 for r in covariate_rows if r.get("flag_large_shift"))),
+        "n_missingness_shifts": len(shifted_missingness),
         "baseline_shift": baseline_shift,
         "iptw": {k: v for k, v in weights.items() if k != "weights"},
         "weights": weights.get("weights") if weights.get("available") else None,
-        "warnings": [
-            "Large covariate shift can make unweighted external validation pessimistic or optimistic.",
-            "Very small effective sample size after IPTW indicates weak overlap/positivity problems.",
-        ],
+        "warnings": transport_warnings,
     }
 
 

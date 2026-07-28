@@ -78,9 +78,19 @@ def rare_level_warnings(
 
 
 _MISSING_TOKENS = {
-    "", ".", "-", "--", "?", "na", "n/a", "nan", "none", "null",
+    "", ".", "-", "--", "?", "na", "n/a", "nan", "null",
     "missing", "unknown", "unk",
 }
+
+# "none" used to be in the set above. In clinical data it is far more often a
+# real level — chest pain "none", comorbidity "none" — than a stand-in for a
+# blank, and treating it as missing deleted the level from the table, the test
+# and every model that goes through here, without a word to the user.
+
+# Blanks and punctuation are unambiguous and dropping them silently is what a
+# user expects. A word like "unknown" or "n/a" may well be a category the user
+# meant to keep, so those get named in a warning instead.
+_SILENT_MISSING_TOKENS = {"", ".", "-", "--", "?"}
 
 _SEX_MAP = {
     "f": "Female",
@@ -129,9 +139,26 @@ def clean_two_level(series: pd.Series, keep: str | Iterable | None = "auto") -> 
 
     text = raw.astype("string").str.strip()
     lowered = text.str.casefold()
-    missing = raw.isna() | lowered.isin(_MISSING_TOKENS)
+    token_missing = lowered.isin(_MISSING_TOKENS) & raw.notna()
+    missing = raw.isna() | token_missing
 
     cleaned = text.mask(missing, pd.NA)
+
+    spoken = lowered[token_missing & ~lowered.isin(_SILENT_MISSING_TOKENS)]
+    if not spoken.empty:
+        counts = spoken.value_counts()
+        warnings.append({
+            "variable": str(series.name) if series.name is not None else None,
+            "dropped_levels": [
+                {"level": str(level), "n": int(n)} for level, n in counts.items()
+            ],
+            "note": (
+                f"'{series.name}': {int(counts.sum())} row(s) hold a value that "
+                f"reads as missing ({', '.join(repr(str(l)) for l in counts.index)}) "
+                "and were excluded from the counts and the test. If any of these "
+                "is a real category, recode it before analysing."
+            ),
+        })
 
     observed = set(lowered[~missing].dropna().tolist())
     sex_labels = {_SEX_MAP[v] for v in observed if v in _SEX_MAP}

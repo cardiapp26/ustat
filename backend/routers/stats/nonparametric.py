@@ -179,6 +179,32 @@ def kruskal(req: KruskalRequest):
     return _sanitize(ret)
 
 
+# Ordinal vocabularies seen in clinical grading scales, lowest first. Matched
+# case-insensitively and only when every level of the column is covered.
+_ORDINAL_WORDS = [
+    ["none", "mild", "moderate", "severe"],
+    ["none", "low", "medium", "high"],
+    ["low", "medium", "high"],
+    ["low", "mid", "high"],
+    ["never", "rarely", "sometimes", "often", "always"],
+    ["absent", "mild", "moderate", "marked"],
+    ["i", "ii", "iii", "iv"],
+    ["grade 1", "grade 2", "grade 3", "grade 4"],
+    ["mild", "moderate", "severe"],
+    ["small", "medium", "large"],
+    ["negative", "equivocal", "positive"],
+]
+
+
+def _ordinal_rank_map(levels: list) -> Optional[list]:
+    """Rank each level by a known ordinal vocabulary, or None if unrecognised."""
+    lowered = [str(lv).strip().casefold() for lv in levels]
+    for vocab in _ORDINAL_WORDS:
+        if all(w in vocab for w in lowered) and len(set(lowered)) == len(lowered):
+            return [vocab.index(w) for w in lowered]
+    return None
+
+
 # ── 3. Jonckheere-Terpstra ─────────────────────────────────────────────────────
 
 
@@ -200,8 +226,17 @@ def jonckheere_terpstra(req: JonckheereRequest):
     if len(sub) < 5:
         raise HTTPException(422, "Need at least 5 non-null rows.")
 
+    raw_levels = list(pd.unique(sub[req.group_column]))
+    numeric_levels = all(
+        isinstance(x, (int, float, np.integer, np.floating))
+        or (
+            isinstance(x, str)
+            and x.replace(".", "", 1).replace("-", "", 1).isdigit()
+        )
+        for x in raw_levels
+    )
     levels = sorted(
-        sub[req.group_column].unique(),
+        raw_levels,
         key=lambda x: (
             (0, float(x))
             if isinstance(x, (int, float, np.integer, np.floating))
@@ -212,6 +247,32 @@ def jonckheere_terpstra(req: JonckheereRequest):
             else (1, str(x))
         ),
     )
+    order_warnings: list = []
+    order_source = "numeric value" if numeric_levels else "alphabetical (assumed)"
+    if not numeric_levels and req.scores is None:
+        # This test measures a trend ACROSS the ordering, so the ordering is
+        # the hypothesis. Labels like Low / Medium / High sort to High, Low,
+        # Medium, which reverses the trend and changes the p-value — and none
+        # of that was visible in the response. Recognise the usual clinical
+        # ordinal words, and say out loud which order was used either way.
+        ranked = _ordinal_rank_map(raw_levels)
+        if ranked is not None:
+            levels = [lev for _, lev in sorted(zip(ranked, raw_levels))]
+            order_source = "recognised ordinal labels"
+            order_warnings.append(
+                f"'{req.group_column}' was ordered as "
+                + " < ".join(str(lv) for lv in levels)
+                + " from its labels. Send `scores` to set the order explicitly."
+            )
+        else:
+            order_warnings.append(
+                f"'{req.group_column}' has non-numeric levels, so they were "
+                "placed in alphabetical order: "
+                + " < ".join(str(lv) for lv in levels)
+                + ". Jonckheere-Terpstra tests a trend ACROSS that order — if "
+                "this is not the clinical order, send `scores` to set it, "
+                "because the trend direction and the p-value depend on it."
+            )
     if req.scores is not None:
         if len(req.scores) != len(levels):
             raise HTTPException(
@@ -281,8 +342,13 @@ def jonckheere_terpstra(req: JonckheereRequest):
             "p": p_two,
             "significant": sig,
             "effect_sizes": [],
+            "warnings": order_warnings,
+            # The order the trend was measured across, stated rather than
+            # implied: it decides the direction and the p-value.
+            "level_order": [str(lv) for lv in levels],
+            "level_order_source": order_source,
             "assumptions": [
-                "Ordered (ordinal) exposure with ≥3 levels",
+                "Ordered (ordinal) exposure with \u22653 levels",
                 "Continuous (or at least ordinal) outcome",
                 "Independence between observations",
             ],
@@ -295,7 +361,9 @@ def jonckheere_terpstra(req: JonckheereRequest):
             "interpretation": (
                 f"{'Significant' if sig else 'No significant'} monotone trend in "
                 f"{req.column} across {K} ordered levels of {req.group_column} "
-                f"(J = {J:.2f}, Z = {z:.3f}, p = {p_str}; direction: {direction})."
+                f"(J = {J:.2f}, Z = {z:.3f}, p = {p_str}; direction: {direction}) "
+                f"measured across the order "
+                + " < ".join(str(lv) for lv in levels) + "."
             ),
             "result_text": (
                 f"The Jonckheere-Terpstra non-parametric trend test was used to "

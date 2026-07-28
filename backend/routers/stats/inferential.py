@@ -179,6 +179,20 @@ def chisquare(req: ChiSqRequest):
     df = _get_df(req.session_id)
     work, warnings = _clean_crosstab_work(df, req.row_column, req.col_column)
     ct = pd.crosstab(work[req.row_column], work[req.col_column])
+    # chi2_contingency answers a one-row or one-column table with dof 0 and
+    # p exactly 1.0. Returned as-is that reads as a tested, non-significant
+    # association, so a variable that never varies — or that only exists in
+    # one group — looked like evidence of no difference.
+    if ct.shape[0] < 2 or ct.shape[1] < 2:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"'{req.row_column}' × '{req.col_column}' has only "
+                f"{ct.shape[0]} row(s) and {ct.shape[1]} column(s) after "
+                "dropping missing values. An association needs at least two "
+                "of each; there is nothing to test."
+            ),
+        )
     chi2, p, dof, expected = scipy_stats.chi2_contingency(ct)
     sig = bool(p < 0.05)
     n = ct.values.sum()
@@ -479,6 +493,8 @@ def noninferiority(req: NonInferiorityRequest):
     ci_level = round((1 - 2 * req.alpha) * 100, 1)
     log_margin = None
     is_log = False
+    # Set only by the continuous branch, whose interval and p-value are t-based.
+    welch_df: Optional[float] = None
 
     if req.outcome_type == "binary":
         y = pd.to_numeric(work[req.outcome_col], errors="coerce")
@@ -532,7 +548,12 @@ def noninferiority(req: NonInferiorityRequest):
         cm = CompareMeans(DescrStatsW(t), DescrStatsW(r))
         est = float(t.mean() - r.mean())
         lo, hi = cm.tconfint_diff(alpha=2 * req.alpha, usevar="unequal")
-        se = (hi - lo) / (2 * z_one)
+        # Take the standard error from the comparison itself. Recovering it as
+        # (hi - lo) / (2 * z_one) divided a t-based interval by a normal
+        # quantile, so the two scales were mixed and the SE came out too large
+        # — on the report's example 2.628 against a true 2.493.
+        se = float(cm.std_meandiff_separatevar)
+        welch_df = float(cm.dof_satt())
         est_disp, lo_disp, hi_disp = est, float(lo), float(hi)
         detail = {"n_test": len(t), "n_ref": len(r),
                   "mean_test": round(float(t.mean()), 4), "mean_ref": round(float(r.mean()), 4)}
@@ -541,17 +562,32 @@ def noninferiority(req: NonInferiorityRequest):
     else:
         raise HTTPException(status_code=422, detail="outcome_type must be 'binary' or 'continuous'.")
 
+    # One test statistic, one direction of evidence: how far the estimate sits
+    # BELOW the margin (upper bound) or ABOVE it (lower bound). Both branches
+    # used to build z the other way round and then take norm.cdf, which
+    # returns the complement of the p-value: the report's example demonstrated
+    # non-inferiority on the CI rule and printed p = 0.99999 next to it, where
+    # the correct p is 1.4e-05. The decision and its p contradicted each other
+    # on every call.
     m_scale = (log_margin if is_log else req.margin)
     if req.bound == "upper":
+        # H0: effect >= margin. Evidence against it is an estimate below it.
         non_inferior = hi_disp < req.margin
-        z = (m_scale - scale_point) / scale_se if scale_se > 0 else 0.0
-        p_ni = float(scipy_stats.norm.cdf(z))
+        z = (scale_point - m_scale) / scale_se if scale_se > 0 else 0.0
         rule = f"upper {ci_level}% CI bound ({round(hi_disp, 4)}) < margin ({req.margin})"
     else:
+        # H0: effect <= margin. Evidence against it is an estimate above it.
         non_inferior = lo_disp > req.margin
-        z = (scale_point - m_scale) / scale_se if scale_se > 0 else 0.0
-        p_ni = float(scipy_stats.norm.cdf(z))
+        z = (m_scale - scale_point) / scale_se if scale_se > 0 else 0.0
         rule = f"lower {ci_level}% CI bound ({round(lo_disp, 4)}) > margin ({req.margin})"
+    # The continuous interval is a Welch t interval, so its p-value is a t
+    # tail. The binary effects carry a large-sample normal SE and stay normal.
+    if welch_df is not None:
+        p_ni = float(scipy_stats.t.cdf(z, welch_df))
+        stat_name = "t"
+    else:
+        p_ni = float(scipy_stats.norm.cdf(z))
+        stat_name = "z"
 
     interp = (
         f"Non-inferiority test ({eff}, {test_g} vs {ref_g}). "
@@ -585,6 +621,11 @@ def noninferiority(req: NonInferiorityRequest):
         "alpha_one_sided": req.alpha,
         "non_inferior": bool(non_inferior),
         "p_noninferiority": round(p_ni, 6),
+        # The statistic behind the p, so the CI rule and the p can be checked
+        # against each other rather than taken on trust.
+        "statistic": round(float(z), 5),
+        "statistic_name": stat_name,
+        "df": round(welch_df, 3) if welch_df is not None else None,
         "warnings": cleaned.warnings,
         **detail,
         "assumptions": [

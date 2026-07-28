@@ -123,4 +123,41 @@ describe('HypothesisPanel', () => {
     // The result itself must still be on screen.
     expect(screen.getByText('Significant.')).toBeInTheDocument()
   })
+
+  it('switching to a categorical test re-points the column selection', async () => {
+    // The primary selector draws from the numeric list for a t-test and the
+    // categorical list for chi-square. The selection used to carry over, so
+    // AGE stayed in `col` while the dropdown showed only GROUP: the value
+    // being sent appeared nowhere on screen.
+    installSession()
+    let sent: Record<string, unknown> | null = null
+    server.use(
+      http.post('/api/stats/chisquare', async ({ request }) => {
+        sent = (await request.json()) as Record<string, unknown>
+        return HttpResponse.json({
+          test: 'Chi-square', interpretation: 'ok', significant: false, p: 0.5,
+        })
+      }),
+    )
+
+    const user = userEvent.setup()
+    render(<HypothesisPanel />)
+    await user.click(screen.getByRole('radio', { name: /chi-square/i }))
+    await user.click(screen.getByRole('button', { name: /run test/i }))
+
+    await waitFor(() => expect(sent).not.toBeNull())
+    // GROUP is the only categorical column in the fixture.
+    expect(sent!.row_column).toBe('GROUP')
+    expect(sent!.row_column).not.toBe('AGE')
+  })
+
+  it('two-way ANOVA lets you choose the first factor', async () => {
+    // factor1 is sent as groupCol, but "two_way" was missing from the list
+    // that renders the Group column selector, so the field was invisible.
+    installSession()
+    const user = userEvent.setup()
+    render(<HypothesisPanel />)
+    await user.click(screen.getByRole('radio', { name: /two-way anova/i }))
+    expect(screen.getByText('Group column')).toBeInTheDocument()
+  })
 })

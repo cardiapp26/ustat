@@ -185,10 +185,19 @@ def test_kendalls_w_range():
 
 
 def test_matched_rank_biserial_range():
-    out = su.matched_rank_biserial(w_stat=50.0, n=20)
+    out = su.matched_rank_biserial(w_plus=50.0, n=20)
     assert out["name"] == "rank_biserial_r"
     assert -1.0 <= out["value"] <= 1.0
     assert -1.0 <= out["ci_low"] <= out["ci_high"] <= 1.0
+
+
+def test_matched_rank_biserial_carries_the_sign():
+    """The argument is the sum of POSITIVE signed ranks, so all-positive and
+    all-negative differences must land at opposite ends."""
+    n = 6
+    max_w = n * (n + 1) / 2
+    assert su.matched_rank_biserial(max_w, n)["value"] == 1.0
+    assert su.matched_rank_biserial(0.0, n)["value"] == -1.0
 
 
 def test_cohens_h_bounds():

@@ -32,7 +32,117 @@ def sorted_groups(series: "pd.Series") -> list:
         return sorted(vals, key=str)
 
 
+def sanitize_nonfinite(obj):
+    """Recursively replace NaN/Inf floats with None.
+
+    A single non-finite number anywhere in a response makes the whole payload
+    unserialisable, and the global handler turns that into a 400 — so a valid
+    omnibus ANOVA was discarded because one post-hoc pair had a constant
+    difference, and a valid CMH chi-square and p were discarded because one
+    stratum had a zero cell and the pooled odds ratio came out infinite. The
+    number that cannot be represented becomes null; everything else survives.
+    """
+    if isinstance(obj, dict):
+        return {k: sanitize_nonfinite(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [sanitize_nonfinite(v) for v in obj]
+    if isinstance(obj, float) and not np.isfinite(obj):
+        return None
+    if isinstance(obj, np.floating):
+        v = float(obj)
+        return v if np.isfinite(v) else None
+    return obj
+
+
+def sphericity(values: np.ndarray) -> dict:
+    """Mauchly's test and the Greenhouse-Geisser / Huynh-Feldt epsilons.
+
+    ``values`` is subjects × levels, complete cases only.
+
+    statsmodels' ``AnovaRM`` result has no ``epsilon`` attribute, so the code
+    that looked for one never found it: no sphericity was ever reported and no
+    correction was ever applied. With three or more levels and correlated
+    residuals the uncorrected F test is anticonservative — it reports an
+    effect that the corrected degrees of freedom would not support.
+    """
+    x = np.asarray(values, dtype=float)
+    n, k = x.shape
+    out: dict = {"n": int(n), "k": int(k)}
+    if k < 3 or n < 3:
+        # With two levels there is only one difference score and sphericity
+        # is satisfied by construction.
+        out.update({"applicable": False, "gg": 1.0, "hf": 1.0})
+        return out
+
+    s = np.cov(x, rowvar=False)
+    # Greenhouse-Geisser (1959) on the covariance matrix of the levels.
+    s_bar = s.mean()
+    row_means = s.mean(axis=1)
+    diag_mean = np.trace(s) / k
+    num = (k ** 2) * (diag_mean - s_bar) ** 2
+    den = (k - 1) * ((s ** 2).sum() - 2 * k * (row_means ** 2).sum() + (k ** 2) * s_bar ** 2)
+    gg = float(num / den) if den > 0 else 1.0
+    gg = float(min(max(gg, 1.0 / (k - 1)), 1.0))
+
+    # Huynh-Feldt, capped at 1.
+    hf_num = n * (k - 1) * gg - 2
+    hf_den = (k - 1) * (n - 1 - (k - 1) * gg)
+    hf = float(min(hf_num / hf_den, 1.0)) if hf_den > 0 else 1.0
+    hf = float(max(hf, gg))
+
+    # Mauchly's W on orthonormal contrasts of the levels.
+    contrasts = np.linalg.qr(np.eye(k) - np.ones((k, k)) / k)[0][:, : k - 1]
+    s_star = contrasts.T @ s @ contrasts
+    det = float(np.linalg.det(s_star))
+    tr = float(np.trace(s_star))
+    w = p_mauchly = None
+    if det > 0 and tr > 0:
+        w = det / ((tr / (k - 1)) ** (k - 1))
+        dof = k * (k - 1) / 2 - 1
+        if dof >= 1 and n > 1 and w > 0:
+            d = 1 - (2 * (k - 1) ** 2 + (k - 1) + 2) / (6 * (k - 1) * (n - 1))
+            chi2 = -(n - 1) * d * np.log(w)
+            p_mauchly = float(sp.chi2.sf(chi2, dof))
+    out.update({
+        "applicable": True,
+        "gg": gg,
+        "hf": hf,
+        "mauchly_w": float(w) if w is not None else None,
+        "mauchly_p": p_mauchly,
+    })
+    return out
+
+
+def looks_continuous(s: pd.Series, min_levels: int = 10) -> bool:
+    """Decide whether a numeric column should be summarised as continuous.
+
+    The rule used to be ``nunique() > min_levels`` on its own — an absolute
+    threshold that a small study can never clear. With 10 rows a column holds
+    at most 10 distinct values, so every continuous measurement in a 10-row
+    dataset was listed as a categorical variable with one category per
+    patient, each at 11.1%, and handed a chi-square.
+
+    A float column carrying fractional values is a measurement whatever its
+    row count, so that counts as continuous too. Integer-valued columns still
+    need the distinct-value threshold, which keeps 0/1 flags and small counts
+    categorical.
+    """
+    if not pd.api.types.is_numeric_dtype(s):
+        return False
+    if s.nunique(dropna=True) > min_levels:
+        return True
+    vals = pd.to_numeric(s, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    if vals.empty:
+        return False
+    return bool((vals != vals.round()).any())
+
+
 # ── Categorical p-value with small-cell rule ───────────────────────────────────
+
+# Above this many categories the table is almost certainly free text or an
+# identifier rather than a grouping variable, and no association test on it
+# means anything.
+MAX_TEST_CATEGORIES = 20
 
 
 def _fisher_freeman_halton_mc(
@@ -83,14 +193,37 @@ def _fisher_freeman_halton_mc(
     return (count + 1) / (n_resamples + 1)
 
 
-def _categorical_p_with_rule(ct: np.ndarray) -> tuple[float, str]:
+def _categorical_p_with_rule(ct: np.ndarray) -> tuple[Optional[float], str]:
     """Categorical association p-value with small-cell fallback rule.
 
     Runs a chi-square test of independence. If any expected cell count is < 5,
     fall back to Fisher's exact test for 2×2 tables or a Fisher-Freeman-Halton
     Monte Carlo permutation test for larger r×c tables.
+
+    A table with a single row or a single column carries no association to
+    test. chi2_contingency answers such a table with dof 0 and p exactly 1.0,
+    which reads as a tested, non-significant result — so a variable that never
+    varies, or that only exists in one group, would be reported as evidence of
+    no difference. Those return ``(None, reason)`` instead, and an empty table
+    does too rather than raising.
     """
     obs = np.asarray(ct, dtype=float)
+    if obs.ndim != 2 or obs.size == 0 or obs.sum() <= 0:
+        return None, "No data to test"
+    n_rows, n_cols = obs.shape
+    if n_rows < 2:
+        return None, "Only one category — nothing to compare"
+    if n_cols < 2:
+        return None, "Present in only one group — nothing to compare"
+    if n_rows > MAX_TEST_CATEGORIES:
+        # A free-text or ID-like column produces one category per row. The
+        # chi-square is then computed on a table where every expected count is
+        # well under 1, and the Monte Carlo fallback would spend 5000
+        # permutations arriving at an equally meaningless number.
+        return None, (
+            f"{n_rows} categories is too many to test — check the column is "
+            "categorical and not free text or an identifier"
+        )
     chi2, p_chi, dof, expected = sp.chi2_contingency(obs)
     if (expected < 5).any():
         if obs.shape == (2, 2):
@@ -812,10 +945,15 @@ def kendalls_w(chi2: float, n: int, k: int) -> dict:
     }
 
 
-def matched_rank_biserial(w_stat: float, n: int) -> dict:
-    """Matched-pairs rank-biserial r from Wilcoxon signed-rank W."""
+def matched_rank_biserial(w_plus: float, n: int) -> dict:
+    """Matched-pairs rank-biserial r from the sum of POSITIVE signed ranks.
+
+    Not from SciPy's two-sided statistic, which is min(W+, W-) and carries no
+    direction: all-positive and all-negative differences both give it as 0,
+    and both then came out as r = -1.
+    """
     max_w = n * (n + 1) / 2
-    r = 2 * w_stat / max_w - 1 if max_w > 0 else 0.0
+    r = 2 * w_plus / max_w - 1 if max_w > 0 else 0.0
     se = np.sqrt((2 * n + 1) / (6 * n)) if n > 0 else 0
     ci_lo = max(-1, r - 1.96 * se)
     ci_hi = min(1, r + 1.96 * se)

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useStore, isNumericKind, isCategoricalKind, type Session } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
 import { runTTest, runChiSquare, runAnova, runMannWhitney, runFisher, runKruskal, runAncova, runTwoWayAnova, runJonckheereTerpstra, runMancova } from "../api";
@@ -335,7 +335,11 @@ function HypothesisPanelBody({ session }: { session: Session }) {
   };
 
   const isCat = test === "chisquare" || test === "fisher";
-  const needsGroup = ["ttest_2sample", "anova", "mannwhitney", "kruskal", "jonckheere", "ancova", "mancova"].includes(test);
+  // "two_way" belongs here: the request sends factor1: groupCol, but the test
+  // was missing from this list, so the Group column selector never rendered
+  // for it. Whatever groupCol happened to hold from the previous test was
+  // sent as factor1, unseen.
+  const needsGroup = ["ttest_2sample", "anova", "mannwhitney", "kruskal", "jonckheere", "ancova", "mancova", "two_way"].includes(test);
   const isKruskal = test === "kruskal";
   const needsSecondCat = isCat;
   const isAncova = test === "ancova";
@@ -345,6 +349,22 @@ function HypothesisPanelBody({ session }: { session: Session }) {
   // powerful than Kruskal/ANOVA which ignore the group ordering.
   const groupIsOrdinal = session.columns.some((c) => c.name === groupCol && c.kind === "ordinal");
   const suggestJonckheere = groupIsOrdinal && (test === "kruskal" || test === "anova");
+
+  // Switching test type changes which list each selector draws from — the
+  // primary column comes from the categorical list for chi-square/Fisher and
+  // from the numeric list for everything else. The selections used to carry
+  // over untouched, so a numeric column left over from a t-test stayed in
+  // `col` while the dropdown showed the categorical options: the value was
+  // not visible anywhere on screen and was still what got sent. Point every
+  // selection back at a member of its own list.
+  useEffect(() => {
+    const primary = isCat ? catCols : numCols;
+    if (primary.length && !primary.includes(col)) setCol(primary[0]);
+    if (catCols.length && !catCols.includes(groupCol)) setGroupCol(catCols[0]);
+    if (catCols.length && !catCols.includes(col2)) setCol2(catCols[1] ?? catCols[0]);
+    if (catCols.length && !catCols.includes(factor2)) setFactor2(catCols[1] ?? catCols[0]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [test, isCat, numCols.join("|"), catCols.join("|")]);
 
   const run = async () => {
     setLoading(true); setError(null); setResult(null);
