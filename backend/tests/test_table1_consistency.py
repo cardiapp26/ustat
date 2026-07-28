@@ -296,7 +296,10 @@ def test_missing_does_not_enter_the_categorical_smd(client, wide):
     g2 = pairs[pairs[GROUP] == "B"]["cp"]
     p1 = np.array([(g1 == c).mean() for c in levels[:-1]])
     p2 = np.array([(g2 == c).mean() for c in levels[:-1]])
-    s_pool = (np.diag(p1 * (1 - p1)) + np.diag(p2 * (1 - p2))) / 2
+    # Multinomial covariance, diag(p) - p p' — the categories are constrained
+    # to sum to 1, so the off-diagonal terms are not zero.
+    cov = lambda pv: np.diag(pv) - np.outer(pv, pv)  # noqa: E731
+    s_pool = (cov(p1) + cov(p2)) / 2
     diff = p1 - p2
     expected = float(np.sqrt(diff @ np.linalg.inv(s_pool) @ diff))
     assert row["smd"] == pytest.approx(expected, abs=1e-3)

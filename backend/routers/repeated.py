@@ -10,7 +10,7 @@ from services import store
 from services.stat_utils import (
     cohen_d_paired, matched_rank_biserial, kendalls_w, partial_eta_squared,
     check_normality, group_summary, adjust_pvalues,
-    sanitize_nonfinite, sphericity,
+    sanitize_nonfinite, sphericity, paired_contrast_is_degenerate,
 )
 
 router = APIRouter()
@@ -49,46 +49,79 @@ def paired_ttest(req: PairedTTestRequest):
     d = x1 - x2
     n = len(d)
 
+    # Every pair changing by the same amount leaves the difference with no
+    # variance, and a t has nowhere to come from. This used to be handled by
+    # capping an infinite t at +/-9999 and setting p to 0 — a statistic the
+    # data never produced, reported as an overwhelming result. Testing
+    # isfinite alone does not catch it either: on large values the subtraction
+    # loses bits, the spread comes out as a few ulps instead of zero, and
+    # SciPy returns a finite t of 8.6e12 with p = 0.
+    degenerate = paired_contrast_is_degenerate(x1, x2)
     t_stat, p = sp.ttest_rel(x1, x2)
-    if np.isnan(p) or np.isnan(t_stat):
+    degenerate_note = None
+    if degenerate:
+        if abs(float(d.mean())) <= 1e-12 * max(
+            float(np.max(np.abs(x1))), float(np.max(np.abs(x2))), 1.0
+        ):
+            # Identical columns. "No difference" is a real, reportable answer.
+            t_stat, p = 0.0, 1.0
+        else:
+            t_stat, p = None, None
+            degenerate_note = (
+                f"Every pair changed by the same amount "
+                f"({float(d.mean()):.6g}), so the difference carries no "
+                "variance and a paired t-test has nothing to estimate. The "
+                "change itself is reported below."
+            )
+    elif np.isnan(p) or np.isnan(t_stat):
         p = 1.0
         t_stat = 0.0
-    if np.isinf(t_stat):
-        t_stat = float(np.sign(t_stat)) * 9999.0  # cap for JSON serialization
-        p = 0.0
-    sig = bool(p < req.alpha)
+    sig = bool(p is not None and p < req.alpha)
     es = cohen_d_paired(d)
     norm = check_normality(d, "Differences")
 
     mean_diff = float(d.mean())
     sd_diff = float(d.std(ddof=1))
-    ps = _p_str(p)
+    ps = _p_str(p) if p is not None else "\u2014"
+
+    t_disp = f"{t_stat:.3f}" if t_stat is not None else "—"
+    warn_list = (
+        ["Differences are not normally distributed — consider Wilcoxon signed-rank test."]
+        if not norm["met"] else []
+    )
+    if degenerate_note:
+        warn_list = [degenerate_note] + warn_list
 
     return sanitize_nonfinite({
         "test": "Paired-samples t-test",
-        "t": round(float(t_stat), 4), "df": n - 1, "p": float(p),
+        "t": round(float(t_stat), 4) if t_stat is not None else None,
+        "df": n - 1,
+        "p": float(p) if p is not None else None,
         "significant": sig,
         "effect_sizes": [es],
         "assumptions": [norm],
-        "warnings": ["Differences are not normally distributed — consider Wilcoxon signed-rank test."] if not norm["met"] else [],
+        "warnings": warn_list,
         "summary": {
             req.col1: group_summary(x1, req.col1),
             req.col2: group_summary(x2, req.col2),
             "differences": {"n": n, "mean": round(mean_diff, 4), "sd": round(sd_diff, 4)},
         },
-        "interpretation": f"{'Significant' if sig else 'No significant'} difference between {req.col1} and {req.col2} (t({n-1}) = {t_stat:.3f}, p = {ps}, d_z = {es['value']:.3f} [{es['magnitude']}])",
+        "interpretation": (
+            degenerate_note if degenerate_note else
+            f"{'Significant' if sig else 'No significant'} difference between {req.col1} and {req.col2} (t({n-1}) = {t_disp}, p = {ps}, d_z = {es['value']:.3f} [{es['magnitude']}])"
+        ),
         "result_text": (
             f"A paired-samples t-test compared {req.col1} (M = {x1.mean():.2f}, SD = {x1.std(ddof=1):.2f}) "
             f"and {req.col2} (M = {x2.mean():.2f}, SD = {x2.std(ddof=1):.2f}). "
             f"{'There was a significant difference' if sig else 'There was no significant difference'} "
-            f"(t({n-1}) = {t_stat:.3f}, p = {ps}). The mean difference was {mean_diff:.3f} (SD = {sd_diff:.3f}), "
+            f"(t({n-1}) = {t_disp}, p = {ps}). The mean difference was {mean_diff:.3f} (SD = {sd_diff:.3f}), "
             f"with a {es['magnitude']} effect size (Cohen's d_z = {es['value']:.3f}, 95% CI [{es['ci_low']:.3f}, {es['ci_high']:.3f}])."
         ),
         "export_rows": [
             ["Statistic", "Value"],
-            ["t", round(float(t_stat), 4)],
+            ["t", round(float(t_stat), 4) if t_stat is not None else "—"],
             ["df", n - 1],
-            ["p", round(float(p), 6)],
+            ["p", round(float(p), 6) if p is not None else "—"],
             ["Mean difference", round(mean_diff, 4)],
             ["SD of differences", round(sd_diff, 4)],
             ["Cohen's d_z", es["value"]],
@@ -126,6 +159,16 @@ def wilcoxon_signed_rank(req: WilcoxonSRRequest):
     if len(nonzero) < 3:
         raise HTTPException(400, "Too few non-zero differences for Wilcoxon test.")
 
+    # SciPy picks the exact distribution for small samples without ties and
+    # the normal approximation otherwise; zero differences are dropped
+    # (Wilcoxon's own rule). None of that used to be reported, so a p that
+    # differs from R's wilcox.text on tied data had no explanation attached.
+    n_zero = int((d == 0).sum())
+    _, tie_counts = np.unique(np.abs(nonzero), return_counts=True)
+    n_ties = int((tie_counts > 1).sum())
+    p_method = (
+        "exact" if (len(nonzero) <= 25 and n_ties == 0) else "normal approximation"
+    )
     w_stat, p = sp.wilcoxon(x1, x2, alternative="two-sided")
     sig = bool(p < req.alpha)
     # The two-sided SciPy statistic is min(W+, W-), which carries no
@@ -143,7 +186,20 @@ def wilcoxon_signed_rank(req: WilcoxonSRRequest):
         "W": round(float(w_stat), 4), "p": float(p), "n_nonzero": len(nonzero),
         "significant": sig,
         "effect_sizes": [es],
-        "assumptions": [],
+        "p_method": p_method,
+        "n_zero_differences": n_zero,
+        "n_tied_ranks": n_ties,
+        "assumptions": [
+            {"name": "Zero differences", "met": True,
+             "detail": (f"{n_zero} pair(s) showed no change and were dropped, "
+                        "as Wilcoxon's rule requires." if n_zero else
+                        "No pair showed exactly zero change.")},
+            {"name": "Ties", "met": n_ties == 0,
+             "detail": (f"{n_ties} group(s) of tied absolute differences; the "
+                        "p-value uses the normal approximation, which can "
+                        "differ from an exact method." if n_ties else
+                        f"No tied absolute differences; p from the {p_method}.")},
+        ],
         "summary": {
             req.col1: group_summary(x1, req.col1),
             req.col2: group_summary(x2, req.col2),
@@ -348,27 +404,35 @@ def rm_anova(req: RMAnovaRequest):
                 common = g1.index.intersection(g2.index)
                 if len(common) < 3:
                     continue
-                t, pv = sp.ttest_rel(g1.loc[common].values, g2.loc[common].values)
-                # A pair whose differences are all identical has zero variance,
-                # so SciPy returns t = inf. That single value used to make the
-                # entire response unserialisable and the global handler turned
-                # it into a 400 — the valid omnibus result went with it. Report
-                # the pair with its difference and say why there is no t.
+                v1 = g1.loc[common].values
+                v2 = g2.loc[common].values
+                # A pair whose differences are all identical has no variance,
+                # so SciPy returns t = inf — one value that used to make the
+                # entire response unserialisable, turning a valid omnibus
+                # result into a 400. Testing isfinite is not enough on its
+                # own: when the values are large, subtracting them loses bits
+                # and the spread comes out as a few ulps rather than exactly
+                # zero, so SciPy returns a FINITE t (8.6e12 on values of order
+                # 1e6) with p = 0 and the pair is reported as significant. The
+                # spread is judged against the size of the numbers instead.
+                degenerate = paired_contrast_is_degenerate(v1, v2)
+                t, pv = sp.ttest_rel(v1, v2)
                 row = {
                     "group1": str(levels[i]), "group2": str(levels[j]),
                     "mean_diff": round(float(g1.loc[common].mean() - g2.loc[common].mean()), 4),
                 }
-                if np.isfinite(t) and np.isfinite(pv):
+                if not degenerate and np.isfinite(t) and np.isfinite(pv):
                     row["statistic"] = round(float(t), 4)
-                    row["p"] = round(float(pv), 6)
+                    # Not rounded to 6 dp: a p of 1e-40 would print as 0.0.
+                    row["p"] = float(pv)
                     raw_ps.append(float(pv))
                 else:
                     row["statistic"] = None
                     row["p"] = None
                     row["note"] = (
-                        "Every subject changed by the same amount between these "
-                        "two levels, so the difference has no variance and a "
-                        "paired t cannot be computed."
+                        "Every subject changed by effectively the same amount "
+                        "between these two levels, so the difference carries no "
+                        "variance and a paired t cannot be computed."
                     )
                 posthoc.append(row)
         if raw_ps:

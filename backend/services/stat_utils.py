@@ -54,6 +54,37 @@ def sanitize_nonfinite(obj):
     return obj
 
 
+def paired_contrast_is_degenerate(
+    x1: np.ndarray, x2: np.ndarray, rel_tol: float = 1e-12
+) -> bool:
+    """True when a paired difference has no usable variance.
+
+    Checking only for a zero standard deviation is not enough. When every
+    subject changes by the same amount but the values are large, subtracting
+    them loses bits, and the difference gets a spread of a few ulps instead of
+    exactly zero. SciPy then returns a finite t — 8.6e12 on values of order
+    1e6 — with p = 0, so the response is HTTP 200 and the pair is reported as
+    significant. The statistic is arithmetic noise.
+
+    The spread is therefore judged against the magnitude of the numbers being
+    differenced, not against zero.
+    """
+    a = np.asarray(x1, dtype=float)
+    b = np.asarray(x2, dtype=float)
+    d = a - b
+    if d.size < 2:
+        return True
+    spread = float(np.std(d, ddof=1))
+    if not np.isfinite(spread):
+        return True
+    scale = max(
+        float(np.max(np.abs(a))) if a.size else 0.0,
+        float(np.max(np.abs(b))) if b.size else 0.0,
+        1.0,
+    )
+    return spread <= rel_tol * scale
+
+
 def sphericity(values: np.ndarray) -> dict:
     """Mauchly's test and the Greenhouse-Geisser / Huynh-Feldt epsilons.
 
@@ -145,8 +176,14 @@ def looks_continuous(s: pd.Series, min_levels: int = 10) -> bool:
 MAX_TEST_CATEGORIES = 20
 
 
+# Resample count for the Fisher-Freeman-Halton Monte Carlo p. Fixed, and
+# named in the reported test so the p is reproducible and its granularity
+# (1 / (N + 1)) is visible.
+FFH_RESAMPLES = 5000
+
+
 def _fisher_freeman_halton_mc(
-    observed: np.ndarray, n_resamples: int = 5000, seed: int = 42
+    observed: np.ndarray, n_resamples: int = FFH_RESAMPLES, seed: int = 42
 ) -> float:
     """Monte Carlo p-value for r×c independence via Fisher-Freeman-Halton.
 
@@ -229,7 +266,10 @@ def _categorical_p_with_rule(ct: np.ndarray) -> tuple[Optional[float], str]:
         if obs.shape == (2, 2):
             _, p_fisher = sp.fisher_exact(obs)
             return float(p_fisher), "Fisher"
-        return _fisher_freeman_halton_mc(obs), "Fisher-Freeman-Halton (MC)"
+        p_mc = _fisher_freeman_halton_mc(obs)
+        # A Monte Carlo p carries its own sampling error; naming the resample
+        # count lets the reader judge how far it can move.
+        return p_mc, f"Fisher-Freeman-Halton (MC, {FFH_RESAMPLES} resamples)"
     return float(p_chi), "Chi-square"
 
 
@@ -378,8 +418,10 @@ def cohen_d(g1: np.ndarray, g2: np.ndarray) -> dict:
     n1, n2 = len(g1), len(g2)
     m1, m2 = g1.mean(), g2.mean()
     s1, s2 = g1.std(ddof=1), g2.std(ddof=1)
-    sp = np.sqrt(((n1 - 1) * s1**2 + (n2 - 1) * s2**2) / (n1 + n2 - 2))
-    if sp == 0:
+    # Not `sp` — that name is scipy.stats at module level, and shadowing it
+    # here broke the t quantile below.
+    s_pooled = np.sqrt(((n1 - 1) * s1**2 + (n2 - 1) * s2**2) / (n1 + n2 - 2))
+    if s_pooled == 0:
         return {
             "name": "cohen_d",
             "value": 0.0,
@@ -387,18 +429,24 @@ def cohen_d(g1: np.ndarray, g2: np.ndarray) -> dict:
             "ci_high": 0.0,
             "magnitude": "negligible",
         }
-    d = (m1 - m2) / sp
+    d = (m1 - m2) / s_pooled
     # Hedges' correction for small samples
     j = 1 - 3 / (4 * (n1 + n2 - 2) - 1)
     g = d * j
-    # CI via non-central t approximation
-    se = (
-        np.sqrt(n1 + n2)
-        / np.sqrt(n1 * n2)
-        * np.sqrt(1 + g**2 * n1 * n2 / (2 * (n1 + n2)))
-    )
-    ci_lo = g - 1.96 * se
-    ci_hi = g + 1.96 * se
+    # Large-sample standard error of a two-sample d (Hedges & Olkin):
+    #     sqrt((n1 + n2) / (n1 * n2) + g^2 / (2 * (n1 + n2)))
+    #
+    # The expression here used to be
+    #     sqrt((n1+n2)/(n1*n2)) * sqrt(1 + g^2 * n1 * n2 / (2 * (n1+n2)))
+    # which multiplies out to sqrt((n1+n2)/(n1*n2) + g^2 / 2) — the second
+    # term missing its (n1 + n2) divisor. At n = 100 per arm that is 5.5x too
+    # wide, so a g of 1.17 carried a 95% CI of [-0.48, 2.81] next to a p of
+    # 1.6e-14: an interval spanning zero beside overwhelming significance.
+    se = np.sqrt((n1 + n2) / (n1 * n2) + g**2 / (2 * (n1 + n2)))
+    # t rather than 1.96 — with small groups the normal quantile is too short.
+    crit = float(sp.t.ppf(0.975, max(n1 + n2 - 2, 1)))
+    ci_lo = g - crit * se
+    ci_hi = g + crit * se
     return {
         "name": "hedges_g",
         "value": round(g, 4),
@@ -508,8 +556,9 @@ def cohen_d_one_sample(x: np.ndarray, mu: float) -> dict:
     n = len(x)
     d = (x.mean() - mu) / x.std(ddof=1) if x.std(ddof=1) > 0 else 0
     se = np.sqrt(1 / n + d**2 / (2 * n))
-    ci_lo = d - 1.96 * se
-    ci_hi = d + 1.96 * se
+    crit = float(sp.t.ppf(0.975, max(n - 1, 1)))
+    ci_lo = d - crit * se
+    ci_hi = d + crit * se
     return {
         "name": "cohen_d",
         "value": round(d, 4),
@@ -922,8 +971,9 @@ def cohen_d_paired(d: np.ndarray) -> dict:
         }
     dz = float(d.mean()) / sd
     se = np.sqrt(1 / n + dz**2 / (2 * n))
-    ci_lo = dz - 1.96 * se
-    ci_hi = dz + 1.96 * se
+    crit = float(sp.t.ppf(0.975, max(n - 1, 1)))
+    ci_lo = dz - crit * se
+    ci_hi = dz + crit * se
     return {
         "name": "cohen_d_z",
         "value": round(dz, 4),

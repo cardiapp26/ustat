@@ -854,6 +854,7 @@ def table1(req: Table1Request):
             p_value_str: Optional[str] = None
             test_name_str: Optional[str] = None
             significant = False
+            p_raw: Optional[float] = None
             # A parametric test needs a variance in each group. With one
             # observation in a group scipy returns nan, which used to be
             # printed as an em dash beside a confident "t-test (Welch)" label.
@@ -897,6 +898,7 @@ def table1(req: Table1Request):
                             _, p_t = scipy_stats.kruskal(*group_arrs)
                             test_name_str = "Kruskal-Wallis"
                     p_value_str = _fmt_p(float(p_t))
+                    p_raw = float(p_t)
                     significant = bool(float(p_t) < 0.05)
                 except Exception:
                     logger.exception("Table 1 statistical test failed")
@@ -929,6 +931,10 @@ def table1(req: Table1Request):
             row: dict = {
                 "variable": var,
                 "type": "numeric",
+                # The formatted p is for the table; the raw one is for anyone
+                # comparing against another tool or pooling for meta-analysis.
+                # Only the rounded string used to be returned.
+                "p_raw": p_raw,
                 "overall_n": int(len(s_all)),
                 "normal": normal,
                 "normality_test": norm_test_name,
@@ -1033,8 +1039,18 @@ def table1(req: Table1Request):
 
                         p1_vec = np.array([(g1_s == c).mean() for c in all_cats[:-1]])
                         p2_vec = np.array([(g2_s == c).mean() for c in all_cats[:-1]])
-                        s1 = np.diag(p1_vec * (1 - p1_vec))
-                        s2 = np.diag(p2_vec * (1 - p2_vec))
+
+                        # Multinomial covariance: diag(p) - p p'. The
+                        # off-diagonal -p_i p_j terms were missing, so the
+                        # categories were treated as if they varied
+                        # independently when in fact they are constrained to
+                        # sum to 1. That biases the Mahalanobis distance the
+                        # SMD is built from.
+                        def _multinomial_cov(pv: np.ndarray) -> np.ndarray:
+                            return np.diag(pv) - np.outer(pv, pv)
+
+                        s1 = _multinomial_cov(p1_vec)
+                        s2 = _multinomial_cov(p2_vec)
                         s_pool = (s1 + s2) / 2
                         diff = p1_vec - p2_vec
                         det = np.linalg.det(s_pool)
@@ -1065,6 +1081,7 @@ def table1(req: Table1Request):
             row = {
                 "variable": var,
                 "type": "categorical",
+                "p_raw": float(p_chi_raw) if p_chi_raw is not None else None,
                 "stat_label": "n (%)",
                 "overall": f"n={total_all}",
                 "overall_n": int(total_all),

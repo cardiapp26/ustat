@@ -468,5 +468,7 @@ def test_categorical_p_with_rule_falls_back_to_ffh_for_rxC():
     # 3x3 table with a small expected cell -> Fisher-Freeman-Halton MC.
     ct = np.array([[0, 8, 12], [1, 10, 9], [2, 7, 11]])
     p, test_name = su._categorical_p_with_rule(ct)
-    assert test_name == "Fisher-Freeman-Halton (MC)"
+    assert test_name.startswith("Fisher-Freeman-Halton (MC")
+    # The resample count is named so the p's granularity is visible.
+    assert "5000 resamples" in test_name
     assert 0.0 < p <= 1.0

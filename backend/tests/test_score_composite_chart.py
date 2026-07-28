@@ -137,5 +137,5 @@ def test_score_composite_small_cell_rxC_uses_fisher_freeman_halton(client):
     assert "Fisher-Freeman-Halton" in body["method_note"]
     comp_rows = body["scores"][0]["components"]
     assert len(comp_rows) == 1
-    assert comp_rows[0]["test"] == "Fisher-Freeman-Halton (MC)"
+    assert comp_rows[0]["test"].startswith("Fisher-Freeman-Halton (MC")
     assert comp_rows[0]["p_value"] is not None

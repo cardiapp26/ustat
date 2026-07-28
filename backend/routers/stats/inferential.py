@@ -277,7 +277,26 @@ def anova(req: AnovaRequest):
     if len(group_arrays) < 2:
         raise HTTPException(status_code=400, detail="Need at least 2 groups")
 
-    stat, p = scipy_stats.f_oneway(*group_arrays)
+    # Levene decides the omnibus, the same way it decides Student vs Welch in
+    # the two-group case. This used to be the classic equal-variance F no
+    # matter what, with only the post-hoc switching to Games-Howell: under
+    # unequal variances and unequal group sizes that F is not valid, and the
+    # user was handed a robust post-hoc hanging off a non-robust omnibus.
+    levene = check_equal_variances(
+        group_arrays, group_names,
+        on_violation="omnibus switched to Welch's ANOVA; post-hoc uses Games-Howell",
+    )
+    use_welch = not levene["met"]
+    if use_welch:
+        from statsmodels.stats.oneway import anova_oneway
+        welch = anova_oneway(group_arrays, use_var="unequal")
+        stat, p = float(welch.statistic), float(welch.pvalue)
+        welch_df_den = float(welch.df[1])
+        omnibus_name = "Welch's ANOVA (unequal variances)"
+    else:
+        stat, p = scipy_stats.f_oneway(*group_arrays)
+        welch_df_den = None
+        omnibus_name = "One-way ANOVA"
     sig = bool(p < 0.05)
     k = len(group_arrays)
     n_total = sum(len(g) for g in group_arrays)
@@ -290,13 +309,7 @@ def anova(req: AnovaRequest):
     es_eta = eta_squared(float(stat), df_between, df_within)
     es_omega = omega_squared(float(stat), df_between, df_within, ms_within)
 
-    # Assumption checks
-    # The omnibus F below is scipy's classic equal-variance f_oneway; only the
-    # post-hoc switches to Games-Howell. Say exactly that.
-    assumptions = [check_equal_variances(
-        group_arrays, group_names,
-        on_violation="omnibus F is not Welch-corrected; post-hoc uses Games-Howell",
-    )]
+    assumptions = [levene]
     for name, arr in grp_dict.items():
         assumptions.append(check_normality(arr, name))
 
@@ -313,11 +326,17 @@ def anova(req: AnovaRequest):
             posthoc_method = "Games-Howell (unequal variances)"
 
     p_str = '<0.001' if p < 0.001 else f'{p:.4f}'
+    df_den_report = welch_df_den if welch_df_den is not None else df_within
     group_stats = df.groupby(req.group_column)[req.column].agg(["count", "mean", "std"]).reset_index()
+    # Welch's F carries fractional denominator degrees of freedom; reporting
+    # it against the pooled within-groups df would understate the tail.
+    df_den_report = welch_df_den if welch_df_den is not None else float(df_within)
     ret = {
-        "test": "One-way ANOVA",
+        "test": omnibus_name,
         "F": float(stat), "p": float(p),
         "df_between": df_between, "df_within": df_within,
+        "df_denominator": round(df_den_report, 3),
+        "variance_assumption": "welch" if use_welch else "equal",
         "significant": sig,
         "effect_sizes": [es_eta, es_omega],
         "assumptions": assumptions,
@@ -327,7 +346,11 @@ def anova(req: AnovaRequest):
             {k: (float(v) if isinstance(v, (int, float)) else str(v)) for k, v in row.items()}
             for row in group_stats.to_dict(orient="records")
         ],
-        "interpretation": f"{'Significant' if sig else 'No significant'} difference across groups (F({df_between},{df_within}) = {stat:.2f}, p = {p_str}, η² = {es_eta['value']:.3f} [{es_eta['magnitude']}])",
+        "interpretation": (
+            f"{'Significant' if sig else 'No significant'} difference across groups "
+            f"({omnibus_name}: F({df_between},{df_den_report:.4g}) = {stat:.2f}, "
+            f"p = {p_str}, \u03B7\u00B2 = {es_eta['value']:.3f} [{es_eta['magnitude']}])"
+        ),
         "methods_text": methods_anova(req.column, req.group_column),
         "r_code": r_anova(req.column, req.group_column),
     }
@@ -620,7 +643,10 @@ def noninferiority(req: NonInferiorityRequest):
         "bound": req.bound,
         "alpha_one_sided": req.alpha,
         "non_inferior": bool(non_inferior),
-        "p_noninferiority": round(p_ni, 6),
+        # Not rounded to 6 dp: a decisive non-inferiority p of 1.5e-14 printed
+        # as 0.0, which reads as an impossible certainty rather than a very
+        # small number.
+        "p_noninferiority": float(p_ni),
         # The statistic behind the p, so the CI rule and the p can be checked
         # against each other rather than taken on trust.
         "statistic": round(float(z), 5),
@@ -646,7 +672,7 @@ def noninferiority(req: NonInferiorityRequest):
             ["Bound tested", req.bound],
             ["One-sided alpha", req.alpha],
             ["Non-inferior", "Yes" if non_inferior else "No"],
-            ["p (non-inferiority)", round(p_ni, 6)],
+            ["p (non-inferiority)", "<0.000001" if 0 < p_ni < 1e-6 else round(p_ni, 6)],
         ],
         "r_code": (
             "# Non-inferiority: one-sided alpha = "

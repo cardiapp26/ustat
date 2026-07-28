@@ -99,13 +99,19 @@ def test_pooled_path_reports_pooled_df():
     assert body["df"] == pytest.approx(len(g0) + len(g1) - 2)
 
 
-def test_anova_does_not_claim_a_welch_omnibus():
+def test_anova_switches_the_omnibus_when_levene_fails():
+    """This used to assert the opposite — that the omnibus stayed the classic
+    equal-variance F and said so. Disclosing the limitation was honest, but a
+    robust Games-Howell post-hoc hanging off a non-robust omnibus is still the
+    wrong test, so Levene now decides the omnibus as well."""
     from fastapi.testclient import TestClient
     from main import app
+    from statsmodels.stats.oneway import anova_oneway
 
     rng = np.random.default_rng(SEED + 2)
+    groups = [rng.normal(10, 1, 60), rng.normal(11, 5, 60), rng.normal(12, 12, 60)]
     frame = pd.DataFrame({
-        "y": np.concatenate([rng.normal(10, 1, 60), rng.normal(11, 5, 60), rng.normal(12, 12, 60)]),
+        "y": np.concatenate(groups),
         "g": ["A"] * 60 + ["B"] * 60 + ["C"] * 60,
     })
     sid = make_session(frame, "anova_levene_session")
@@ -113,10 +119,38 @@ def test_anova_does_not_claim_a_welch_omnibus():
         "session_id": sid, "column": "y", "group_column": "g",
     })
     assert r.status_code == 200, r.text
-    levene = next(a for a in r.json()["assumptions"] if "Levene" in a["name"])
+    out = r.json()
+    levene = next(a for a in out["assumptions"] if "Levene" in a["name"])
     assert levene["met"] is False
-    assert "Welch correction applied" not in levene["detail"]
-    assert "not Welch-corrected" in levene["detail"]
+    assert out["variance_assumption"] == "welch"
+    assert "Welch" in out["test"]
+
+    expected = anova_oneway(groups, use_var="unequal")
+    assert out["F"] == pytest.approx(float(expected.statistic), rel=1e-9)
+    assert out["p"] == pytest.approx(float(expected.pvalue), rel=1e-9)
+    # Welch's denominator df is fractional and smaller than the pooled n - k.
+    assert out["df_denominator"] < out["df_within"]
+
+
+def test_anova_keeps_the_classic_f_when_variances_are_equal():
+    from fastapi.testclient import TestClient
+    from main import app
+    from scipy import stats as sp
+
+    rng = np.random.default_rng(SEED + 3)
+    groups = [rng.normal(10, 2, 50), rng.normal(11, 2, 50), rng.normal(12, 2, 50)]
+    frame = pd.DataFrame({
+        "y": np.concatenate(groups),
+        "g": ["A"] * 50 + ["B"] * 50 + ["C"] * 50,
+    })
+    sid = make_session(frame, "anova_equalvar_session")
+    r = TestClient(app).post("/api/stats/anova", json={
+        "session_id": sid, "column": "y", "group_column": "g",
+    })
+    out = r.json()
+    assert out["variance_assumption"] == "equal"
+    assert out["test"] == "One-way ANOVA"
+    assert out["F"] == pytest.approx(float(sp.f_oneway(*groups).statistic), rel=1e-9)
 
 
 def test_ttest_still_states_welch_was_applied(welch_result):
