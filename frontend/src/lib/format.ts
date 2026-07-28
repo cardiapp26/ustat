@@ -68,3 +68,43 @@ export function fmtPubPHtml(p: number | null | undefined): string {
   const s = fmtPubP(p);
   return s === "—" ? s : s.replace(/^p/, "<i>p</i>");
 }
+
+/**
+ * Reduce a backend warning to text that React can render.
+ *
+ * Warnings are not one shape. Some endpoints emit plain strings, others emit
+ * a record — `{type, message, …}` from the chart endpoints, or
+ * `{variable, rare_levels, kept_levels, note}` from the category-health
+ * helpers. A panel that assumed strings and rendered the value directly
+ * crashed the whole tab with React error #31 ("objects are not valid as a
+ * React child"), taking the results with it.
+ *
+ * Everything goes through here so a warning can never cost the user their
+ * output. An unrecognised shape degrades to something readable rather than
+ * throwing.
+ */
+export function warningText(w: unknown): string {
+  if (w == null) return "";
+  if (typeof w === "string") return w;
+  if (typeof w === "number" || typeof w === "boolean") return String(w);
+  if (Array.isArray(w)) return w.map(warningText).filter(Boolean).join(" · ");
+  if (typeof w === "object") {
+    const rec = w as Record<string, unknown>;
+    // The prose fields, in the order a reader would want them.
+    for (const key of ["message", "note", "detail", "text", "warning"]) {
+      const v = rec[key];
+      if (typeof v === "string" && v.trim()) return v.trim();
+    }
+    // No prose: build something legible instead of dumping [object Object].
+    const parts = Object.entries(rec)
+      .filter(([, v]) => v != null && typeof v !== "object")
+      .map(([k, v]) => `${k}: ${String(v)}`);
+    if (parts.length) return parts.join(", ");
+    try {
+      return JSON.stringify(w);
+    } catch {
+      return "Unrecognised warning";
+    }
+  }
+  return String(w);
+}

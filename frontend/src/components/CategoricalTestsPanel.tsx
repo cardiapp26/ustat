@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useStore, isNumericKind, isCategoricalKind, type Session } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
 import { runBinomial, runOneProportion, runTwoProportions, runMcNemar, runCochranQ, runMantelHaenszel, runCochranArmitage } from "../api";
-import { fmtP } from "../lib/format";
+import { fmtP, warningText } from "../lib/format";
 // ResultExporter available via ResultCard pattern
 
 /** True when a stat-grid key holds a p-value (route through the canonical fmtP). */
@@ -54,7 +54,7 @@ interface CategoricalResult {
   posthoc?: PostHocRow[];
   posthoc_method?: string;
   r_code?: string;
-  warnings?: string[];
+  warnings?: unknown[];
   [key: string]: unknown;
 }
 
@@ -75,7 +75,7 @@ function ResultCard({ result }: { result: CategoricalResult }) {
         <div className="space-y-1">
           {(result.warnings ?? []).map((w, i) => (
             <p key={i} className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-800 leading-relaxed">
-              ⚠ {w}
+              ⚠ {warningText(w)}
             </p>
           ))}
         </div>

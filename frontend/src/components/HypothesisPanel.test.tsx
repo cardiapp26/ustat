@@ -83,4 +83,44 @@ describe('HypothesisPanel', () => {
       expect(screen.getByText('Column contains no valid numeric data')).toBeInTheDocument(),
     )
   })
+
+  it('renders an object warning instead of crashing the tab', async () => {
+    // Reported from production: /api/stats/chisquare mixes plain strings with
+    // rare-level dicts in one `warnings` list. Rendering the dict directly
+    // threw React error #31 and the error boundary swallowed the whole Tests
+    // tab, results included.
+    installSession()
+    server.use(
+      http.post('/api/stats/ttest', () =>
+        HttpResponse.json({
+          test: 'One-sample t-test',
+          interpretation: 'Significant.',
+          significant: true,
+          statistic: 2.5,
+          p: 0.03,
+          warnings: [
+            {
+              variable: 'cp',
+              rare_levels: [{ level: 'rare_one', n: 2 }],
+              kept_levels: [{ level: 'typical', n: 120 }],
+              note: "'cp' has 1 category(ies) with <10 rows.",
+            },
+            'Some expected cell counts < 5. Consider Fisher\'s exact test instead.',
+          ],
+        }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<HypothesisPanel />)
+    await user.click(screen.getByRole('button', { name: /run test/i }))
+
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'One-sample t-test' })).toBeInTheDocument(),
+    )
+    expect(screen.getByText(/has 1 category\(ies\) with <10 rows/)).toBeInTheDocument()
+    expect(screen.getByText(/expected cell counts < 5/)).toBeInTheDocument()
+    // The result itself must still be on screen.
+    expect(screen.getByText('Significant.')).toBeInTheDocument()
+  })
 })

@@ -11,7 +11,7 @@ import TitledPlot from "./TitledPlot";
 import IntervalCensoredPanel from "./IntervalCensoredPanel";
 import { Tip } from "./Tip";
 import ThreeCol from "./ThreeCol";
-import { fmtP, fmtPubP } from "../lib/format";
+import { fmtP, fmtPubP, warningText } from "../lib/format";
 import type { PlotData, PlotLayout, PlotCaptureHandle, PlotRef } from "../lib/plotTypes";
 
 // ── Loose result shapes for the survival API responses ────────────────────────
@@ -191,7 +191,7 @@ interface FrailtyResult extends ResultBlockData {
   frailty_variance_test?: FrailtyVarianceTest;
   concordance?: number | null;
   log_likelihood?: number | null;
-  warnings?: string[];
+  warnings?: unknown[];
   method_note?: string;
 }
 
@@ -232,7 +232,7 @@ interface DynamicPredictionResult extends ResultBlockData {
   microsimulation?: Record<string, unknown>;
   model_type?: string;
   note?: string;
-  warnings?: string[];
+  warnings?: unknown[];
 }
 
 interface EValueResult extends ResultBlockData {
@@ -1763,7 +1763,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
               {frailtyResult?.warnings && frailtyResult.warnings.length > 0 && (
                 <div className="mt-2 space-y-1">
                   {frailtyResult.warnings.map((w, i) => (
-                    <div key={i} className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">{w}</div>
+                    <div key={i} className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">{warningText(w)}</div>
                   ))}
                 </div>
               )}

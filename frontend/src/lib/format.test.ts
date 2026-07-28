@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fmtP, fmtPFull, fmtPubP, fmtPubPHtml, pCellTitle } from './format'
+import { fmtP, fmtPFull, fmtPubP, fmtPubPHtml, pCellTitle, warningText } from './format'
 
 describe('fmtP', () => {
   it('returns em-dash for null/undefined', () => {
@@ -74,5 +74,42 @@ describe('fmtPubPHtml', () => {
   it('wraps the leading "p" in <i> for Plotly text', () => {
     expect(fmtPubPHtml(0.035)).toBe('<i>p</i>=0.035')
     expect(fmtPubPHtml(0.0001)).toBe('<i>p</i><0.001')
+  })
+})
+
+describe('warningText', () => {
+  it('passes a plain string through', () => {
+    expect(warningText('Levene p = 0.03')).toBe('Levene p = 0.03')
+  })
+
+  it('renders the category-health object that crashed the Tests tab', () => {
+    // React error #31: this exact shape reached a panel that rendered it
+    // directly and took the whole tab down with it.
+    const w = {
+      variable: 'cp',
+      rare_levels: [{ level: 'x', n: 1 }],
+      kept_levels: [{ level: 'A', n: 200 }],
+      note: "'cp' has 1 category(ies) with <10 rows.",
+    }
+    expect(warningText(w)).toBe("'cp' has 1 category(ies) with <10 rows.")
+  })
+
+  it('prefers message over note', () => {
+    expect(warningText({ message: 'first', note: 'second' })).toBe('first')
+  })
+
+  it('summarises an object that carries no prose', () => {
+    expect(warningText({ n_dropped: 3, type: 'log_axis' })).toBe('n_dropped: 3, type: log_axis')
+  })
+
+  it('joins a list of warnings', () => {
+    expect(warningText(['a', { note: 'b' }])).toBe('a · b')
+  })
+
+  it('never throws on odd input', () => {
+    expect(warningText(null)).toBe('')
+    expect(warningText(undefined)).toBe('')
+    expect(warningText(42)).toBe('42')
+    expect(typeof warningText({ nested: { deep: 1 } })).toBe('string')
   })
 })

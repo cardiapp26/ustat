@@ -1,4 +1,5 @@
 import { useState, useRef, type ReactNode } from "react";
+import { warningText } from "../lib/format";
 import { useStore, isNumericKind } from "../store";
 import { usePlotLayout, usePalette } from "../plotStyle";
 import { runRandomForest, runGradientBoosting, runMLSurvivalBenchmark } from "../api";
@@ -164,7 +165,7 @@ interface SurvivalMLResult {
     winner_by_ibs?: string | null;
   };
   assumptions?: string[];
-  warnings?: string[];
+  warnings?: unknown[];
   result_text?: string;
   note?: string;
 }
@@ -514,7 +515,7 @@ export default function MLPanel() {
                     <ul className="space-y-1">
                       {survWarnings.map((w, i) => (
                         <li key={i} className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-[11px] text-amber-900 leading-snug">
-                          {w}
+                          {warningText(w)}
                         </li>
                       ))}
                     </ul>

@@ -3,7 +3,7 @@ import { useStore, isNumericKind, isCategoricalKind, type Session } from "../sto
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
 import { runTTest, runChiSquare, runAnova, runMannWhitney, runFisher, runKruskal, runAncova, runTwoWayAnova, runJonckheereTerpstra, runMancova } from "../api";
 import ResultExporter from "./ResultExporter";
-import { fmtP } from "../lib/format";
+import { fmtP, warningText } from "../lib/format";
 
 /** True when a stat-grid key holds a p-value (route through the canonical fmtP). */
 function isPKey(k: string): boolean {
@@ -110,7 +110,7 @@ interface TestResult {
   result_text?: string;
   effect_sizes?: EffectSize[];
   assumptions?: AssumptionCheck[];
-  warnings?: string[];
+  warnings?: unknown[];
   posthoc?: PostHocRow[];
   posthoc_method?: string;
   groups?: Record<string, unknown>[];
@@ -204,9 +204,9 @@ function ResultCard({ result }: { result: TestResult }) {
       {/* Warnings */}
       {(result.warnings?.length ?? 0) > 0 && (
         <div className="mt-2 space-y-1">
-          {(result.warnings ?? []).map((w: string, i: number) => (
+          {(result.warnings ?? []).map((w, i) => (
             <div key={i} className="flex items-center gap-2 text-xs px-3 py-1 rounded-lg bg-amber-50 text-amber-800">
-              <span>⚠</span> {w}
+              <span>⚠</span> {warningText(w)}
             </div>
           ))}
         </div>

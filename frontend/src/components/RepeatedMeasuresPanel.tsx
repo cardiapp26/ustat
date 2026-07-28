@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useStore, isNumericKind, type Session } from "../store";
 import { runPairedTTest, runWilcoxonSR, runFriedman, runRMAnova, runMixedAnova } from "../api";
 import ResultExporter from "./ResultExporter";
-import { fmtP } from "../lib/format";
+import { fmtP, warningText } from "../lib/format";
 
 const RM_TESTS = [
   { id: "paired_ttest",   label: "Paired t-test",        group: "Parametric" },
@@ -79,7 +79,7 @@ interface RMResult {
   significant?: boolean;
   effect_sizes?: EffectSize[];
   assumptions?: AssumptionCheck[];
-  warnings?: string[];
+  warnings?: unknown[];
   posthoc?: PostHocRow[];
   posthoc_method?: string;
   export_rows?: (string | number | null | undefined)[][];
@@ -165,8 +165,8 @@ function ResultCard({ result }: { result: RMResult }) {
       )}
 
       {/* Warnings */}
-      {(result.warnings?.length ?? 0) > 0 && (result.warnings ?? []).map((w: string, i: number) => (
-        <div key={i} className="text-xs px-3 py-1 rounded-lg bg-amber-50 text-amber-800">\u26A0 {w}</div>
+      {(result.warnings?.length ?? 0) > 0 && (result.warnings ?? []).map((w, i) => (
+        <div key={i} className="text-xs px-3 py-1 rounded-lg bg-amber-50 text-amber-800">\u26A0 {warningText(w)}</div>
       ))}
 
       {/* Result text */}
