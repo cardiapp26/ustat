@@ -5,10 +5,29 @@ import { BookOpen, X } from "lucide-react";
 import { useStore } from "../store";
 import type { ColMeta, Session } from "../store";
 import api from "../api";
-import { renameColumn } from "../api";
+import { renameColumn, getColumnBadges } from "../api";
 import DataDictionaryPanel from "./DataDictionaryPanel";
 
 // ── Kind cycling ───────────────────────────────────────────────────────────────
+
+interface ColumnBadge {
+  n_missing: number;
+  pct_missing: number;
+  min?: number;
+  max?: number;
+  n_valid?: number;
+}
+
+/** Keep a range badge to a few characters — the header has no room for
+ *  full precision, and the exact bounds are in the tooltip. */
+function fmtRange(v: number): string {
+  if (!Number.isFinite(v)) return "—";
+  if (Number.isInteger(v)) return String(v);
+  const abs = Math.abs(v);
+  if (abs >= 1000 || abs < 0.01) return v.toExponential(1);
+  // Drop trailing zeros so a range does not read "8.10–217.9".
+  return String(Number(v.toFixed(abs >= 10 ? 1 : 2)));
+}
 
 const KIND_CYCLE: ColMeta["kind"][] = ["numeric", "categorical", "ordinal", "text", "date"];
 
@@ -366,6 +385,28 @@ function DataTableBody({ session }: { session: Session }) {
   );
 
   // Per-column missing counts (computed once over full preview)
+  // Per-column facts computed by the server over the whole dataframe. The
+  // grid's own `preview` stops at 2000 rows, so anything derived from it
+  // describes the top of the file rather than the column.
+  const dataVersion = useStore((s) => s.dataVersion);
+  const [columnBadges, setColumnBadges] = useState<Record<string, ColumnBadge>>({});
+  const [badgeRows, setBadgeRows] = useState(0);
+  useEffect(() => {
+    const sid = session?.session_id;
+    if (!sid) { setColumnBadges({}); setBadgeRows(0); return; }
+    let cancelled = false;
+    getColumnBadges(sid)
+      .then((res) => {
+        if (cancelled) return;
+        setColumnBadges(res.data?.columns ?? {});
+        setBadgeRows(Number(res.data?.n_rows ?? 0));
+      })
+      // Non-fatal: the header falls back to preview-derived counts and simply
+      // shows no range.
+      .catch(() => { if (!cancelled) { setColumnBadges({}); setBadgeRows(0); } });
+    return () => { cancelled = true; };
+  }, [session?.session_id, dataVersion]);
+
   const missingCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const col of columns) {
@@ -1697,7 +1738,14 @@ function DataTableBody({ session }: { session: Session }) {
               </th>
               {columns.map((col, colIdx) => {
                 const isSorted = sortCol === col.name;
-                const nMissing = missingCounts[col.name] ?? 0;
+                const serverBadge = columnBadges[col.name];
+                // Server counts cover the whole frame; the preview-derived
+                // count is the fallback until that request lands.
+                const nMissing = serverBadge?.n_missing ?? missingCounts[col.name] ?? 0;
+                const range =
+                  serverBadge && serverBadge.min != null && serverBadge.max != null
+                    ? { min: serverBadge.min, max: serverBadge.max, n_valid: serverBadge.n_valid ?? 0 }
+                    : null;
                 const isDragOver = dropIdx === colIdx && dragIdx !== colIdx;
                 const frozen = isFrozenCol(colIdx);
                 const draggable = !frozen && renameCol !== col.name;
@@ -1824,24 +1872,39 @@ function DataTableBody({ session }: { session: Session }) {
                           {isSorted ? (sortDir === "asc" ? "▲" : "▼") : "⇅"}
                         </button>
                       </div>
-                      {nMissing > 0 && (() => {
-                        const pct = preview.length ? (nMissing / preview.length) * 100 : 0;
-                        const pctLabel = pct >= 10 ? pct.toFixed(0) : pct.toFixed(1);
-                        return (
-                          <div className="flex justify-start">
-                            <button
-                              onClick={() => {
-                                setShowMissingOnly(true);
-                                setFilters((prev) => ({ ...prev, [col.name]: "" }));
-                              }}
-                              title={`${nMissing} missing values (${pctLabel}% of ${preview.length} rows) — click to filter`}
-                              className="flex-shrink-0 text-[8px] font-semibold px-1 py-0.5 rounded bg-amber-100 text-amber-700 border border-amber-300 hover:bg-amber-200 transition-colors"
+                      {(nMissing > 0 || range) && (
+                        <div className="flex justify-start items-center gap-1 flex-wrap">
+                          {nMissing > 0 && (() => {
+                            // Denominator: the server counts over the whole
+                            // frame; preview is capped at 2000 rows, so falling
+                            // back to it would state a percentage of the top of
+                            // the file as if it described the column.
+                            const denom = badgeRows || preview.length;
+                            const pct = denom ? (nMissing / denom) * 100 : 0;
+                            const pctLabel = pct >= 10 ? pct.toFixed(0) : pct.toFixed(1);
+                            return (
+                              <button
+                                onClick={() => {
+                                  setShowMissingOnly(true);
+                                  setFilters((prev) => ({ ...prev, [col.name]: "" }));
+                                }}
+                                title={`${nMissing} missing values (${pctLabel}% of ${denom} rows) — click to filter`}
+                                className="flex-shrink-0 text-[8px] font-semibold px-1 py-0.5 rounded bg-amber-100 text-amber-700 border border-amber-300 hover:bg-amber-200 transition-colors"
+                              >
+                                {nMissing}✕ · {pctLabel}%
+                              </button>
+                            );
+                          })()}
+                          {range && (
+                            <span
+                              title={`Range across all ${badgeRows} rows: minimum ${range.min}, maximum ${range.max} (${range.n_valid} values; blanks and implausible placeholders excluded)`}
+                              className="flex-shrink-0 text-[8px] font-semibold px-1 py-0.5 rounded bg-sky-100 text-sky-700 border border-sky-300"
                             >
-                              {nMissing}✕ · {pctLabel}%
-                            </button>
-                          </div>
-                        );
-                      })()}
+                              {fmtRange(range.min)}–{fmtRange(range.max)}
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </th>
                 );

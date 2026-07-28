@@ -107,6 +107,9 @@ export const runIPTW          = (data: object) => api.post("/api/models/iptw", d
 export const getSparklines = (sessionId: string) =>
   api.get(`/api/stats/${sessionId}/sparklines`);
 
+export const getColumnBadges = (sessionId: string) =>
+  api.get(`/api/stats/${sessionId}/column_badges`);
+
 export const getRawColumns = (sessionId: string, columns: string[]) =>
   api.get(`/api/stats/${sessionId}/raw`, { params: { columns: columns.join(",") } });
 

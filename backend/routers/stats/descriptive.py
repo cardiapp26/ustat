@@ -11,7 +11,11 @@ from loguru import logger
 
 from services import store
 from services.category_health import clean_two_level
-from services.dirty_value_guard import coerce_numeric
+from services.dirty_value_guard import (
+    coerce_numeric,
+    flag_sentinels,
+    plausibility_max_for_column,
+)
 from services.stat_utils import sorted_groups, _categorical_p_with_rule
 from services.impute import apply_imputation, missing_info
 
@@ -218,6 +222,48 @@ def frequency(session_id: str, column: Optional[str] = None):
 
 
 # ── 4. Sparklines ──────────────────────────────────────────────────────────────
+
+
+@router.get("/{session_id}/column_badges")
+def get_column_badges(session_id: str):
+    """Per-column facts for the grid header: missing count and value range.
+
+    Computed over the whole dataframe. The grid's own `preview` is capped at
+    2000 rows by the upload endpoint, so anything counted there describes the
+    top of the file rather than the column, which is exactly the kind of
+    number a header badge is read as being about the column.
+
+    Range is returned only for numeric columns; min and max of a category
+    label is an artefact of alphabetical order, not a fact about the data.
+    """
+    df = _get_df(session_id, allow_missing=True)
+    if df is None:
+        return {"n_rows": 0, "columns": {}}
+
+    n_rows = int(len(df))
+    out: dict = {}
+    for col in df.columns:
+        max_plausible = plausibility_max_for_column(col)
+        raw_missing = df[col].isna()
+        implausible = flag_sentinels(df[col], max_plausible)
+        n_missing = int((raw_missing | implausible).sum())
+        entry: dict = {
+            "n_missing": n_missing,
+            "pct_missing": round(n_missing / n_rows * 100, 1) if n_rows else 0.0,
+        }
+        # Sentinels (999, -99 …) are excluded from the range for the same
+        # reason they count as missing: a max of 999 for a heart rate is the
+        # placeholder, not the largest observation.
+        s = df[col][~(raw_missing | implausible)]
+        if pd.api.types.is_numeric_dtype(df[col]) and len(s) > 0:
+            s = pd.to_numeric(s, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+            if len(s) > 0:
+                entry["min"] = float(s.min())
+                entry["max"] = float(s.max())
+                entry["n_valid"] = int(len(s))
+        out[col] = entry
+
+    return {"n_rows": n_rows, "columns": out}
 
 
 @router.get("/{session_id}/sparklines")
