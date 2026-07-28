@@ -1,0 +1,176 @@
+{
+  "area": "table1",
+  "n_pass": 15,
+  "n_fail": 0,
+  "findings": [
+    {
+      "test": "table1 HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'group_column': 'group', 'group_labels': ['A', 'B'], 'group_ns': {'A': 98, 'B': 102}, 'total_n': 200, 'warnings': [\"'education': the test uses 192 of 200 rows; the rest are missing the variable or the grouping column.\", \"'smoking': the test uses 190 of 200 rows; the rest are missing the variable or"
+    },
+    {
+      "test": "table1 tum degiskenler icin satir var",
+      "status": "PASS",
+      "detail": "rows=15 vars=15"
+    },
+    {
+      "test": "table1 score p'si t-test veya MW ile eslesiyor",
+      "status": "PASS",
+      "detail": "table1_p=0.0005 t_p=0.00056 mw_p=0.00118 -> t-test"
+    },
+    {
+      "test": "table1 kullanilan test adi raporlanmis",
+      "status": "PASS",
+      "detail": "test=t-test"
+    },
+    {
+      "test": "table1 sex p'si chi2 veya Fisher ile eslesiyor",
+      "status": "PASS",
+      "detail": "table1_p=0.322 chi2_p=0.32210 fisher_p=0.32211"
+    },
+    {
+      "test": "table1 SMD raporlaniyor",
+      "status": "PASS",
+      "detail": "smd_rows=15"
+    },
+    {
+      "test": "table1 eksiklik bilgisi var",
+      "status": "PASS",
+      "detail": "missing_rows=10 expected=10"
+    },
+    {
+      "test": "table1 grupsuz HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'group_column': None, 'group_labels': [], 'group_ns': {}, 'total_n': 200, 'warnings': [], 'rows': [{'variable': 'age', 'type': 'numeric', 'p_raw': None, 'overall_n': 200, 'normal': True, 'normality_t"
+    },
+    {
+      "test": "pub_tables format HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'title': 'Table 1. Baseline Clinical Characteristics by group', 'columns': ['Variable', 'A (n=98)', 'B (n=102)', 'p-value'], 'rows': [{'label': 'age, years, Mean ± SD', 'values': ['55.3 ± 9.9', '55.1"
+    },
+    {
+      "test": "pub_tables eksiklik satirlarini koruyor",
+      "status": "PASS",
+      "detail": "missing_rows=1"
+    },
+    {
+      "test": "pub_tables export xlsx HTTP200",
+      "status": "PASS",
+      "detail": "status=200"
+    },
+    {
+      "test": "pub_tables xlsx icerik boyutu >1KB",
+      "status": "PASS",
+      "detail": "bytes=5662"
+    },
+    {
+      "test": "pub_tables export docx HTTP200",
+      "status": "PASS",
+      "detail": "status=200"
+    },
+    {
+      "test": "weighted_descriptive HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'test': 'Weighted descriptive statistics', 'weight_col': 'w', 'n': 190, 'results': [{'column': 'age', 'n': 190, 'sum_weights': 237.9197, 'ess_kish': 171.66, 'w_mean': 55.404345, 'w_sd': 10.638633, 'w"
+    },
+    {
+      "test": "weighted mean dogru",
+      "status": "PASS",
+      "detail": "api=55.404345 ref=55.4043"
+    }
+  ],
+  "reference": {
+    "table1_score": {
+      "p_ttest": 0.0005604314014586583,
+      "p_mw": 0.0011829233914561268,
+      "meanA": 52.73382978723405,
+      "meanB": 57.82728260869566,
+      "sdA": 9.238912926136798,
+      "sdB": 10.51474078868902
+    }
+  },
+  "api_summary": {
+    "table1_keys": [
+      "group_column",
+      "group_labels",
+      "group_ns",
+      "total_n",
+      "warnings",
+      "rows"
+    ],
+    "n_rows": 15,
+    "table1_score_row": {
+      "variable": "score",
+      "type": "numeric",
+      "p_raw": 0.0005604314014586583,
+      "overall_n": 186,
+      "normal": true,
+      "normality_test": "Kolmogorov-Smirnov (Lilliefors)",
+      "normality_p": 0.1471,
+      "normality_mode": "overall",
+      "per_group_normality": {},
+      "stat_rows": [
+        {
+          "label": "Mean ± SD",
+          "overall": "55.25 ± 10.19",
+          "group_stats": {
+            "A": "52.73 ± 9.24",
+            "B": "57.83 ± 10.51"
+          }
+        }
+      ],
+      "missing_row": {
+        "label": "Missing n (%)",
+        "overall": "14 (7.0%)",
+        "group_stats": {
+          "A": "4 (4.1%)",
+          "B": "10 (9.8%)"
+        }
+      },
+      "p_value": "<0.001",
+      "test": "t-test",
+      "significant": true,
+      "smd": 0.5146,
+      "stat_label": "Mean ± SD",
+      "overall": "55.25 ± 10.19",
+      "group_stats": {
+        "A": "52.73 ± 9.24",
+        "B": "57.83 ± 10.51"
+      }
+    },
+    "table1_sex_row": {
+      "variable": "sex",
+      "type": "categorical",
+      "p_raw": 0.32210200812889284,
+      "stat_label": "n (%)",
+      "overall": "n=200",
+      "overall_n": 200,
+      "p_value": "0.322",
+      "test": "Chi-square",
+      "significant": false,
+      "sub_rows": [
+        {
+          "category": "Female",
+          "overall": "100 (50.0%)",
+          "group_stats": {
+            "A": "53 (54.1%)",
+            "B": "47 (46.1%)"
+          }
+        },
+        {
+          "category": "Male",
+          "overall": "100 (50.0%)",
+          "group_stats": {
+            "A": "45 (45.9%)",
+            "B": "55 (53.9%)"
+          }
+        }
+      ],
+      "missing_row": null,
+      "group_stats": {},
+      "stat_rows": [],
+      "smd": 0.1606
+    },
+    "export_xlsx_bytes": 5662
+  }
+}

@@ -47,6 +47,8 @@ def test_roc_lower_returns_one_minus_auc_and_swapped_ci_bounds(client) -> None:
     h = hi.json()
     lo_d = lo.json()
 
+    assert h["direction_requested"] == "higher"
+    assert lo_d["direction_requested"] == "lower"
     assert h["direction_used"] == "higher"
     assert lo_d["direction_used"] == "lower"
     assert h["direction_flipped"] is False
@@ -59,6 +61,31 @@ def test_roc_lower_returns_one_minus_auc_and_swapped_ci_bounds(client) -> None:
     # Confidence-interval bounds are swapped.
     assert lo_d["ci_lower"] == pytest.approx(1.0 - h["ci_upper"], abs=1e-6)
     assert lo_d["ci_upper"] == pytest.approx(1.0 - h["ci_lower"], abs=1e-6)
+
+
+def test_roc_auto_direction_reports_the_flip(client) -> None:
+    """Auto direction exposes both the request and the resolved direction."""
+    rng = np.random.default_rng(20260709)
+    df = _make_roc_df(rng)
+    df["score"] = -df["score"]
+    sid = make_session(df, "roc_dir_auto_flip")
+
+    r = client.post(
+        BASE,
+        json={
+            "session_id": sid,
+            "score_column": "score",
+            "outcome_column": "event",
+            "direction": "auto",
+        },
+    )
+
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["direction_requested"] == "auto"
+    assert d["direction_used"] == "lower"
+    assert d["direction_flipped"] is True
+    assert d["auc"] > 0.5
 
 
 def test_roc_direction_invalid_rejected(client) -> None:

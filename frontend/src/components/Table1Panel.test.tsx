@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -132,6 +132,47 @@ describe('Table1Panel', () => {
     // SMD column header + value rendered
     expect(screen.getByText('SMD')).toBeInTheDocument()
     expect(screen.getByText('0.350')).toBeInTheDocument()
+  })
+
+  it('renders and exports variable-level missing rows from the API contract', async () => {
+    installSession()
+    server.use(
+      http.post('/api/stats/table1', () =>
+        HttpResponse.json({
+          ...T1_RESULT_GROUPED,
+          rows: T1_RESULT_GROUPED.rows.map((row) => ({
+            ...row,
+            missing_row: row.variable === 'AGE'
+              ? {
+                  label: 'Missing n (%)',
+                  overall: '1 (33.3%)',
+                  group_stats: { A: '1 (50.0%)', B: '0 (0.0%)' },
+                }
+              : {
+                  label: 'Missing n (%)',
+                  overall: '1 (33.3%)',
+                  group_stats: { A: '0 (0.0%)', B: '1 (100.0%)' },
+                },
+          })),
+        }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<Table1Panel />)
+    await user.selectOptions(screen.getByRole('combobox'), 'GROUP')
+    await user.click(screen.getByRole('button', { name: /generate table/i }))
+
+    const ageMissing = await screen.findByTestId('missing-row-AGE')
+    expect(within(ageMissing).getByText('Missing n (%)')).toBeInTheDocument()
+    expect(within(ageMissing).getByText('1 (50.0%)')).toBeInTheDocument()
+    expect(screen.getAllByText('Missing n (%)')).toHaveLength(2)
+
+    await user.click(screen.getByTitle(/copy table to clipboard/i))
+    await waitFor(async () => {
+      const exported = await navigator.clipboard.readText()
+      expect(exported).toContain('Missing n (%)\t1 (33.3%)\t1 (50.0%)\t0 (0.0%)')
+    })
   })
 
   it('shows the backend error message on failure', async () => {

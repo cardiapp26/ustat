@@ -379,6 +379,24 @@ def format_table1_for_journal(result: dict, options: dict = None) -> dict:
                         "bold": False,
                     })
 
+        missing_row = row.get("missing_row")
+        if missing_row:
+            if has_groups:
+                missing_groups = missing_row.get("group_stats", {})
+                missing_values = [
+                    str(missing_groups.get(group, "")) for group in group_labels
+                ]
+            else:
+                missing_values = [str(missing_row.get("overall", ""))]
+            formatted_rows.append({
+                "label": missing_row.get("label", "Missing n (%)"),
+                "values": missing_values,
+                "p_value": "",
+                "test_symbol": "",
+                "indent": 1,
+                "bold": False,
+            })
+
     # Detect abbreviations
     abbreviations = _find_abbreviations(all_text)
 

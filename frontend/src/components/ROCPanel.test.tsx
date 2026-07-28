@@ -114,6 +114,37 @@ describe('ROCPanel', () => {
     await waitFor(() => expect(screen.getByText('Score column has no variance')).toBeInTheDocument())
   })
 
+  it('Single curve tab: visibly reports when auto direction flips', async () => {
+    installSession(rocSession())
+    mockNoMissing()
+    server.use(
+      http.post('/api/stats/roc', () =>
+        HttpResponse.json({
+          auc: 0.79,
+          ci_lower: 0.66,
+          ci_upper: 0.9,
+          curve,
+          direction_requested: 'auto',
+          direction_used: 'lower',
+          direction_flipped: true,
+          n: 3,
+          n_positive: 2,
+          n_negative: 1,
+        }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<ROCPanel />)
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Run ROC' })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: 'Run ROC' }))
+
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      'Auto direction flipped to lower = event: low values of SCORE1 predict the event',
+    )
+  })
+
   it('Compare (DeLong) tab: runs comparison and renders the result', async () => {
     installSession(rocSession())
     mockNoMissing()
@@ -129,6 +160,8 @@ describe('ROCPanel', () => {
           significant: true,
           interpretation: 'SCORE1 significantly outperformed SCORE2 (DeLong p = 0.036).',
           curve_1: curve, curve_2: curve,
+          direction_1_requested: 'lower',
+          direction_1_flipped: true,
         }),
       ),
     )
@@ -146,6 +179,7 @@ describe('ROCPanel', () => {
     )
     expect(screen.getByText(/SCORE1 significantly outperformed SCORE2/)).toBeInTheDocument()
     expect(screen.getByText('0.820')).toBeInTheDocument()
+    expect(screen.queryByText(/auto-flipped direction/i)).not.toBeInTheDocument()
   })
 
   it('Multi-compare tab: runs multiple ROCs and the pairwise DeLong matrix', async () => {

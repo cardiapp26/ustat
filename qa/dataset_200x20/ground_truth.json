@@ -1,0 +1,83 @@
+{
+  "n_rows": 200,
+  "n_cols": 20,
+  "continuous": [
+    "age",
+    "bmi",
+    "sbp",
+    "cholesterol",
+    "glucose",
+    "score",
+    "biomarker",
+    "pre",
+    "post",
+    "time"
+  ],
+  "categorical": [
+    "event",
+    "sex",
+    "group",
+    "education",
+    "smoking",
+    "diabetes",
+    "hypertension",
+    "stage",
+    "center",
+    "response"
+  ],
+  "missing_frac": {
+    "bmi": 0.05,
+    "sbp": 0.09,
+    "cholesterol": 0.055,
+    "glucose": 0.03,
+    "score": 0.07,
+    "biomarker": 0.04,
+    "post": 0.06,
+    "education": 0.04,
+    "smoking": 0.05,
+    "stage": 0.03,
+    "response": 0.04
+  },
+  "relations": {
+    "score~group": {
+      "true_diff_B_minus_A": 5.0,
+      "expect": "significant"
+    },
+    "biomarker~group": {
+      "true_diff": 0.0,
+      "expect": "not significant"
+    },
+    "bmi~sex": {
+      "true_diff_M_minus_F": 3.0,
+      "expect": "significant"
+    },
+    "pre_post": {
+      "true_diff_pre_minus_post": 3.0,
+      "expect": "significant (paired)"
+    },
+    "glucose~diabetes": {
+      "true_diff": 22.0,
+      "expect": "significant"
+    },
+    "corr(age,sbp)": {
+      "expect": "positive significant"
+    },
+    "corr(age,cholesterol)": {
+      "expect": "positive significant"
+    },
+    "corr(bmi,glucose)": {
+      "expect": "positive"
+    },
+    "cox group HR": {
+      "true_HR_B_vs_A": 1.8,
+      "expect": "HR>1, likely significant"
+    },
+    "chi sex x group": {
+      "expect": "not significant (independent by design)"
+    },
+    "survival": {
+      "note": "time/event eksiksiz birakildi",
+      "event_rate": 0.805
+    }
+  }
+}

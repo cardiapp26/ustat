@@ -1,7 +1,146 @@
 """Tests for categorical endpoints."""
 import numpy as np
 import pandas as pd
+import pytest
 from conftest import make_session
+from routers.categorical import (
+    BinomialRequest,
+    CochranArmitageRequest,
+    MantelHaenszelRequest,
+    McnemarRequest,
+    OneProportionRequest,
+    TwoProportionsRequest,
+)
+
+
+@pytest.mark.parametrize(
+    ("model", "payload", "expected"),
+    [
+        (
+            BinomialRequest,
+            {"session_id": "s", "column": "x", "p": 0.4},
+            {"expected_proportion": 0.4},
+        ),
+        (
+            OneProportionRequest,
+            {"session_id": "s", "column": "x", "p0": 0.45},
+            {"null_proportion": 0.45},
+        ),
+        (
+            TwoProportionsRequest,
+            {"session_id": "s", "column": "x", "group_col": "group"},
+            {"group_column": "group"},
+        ),
+        (
+            McnemarRequest,
+            {"session_id": "s", "column1": "before", "column2": "after"},
+            {"col1": "before", "col2": "after"},
+        ),
+        (
+            MantelHaenszelRequest,
+            {
+                "session_id": "s",
+                "row_column": "row",
+                "col_column": "col",
+                "strata_column": "stratum",
+            },
+            {"row_col": "row", "col_col": "col", "strata_col": "stratum"},
+        ),
+        (
+            CochranArmitageRequest,
+            {
+                "session_id": "s",
+                "ordinal_column": "dose",
+                "event_column": "event",
+            },
+            {"ordinal_col": "dose", "event_col": "event"},
+        ),
+    ],
+)
+def test_categorical_request_models_accept_specific_legacy_aliases(
+    model, payload, expected
+):
+    request = model.model_validate(payload)
+    for field, value in expected.items():
+        assert getattr(request, field) == value
+
+
+@pytest.mark.parametrize(
+    ("model", "payload", "field", "canonical_value"),
+    [
+        (
+            BinomialRequest,
+            {
+                "session_id": "s",
+                "column": "x",
+                "expected_proportion": 0.3,
+                "p": 0.8,
+            },
+            "expected_proportion",
+            0.3,
+        ),
+        (
+            OneProportionRequest,
+            {
+                "session_id": "s",
+                "column": "x",
+                "null_proportion": 0.35,
+                "p0": 0.75,
+            },
+            "null_proportion",
+            0.35,
+        ),
+        (
+            TwoProportionsRequest,
+            {
+                "session_id": "s",
+                "column": "x",
+                "group_column": "canonical_group",
+                "group_col": "legacy_group",
+            },
+            "group_column",
+            "canonical_group",
+        ),
+        (
+            McnemarRequest,
+            {
+                "session_id": "s",
+                "col1": "canonical_before",
+                "column1": "legacy_before",
+                "col2": "after",
+            },
+            "col1",
+            "canonical_before",
+        ),
+        (
+            MantelHaenszelRequest,
+            {
+                "session_id": "s",
+                "row_col": "canonical_row",
+                "row_column": "legacy_row",
+                "col_col": "col",
+                "strata_col": "stratum",
+            },
+            "row_col",
+            "canonical_row",
+        ),
+        (
+            CochranArmitageRequest,
+            {
+                "session_id": "s",
+                "ordinal_col": "canonical_dose",
+                "ordinal_column": "legacy_dose",
+                "event_col": "event",
+            },
+            "ordinal_col",
+            "canonical_dose",
+        ),
+    ],
+)
+def test_categorical_request_canonical_fields_win_over_legacy_aliases(
+    model, payload, field, canonical_value
+):
+    assert getattr(model.model_validate(payload), field) == canonical_value
 
 
 def test_binomial_known(client):
@@ -88,3 +227,121 @@ def test_mantel_haenszel(client):
     d = r.json()
     assert "r_code" in d
     assert "result_text" in d
+
+
+def _stratified_frame(tables):
+    rows = []
+    for stratum, table in enumerate(tables):
+        for row_level in range(2):
+            for col_level in range(2):
+                rows.extend(
+                    {
+                        "row": row_level,
+                        "col": col_level,
+                        "stratum": stratum,
+                    }
+                    for _ in range(table[row_level][col_level])
+                )
+    return pd.DataFrame(rows)
+
+
+def test_mantel_haenszel_common_or_ci_respects_alpha(client):
+    tables = [
+        [[12, 8], [6, 14]],
+        [[15, 5], [10, 10]],
+    ]
+    sid = make_session(_stratified_frame(tables), "mh_ci_alpha")
+    r = client.post("/api/categorical/mantel_haenszel", json={
+        "session_id": sid,
+        "row_col": "row",
+        "col_col": "col",
+        "strata_col": "stratum",
+        "alpha": 0.1,
+    })
+
+    assert r.status_code == 200, r.text
+    d = r.json()
+    effect = d["effect_sizes"][0]
+    assert effect["value"] == pytest.approx(3.2449, abs=1e-4)
+    assert effect["ci_low"] == pytest.approx(1.4792, abs=1e-4)
+    assert effect["ci_high"] == pytest.approx(7.1181, abs=1e-4)
+    assert effect["ci_level"] == pytest.approx(0.9)
+    assert "90% CI [1.479–7.118]" in d["interpretation"]
+    exported = dict(d["export_rows"][1:])
+    assert exported["Common OR 90% CI lower"] == pytest.approx(1.4792, abs=1e-4)
+    assert exported["Common OR 90% CI upper"] == pytest.approx(7.1181, abs=1e-4)
+
+
+@pytest.mark.parametrize("alpha", [-0.1, 0, 1, 1.1])
+def test_mantel_haenszel_rejects_invalid_alpha(client, alpha):
+    tables = [
+        [[12, 8], [6, 14]],
+        [[15, 5], [10, 10]],
+    ]
+    sid = make_session(_stratified_frame(tables), f"mh_invalid_alpha_{alpha}")
+    response = client.post(
+        "/api/categorical/mantel_haenszel",
+        json={
+            "session_id": sid,
+            "row_col": "row",
+            "col_col": "col",
+            "strata_col": "stratum",
+            "alpha": alpha,
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_mantel_haenszel_rejects_nonfinite_alpha():
+    with pytest.raises(ValueError):
+        MantelHaenszelRequest.model_validate(
+            {
+                "session_id": "s",
+                "row_col": "row",
+                "col_col": "col",
+                "strata_col": "stratum",
+                "alpha": float("nan"),
+            }
+        )
+
+
+def test_mantel_haenszel_common_or_ci_handles_zero_cells(client):
+    tables = [
+        [[12, 8], [6, 14]],
+        [[10, 0], [10, 10]],
+    ]
+    sid = make_session(_stratified_frame(tables), "mh_ci_zero")
+    r = client.post("/api/categorical/mantel_haenszel", json={
+        "session_id": sid,
+        "row_col": "row",
+        "col_col": "col",
+        "strata_col": "stratum",
+    })
+
+    assert r.status_code == 200, r.text
+    effect = r.json()["effect_sizes"][0]
+    assert effect["value"] == pytest.approx(6.2778, abs=1e-4)
+    assert effect["ci_low"] == pytest.approx(1.8893, abs=1e-4)
+    assert effect["ci_high"] == pytest.approx(20.8599, abs=1e-4)
+
+
+def test_mantel_haenszel_nonfinite_common_or_and_ci_are_null(client):
+    tables = [
+        [[10, 0], [0, 10]],
+        [[10, 0], [0, 10]],
+    ]
+    sid = make_session(_stratified_frame(tables), "mh_ci_nonfinite")
+    r = client.post("/api/categorical/mantel_haenszel", json={
+        "session_id": sid,
+        "row_col": "row",
+        "col_col": "col",
+        "strata_col": "stratum",
+    })
+
+    assert r.status_code == 200, r.text
+    d = r.json()
+    effect = d["effect_sizes"][0]
+    assert effect["value"] is None
+    assert effect["ci_low"] is None
+    assert effect["ci_high"] is None
+    assert any("odds ratio is not finite" in warning for warning in d["warnings"])

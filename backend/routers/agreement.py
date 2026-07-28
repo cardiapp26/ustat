@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats as sp
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 
 from services import store
 from services.stat_utils import lins_ccc, group_summary
@@ -28,8 +28,8 @@ def _p_str(p: float) -> str:
 
 class BlandAltmanRequest(BaseModel):
     session_id: str
-    method1: str
-    method2: str
+    method1: str = Field(validation_alias=AliasChoices("method1", "column1"))
+    method2: str = Field(validation_alias=AliasChoices("method2", "column2"))
     alpha: float = 0.05
 
 
@@ -136,8 +136,8 @@ def bland_altman(req: BlandAltmanRequest):
 
 class DemingRequest(BaseModel):
     session_id: str
-    method1: str
-    method2: str
+    method1: str = Field(validation_alias=AliasChoices("method1", "column1"))
+    method2: str = Field(validation_alias=AliasChoices("method2", "column2"))
     error_ratio: float = 1.0
     alpha: float = 0.05
 
@@ -252,8 +252,8 @@ def deming_regression(req: DemingRequest):
 
 class PassingBablokRequest(BaseModel):
     session_id: str
-    method1: str
-    method2: str
+    method1: str = Field(validation_alias=AliasChoices("method1", "column1"))
+    method2: str = Field(validation_alias=AliasChoices("method2", "column2"))
     alpha: float = 0.05
 
 
@@ -352,8 +352,8 @@ def passing_bablok(req: PassingBablokRequest):
 
 class ConcordanceRequest(BaseModel):
     session_id: str
-    method1: str
-    method2: str
+    method1: str = Field(validation_alias=AliasChoices("method1", "column1"))
+    method2: str = Field(validation_alias=AliasChoices("method2", "column2"))
     alpha: float = 0.05
 
 

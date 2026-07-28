@@ -1,0 +1,79 @@
+{
+  "area": "categorical",
+  "n_pass": 14,
+  "n_fail": 0,
+  "findings": [
+    {
+      "test": "binomial HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'test': 'Binomial test', 'k': 87, 'n': 192, 'observed_proportion': 0.4531, 'expected_proportion': 0.5, 'p': 0.21977161105088086, 'significant': False, 'effect_sizes': [{'name': 'cohens_h', 'value': -"
+    },
+    {
+      "test": "binomial p scipy ile ayni",
+      "status": "PASS",
+      "detail": "api=0.21977161105088086 ref=0.21977"
+    },
+    {
+      "test": "one_proportion HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'test': 'One-sample proportion z-test', 'z': -1.3048, 'p': 0.19196617812139205, 'significant': False, 'effect_sizes': [{'name': 'cohens_h', 'value': -0.0939, 'ci_low': None, 'ci_high': None, 'magnitu"
+    },
+    {
+      "test": "two_proportions HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'test': 'Two-sample proportion z-test', 'z': 0.8563, 'p': 0.39182555522278684, 'significant': False, 'effect_sizes': [{'name': 'cohens_h', 'value': 0.1237, 'ci_low': None, 'ci_high': None, 'magnitude': 'negligible'}], 'assumptions': [], 'summary': {'A': {'n': 95, 'k': 46, 'proportion': 0.4842}, 'B'"
+    },
+    {
+      "test": "two_proportions p yakin",
+      "status": "PASS",
+      "detail": "api=0.39182555522278684 ref=0.39183"
+    },
+    {
+      "test": "mcnemar HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'test': \"McNemar's test\", 'statistic': 12.8929, 'p': 0.0003298385207779935, 'exact': False, 'significant': True, 'effect_sizes': [{'name': 'odds_ratio_discordant', 'value': 0.1667, 'ci_low': None, 'ci_high': None, 'magnitude': 'negligible'}], 'assumptions': [], 'contingency_table': {'a': 36, 'b': 4"
+    },
+    {
+      "test": "mcnemar p smodels ile yakin",
+      "status": "PASS",
+      "detail": "api=0.0003298385207779935 ref=0.00018 (exact vs chi2 yaklasimi farki olabilir)"
+    },
+    {
+      "test": "cochran_q HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'test': \"Cochran's Q test\", 'Q': 28.1085, 'df': 2, 'p': 7.876093915948346e-07, 'significant': True, 'effect_sizes': [{'name': 'kendalls_w', 'value': 0.0732, 'ci_low': None, 'ci_high': None, 'magnitude': 'medium'}], 'assumptions': [], 'posthoc': [{'group1': 'diabetes', 'group2': 'hypertension', 'p':"
+    },
+    {
+      "test": "cochran_q p smodels ile yakin",
+      "status": "PASS",
+      "detail": "api=7.876093915948346e-07 ref=0.00000"
+    },
+    {
+      "test": "mantel_haenszel HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'test': 'Cochran-Mantel-Haenszel test', 'statistic': 0.5416, 'p': 0.4617745227644009, 'significant': False, 'effect_sizes': [{'name': 'common_odds_ratio', 'value': 0.8047, 'ci_low': 0.4525, 'ci_high': 1.4313, 'ci_level': 0.95, 'magnitude': ''}], 'assumptions': [], 'summary': {'n_strata': 2, 'n_tota"
+    },
+    {
+      "test": "MH pooled OR smodels ile yakin",
+      "status": "PASS",
+      "detail": "api=0.8047 ref=0.8047 es=[{'name': 'common_odds_ratio', 'value': 0.8047, 'ci_low': 0.4525, 'ci_high': 1.4313, 'ci_level': 0.95, 'magnitude': ''}]"
+    },
+    {
+      "test": "MH pooled OR CI smodels ile yakin",
+      "status": "PASS",
+      "detail": "api={'name': 'common_odds_ratio', 'value': 0.8047, 'ci_low': 0.4525, 'ci_high': 1.4313, 'ci_level': 0.95, 'magnitude': ''} ref=[0.45246, 1.43133]"
+    },
+    {
+      "test": "MH p smodels ile yakin",
+      "status": "PASS",
+      "detail": "api=0.4617745227644009 ref=0.46177"
+    },
+    {
+      "test": "cochran_armitage HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'test': 'Cochran-Armitage trend test', 'z': 0.3513, 'statistic': 0.3513, 'p': 0.7253714926474308, 'significant': False, 'effect_sizes': [], 'warnings': [], 'level_order_source': 'caller-supplied leve"
+    }
+  ],
+  "reference": {},
+  "api_summary": {}
+}

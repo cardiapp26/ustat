@@ -42,6 +42,8 @@ interface ROCResult {
   optimal_cutoff?: number | null;
   sensitivity?: number | null;
   specificity?: number | null;
+  direction_requested?: "auto" | "higher" | "lower";
+  direction_used?: "higher" | "lower";
   direction_flipped?: boolean;
   result_text?: string;
   imputation?: string;
@@ -74,6 +76,8 @@ interface ROCCompareResult {
   interpretation: string;
   curve_1?: CurvePoint[];
   curve_2?: CurvePoint[];
+  direction_1_requested?: "auto" | "higher" | "lower";
+  direction_2_requested?: "auto" | "higher" | "lower";
   direction_1_flipped?: boolean;
   direction_2_flipped?: boolean;
 }
@@ -550,6 +554,9 @@ function ROCPanelBody({ session }: { session: Session }) {
     const rows: (string | number | null)[][] = [
       ["Score column", scoreCol],
       ["Outcome column", outcomeCol],
+      ["Direction requested", result.direction_requested ?? scoreDirection],
+      ["Direction used", result.direction_used ?? "—"],
+      ["Auto direction flipped", result.direction_requested === "auto" && result.direction_flipped ? "Yes" : "No"],
       ["n", result.n ?? "—"],
       ["Positives (1)", result.n_positive ?? "—"],
       ["Negatives (0)", result.n_negative ?? "—"],
@@ -591,7 +598,7 @@ function ROCPanelBody({ session }: { session: Session }) {
       rows.push([p.fpr.toFixed(6), p.tpr.toFixed(6)]);
     }
     return { headers, rows };
-  }, [result, scoreCol, outcomeCol]);
+  }, [result, scoreCol, outcomeCol, scoreDirection]);
 
   const multiExport = useMemo(() => {
     if (!multiResults.length) return null;
@@ -728,9 +735,9 @@ function ROCPanelBody({ session }: { session: Session }) {
                     </button>
                   ))}
                 </div>
-                {result?.direction_flipped && (
-                  <p className="text-[10px] text-emerald-700 mt-1">
-                    ⚙ Auto-flipped: low values of <span className="font-mono">{scoreCol}</span> predict the event (AUC describes the protective direction).
+                {result?.direction_requested === "auto" && result.direction_flipped && (
+                  <p role="status" className="text-[10px] text-emerald-700 mt-1">
+                    ⚙ Auto direction flipped to lower = event: low values of <span className="font-mono">{scoreCol}</span> predict the event (AUC describes the protective direction).
                   </p>
                 )}
               </div>
@@ -808,14 +815,18 @@ function ROCPanelBody({ session }: { session: Session }) {
                       ))}
                     </div>
                   </div>
-                  {(cmpResult?.direction_1_flipped || cmpResult?.direction_2_flipped) && (
+                  {(
+                    (cmpResult?.direction_1_requested === "auto" && cmpResult.direction_1_flipped)
+                    || (cmpResult?.direction_2_requested === "auto" && cmpResult.direction_2_flipped)
+                  ) && (
                     <div className="text-[10px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-2 py-1 leading-tight">
                       ⚙ DeLong recomputed with auto-flipped direction:
-                      {cmpResult.direction_1_flipped && (
+                      {cmpResult.direction_1_requested === "auto" && cmpResult.direction_1_flipped && (
                         <> <span className="font-mono">{scoreCol}</span> (lower = event)</>
                       )}
-                      {cmpResult.direction_1_flipped && cmpResult.direction_2_flipped && " · "}
-                      {cmpResult.direction_2_flipped && (
+                      {cmpResult.direction_1_requested === "auto" && cmpResult.direction_1_flipped
+                        && cmpResult.direction_2_requested === "auto" && cmpResult.direction_2_flipped && " · "}
+                      {cmpResult.direction_2_requested === "auto" && cmpResult.direction_2_flipped && (
                         <><span className="font-mono">{scoreCol2}</span> (lower = event)</>
                       )}
                     </div>

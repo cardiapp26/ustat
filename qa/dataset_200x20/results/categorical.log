@@ -1,0 +1,14 @@
+/Users/yh/Documents/projects/wiz3/.venv/lib/python3.10/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+  from starlette.testclient import TestClient as TestClient  # noqa
+[PASS] binomial HTTP200: status=200 {'test': 'Binomial test', 'k': 87, 'n': 192, 'observed_proportion': 0.4531, 'expected_proportion': 0.5, 'p': 0.21977161105088086, 'significant': False, 'effect_sizes': [
+[PASS] binomial p scipy ile ayni: api=0.21977161105088086 ref=0.21977
+[PASS] one_proportion HTTP200: status=200 {'test': 'One-sample proportion z-test', 'z': -1.3048, 'p': 0.19196617812139205, 'significant': False, 'effect_sizes': [{'name': 'cohens_h', 'value': -0.0939, 'ci_low': 
+[FAIL] two_proportions HTTP200: status=422 {'detail': [{'type': 'missing', 'loc': ['body', 'column'], 'msg': 'Field required', 'input': {'session_id': 'qa_session', 'outcome_column': 'response', 'group_column': '
+[PASS] mcnemar HTTP200: status=200 {'test': "McNemar's test", 'statistic': 12.8929, 'p': 0.0003298385207779935, 'exact': False, 'significant': True, 'effect_sizes': [{'name': 'odds_ratio_discordant', 'val
+[PASS] mcnemar p smodels ile yakin: api=0.0003298385207779935 ref=0.00018 (exact vs chi2 yaklasimi farki olabilir)
+[PASS] cochran_q HTTP200: status=200 {'test': "Cochran's Q test", 'Q': 28.1085, 'df': 2, 'p': 7.876093915948346e-07, 'significant': True, 'effect_sizes': [{'name': 'kendalls_w', 'value': 0.0732, 'ci_low': N
+[PASS] cochran_q p smodels ile yakin: api=7.876093915948346e-07 ref=0.00000
+[FAIL] mantel_haenszel HTTP200: status=422 {'detail': [{'type': 'missing', 'loc': ['body', 'row_col'], 'msg': 'Field required', 'input': {'session_id': 'qa_session_mh', 'row_column': 'response', 'col_column': 'gr
+[FAIL] cochran_armitage HTTP200: status=422 {'detail': [{'type': 'missing', 'loc': ['body', 'ordinal_col'], 'msg': 'Field required', 'input': {'session_id': 'qa_session', 'outcome_column': 'response', 'dose_column
+
+7 PASS / 3 FAIL

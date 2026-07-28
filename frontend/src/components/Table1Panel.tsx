@@ -52,6 +52,7 @@ interface T1Row {
   type: "numeric" | "categorical";
   overall_n: number;
   stat_rows?: StatRow[];
+  missing_row?: StatRow | null;
   stat_label?: string;
   overall?: string;
   p_value: string | null;
@@ -96,6 +97,45 @@ function pStars(p: string | null) {
   if (v < 0.01) return "**";
   if (v < 0.05) return "*";
   return "ns";
+}
+
+function MissingStatTableRow({
+  row,
+  groupLabels,
+  hasGroups,
+  showSMD,
+}: {
+  row: T1Row;
+  groupLabels: string[];
+  hasGroups: boolean;
+  showSMD: boolean;
+}) {
+  if (!row.missing_row) return null;
+  return (
+    <tr
+      data-testid={`missing-row-${row.variable}`}
+      className="border-t border-gray-100 bg-gray-50/40"
+    >
+      <td className="border-r border-gray-200" />
+      <td className="px-3 py-1.5 text-center text-xs font-medium text-gray-500 border-r border-gray-200">
+        {row.missing_row.label}
+      </td>
+      <td className="px-4 py-1.5 text-center text-gray-700 font-mono text-xs border-r border-gray-200">
+        {row.missing_row.overall}
+      </td>
+      {groupLabels.map((g) => (
+        <td
+          key={g}
+          className="px-4 py-1.5 text-center text-gray-700 font-mono text-xs border-r border-gray-200"
+        >
+          {row.missing_row?.group_stats[g] ?? "—"}
+        </td>
+      ))}
+      {hasGroups && <><td /><td /></>}
+      {hasGroups && showSMD && <td />}
+      <td />
+    </tr>
+  );
 }
 
 // ── Stats selector panel ──────────────────────────────────────────────────────
@@ -286,7 +326,14 @@ function Table1PanelBody({ session }: { session: Session }) {
           if (oldLabel in gs) { gs[trimmed] = gs[oldLabel]; delete gs[oldLabel]; }
           return { ...sr, group_stats: gs };
         });
-        return { ...row, group_stats, stat_rows, sub_rows };
+        const missing_row = row.missing_row
+          ? { ...row.missing_row, group_stats: { ...row.missing_row.group_stats } }
+          : row.missing_row;
+        if (missing_row && oldLabel in missing_row.group_stats) {
+          missing_row.group_stats[trimmed] = missing_row.group_stats[oldLabel];
+          delete missing_row.group_stats[oldLabel];
+        }
+        return { ...row, group_stats, stat_rows, sub_rows, missing_row };
       });
       setResult({ ...result, group_labels, group_ns, rows });
     }
@@ -414,6 +461,15 @@ function Table1PanelBody({ session }: { session: Session }) {
                 return { ...sr, group_stats: gs };
               });
             }
+
+            if (row.missing_row) {
+              const gs: Record<string, string> = {};
+              Object.entries(row.missing_row.group_stats).forEach(([g, val]) => {
+                const mapped = groupLabels[String(g)] ?? g;
+                gs[mapped] = val;
+              });
+              row.missing_row = { ...row.missing_row, group_stats: gs };
+            }
           }
           
           // Map sub-rows categories
@@ -484,6 +540,18 @@ function Table1PanelBody({ session }: { session: Session }) {
             ...gl.map((g: string) => sr.group_stats[g] ?? ""), "", "",
             ...(showSMD ? [""] : []), ""]);
         });
+      }
+      if (row.missing_row) {
+        rows.push([
+          "",
+          row.missing_row.label,
+          row.missing_row.overall,
+          ...gl.map((g: string) => row.missing_row?.group_stats[g] ?? ""),
+          "",
+          "",
+          ...(showSMD ? [""] : []),
+          "",
+        ]);
       }
     });
     return { headers, rows };
@@ -874,6 +942,12 @@ function Table1PanelBody({ session }: { session: Session }) {
                           </td>
                         </tr>
                       ))}
+                      <MissingStatTableRow
+                        row={row}
+                        groupLabels={result.group_labels}
+                        hasGroups={hasGroups}
+                        showSMD={showSMD}
+                      />
                       </React.Fragment>
                     ) : (
                       <React.Fragment key={`cat-${ri}`}>
@@ -960,6 +1034,12 @@ function Table1PanelBody({ session }: { session: Session }) {
                             <td />
                           </tr>
                         ))}
+                        <MissingStatTableRow
+                          row={row}
+                          groupLabels={result.group_labels}
+                          hasGroups={hasGroups}
+                          showSMD={showSMD}
+                        />
                       </React.Fragment>
                     )
                   )}

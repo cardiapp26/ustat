@@ -1,0 +1,54 @@
+{
+  "area": "agreement",
+  "n_pass": 9,
+  "n_fail": 0,
+  "findings": [
+    {
+      "test": "bland_altman HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'test': 'Bland-Altman analysis', 'statistic': 2.4188, 'p': 2.1336604113034e-06, 'significant': True, 'effect_sizes': [], 'assumptions': [], 'plot_data': {'means': [42.42, 66.16499999999999, 61.2, 61.055, 65.24, 70.795, 59.71, 73.88499999999999, 65.02, 71.75, 62.345, 70.85, 74.92, 57.465, 58.1500000"
+    },
+    {
+      "test": "BA bias dogru",
+      "status": "PASS",
+      "detail": "api=2.4188 ref=2.4188"
+    },
+    {
+      "test": "BA LoA dogru (±1.96 SD)",
+      "status": "PASS",
+      "detail": "api=(-9.3975,14.2351) ref=(-9.398,14.235)"
+    },
+    {
+      "test": "BA bias ~ +3 (tasarim)",
+      "status": "PASS",
+      "detail": "bias=2.419"
+    },
+    {
+      "test": "deming HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'test': 'Deming regression', 'statistic': 1.2985, 'p': None, 'significant': True, 'effect_sizes': [], 'assumptions': [], 'slope': 1.2985, 'intercept': -23.2956, 'se_slope': 0.0712, 'se_intercept': 4.9105, 'ci_slope': {'low': 1.159, 'high': 1.438}, 'ci_intercept': {'low': -32.9202, 'high': -13.6711}"
+    },
+    {
+      "test": "deming slope dogru",
+      "status": "PASS",
+      "detail": "api=1.2985 ref=1.2985"
+    },
+    {
+      "test": "passing_bablok HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'test': 'Passing-Bablok regression', 'statistic': 0.9989, 'p': None, 'significant': False, 'effect_sizes': [], 'assumptions': [{'name': 'Linearity (Cusum test)', 'met': True, 'detail': 'Cusum p = 0.8"
+    },
+    {
+      "test": "concordance HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'test': \"Lin's concordance correlation coefficient\", 'statistic': 0.7616, 'p': None, 'significant': None, 'effect_sizes': [{'name': 'lins_ccc', 'value': 0.7616, 'ci_low': 0.6942, 'ci_high': 0.8158, 'precision': 0.8053, 'accuracy': 0.9458, 'magnitude': 'large'}], 'assumptions': [], 'ccc': 0.7616, 'c"
+    },
+    {
+      "test": "CCC dogru",
+      "status": "PASS",
+      "detail": "api=0.7616 ref=0.7616"
+    }
+  ],
+  "reference": {},
+  "api_summary": {}
+}

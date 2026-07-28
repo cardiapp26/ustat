@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats as scipy_stats
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 
 from services import store
 from services.category_health import clean_two_level
@@ -64,7 +64,9 @@ def _two_level_work(
 class MannWhitneyRequest(BaseModel):
     session_id: str
     column: str
-    group_column: str
+    group_column: str = Field(
+        validation_alias=AliasChoices("group_column", "group_col"),
+    )
 
 
 @router.post("/mannwhitney")
@@ -116,7 +118,9 @@ def mannwhitney(req: MannWhitneyRequest):
 class KruskalRequest(BaseModel):
     session_id: str
     column: str
-    group_column: str
+    group_column: str = Field(
+        validation_alias=AliasChoices("group_column", "group_col"),
+    )
     posthoc_correction: Optional[str] = "holm"
 
 
@@ -211,7 +215,9 @@ def _ordinal_rank_map(levels: list) -> Optional[list]:
 class JonckheereRequest(BaseModel):
     session_id: str
     column: str
-    group_column: str
+    group_column: str = Field(
+        validation_alias=AliasChoices("group_column", "group_col"),
+    )
     scores: Optional[List[float]] = None
     alpha: float = 0.05
 
@@ -529,8 +535,12 @@ def _validate_roc_inputs(
 
 class ROCRequest(BaseModel):
     session_id: str
-    score_column: str
-    outcome_column: str
+    score_column: str = Field(
+        validation_alias=AliasChoices("score_column", "score_col"),
+    )
+    outcome_column: str = Field(
+        validation_alias=AliasChoices("outcome_column", "outcome_col"),
+    )
     direction: Optional[str] = "auto"
     manual_cutoff: Optional[float] = None
     imputation: Optional[str] = "listwise"
@@ -745,9 +755,15 @@ def _run_roc(req: ROCRequest, df_full: pd.DataFrame):
 
 class ROCCompareRequest(BaseModel):
     session_id: str
-    score_column_1: str
-    score_column_2: str
-    outcome_column: str
+    score_column_1: str = Field(
+        validation_alias=AliasChoices("score_column_1", "score_col_1"),
+    )
+    score_column_2: str = Field(
+        validation_alias=AliasChoices("score_column_2", "score_col_2"),
+    )
+    outcome_column: str = Field(
+        validation_alias=AliasChoices("outcome_column", "outcome_col"),
+    )
     direction_1: Optional[str] = "auto"
     direction_2: Optional[str] = "auto"
 
@@ -863,8 +879,12 @@ def _run_roc_compare(req: ROCCompareRequest, df_full: pd.DataFrame):
 
 class ROCMultiCompareRequest(BaseModel):
     session_id: str
-    score_columns: List[str]
-    outcome_column: str
+    score_columns: List[str] = Field(
+        validation_alias=AliasChoices("score_columns", "score_cols"),
+    )
+    outcome_column: str = Field(
+        validation_alias=AliasChoices("outcome_column", "outcome_col"),
+    )
     directions: Optional[List[str]] = None
     p_adjust: Optional[str] = "holm"
 
@@ -1054,8 +1074,12 @@ def _run_roc_multi_compare(req: ROCMultiCompareRequest, df_full: pd.DataFrame):
 
 class ROCCombinedRequest(BaseModel):
     session_id: str
-    predictor_columns: List[str]
-    outcome_column: str
+    predictor_columns: List[str] = Field(
+        validation_alias=AliasChoices("predictor_columns", "predictor_cols"),
+    )
+    outcome_column: str = Field(
+        validation_alias=AliasChoices("outcome_column", "outcome_col"),
+    )
     model_name: Optional[str] = "Combined Model"
 
 

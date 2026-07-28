@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats as sp
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 from typing import List, Optional
 
 from services import store
@@ -79,7 +79,10 @@ def _binary_success(col: pd.Series, name: str) -> tuple[int, str, list]:
 class BinomialRequest(BaseModel):
     session_id: str
     column: str
-    expected_proportion: float = 0.5
+    expected_proportion: float = Field(
+        default=0.5,
+        validation_alias=AliasChoices("expected_proportion", "p"),
+    )
     alpha: float = 0.05
 
 
@@ -155,7 +158,10 @@ def binomial_test(req: BinomialRequest):
 class OneProportionRequest(BaseModel):
     session_id: str
     column: str
-    null_proportion: float = 0.5
+    null_proportion: float = Field(
+        default=0.5,
+        validation_alias=AliasChoices("null_proportion", "p0"),
+    )
     alpha: float = 0.05
 
 
@@ -234,7 +240,9 @@ def one_proportion_ztest(req: OneProportionRequest):
 class TwoProportionsRequest(BaseModel):
     session_id: str
     column: str
-    group_column: str
+    group_column: str = Field(
+        validation_alias=AliasChoices("group_column", "group_col")
+    )
     alpha: float = 0.05
 
 
@@ -322,8 +330,8 @@ def two_proportions_ztest(req: TwoProportionsRequest):
 
 class McnemarRequest(BaseModel):
     session_id: str
-    col1: str
-    col2: str
+    col1: str = Field(validation_alias=AliasChoices("col1", "column1"))
+    col2: str = Field(validation_alias=AliasChoices("col2", "column2"))
     alpha: float = 0.05
 
 
@@ -576,10 +584,16 @@ def cochran_q_test(req: CochranQRequest):
 
 class MantelHaenszelRequest(BaseModel):
     session_id: str
-    row_col: str
-    col_col: str
-    strata_col: str
-    alpha: float = 0.05
+    row_col: str = Field(
+        validation_alias=AliasChoices("row_col", "row_column")
+    )
+    col_col: str = Field(
+        validation_alias=AliasChoices("col_col", "col_column")
+    )
+    strata_col: str = Field(
+        validation_alias=AliasChoices("strata_col", "strata_column")
+    )
+    alpha: float = Field(default=0.05, gt=0, lt=1)
 
 
 @router.post("/mantel_haenszel")
@@ -633,20 +647,29 @@ def mantel_haenszel_test(req: MantelHaenszelRequest):
     sig = bool(p < req.alpha)
     ps = _p_str(p)
 
-    # Common odds ratio. A stratum with a zero cell sends the pooled estimate
-    # to infinity, and one infinite number used to make the whole response
-    # unserialisable — the global handler turned it into a 400 and the valid
-    # CMH statistic and p-value went with it. Report the estimate as absent
-    # and name the strata responsible, rather than losing the test.
-    try:
-        common_or = float(st.oddsratio_pooled)
-    except Exception:
-        common_or = None
+    # Estimate the common odds ratio and its alpha-aware normal-approximation
+    # interval from the same StratifiedTable used for the CMH test. Zero cells
+    # can produce valid finite estimates, but complete separation can produce
+    # Inf/NaN; those boundary results must not sink the otherwise valid test.
+    common_or = None
+    or_ci_low = None
+    or_ci_high = None
+    with np.errstate(all="ignore"):
+        try:
+            common_or = float(st.oddsratio_pooled)
+        except Exception:
+            pass
+        try:
+            ci = st.oddsratio_pooled_confint(alpha=req.alpha)
+            or_ci_low, or_ci_high = (float(ci[0]), float(ci[1]))
+        except Exception:
+            pass
+
+    zero_cell = [
+        info["stratum"] for info, tab in zip(stratum_info, tables)
+        if float(np.asarray(tab).min()) == 0
+    ]
     if common_or is not None and not np.isfinite(common_or):
-        zero_cell = [
-            info["stratum"] for info, tab in zip(stratum_info, tables)
-            if float(np.asarray(tab).min()) == 0
-        ]
         warnings.append(
             "The common odds ratio is not finite because "
             + (f"stratum/strata {', '.join(zero_cell)} contain "
@@ -656,7 +679,32 @@ def mantel_haenszel_test(req: MantelHaenszelRequest):
             "common odds ratio."
         )
         common_or = None
+        or_ci_low = None
+        or_ci_high = None
+    elif (
+        or_ci_low is None
+        or or_ci_high is None
+        or not np.isfinite(or_ci_low)
+        or not np.isfinite(or_ci_high)
+    ):
+        warnings.append(
+            "The common odds ratio confidence interval could not be estimated"
+            + (
+                f" because stratum/strata {', '.join(zero_cell)} contain a zero cell."
+                if zero_cell else "."
+            )
+        )
+        or_ci_low = None
+        or_ci_high = None
+
+    confidence_pct = 100 * (1 - req.alpha)
+    confidence_label = f"{confidence_pct:g}% CI"
     or_str = f"{common_or:.3f}" if common_or is not None else "N/A"
+    or_ci_str = (
+        f"{or_ci_low:.3f}–{or_ci_high:.3f}"
+        if or_ci_low is not None and or_ci_high is not None
+        else "unavailable"
+    )
 
     return sanitize_nonfinite({
         "test": "Cochran-Mantel-Haenszel test",
@@ -666,7 +714,10 @@ def mantel_haenszel_test(req: MantelHaenszelRequest):
         # 0 as absent.
         "effect_sizes": [{"name": "common_odds_ratio",
                           "value": round(common_or, 4) if common_or is not None else None,
-                          "ci_low": None, "ci_high": None, "magnitude": ""}],
+                          "ci_low": round(or_ci_low, 4) if or_ci_low is not None else None,
+                          "ci_high": round(or_ci_high, 4) if or_ci_high is not None else None,
+                          "ci_level": round(1 - req.alpha, 6),
+                          "magnitude": ""}],
         "assumptions": [],
         "summary": {
             "n_strata": len(strata),
@@ -677,20 +728,25 @@ def mantel_haenszel_test(req: MantelHaenszelRequest):
         "interpretation": (
             f"{'Significant' if sig else 'No significant'} association between {req.row_col} and {req.col_col} "
             f"after stratifying by {req.strata_col} "
-            f"(CMH statistic = {stat:.3f}, p = {ps}, common OR = {or_str})"
+            f"(CMH statistic = {stat:.3f}, p = {ps}, common OR = {or_str}, "
+            f"{confidence_label} [{or_ci_str}])"
         ),
         "result_text": (
             f"A Cochran-Mantel-Haenszel test examined the association between {req.row_col} and {req.col_col} "
             f"across {len(strata)} strata of {req.strata_col} (n = {len(sub)}). "
             f"The result was {'statistically significant' if sig else 'not statistically significant'} "
             f"(CMH statistic = {stat:.3f}, p = {ps}). "
-            f"Common odds ratio = {or_str}."
+            f"Common odds ratio = {or_str} ({confidence_label} [{or_ci_str}])."
         ),
         "export_rows": [
             ["Statistic", "Value"],
             ["CMH statistic", round(stat, 4)],
             ["p", round(p, 6)],
             ["Common OR", or_str],
+            [f"Common OR {confidence_label} lower",
+             round(or_ci_low, 4) if or_ci_low is not None else "N/A"],
+            [f"Common OR {confidence_label} upper",
+             round(or_ci_high, 4) if or_ci_high is not None else "N/A"],
             ["Number of strata", len(strata)],
             ["Total n", int(len(sub))],
         ],
@@ -711,8 +767,12 @@ def mantel_haenszel_test(req: MantelHaenszelRequest):
 
 class CochranArmitageRequest(BaseModel):
     session_id: str
-    ordinal_col: str          # the ordered exposure / dose column
-    event_col: str            # binary 0/1 outcome column
+    ordinal_col: str = Field(  # the ordered exposure / dose column
+        validation_alias=AliasChoices("ordinal_col", "ordinal_column")
+    )
+    event_col: str = Field(  # binary 0/1 outcome column
+        validation_alias=AliasChoices("event_col", "event_column")
+    )
     scores: Optional[List[float]] = None  # custom scores per level; default = ranks 0..K-1
     success_value: Optional[str] = None   # which value of event_col counts as "success"
     alpha: float = 0.05

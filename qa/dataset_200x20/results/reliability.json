@@ -1,0 +1,24 @@
+{
+  "area": "reliability",
+  "n_pass": 3,
+  "n_fail": 0,
+  "findings": [
+    {
+      "test": "cronbach HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'test': \"Cronbach's Alpha Reliability Analysis\", 'alpha': 0.9144, 'omega': 0.9136, 'n': 200, 'k': 6, 'significant': True, 'effect_sizes': [{'name': \"Cronbach's alpha\", 'value': 0.9144, 'magnitude': 'Excellent'}, {'name': \"McDonald's omega\", 'value': 0.9136, 'magnitude': 'Excellent'}], 'assumptions'"
+    },
+    {
+      "test": "cronbach alfa dogru",
+      "status": "PASS",
+      "detail": "api=0.9144 ref=0.9144"
+    },
+    {
+      "test": "cronbach alfa makul (>0.7, tek boyut tasarim)",
+      "status": "PASS",
+      "detail": "alpha=0.9144"
+    }
+  ],
+  "reference": {},
+  "api_summary": {}
+}

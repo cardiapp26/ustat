@@ -33,7 +33,7 @@ const TEST_GUIDANCE: Record<string, { when: string; assumptions: string; reading
   ttest_2sample: {
     when: "Compare means between two independent groups (e.g. treatment vs. control, male vs. female).",
     assumptions: "Both groups approximately normal (or n > 30 each). Levene's test checks equal variances — if violated, Welch's t-test is used automatically.",
-    reading: "p < 0.05 means the groups differ significantly. Report: t(df) = X.XX, p = Y.YYY. Add Cohen's d for effect size (small 0.2, medium 0.5, large 0.8).",
+    reading: "p < 0.05 means the groups differ significantly. Report: t(df) = X.XX, p = Y.YYY. Add Hedges' g for effect size (small 0.2, medium 0.5, large 0.8).",
   },
   anova: {
     when: "Compare means across 3+ groups simultaneously (e.g. drug A vs. B vs. C). Avoids multiple-comparison inflation from running many t-tests.",

@@ -1,0 +1,59 @@
+{
+  "area": "correlation",
+  "n_pass": 10,
+  "n_fail": 0,
+  "findings": [
+    {
+      "test": "pearson age-sbp HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'method': 'pearson', 'label': 'r', 'n': 182, 'n_excluded': 18, 'imputation': 'listwise', 'r': 0.46179349443399814, 'p': 5.3210694894598866e-11, 'ci_low': 0.3391141673662346, 'ci_high': 0.5690290605012103, 'normality_test': 'Kolmogorov-Smirnov (Lilliefors)', 'normality': {'age': {'statistic': 0.0430"
+    },
+    {
+      "test": "pearson r scipy ile ayni",
+      "status": "PASS",
+      "detail": "api=0.46179349443399814 ref=0.46179"
+    },
+    {
+      "test": "pearson p scipy ile ayni",
+      "status": "PASS",
+      "detail": "api=5.3210694894598866e-11 ref=5.321e-11"
+    },
+    {
+      "test": "pearson pozitif anlamli (tasarim)",
+      "status": "PASS",
+      "detail": "r=0.462"
+    },
+    {
+      "test": "spearman HTTP200+r/p",
+      "status": "PASS",
+      "detail": "api=0.46178802473323755,5.324205466882238e-11 ref=0.46179,0.00000"
+    },
+    {
+      "test": "corr matrix HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'method': 'pearson', 'variables': ['age', 'bmi', 'sbp', 'glucose'], 'n': 168, 'matrix': {'age': {'age': 1.0, 'bmi': 0.14873224259035378, 'sbp': 0.47063658684065207, 'glucose': 0.1728127683456056}, 'b"
+    },
+    {
+      "test": "corr matrix age-sbp pandas ile ayni",
+      "status": "PASS",
+      "detail": "api=0.47063658684065207 ref=0.4706"
+    },
+    {
+      "test": "icc HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'icc': 0.7624714486532695, 'ci_low': 0.7266059425976056, 'ci_high': 0.8363878716266632, 'f_stat': 8.419310788591773, 'f_p': 1.7023881116160594e-41, 'n': 188, 'interpretation': 'Good', 'bland_altman': {'means': [42.42, 66.16499999999999, 61.2, 61.055, 65.24, 70.795, 59.71, 73.88499999999999, 65.02, "
+    },
+    {
+      "test": "cohens_kappa HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'kappa': 0.6684350132625996, 'ci_low': 0.5468559602440829, 'ci_high': 0.7900140662811163, 'se': 0.06203012909107993, 'n': 200, 'po': 0.875, 'pe': 0.875, 'interpretation': 'Substantial', 'labels': ['0.0', '1.0'], 'confusion_matrix': [[138, 22], [3, 37]]}"
+    },
+    {
+      "test": "kappa sklearn ile ayni",
+      "status": "PASS",
+      "detail": "api=0.6684350132625996 ref=0.6684"
+    }
+  ],
+  "reference": {},
+  "api_summary": {}
+}

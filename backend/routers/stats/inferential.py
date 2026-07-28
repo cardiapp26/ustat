@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats as scipy_stats
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 from loguru import logger
 
 from services import store
@@ -77,7 +77,10 @@ def _clean_crosstab_work(df: pd.DataFrame, row_col: str, col_col: str) -> tuple[
 class TTestRequest(BaseModel):
     session_id: str
     column: str
-    group_column: Optional[str] = None
+    group_column: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("group_column", "group_col"),
+    )
     mu: Optional[float] = 0.0
     # "auto" lets Levene pick Student vs Welch; the other two force it.
     method: Literal["auto", "student", "welch"] = "auto"
@@ -170,8 +173,12 @@ def ttest(req: TTestRequest):
 
 class ChiSqRequest(BaseModel):
     session_id: str
-    row_column: str
-    col_column: str
+    row_column: str = Field(
+        validation_alias=AliasChoices("row_column", "row_col"),
+    )
+    col_column: str = Field(
+        validation_alias=AliasChoices("col_column", "col_col"),
+    )
 
 
 @router.post("/chisquare")
@@ -226,8 +233,12 @@ def chisquare(req: ChiSqRequest):
 
 class FisherRequest(BaseModel):
     session_id: str
-    row_column: str
-    col_column: str
+    row_column: str = Field(
+        validation_alias=AliasChoices("row_column", "row_col"),
+    )
+    col_column: str = Field(
+        validation_alias=AliasChoices("col_column", "col_col"),
+    )
 
 
 @router.post("/fisher")
@@ -264,7 +275,9 @@ def fisher_exact(req: FisherRequest):
 class AnovaRequest(BaseModel):
     session_id: str
     column: str
-    group_column: str
+    group_column: str = Field(
+        validation_alias=AliasChoices("group_column", "group_col"),
+    )
 
 
 @router.post("/anova")
@@ -326,7 +339,6 @@ def anova(req: AnovaRequest):
             posthoc_method = "Games-Howell (unequal variances)"
 
     p_str = '<0.001' if p < 0.001 else f'{p:.4f}'
-    df_den_report = welch_df_den if welch_df_den is not None else df_within
     group_stats = df.groupby(req.group_column)[req.column].agg(["count", "mean", "std"]).reset_index()
     # Welch's F carries fractional denominator degrees of freedom; reporting
     # it against the pooled within-groups df would understate the tail.
@@ -363,8 +375,14 @@ def anova(req: AnovaRequest):
 class TOSTRequest(BaseModel):
     session_id: str
     column: str
-    group_column: Optional[str] = None
-    paired_column: Optional[str] = None
+    group_column: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("group_column", "group_col"),
+    )
+    paired_column: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("paired_column", "paired_col"),
+    )
     low: float
     high: float
     mu: Optional[float] = 0.0
@@ -474,8 +492,12 @@ def tost(req: TOSTRequest):
 
 class NonInferiorityRequest(BaseModel):
     session_id: str
-    outcome_col: str
-    group_col: str
+    outcome_col: str = Field(
+        validation_alias=AliasChoices("outcome_col", "outcome_column"),
+    )
+    group_col: str = Field(
+        validation_alias=AliasChoices("group_col", "group_column"),
+    )
     test_group: Optional[str] = None
     ref_group: Optional[str] = None
     outcome_type: str = "binary"

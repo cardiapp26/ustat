@@ -1,0 +1,143 @@
+{
+  "area": "survival",
+  "n_pass": 17,
+  "n_fail": 0,
+  "findings": [
+    {
+      "test": "km HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'model': 'Kaplan-Meier', 'groups': [{'group': 'A', 'n': 98, 'events': 75, 'median_survival': 16.2, 'curve': [{'time': 0.0, 'survival': 1.0}, {'time': 0.9, 'survival': 0.9897959183673466}, {'time': 1.0, 'survival': 0.9795918367346934}, {'time': 1.2, 'survival': 0.9693877551020403}, {'time': 1.3, 'su"
+    },
+    {
+      "test": "km logrank p lifelines ile ayni",
+      "status": "PASS",
+      "detail": "api=6.800750101151299e-06 ref=0.00001 keys=['test', 'chi2', 'df', 'p']"
+    },
+    {
+      "test": "km logrank stat lifelines ile ayni",
+      "status": "PASS",
+      "detail": "api=20.24847922761715 ref=20.2485"
+    },
+    {
+      "test": "km logrank anlamli (HR=1.8 tasarim)",
+      "status": "PASS",
+      "detail": "p=6.800750101151299e-06"
+    },
+    {
+      "test": "km median survival A/B dogru",
+      "status": "PASS",
+      "detail": "api={'A': 16.2, 'B': 7.1} ref A=16.20 B=7.10"
+    },
+    {
+      "test": "cox HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'model': 'Cox Proportional Hazards', 'n': 161, 'n_analyzed': 200, 'n_total': 200, 'n_excluded': 0, 'imputation': 'listwise', 'log_likelihood': -682.818203965179, 'concordance': 0.6162694101859544, 'coefficients': [{'variable': 'grpB', 'log_hr': 0.7169393791267901, 'hr': 2.0481549820164564, 'se': 0."
+    },
+    {
+      "test": "cox HR(grpB) lifelines ile ayni",
+      "status": "PASS",
+      "detail": "api=2.0481549820164564 ref=2.0482"
+    },
+    {
+      "test": "cox p(grpB) lifelines ile ayni",
+      "status": "PASS",
+      "detail": "api=1.0303833398668847e-05 ref=0.00001"
+    },
+    {
+      "test": "cox HR>1 ve anlamli (gercek HR=1.8)",
+      "status": "PASS",
+      "detail": "HR=2.0481549820164564 p=1.0303833398668847e-05"
+    },
+    {
+      "test": "cox HR tahmini gercek 1.8'e yakin (CI icinde)",
+      "status": "PASS",
+      "detail": "HR=2.0481549820164564 true=1.8"
+    },
+    {
+      "test": "cox_uni_multi HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'duration_col': 'time', 'event_col': 'event', 'n': 190, 'n_events': 152, 'n_pars': 0, 'n_events_pars': 0, 'rows': [{'term': 'grpB', 'predictor': 'grpB', 'kind': 'numeric', 'category': None, 'referenc"
+    },
+    {
+      "test": "rmst HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'test': 'Restricted Mean Survival Time', 'n': 200, 'n_invalid_survival': 0, 'tau': 10.0, 'rmst_by_group': {'A': {'n': 98, 'n_events': 75, 'rmst': 8.3953, 'se': 0.289, 'ci_low': 7.8289, 'ci_high': 8.9617}, 'B': {'n': 102, 'n_events': 86, 'rmst': 6.5484, 'se': 0.3232, 'ci_low': 5.9148, 'ci_high': 7.1"
+    },
+    {
+      "test": "rmst grup degerleri lifelines ile yakin",
+      "status": "PASS",
+      "detail": "api_keys=['test', 'n', 'n_invalid_survival', 'tau', 'rmst_by_group', 'contrasts', 'rmst_mi_note', 'plot', 'assumptions', 'warnings', 'result_text', 'export_rows', 'r_code'] ref A=8.354 B=6.481"
+    },
+    {
+      "test": "evalue HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'test': 'E-value (Unmeasured Confounding)', 'estimate': 1.8, 'measure_type': 'HR', 'ci': [1.4893739660101928, 2.8165785934854477], 'rr_converted': 1.8, 'evalue_point': 3.0, 'evalue_ci': 2.3431, 'e_va"
+    },
+    {
+      "test": "evalue formulu dogru",
+      "status": "PASS",
+      "detail": "api=3.0 ref=3.0000"
+    },
+    {
+      "test": "fine_gray HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'test': 'Fine-Gray Competing Risks', 'n': 200, 'event_types': [1], 'event_of_interest': 1, 'event_counts': {'All': {'n': 200, 'event_of_interest': 161, 'competing_events': 0, 'censored': 39}}, 'cif_d"
+    },
+    {
+      "test": "landmark HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'test': 'Landmark Survival Analysis', 'landmark_time': 5.0, 'n_total': 200, 'n_excluded': 66, 'n_invalid_survival': 0, 'warnings': [], 'n_landmark': 134, 'km_summaries': {'All': {'n': 134, 'events': "
+    }
+  ],
+  "reference": {
+    "km": {
+      "logrank_chi2": 20.24847922761715,
+      "logrank_p": 6.800750101151299e-06,
+      "median_A": 16.2,
+      "median_B": 7.1
+    },
+    "cox": {
+      "HR_grpB": 2.0481549820164564,
+      "p": 1.0303833398668847e-05,
+      "beta_grpB": 0.7169393791267901,
+      "beta_age": -0.00818620184880209
+    },
+    "rmst": {
+      "A": 8.354281483876683,
+      "B": 6.4813811398880805,
+      "diff_B_minus_A": -1.8729003439886025
+    }
+  },
+  "api_summary": {
+    "cox_keys": [
+      "model",
+      "n",
+      "n_analyzed",
+      "n_total",
+      "n_excluded",
+      "imputation",
+      "log_likelihood",
+      "concordance",
+      "coefficients",
+      "interactions_used",
+      "ph_test",
+      "assumptions",
+      "missing_data"
+    ],
+    "rmst_keys": [
+      "test",
+      "n",
+      "n_invalid_survival",
+      "tau",
+      "rmst_by_group",
+      "contrasts",
+      "rmst_mi_note",
+      "plot",
+      "assumptions",
+      "warnings",
+      "result_text",
+      "export_rows",
+      "r_code"
+    ]
+  }
+}

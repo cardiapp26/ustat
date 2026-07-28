@@ -1,0 +1,156 @@
+{
+  "area": "inferential",
+  "n_pass": 22,
+  "n_fail": 0,
+  "findings": [
+    {
+      "test": "ttest score~group HTTP200",
+      "status": "PASS",
+      "detail": "status=200 body={'test': 'Independent samples t-test', 'group1': 'A', 'n1': 94, 'mean1': 52.73382978723405, 'group2': 'B', 'n2': 92, 'mean2': 57.82728260869566, 't': -3.5115277969931937, 'p': 0.0005604314014586583, '"
+    },
+    {
+      "test": "ttest t degeri scipy ile ayni",
+      "status": "PASS",
+      "detail": "api=-3.51153 ref=-3.51153"
+    },
+    {
+      "test": "ttest p degeri scipy ile ayni",
+      "status": "PASS",
+      "detail": "api=5.604e-04 ref=5.604e-04"
+    },
+    {
+      "test": "ttest anlamli (beklenen +5 fark)",
+      "status": "PASS",
+      "detail": "p=5.604e-04"
+    },
+    {
+      "test": "ttest Welch/Student secimi Levene ile tutarli",
+      "status": "PASS",
+      "detail": "api=student levene_p=0.1429"
+    },
+    {
+      "test": "ttest ES Hedges g olarak etiketli ve hesapli",
+      "status": "PASS",
+      "detail": "api={'name': 'hedges_g', 'value': -0.5129, 'ci_low': -0.8069, 'ci_high': -0.2188, 'magnitude': 'medium'} ref_g=-0.512883"
+    },
+    {
+      "test": "ttest biomarker anlamsiz (null dogru)",
+      "status": "PASS",
+      "detail": "p=0.5647235984070044"
+    },
+    {
+      "test": "ttest biomarker p scipy ile ayni",
+      "status": "PASS",
+      "detail": "api=5.647e-01 ref=5.647e-01"
+    },
+    {
+      "test": "one-sample t HTTP200+p",
+      "status": "PASS",
+      "detail": "api t=6.778146114110679 p=1.3500428524285688e-10 ref t=6.7781 p=1.350e-10"
+    },
+    {
+      "test": "chi2 sex x group",
+      "status": "PASS",
+      "detail": "api=0.9803921568627452,0.32210200812889284,1 ref=0.9804,0.3221,1"
+    },
+    {
+      "test": "chi2 sex x group anlamsiz (tasarim geregi)",
+      "status": "PASS",
+      "detail": "p=0.3221"
+    },
+    {
+      "test": "chi2 stage x group",
+      "status": "PASS",
+      "detail": "api=1.409316764247795,0.7033522904044263 ref=1.4093,0.7034"
+    },
+    {
+      "test": "fisher diabetes x group",
+      "status": "PASS",
+      "detail": "api OR=0.7402597402597403 p=0.47998445222936725 ref OR=0.7403 p=0.4800"
+    },
+    {
+      "test": "anova score~education F/p",
+      "status": "PASS",
+      "detail": "api F=0.2144627867302538 p=0.8073461156843061 ref F=0.2145 p=0.8073"
+    },
+    {
+      "test": "anova posthoc method variansla tutarli",
+      "status": "PASS",
+      "detail": "posthoc=None (F ns oldugunda None beklenir; api=ns)"
+    },
+    {
+      "test": "tost p_overall statsmodels ile ayni",
+      "status": "PASS",
+      "detail": "api=0.010271853726084459 ref=0.010272"
+    },
+    {
+      "test": "tost esdegerlik karari tutarli",
+      "status": "PASS",
+      "detail": "equiv=True ref_p=0.01027"
+    },
+    {
+      "test": "noninferiority HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'test': 'Non-inferiority (margin) test', 'outcome_type': 'continuous', 'effect': 'Mean difference', 'test_group': 'A', 'ref_group': 'B', 'estimate': -5.09345, 'ci_level': 90.0, 'ci_low': -7.49499, 'c"
+    },
+    {
+      "test": "noninferiority estimate A-B dogru",
+      "status": "PASS",
+      "detail": "api=-5.09345 ref=-5.0935"
+    },
+    {
+      "test": "noninferiority CI smodels ile ayni",
+      "status": "PASS",
+      "detail": "api=(-7.49499,-2.69192) ref=(-7.4950,-2.6919)"
+    },
+    {
+      "test": "noninferiority karar CI kurali ile tutarli",
+      "status": "PASS",
+      "detail": "ni=True ci_high=-2.69192 margin=4"
+    },
+    {
+      "test": "power t_two n",
+      "status": "PASS",
+      "detail": "api=64.0 ref_ceil=64.0"
+    }
+  ],
+  "reference": {
+    "ttest_score_group": {
+      "t": -3.5115277969931937,
+      "p": 0.0005604314014586583,
+      "equal_var": true,
+      "levene_p": 0.14287194854242144,
+      "meanA": 52.73382978723405,
+      "meanB": 57.82728260869566,
+      "nA": 94,
+      "nB": 92
+    },
+    "chi_sex_group": {
+      "chi2": 0.9803921568627452,
+      "p": 0.32210200812889284,
+      "dof": 1
+    },
+    "anova_levene": {
+      "levene_p": 0.019836280944116824,
+      "welch": true
+    },
+    "anova_score_edu": {
+      "F": 0.2144627867302538,
+      "p": 0.8073461156843061
+    }
+  },
+  "api_summary": {
+    "ttest_score_group": {
+      "status": 200,
+      "t": -3.5115277969931937,
+      "p": 0.0005604314014586583,
+      "df": 184.0,
+      "test_name": "Independent samples t-test",
+      "interp": "Significant difference between groups (t = -3.512, p = <0.001, Hedges' g = -0.513 [medium])",
+      "df_method": "pooled",
+      "es": [
+        "hedges_g"
+      ]
+    }
+  }
+}

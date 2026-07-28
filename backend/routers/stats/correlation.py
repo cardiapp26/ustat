@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats as scipy_stats
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 from loguru import logger
 
 from services import store
@@ -323,8 +323,12 @@ def correlation_matrix_post(req: CorrelationMatrixRequest):
 
 class ICCRequest(BaseModel):
     session_id: str
-    rater1_col: str
-    rater2_col: str
+    rater1_col: str = Field(
+        validation_alias=AliasChoices("rater1_col", "rater1_column"),
+    )
+    rater2_col: str = Field(
+        validation_alias=AliasChoices("rater2_col", "rater2_column"),
+    )
 
 
 @router.post("/icc")
@@ -406,8 +410,12 @@ def icc_endpoint(req: ICCRequest):
 
 class KappaRequest(BaseModel):
     session_id: str
-    rater1_col: str
-    rater2_col: str
+    rater1_col: str = Field(
+        validation_alias=AliasChoices("rater1_col", "rater1_column"),
+    )
+    rater2_col: str = Field(
+        validation_alias=AliasChoices("rater2_col", "rater2_column"),
+    )
 
 
 @router.post("/cohens_kappa")
@@ -466,7 +474,9 @@ def cohens_kappa(req: KappaRequest):
 
 class FleissKappaRequest(BaseModel):
     session_id: str
-    rater_cols: List[str]
+    rater_cols: List[str] = Field(
+        validation_alias=AliasChoices("rater_cols", "rater_columns"),
+    )
 
 
 @router.post("/fleiss_kappa")

@@ -19,17 +19,94 @@ export const getFrequency = (sessionId: string, column: string) =>
 export const getCorrelation = (sessionId: string, method = "pearson") =>
   api.get(`/api/stats/${sessionId}/correlation`, { params: { method } });
 
-export const runTTest = (data: object) => api.post("/api/stats/ttest", data);
-export const runChiSquare = (data: object) => api.post("/api/stats/chisquare", data);
-export const runAnova = (data: object) => api.post("/api/stats/anova", data);
-export const runMannWhitney = (data: object) => api.post("/api/stats/mannwhitney", data);
-export const runFisher = (data: object) => api.post("/api/stats/fisher", data);
-export const runKruskal = (data: object) => api.post("/api/stats/kruskal", data);
-export const runJonckheereTerpstra = (data: object) => api.post("/api/stats/jonckheere_terpstra", data);
-export const runROC = (data: object) => api.post("/api/stats/roc", data);
-export const runROCCompare = (data: object) => api.post("/api/stats/roc_compare", data);
-export const runROCMultiCompare = (data: object) => api.post("/api/stats/roc_multi_compare", data);
-export const runROCCombined = (data: object) => api.post("/api/stats/roc_combined", data);
+export interface TTestRequest {
+  session_id: string;
+  column: string;
+  group_column?: string;
+  mu?: number;
+  method?: "auto" | "student" | "welch";
+  equal_var?: boolean;
+}
+
+export interface ChiSquareRequest {
+  session_id: string;
+  row_column: string;
+  col_column: string;
+}
+
+export interface FisherRequest {
+  session_id: string;
+  row_column: string;
+  col_column: string;
+}
+
+export interface AnovaRequest {
+  session_id: string;
+  column: string;
+  group_column: string;
+}
+
+export interface MannWhitneyRequest {
+  session_id: string;
+  column: string;
+  group_column: string;
+}
+
+export interface KruskalRequest extends MannWhitneyRequest {
+  posthoc_correction?: "holm" | "bonferroni" | "fdr" | "none";
+}
+
+export interface JonckheereRequest extends MannWhitneyRequest {
+  scores?: number[];
+  alpha?: number;
+}
+
+export interface ROCRequest {
+  session_id: string;
+  score_column: string;
+  outcome_column: string;
+  direction?: "auto" | "higher" | "lower";
+  manual_cutoff?: number;
+  imputation?: string;
+  stratify_by?: string;
+  stratify_values?: unknown[];
+}
+
+export interface ROCCompareRequest {
+  session_id: string;
+  score_column_1: string;
+  score_column_2: string;
+  outcome_column: string;
+  direction_1?: "auto" | "higher" | "lower";
+  direction_2?: "auto" | "higher" | "lower";
+}
+
+export interface ROCMultiCompareRequest {
+  session_id: string;
+  score_columns: string[];
+  outcome_column: string;
+  directions?: Array<"auto" | "higher" | "lower">;
+  p_adjust?: "holm" | "bonferroni" | "none";
+}
+
+export interface ROCCombinedRequest {
+  session_id: string;
+  predictor_columns: string[];
+  outcome_column: string;
+  model_name?: string;
+}
+
+export const runTTest = (data: TTestRequest) => api.post("/api/stats/ttest", data);
+export const runChiSquare = (data: ChiSquareRequest) => api.post("/api/stats/chisquare", data);
+export const runAnova = (data: AnovaRequest) => api.post("/api/stats/anova", data);
+export const runMannWhitney = (data: MannWhitneyRequest) => api.post("/api/stats/mannwhitney", data);
+export const runFisher = (data: FisherRequest) => api.post("/api/stats/fisher", data);
+export const runKruskal = (data: KruskalRequest) => api.post("/api/stats/kruskal", data);
+export const runJonckheereTerpstra = (data: JonckheereRequest) => api.post("/api/stats/jonckheere_terpstra", data);
+export const runROC = (data: ROCRequest) => api.post("/api/stats/roc", data);
+export const runROCCompare = (data: ROCCompareRequest) => api.post("/api/stats/roc_compare", data);
+export const runROCMultiCompare = (data: ROCMultiCompareRequest) => api.post("/api/stats/roc_multi_compare", data);
+export const runROCCombined = (data: ROCCombinedRequest) => api.post("/api/stats/roc_combined", data);
 
 export const getHistogram = (data: object) => api.post("/api/charts/histogram", data);
 export const getScatter = (data: object) => api.post("/api/charts/scatter", data);
@@ -90,7 +167,22 @@ export const runStationarity = (data: object) => api.post("/api/timeseries/stati
 export const runWeightedDescriptive = (data: object) => api.post("/api/stats/weighted_descriptive", data);
 
 // Non-inferiority / margin testing
-export const runNonInferiority = (data: object) => api.post("/api/stats/noninferiority", data);
+export interface NonInferiorityRequest {
+  session_id: string;
+  outcome_col: string;
+  group_col: string;
+  test_group?: string;
+  ref_group?: string;
+  outcome_type?: "binary" | "continuous";
+  effect?: "RR" | "RD" | "OR";
+  margin?: number;
+  bound?: "upper" | "lower";
+  alpha?: number;
+  imputation?: string;
+}
+
+export const runNonInferiority = (data: NonInferiorityRequest) =>
+  api.post("/api/stats/noninferiority", data);
 
 // Multiplicity / gatekeeping
 export const runGatekeeping = (data: object) => api.post("/api/multiplicity/gatekeeping", data);
@@ -126,12 +218,40 @@ export const getUniqueValues   = (sessionId: string, col: string) => api.get(`/a
 
 export const runCorrelationPair = (data: object) => api.post("/api/stats/correlation_pair", data);
 export const runCorrelationMatrix = (data: object) => api.post("/api/stats/correlation_matrix", data);
-export const runICC = (data: object) => api.post("/api/stats/icc", data);
-export const runCohensKappa = (data: object) => api.post("/api/stats/cohens_kappa", data);
-export const runFleissKappa = (data: object) => api.post("/api/stats/fleiss_kappa", data);
+export interface ICCRequest {
+  session_id: string;
+  rater1_col: string;
+  rater2_col: string;
+}
+
+export interface KappaRequest {
+  session_id: string;
+  rater1_col: string;
+  rater2_col: string;
+}
+
+export interface FleissKappaRequest {
+  session_id: string;
+  rater_cols: string[];
+}
+
+export const runICC = (data: ICCRequest) => api.post("/api/stats/icc", data);
+export const runCohensKappa = (data: KappaRequest) => api.post("/api/stats/cohens_kappa", data);
+export const runFleissKappa = (data: FleissKappaRequest) => api.post("/api/stats/fleiss_kappa", data);
 export const runPower       = (data: object) => api.post("/api/stats/power", data);
 export const runHosmerLemeshow = (data: object) => api.post("/api/decision_curve/hosmer_lemeshow", data);
-export const runTOST           = (data: object) => api.post("/api/stats/tost", data);
+export interface TOSTRequest {
+  session_id: string;
+  column: string;
+  group_column?: string;
+  paired_column?: string;
+  low: number;
+  high: number;
+  mu?: number;
+  test_type?: "independent" | "paired" | "one_sample";
+}
+
+export const runTOST = (data: TOSTRequest) => api.post("/api/stats/tost", data);
 export const runGEE            = (data: object) => api.post("/api/models/gee", data);
 export const runOrdinal        = (data: object) => api.post("/api/models/ordinal", data);
 export const runCoxTV          = (data: object) => api.post("/api/models/survival/cox_tv", data);

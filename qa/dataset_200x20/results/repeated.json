@@ -1,0 +1,73 @@
+{
+  "area": "repeated",
+  "n_pass": 10,
+  "n_fail": 0,
+  "findings": [
+    {
+      "test": "paired t HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'test': 'Paired-samples t-test', 't': 5.5011, 'df': 187, 'p': 1.22885038599448e-07, 'significant': True, 'effect_sizes': [{'name': 'cohen_d_z', 'value': 0.4012, 'ci_low': 0.2517, 'ci_high': 0.5508, 'magnitude': 'small'}], 'assumptions': [{'name': 'Normality (Differences)', 'met': True, 'detail': 'K"
+    },
+    {
+      "test": "paired t degeri scipy ile ayni",
+      "status": "PASS",
+      "detail": "api=5.5011 ref=5.5011"
+    },
+    {
+      "test": "paired p scipy ile ayni",
+      "status": "PASS",
+      "detail": "api=1.22885038599448e-07 ref=1.229e-07"
+    },
+    {
+      "test": "paired anlamli (gercek +3 fark)",
+      "status": "PASS",
+      "detail": "p=1.22885038599448e-07"
+    },
+    {
+      "test": "wilcoxon HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'test': 'Wilcoxon signed-rank test', 'W': 4953.5, 'p': 1.4426955310331774e-07, 'n_nonzero': 188, 'significant': True, 'effect_sizes': [{'name': 'rank_biserial_r', 'value': 0.4424, 'ci_low': -0.6907, "
+    },
+    {
+      "test": "wilcoxon p scipy ile yakin",
+      "status": "PASS",
+      "detail": "api=1.4426955310331774e-07 ref=0.00000"
+    },
+    {
+      "test": "friedman HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'test': 'Friedman test', 'chi2': 58.383, 'df': 2, 'p': 2.1003769890657852e-13, 'significant': True, 'effect_sizes': [{'name': 'kendalls_w', 'value': 0.1553, 'ci_low': None, 'ci_high': None, 'magnitud"
+    },
+    {
+      "test": "friedman stat scipy ile yakin",
+      "status": "PASS",
+      "detail": "api=58.383 ref=58.3830"
+    },
+    {
+      "test": "friedman p scipy ile yakin",
+      "status": "PASS",
+      "detail": "api=2.1003769890657852e-13 ref=0.00000"
+    },
+    {
+      "test": "rm_anova HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'test': 'Repeated-measures ANOVA', 'F': 44.6536, 'df_num': 2, 'df_den': 374, 'p': 4.068837803508897e-18, 'significant': True, 'effect_sizes': [{'name': 'partial_eta_squared', 'value': 0.1928, 'ci_low': None, 'ci_high': None, 'magnitude': 'large'}], 'assumptions': [{'name': 'Sphericity (Mauchly)', '"
+    }
+  ],
+  "reference": {
+    "paired": {
+      "t": 5.501085272342987,
+      "p": 1.22885038599448e-07,
+      "mean_diff": 2.4187765957446814,
+      "n": 188
+    }
+  },
+  "api_summary": {
+    "paired": {
+      "t": 5.5011,
+      "p": 1.22885038599448e-07,
+      "n": null,
+      "mean_diff": null
+    }
+  }
+}

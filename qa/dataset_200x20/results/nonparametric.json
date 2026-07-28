@@ -1,0 +1,68 @@
+{
+  "area": "nonparametric",
+  "n_pass": 7,
+  "n_fail": 0,
+  "findings": [
+    {
+      "test": "mannwhitney HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'test': 'Mann-Whitney U test', 'group1': 'A', 'n1': 94, 'median1': 52.15, 'iqr1': 12.504999999999995, 'group2': 'B', 'n2': 92, 'median2': 57.045, 'iqr2': 15.452499999999986, 'U': 3133.0, 'p': 0.0011829233914561268, 'significant': True, 'effect_sizes': [{'name': 'rank_biserial_r', 'value': 0.2754, '"
+    },
+    {
+      "test": "mannwhitney p scipy ile yakin",
+      "status": "PASS",
+      "detail": "api=0.0011829233914561268 ref=0.001183 (normal yakl. farki olabilir)"
+    },
+    {
+      "test": "mannwhitney anlamli (gercek fark var)",
+      "status": "PASS",
+      "detail": "p=0.0011829233914561268"
+    },
+    {
+      "test": "kruskal HTTP200+p",
+      "status": "PASS",
+      "detail": "api=0.0043522324984051584,0.9978262497752032 ref=0.0044,0.99783"
+    },
+    {
+      "test": "jonckheere HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'test': 'Jonckheere-Terpstra trend test', 'J': 4685.0, 'E_J': 5849.5, 'Var_J': 149464.916667, 'z': -3.0121, 'statistic': -3.0121, 'p': 0.0025944430031050736, 'significant': True, 'effect_sizes': [], "
+    },
+    {
+      "test": "roc HTTP200",
+      "status": "PASS",
+      "detail": "status=200 {'test': 'ROC Analysis', 'n': 192, 'n_positive': 154, 'n_negative': 38, 'auc': 0.5334, 'auc_se': 0.051161, 'ci_lower': 0.4331, 'ci_upper': 0.6337, 'auc_z': 0.653, 'auc_p': 0.513762, 'auc_test': 'H0: AUC = 0.5 (DeLong two-sided z-test)', 'direction_requested': 'auto', 'direction_used': 'lower', 'dire"
+    },
+    {
+      "test": "roc AUC sklearn ile ayni ve auto-flip acik",
+      "status": "PASS",
+      "detail": "api=0.5334 ref=0.4666 requested=auto used=lower flipped=True"
+    }
+  ],
+  "reference": {},
+  "api_summary": {
+    "mw": {
+      "status": 200,
+      "keys": [
+        "test",
+        "group1",
+        "n1",
+        "median1",
+        "iqr1",
+        "group2",
+        "n2",
+        "median2",
+        "iqr2",
+        "U",
+        "p",
+        "significant",
+        "effect_sizes",
+        "summary",
+        "interpretation",
+        "methods_text",
+        "r_code",
+        "result_text"
+      ]
+    }
+  }
+}

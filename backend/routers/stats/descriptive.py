@@ -6,7 +6,7 @@ import pandas as pd
 import json as _json
 from scipy import stats as scipy_stats
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 from loguru import logger
 
 from services import store
@@ -528,7 +528,7 @@ _STAT_LABELS: dict[str, str] = {
     "variance": "Variance",
     "min_max": "Min – Max",
     "n": "N (non-missing)",
-    "missing": "Missing",
+    "missing": "Missing n (%)",
     "p10": "10th Pctl",
     "p25": "25th Pctl",
     "p75": "75th Pctl",
@@ -708,6 +708,31 @@ def _fmt_one_stat(
     return "—"
 
 
+def _missing_stat_row(
+    s_col: pd.Series,
+    group_series: dict[str, pd.Series],
+) -> Optional[dict]:
+    """Build a display-only missingness row.
+
+    This deliberately lives outside categorical ``sub_rows`` so missing
+    observations cannot be mistaken for a level by tests, SMD calculations,
+    exports, or other API consumers.
+    """
+
+    def _value(series: pd.Series) -> str:
+        n_missing = int(series.isna().sum())
+        pct = round(n_missing / len(series) * 100, 1) if len(series) else 0.0
+        return f"{n_missing} ({pct}%)"
+
+    if not s_col.isna().any():
+        return None
+    return {
+        "label": _STAT_LABELS["missing"],
+        "overall": _value(s_col),
+        "group_stats": {gl: _value(gs) for gl, gs in group_series.items()},
+    }
+
+
 def _build_stat_rows(
     s_col: pd.Series,
     group_series: dict[str, pd.Series],
@@ -728,10 +753,17 @@ def _build_stat_rows(
 
         label = _STAT_LABELS.get(resolved, resolved)
         if resolved == "missing":
-            overall_val = str(int(s_col.isna().sum()))
-            grp_vals = {
-                gl: str(int(gs.isna().sum())) for gl, gs in group_series.items()
-            }
+            missing_row = _missing_stat_row(s_col, group_series)
+            if missing_row is None:
+                missing_row = {
+                    "label": label,
+                    "overall": "0 (0.0%)",
+                    "group_stats": {
+                        gl: "0 (0.0%)" for gl in group_series
+                    },
+                }
+            overall_val = missing_row["overall"]
+            grp_vals = missing_row["group_stats"]
         else:
             overall_val = _fmt_one_stat(
                 s_all,
@@ -850,6 +882,11 @@ def table1(req: Table1Request):
                 col=var,
                 override=decimals_override,
             )
+            missing_row = (
+                None
+                if "missing" in sel_stats
+                else _missing_stat_row(s, group_series)
+            )
 
             p_value_str: Optional[str] = None
             test_name_str: Optional[str] = None
@@ -942,6 +979,7 @@ def table1(req: Table1Request):
                 "normality_mode": req.normality_mode or "overall",
                 "per_group_normality": per_group_norm,
                 "stat_rows": stat_rows,
+                "missing_row": missing_row,
                 "p_value": p_value_str,
                 "test": test_name_str,
                 "significant": significant,
@@ -959,6 +997,15 @@ def table1(req: Table1Request):
                 df[var] = s
             vc_all = s.value_counts(dropna=True)
             total_all = s.count()
+            category_group_series = (
+                {
+                    gl: df[df[req.group_column] == g][var]
+                    for g, gl in zip(groups, group_labels)
+                }
+                if groups is not None
+                else {}
+            )
+            missing_row = _missing_stat_row(s, category_group_series)
             cats = [str(v) for v in vc_all.index.tolist()]
             sub_rows = []
             for cat in cats:
@@ -1089,6 +1136,7 @@ def table1(req: Table1Request):
                 "test": test_name,
                 "significant": bool(p_chi_raw is not None and p_chi_raw < 0.05),
                 "sub_rows": sub_rows,
+                "missing_row": missing_row,
                 "group_stats": {},
                 "stat_rows": [],
                 "smd": cat_smd,
@@ -1112,9 +1160,16 @@ def table1(req: Table1Request):
 
 class WeightedDescriptiveRequest(BaseModel):
     session_id: str
-    value_cols: List[str]
-    weight_col: str
-    group_col: Optional[str] = None
+    value_cols: List[str] = Field(
+        validation_alias=AliasChoices("value_cols", "value_columns")
+    )
+    weight_col: str = Field(
+        validation_alias=AliasChoices("weight_col", "weight_column")
+    )
+    group_col: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("group_col", "group_column"),
+    )
     imputation: Optional[str] = "listwise"
 
 

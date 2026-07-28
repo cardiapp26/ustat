@@ -170,6 +170,30 @@ def test_anova_omnibus_follows_levene(client):
     assert "Welch" in out["interpretation"]
 
 
+def test_anova_equal_variance_interpretation_path_is_serializable(client):
+    rng = np.random.default_rng(12)
+    groups = [
+        rng.normal(10, 2, 60),
+        rng.normal(11, 2, 60),
+        rng.normal(12, 2, 60),
+    ]
+    df = pd.DataFrame({
+        "y": np.concatenate(groups),
+        "g": ["A"] * 60 + ["B"] * 60 + ["C"] * 60,
+    })
+    sid = make_session(df, "a200_anova_equal")
+    response = client.post(
+        "/api/stats/anova",
+        json={"session_id": sid, "column": "y", "group_column": "g"},
+    )
+
+    assert response.status_code == 200, response.text
+    out = response.json()
+    assert out["variance_assumption"] == "equal"
+    assert out["df_denominator"] == pytest.approx(177.0)
+    assert "F(2,177)" in out["interpretation"]
+
+
 # ── things the report asked to be stated rather than assumed ──────────────────
 
 

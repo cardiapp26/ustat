@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats as sp
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 from typing import List, Optional
 
 from services import store
@@ -33,8 +33,8 @@ def _p_str(p: float) -> str:
 
 class PairedTTestRequest(BaseModel):
     session_id: str
-    col1: str
-    col2: str
+    col1: str = Field(validation_alias=AliasChoices("col1", "column1"))
+    col2: str = Field(validation_alias=AliasChoices("col2", "column2"))
     alpha: float = 0.05
 
 
@@ -139,8 +139,8 @@ def paired_ttest(req: PairedTTestRequest):
 
 class WilcoxonSRRequest(BaseModel):
     session_id: str
-    col1: str
-    col2: str
+    col1: str = Field(validation_alias=AliasChoices("col1", "column1"))
+    col2: str = Field(validation_alias=AliasChoices("col2", "column2"))
     alpha: float = 0.05
 
 
