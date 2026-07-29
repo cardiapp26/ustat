@@ -493,9 +493,19 @@ def firth_logistic_regression(req: FirthLogisticRequest):
     _, _, ll0, pen_ll0, _, _, _ = _firth_fit(X_null, y_arr, max_iter=req.max_iter, tol=req.tol)
 
     z = beta / np.where(se > 0, se, np.nan)
-    p_two = 2.0 * (1.0 - sp_norm.cdf(np.abs(z)))
+    p_wald = 2.0 * (1.0 - sp_norm.cdf(np.abs(z)))
     ci_low = beta - 1.96 * se
     ci_high = beta + 1.96 * se
+
+    # Wald, and knowingly so. logistf reports a PENALISED profile likelihood
+    # p-value, which is not the same as refitting with the column deleted:
+    # deleting a column also changes the Jeffreys penalty, because the penalty
+    # is a function of the design matrix. A naive drop-column LRT was tried
+    # here and moved the age p-value from 0.0077 to 5.6e-05 against R's
+    # 0.0065 — further away, not closer. The correct test constrains the
+    # coefficient to zero while evaluating the penalty on the full design,
+    # which needs a constrained Firth fit rather than a smaller one.
+    p_two = p_wald
 
     coefs = []
     for i, var in enumerate(X_const_df.columns):
@@ -507,6 +517,7 @@ def firth_logistic_regression(req: FirthLogisticRequest):
             "wald": round(float(z[i] ** 2), 4),
             "df": 1,
             "p": float(p_two[i]),
+            "p_method": "Wald",
             "odds_ratio": float(np.exp(beta[i])),
             "z": float(z[i]),
             "or_ci_low": float(np.exp(ci_low[i])),
@@ -571,7 +582,8 @@ def firth_logistic_regression(req: FirthLogisticRequest):
         "method_note": (
             "Firth (1993) bias-corrected logistic regression with Jeffreys-prior "
             "penalty; recommended for rare events or (quasi-)separated data. "
-            "Wald CIs are reported; profile-penalized-likelihood CIs are not "
+            "Wald p-values and CIs are reported; the penalised PROFILE "
+            "likelihood p-values and CIs that R's logistf gives are not "
             "computed in this version. Reference: Heinze & Schemper, Stat Med 2002."
         ),
         "result_text": (

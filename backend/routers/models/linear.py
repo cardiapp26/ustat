@@ -70,6 +70,24 @@ def _compute_vif(X: pd.DataFrame) -> dict:
     return out
 
 
+def information_criteria(model, *, n_params: int, n_obs: int) -> tuple[float, float]:
+    """AIC and BIC counting every estimated parameter, scale included.
+
+    statsmodels' OLS and Gamma-family GLM results leave the residual variance
+    (or the dispersion) out of the parameter count, so their AIC sat exactly
+    2 below R's and their BIC log(n) below it — on the audit frame 2155.81
+    against R's 2157.81, and 2174.33 against 2180.04. A criterion is only
+    meaningful next to another criterion, so a fixed offset is not harmless:
+    it makes this model look better than one someone computed elsewhere.
+
+    Families with a fixed scale (binomial, Poisson) already agree with R and
+    must not be adjusted, so the caller passes the count it wants.
+    """
+    llf = float(model.llf)
+    return (-2.0 * llf + 2.0 * n_params,
+            -2.0 * llf + float(np.log(n_obs)) * n_params)
+
+
 def _sanitize(obj):
     if isinstance(obj, dict):
         return {k: _sanitize(v) for k, v in obj.items()}
@@ -259,6 +277,9 @@ def linear_regression(req: LinearRequest):
         model=model,
     )
 
+    # OLS leaves the residual variance out of its parameter count.
+    _ic = information_criteria(
+        model, n_params=int(model.df_model) + 2, n_obs=int(model.nobs))
     result = {
         "model": f"Linear Regression (OLS){' [Robust SE]' if req.robust_se else ''}",
         "outcome": req.outcome,
@@ -269,8 +290,8 @@ def linear_regression(req: LinearRequest):
         "adj_r_squared": float(model.rsquared_adj),
         "f_stat": float(model.fvalue),
         "f_p": float(model.f_pvalue),
-        "aic": float(model.aic),
-        "bic": float(model.bic),
+        "aic": _ic[0],
+        "bic": _ic[1],
         "coefficients": coefs,
         "residual_se": float(np.sqrt(model.mse_resid)),
         "df_resid": int(model.df_resid),
@@ -475,9 +496,27 @@ def polynomial_regression(req: PolynomialRequest):
     X_parts = {"const": np.ones(len(df))}
     for d in range(1, req.degree + 1):
         X_parts[f"{req.predictor}^{d}"] = x ** d
-    for cov in req.covariates:
-        X_parts[cov] = df[cov].astype(float)
-    X = pd.DataFrame(X_parts)
+    X = pd.DataFrame(X_parts, index=df.index)
+    if req.covariates:
+        # Covariates were cast straight to float, so a categorical one — the
+        # ordinary case of adjusting a dose-response curve for treatment arm —
+        # raised ValueError and came back as an unhandled 500. Every other
+        # model endpoint dummy-codes its predictors; this one did not.
+        covs = pd.get_dummies(df[req.covariates], drop_first=True)
+        non_numeric = [
+            c for c in covs.columns
+            if not pd.api.types.is_numeric_dtype(covs[c])
+            and not pd.api.types.is_bool_dtype(covs[c])
+        ]
+        if non_numeric:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "These covariates could not be used as numbers or as "
+                    f"categories: {', '.join(non_numeric)}."
+                ),
+            )
+        X = pd.concat([X, covs.astype(float)], axis=1)
     y = df[req.outcome].astype(float)
 
     base = sm.OLS(y, X)
@@ -499,13 +538,22 @@ def polynomial_regression(req: PolynomialRequest):
     x_lo, x_hi = float(x.min()), float(x.max())
     xs = np.linspace(x_lo, x_hi, 200)
     X_curve = np.column_stack([xs ** d for d in range(0, req.degree + 1)])
-    cov_means = [float(df[c].mean()) for c in req.covariates]
-    if cov_means:
+    # Hold every covariate at its mean along the curve. Averaging the ENCODED
+    # columns, not the raw ones — the raw column may be a category, and taking
+    # its mean raised TypeError and came back as a 500. For a dummy the mean
+    # is the level's prevalence, which is the usual "average subject" curve.
+    cov_cols = [c for c in X.columns if c not in
+                {"const", *(f"{req.predictor}^{d}" for d in range(1, req.degree + 1))}]
+    if cov_cols:
+        cov_means = [float(X[c].mean()) for c in cov_cols]
         X_curve = np.hstack([X_curve, np.tile(cov_means, (len(xs), 1))])
     pred = model.get_prediction(X_curve)
     yhat = pred.predicted_mean
     ci_df = pred.conf_int()
 
+    # OLS leaves the residual variance out of its parameter count.
+    _ic = information_criteria(
+        model, n_params=int(model.df_model) + 2, n_obs=int(model.nobs))
     return {
         "model": f"Polynomial Regression (degree {req.degree}){' [Robust SE]' if req.robust_se else ''}",
         "outcome": req.outcome,
@@ -515,8 +563,8 @@ def polynomial_regression(req: PolynomialRequest):
         "n_excluded": n_excluded,
         "r_squared": float(model.rsquared),
         "adj_r_squared": float(model.rsquared_adj),
-        "aic": float(model.aic),
-        "bic": float(model.bic),
+        "aic": _ic[0],
+        "bic": _ic[1],
         "residual_se": float(np.sqrt(model.mse_resid)),
         "coefficients": coefs,
         "curve": {

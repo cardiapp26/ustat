@@ -1,0 +1,240 @@
+"""Model endpoints cross-validated against R on a fixed sample dataset.
+
+The reference values below were produced by R 4.5.2 with survival / MASS /
+lme4, from `qa/models_audit/reference.R` on `qa/models_audit/dataset.csv`.
+They are pasted here as literals so the suite does not need R installed.
+
+Four defects the cross-check found, all fixed here:
+
+  * /polynomial cast covariates straight to float, so a categorical one —
+    adjusting a dose-response curve for treatment arm, the ordinary case —
+    raised ValueError and came back as an unhandled 500.
+  * /negbinom estimated the dispersion from Poisson residuals and then fixed
+    it, so theta came out at 3.28 against a true 2.78 and every standard
+    error was about 4% too small — one-sided, always toward significance.
+  * AIC and BIC left the estimated scale out of the parameter count, sitting
+    exactly 2 and log(n) below R's for every OLS and Gamma fit.
+  * the Gamma coefficients were tested against a normal when the dispersion
+    is estimated from the data, which always gives the smaller p.
+"""
+from __future__ import annotations
+
+import pathlib
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from conftest import make_session
+
+# The dataset is BUILT here rather than read from qa/models_audit/dataset.csv.
+# The repository ignores *.csv so that no clinical file is ever committed by
+# accident, and a test that silently skips when its fixture is missing is a
+# test that does not run. The generator is committed and seeded, so the frame
+# is identical to the one the R reference was fitted on.
+_GEN = pathlib.Path(__file__).resolve().parents[2] / "qa" / "models_audit"
+
+pytestmark = pytest.mark.skipif(
+    not (_GEN / "generate_dataset.py").exists(),
+    reason="qa/models_audit/generate_dataset.py not present")
+
+
+@pytest.fixture(scope="module")
+def frame() -> pd.DataFrame:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "models_audit_gen", _GEN / "generate_dataset.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    df = mod.build()
+    # Round-trip through CSV so dtypes match what the R reference read.
+    import io
+    buf = io.StringIO()
+    df.to_csv(buf, index=False)
+    buf.seek(0)
+    return pd.read_csv(buf)
+
+
+@pytest.fixture()
+def sid(frame) -> str:
+    return make_session(frame.copy(), "models_vs_r")
+
+
+def _terms(payload, key="estimate"):
+    return {c["variable"]: c for c in payload["coefficients"]}
+
+
+# ── R reference values, generated from qa/models_audit/reference.json ────────
+# (estimate, se, p) per term. Do not hand-edit — regenerate from the JSON.
+
+R_LINEAR = {
+    "const": (95.11327287442947, 4.487205995325991, 3.1029732080118793e-61),
+    "age": (0.40428097486789755, 0.04618763216042007, 1.6369774941095782e-16),
+    "bmi": (0.767261988355806, 0.12550547680307175, 3.0846950350836427e-09),
+    "arm_treat": (6.07962689048885, 1.0157514179546865, 6.25422046143562e-09),
+    "sex_M": (0.3545791040931057, 1.0099245357327595, 0.7257679472336525),
+}
+
+R_LINEAR_R2 = 0.368847513452583
+R_LINEAR_AIC = 2157.813716009417
+R_LINEAR_BIC = 2180.0364108573544
+
+R_POLY = {
+    "const": (98.66245934773578, 12.469242508071817, 5.079976292084268e-14),
+    "age": (0.9938384353239559, 0.4091422672245315, 0.015732427548913543),
+    "age^2": (-0.004735333725766885, 0.003313650008121473, 0.15404759363958262),
+    "arm_treat": (6.804816289701107, 1.0693414383872042, 7.481840912840576e-10),
+}
+
+R_POLY_R2 = 0.2934693014774892
+
+R_NB = {
+    "const": (0.09581478683159404, 0.27315590455920363, 0.7257612070498778),
+    "age": (0.018056199314714253, 0.004265602859977703, 2.3061797360819768e-05),
+    "arm_treat": (0.13617295498070642, 0.09250178223473145, 0.14099071921150597),
+}
+
+R_NB_THETA = 2.78421980111332
+R_NB_AIC = 1402.4401421599823
+
+R_GAMMA = {
+    "const": (0.8208226087419606, 0.22344716999825873, 0.00028377500474539884),
+    "age": (0.023216858919824338, 0.003539631168635358, 2.399553373192722e-10),
+    "arm_treat": (0.04310093327030131, 0.0774893625711294, 0.5784810389894999),
+}
+
+R_GAMMA_DISP = 0.44732925157725933
+
+R_LOGIT = {
+    "const": (-3.8633216915921884, 1.2531920408367907, 0.002050732210536261),
+    "age": (0.03392156607503565, 0.01266973807640264, 0.007420282629843824),
+    "bmi": (0.08087059628004423, 0.03516334061953619, 0.021456417655967525),
+    "arm_treat": (0.784284192800052, 0.27776497179213305, 0.004749453348278597),
+    "sex_M": (0.43569238180903397, 0.2762527802632471, 0.11476075700322261),
+}
+
+R_COX = {
+    "age": (0.026983631498801147, 0.007283800075997384, 0.00021171703329672054),
+    "arm_treat": (0.45823088301096415, 0.15118688859628976, 0.002438337723173426),
+    "sex_M": (-0.5286759875095557, 0.15249958446488607, 0.0005268166196748788),
+}
+
+R_COX_C = 0.6385241555687241
+
+R_POIS = {
+    "const": (-1.6890346929012736, 0.3287995084274369, 2.791968114942763e-07),
+    "age": (0.02542374123085334, 0.004963982141294736, 3.028859361348647e-07),
+    "arm_treat": (0.4224409564109313, 0.10967368846968163, 0.00011725345536655761),
+}
+
+
+def _check(got, expected, est_key="estimate", rel=1e-5):
+    for name, (est, se, p) in expected.items():
+        assert got[name][est_key] == pytest.approx(est, rel=rel), f"{name}.estimate"
+        assert got[name]["se"] == pytest.approx(se, rel=rel), f"{name}.se"
+        assert got[name]["p"] == pytest.approx(p, rel=1e-3, abs=1e-12), f"{name}.p"
+
+
+def test_linear_matches_r(client, sid):
+    r_ = client.post("/api/models/linear", json={
+        "session_id": sid, "outcome": "sbp",
+        "predictors": ["age", "bmi", "arm", "sex"]})
+    assert r_.status_code == 200, r_.text
+    out = r_.json()
+    _check(_terms(out), R_LINEAR, rel=1e-9)
+    assert out["r_squared"] == pytest.approx(R_LINEAR_R2, rel=1e-9)
+
+
+def test_information_criteria_count_the_residual_variance(client, sid):
+    """statsmodels leaves sigma out of the parameter count, so AIC sat exactly
+    2 below R's and BIC log(n) below. A criterion only means something next to
+    another criterion, so a fixed offset is not harmless."""
+    out = client.post("/api/models/linear", json={
+        "session_id": sid, "outcome": "sbp",
+        "predictors": ["age", "bmi", "arm", "sex"]}).json()
+    assert out["aic"] == pytest.approx(R_LINEAR_AIC, rel=1e-9)
+    assert out["bic"] == pytest.approx(R_LINEAR_BIC, rel=1e-9)
+
+
+def test_polynomial_accepts_a_categorical_covariate(client, sid):
+    """This used to raise ValueError inside the handler and surface as a 500:
+    covariates were cast straight to float with no dummy encoding, and then
+    the prediction curve took the mean of the raw category."""
+    r_ = client.post("/api/models/polynomial", json={
+        "session_id": sid, "outcome": "sbp", "predictor": "age",
+        "degree": 2, "covariates": ["arm"]})
+    assert r_.status_code == 200, r_.text
+    got = _terms(r_.json())
+    got["age"] = got.pop("age^1")
+    _check(got, R_POLY, rel=1e-6)
+    assert r_.json()["r_squared"] == pytest.approx(R_POLY_R2, rel=1e-9)
+
+
+def test_negbinom_estimates_the_dispersion_by_maximum_likelihood(client, sid):
+    """The dispersion came from the Pearson residuals of a Poisson fit and was
+    then treated as KNOWN. It missed (theta 3.28 against 2.78) and, by fixing
+    an estimated parameter, understated every standard error by about 4% —
+    always in the direction that makes a result look more significant."""
+    r_ = client.post("/api/models/negbinom", json={
+        "session_id": sid, "outcome": "visits", "predictors": ["age", "arm"]})
+    assert r_.status_code == 200, r_.text
+    out = r_.json()
+    assert out["theta"] == pytest.approx(R_NB_THETA, rel=1e-6)
+    assert out["alpha"] == pytest.approx(1.0 / R_NB_THETA, rel=1e-6)
+    assert out["aic"] == pytest.approx(R_NB_AIC, rel=1e-9)
+    got = _terms(out)
+    for name, (est, _se, _p) in R_NB.items():
+        assert got[name]["log_irr"] == pytest.approx(est, rel=1e-5), name
+    assert "alpha" not in got, "the dispersion is not a coefficient row"
+
+
+def test_negbinom_standard_errors_are_not_anticonservative(client, sid):
+    """The old fixed-dispersion fit gave SEs strictly smaller than R's. They
+    may now differ slightly the other way — the MLE propagates the uncertainty
+    in the dispersion where R's glm.nb conditions on it — but never smaller."""
+    got = _terms(client.post("/api/models/negbinom", json={
+        "session_id": sid, "outcome": "visits",
+        "predictors": ["age", "arm"]}).json())
+    for name, (_est, r_se, _p) in R_NB.items():
+        assert got[name]["se"] >= r_se * 0.999, name
+        assert got[name]["se"] == pytest.approx(r_se, rel=0.05), name
+
+
+def test_gamma_tests_coefficients_with_a_t_not_a_z(client, sid):
+    """The Gamma dispersion is estimated from the data, not fixed at 1 like
+    binomial and Poisson, so R uses a t on the residual df. A normal is the
+    large-sample limit and is always the smaller p."""
+    r_ = client.post("/api/models/gamma", json={
+        "session_id": sid, "outcome": "cost",
+        "predictors": ["age", "arm"], "link": "log"})
+    assert r_.status_code == 200, r_.text
+    out = r_.json()
+    _check(_terms(out), R_GAMMA, rel=1e-4)
+    assert _terms(out)["const"]["df"] == 297
+    assert out["dispersion"] == pytest.approx(R_GAMMA_DISP, rel=1e-5)
+
+
+# ── models already in agreement: lock them so they stay that way ─────────────
+
+
+def test_logistic_matches_r(client, sid):
+    got = _terms(client.post("/api/models/logistic", json={
+        "session_id": sid, "outcome": "event_binary",
+        "predictors": ["age", "bmi", "arm", "sex"]}).json())
+    _check(got, R_LOGIT, est_key="B", rel=1e-5)
+
+
+def test_cox_matches_r(client, sid):
+    out = client.post("/api/models/survival/cox", json={
+        "session_id": sid, "duration_col": "time", "event_col": "status",
+        "predictors": ["age", "arm", "sex"]}).json()
+    _check(_terms(out), R_COX, est_key="log_hr", rel=1e-5)
+    assert out["concordance"] == pytest.approx(R_COX_C, rel=1e-3)
+
+
+def test_poisson_matches_r(client, sid):
+    got = _terms(client.post("/api/models/poisson", json={
+        "session_id": sid, "outcome": "admissions",
+        "predictors": ["age", "arm"]}).json())
+    _check(got, R_POIS, est_key="log_irr", rel=1e-5)

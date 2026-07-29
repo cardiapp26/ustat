@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 import numpy as np
+from scipy import stats as scipy_stats
 import pandas as pd
 import statsmodels.api as sm
 from fastapi import APIRouter, HTTPException
@@ -191,18 +192,32 @@ def gamma_regression(req: GammaRequest):
     ci = model.conf_int()
 
     vifs = _compute_vif(X)
+    # The Gamma dispersion is estimated from the data, not fixed at 1 as it is
+    # for binomial and Poisson, so each coefficient is tested against a t on
+    # the residual degrees of freedom — that is what R does. statsmodels
+    # defaults to a normal z, which is the large-sample limit and is always
+    # the smaller p: on the audit frame the intercept came out at 0.000239
+    # where R gives 0.000284.
+    df_resid = int(model.df_resid)
     coefs = []
     for var in model.params.index:
         b = float(model.params[var])
+        se = float(model.bse[var])
+        stat = b / se if se > 0 else float("nan")
+        p_t = float(2 * scipy_stats.t.sf(abs(stat), df_resid)) if df_resid > 0 \
+            else float(model.pvalues[var])
+        t_crit = float(scipy_stats.t.ppf(0.975, df_resid)) if df_resid > 0 else 1.96
         coefs.append({
             "variable": str(var),
             "estimate": b,
             "exp_estimate": float(np.exp(b)) if req.link == "log" else None,
-            "se": float(model.bse[var]),
-            "z": float(model.tvalues[var]),
-            "p": float(model.pvalues[var]),
-            "ci_low": float(ci.loc[var, 0]),
-            "ci_high": float(ci.loc[var, 1]),
+            "se": se,
+            "t": stat,
+            "z": stat,
+            "df": df_resid,
+            "p": p_t,
+            "ci_low": b - t_crit * se,
+            "ci_high": b + t_crit * se,
             "vif": vifs.get(str(var)),
         })
 
@@ -212,10 +227,20 @@ def gamma_regression(req: GammaRequest):
         "link": req.link,
         "n": int(model.nobs),
         "n_excluded": n_excluded,
-        "aic": float(model.aic),
-        "bic": float(model.bic),
+        # The dispersion counts as an estimated parameter; statsmodels leaves
+        # it out and lands exactly 2 below R's AIC.
+        "aic": float(-2.0 * model.llf + 2.0 * (len(model.params) + 1)),
+        "bic": float(-2.0 * model.llf + np.log(int(model.nobs)) * (len(model.params) + 1)),
         "deviance": float(model.deviance),
         "scale": float(model.scale),
+        "dispersion": float(model.scale),
+        "df_residual": df_resid,
+        "dispersion_note": (
+            "The Gamma dispersion is estimated, so coefficients are tested "
+            "with a t on the residual degrees of freedom. R's AIC additionally "
+            "estimates the shape by maximum likelihood, so its value can "
+            "differ slightly from this one."
+        ),
         "warnings": cat_warnings,
         "coefficients": coefs,
     })
@@ -246,18 +271,35 @@ def negative_binomial_regression(req: NegBinomRequest):
     if (y.dropna() % 1 != 0).any():
         raise HTTPException(status_code=422, detail="Negative binomial requires integer counts. Fractional values found.")
     cov_type = "HC3" if req.robust_se else "nonrobust"
+    # The dispersion is estimated by maximum likelihood jointly with the
+    # coefficients, the way R's MASS::glm.nb does it.
+    #
+    # It used to be estimated from the Pearson residuals of a Poisson fit and
+    # then handed to a GLM as if it were KNOWN. Two things went wrong: the
+    # moment estimator missed (theta 3.28 against a true 2.78 on the audit
+    # frame), and fixing an estimated parameter ignores its own uncertainty,
+    # so every standard error came out about 4% too small. That is one-sided:
+    # it can only make results look more significant than they are. On the
+    # audit frame the age coefficient carried p = 1.0e-05 where the correct
+    # value is 2.3e-05.
     try:
-        poisson_fit = sm.GLM(y, X, family=sm.families.Poisson()).fit()
-        mu = poisson_fit.mu
-        alpha_est = max(1e-6, float(((((y - mu) ** 2 - mu) / mu ** 2).mean())))
-    except Exception:
-        alpha_est = 1.0
-    model = sm.GLM(y, X, family=sm.families.NegativeBinomial(alpha=alpha_est)).fit(cov_type=cov_type)
+        model = sm.NegativeBinomial(y, X).fit(disp=0, maxiter=200)
+        if cov_type != "nonrobust":
+            model = sm.NegativeBinomial(y, X).fit(
+                disp=0, maxiter=200, cov_type=cov_type)
+        alpha_est = float(model.params["alpha"])
+        alpha_se = float(model.bse["alpha"])
+        converged = bool(getattr(model.mle_retvals, "get", lambda *_: True)("converged", True))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Negative binomial model did not converge: {exc}",
+        )
     ci = model.conf_int()
     vifs = _compute_vif(X)
 
     coefs = []
-    for var in model.params.index:
+    for var in [v for v in model.params.index if v != "alpha"]:
         b = float(model.params[var])
         coefs.append({
             "variable": str(var),
@@ -280,7 +322,18 @@ def negative_binomial_regression(req: NegBinomRequest):
         "n_excluded": n_excluded,
         "aic": float(model.aic),
         "bic": float(model.bic),
-        "deviance": float(model.deviance),
+        # The dispersion the model actually estimated, so the reader can see
+        # how far the counts sit from Poisson. It was never reported at all.
+        "alpha": alpha_est,
+        "alpha_se": alpha_se,
+        "theta": float(1.0 / alpha_est) if alpha_est > 0 else None,
+        "converged": converged,
+        "dispersion_note": (
+            "alpha is the negative-binomial dispersion estimated by maximum "
+            "likelihood; theta = 1 / alpha is the same quantity in R's "
+            "MASS::glm.nb parameterisation. alpha near 0 means the counts are "
+            "close to Poisson."
+        ),
         "warnings": cat_warnings,
         "coefficients": coefs,
     })
@@ -563,20 +616,24 @@ def ordinal_regression(req: OrdinalRequest):
         import math
         coefs.append({
             "variable": name,
-            "log_odds": round(beta, 6),
-            "se": round(se, 6),
-            "z": round(beta / se, 4) if se else None,
-            "p": round(p, 6),
-            "odds_ratio": round(math.exp(beta), 6),
-            "or_ci_low": round(math.exp(lo), 6) if lo is not None else None,
-            "or_ci_high": round(math.exp(hi), 6) if hi is not None else None,
+            # Not rounded on the way out. Six decimals is coarser than the
+            # numbers themselves — a p of 1.9142727e-04 was served as
+            # 0.000191, and anything below 5e-7 would have arrived as a flat
+            # zero. Formatting is the display layer's job.
+            "log_odds": beta,
+            "se": se,
+            "z": (beta / se) if se else None,
+            "p": p,
+            "odds_ratio": math.exp(beta),
+            "or_ci_low": math.exp(lo) if lo is not None else None,
+            "or_ci_high": math.exp(hi) if hi is not None else None,
         })
 
     # Cumulative cut-points (thresholds) — params after the predictor betas.
     thresholds = []
     for name in result.params.index:
         if name not in exog_names:
-            thresholds.append({"boundary": str(name), "coef": round(float(result.params[name]), 6)})
+            thresholds.append({"boundary": str(name), "coef": float(result.params[name])})
 
     # McFadden pseudo-R² against the intercept-only (category-frequency) model.
     pseudo_r2 = None
@@ -599,8 +656,8 @@ def ordinal_regression(req: OrdinalRequest):
         "coefficients": coefs,
         "thresholds": thresholds,
         "pseudo_r2": pseudo_r2,
-        "aic": round(float(result.aic), 4) if result.aic is not None else None,
-        "bic": round(float(result.bic), 4) if result.bic is not None else None,
+        "aic": float(result.aic) if result.aic is not None else None,
+        "bic": float(result.bic) if result.bic is not None else None,
         "brant_proportional_odds": _brant_test(np.asarray(y), X),
         "warnings": cat_warnings,
         "result_text": "",
