@@ -1,4 +1,5 @@
 import axios from "axios";
+import { runColumnStructureMutation } from "./lib/columnStructureLock";
 
 const api = axios.create({ baseURL: "" });  // Vite proxy: /api → localhost:8000
 
@@ -209,10 +210,26 @@ export const getMissing = (sessionId: string, columns: string[]) =>
   api.get(`/api/stats/${sessionId}/missing`, { params: { columns: columns.join(",") } });
 
 // ── Compute / Create New Variable ──────────────────────────────────────────
-export const computeFormula    = (sessionId: string, data: object) => api.post(`/api/compute/${sessionId}/formula`, data);
-export const computeTransform  = (sessionId: string, data: object) => api.post(`/api/compute/${sessionId}/transform`, data);
-export const computeRecode     = (sessionId: string, data: object) => api.post(`/api/compute/${sessionId}/recode`, data);
-export const computeClinical   = (sessionId: string, calc: string, data: object) => api.post(`/api/compute/${sessionId}/clinical/${calc}`, data);
+export const computeFormula = (sessionId: string, data: object) =>
+  runColumnStructureMutation(
+    sessionId,
+    () => api.post(`/api/compute/${sessionId}/formula`, data),
+  );
+export const computeTransform = (sessionId: string, data: object) =>
+  runColumnStructureMutation(
+    sessionId,
+    () => api.post(`/api/compute/${sessionId}/transform`, data),
+  );
+export const computeRecode = (sessionId: string, data: object) =>
+  runColumnStructureMutation(
+    sessionId,
+    () => api.post(`/api/compute/${sessionId}/recode`, data),
+  );
+export const computeClinical = (sessionId: string, calc: string, data: object) =>
+  runColumnStructureMutation(
+    sessionId,
+    () => api.post(`/api/compute/${sessionId}/clinical/${calc}`, data),
+  );
 export const deleteColumn      = (sessionId: string, col: string) => api.delete(`/api/compute/${sessionId}/column/${encodeURIComponent(col)}`);
 export const getUniqueValues   = (sessionId: string, col: string) => api.get(`/api/compute/${sessionId}/unique/${encodeURIComponent(col)}`);
 

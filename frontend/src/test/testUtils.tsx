@@ -36,6 +36,8 @@ export function installSession(session: Session = makeSession()): void {
     panelCache: {},
     undoDepth: 0,
     redoDepth: 0,
+    columnMutationUndo: [],
+    columnMutationRedo: [],
     dataVersion: 0,
     columnDecimals: {},
     sessionHistory: [],

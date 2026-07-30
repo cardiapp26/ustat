@@ -13,6 +13,7 @@ import pandas as pd
 import pytest
 
 from conftest import make_session
+from services import store
 
 SEED = 7
 
@@ -295,6 +296,61 @@ def test_undo_redo_cycle(client, df):
     r2 = client.post(f"/api/sessions/{sid}/redo")
     assert r2.status_code == 200, r2.text
     assert r2.json()["undo_depth"] >= 1
+
+
+def test_undo_redo_restores_column_dependent_state(client, df):
+    sid = _new_session(df, "undo_column_state")
+    store.save_filter(sid, [
+        {"column": "AGE", "operator": "gt", "value": "50", "join": "AND"},
+    ])
+    store.save_metadata(sid, {"AGE": {"label": "Age"}})
+    store.save_kind_overrides(sid, {"AGE": "numeric"})
+    store.set_decimal(sid, "AGE", 1)
+
+    renamed = client.post(
+        f"/api/compute/{sid}/rename",
+        json={"old_name": "AGE", "new_name": "AGE_YEARS"},
+    )
+    assert renamed.status_code == 200, renamed.text
+
+    undone = client.post(f"/api/sessions/{sid}/undo")
+    assert undone.status_code == 200, undone.text
+    assert undone.json()["case_filter"]["conditions"][0]["column"] == "AGE"
+    assert "AGE" in store.get_metadata(sid)
+    assert "AGE" in store.get_kind_overrides(sid)
+    assert store.get_decimals(sid)["AGE"] == 1
+
+    redone = client.post(f"/api/sessions/{sid}/redo")
+    assert redone.status_code == 200, redone.text
+    assert redone.json()["case_filter"]["conditions"][0]["column"] == "AGE_YEARS"
+    assert "AGE_YEARS" in store.get_metadata(sid)
+    assert "AGE_YEARS" in store.get_kind_overrides(sid)
+    assert store.get_decimals(sid)["AGE_YEARS"] == 1
+
+
+def test_generic_undo_preserves_newer_filter_and_metadata(client, df):
+    sid = _new_session(df, "undo_preserve_newer_meta")
+    store.save_filter(sid, [
+        {"column": "AGE", "operator": "gt", "value": "40", "join": "AND"},
+    ])
+    changed = client.patch(
+        f"/api/sessions/{sid}/cell",
+        json={"row_index": 0, "column": "AGE", "value": 1},
+    )
+    assert changed.status_code == 200, changed.text
+
+    newer_filter = [
+        {"column": "LDL", "operator": "gt", "value": "130", "join": "AND"},
+    ]
+    store.save_filter(sid, newer_filter)
+    store.save_metadata(sid, {"AGE": {"label": "Newer age label"}})
+
+    undone = client.post(f"/api/sessions/{sid}/undo")
+
+    assert undone.status_code == 200, undone.text
+    assert store.get_filter(sid) == newer_filter
+    assert store.get_metadata(sid)["AGE"]["label"] == "Newer age label"
+    assert undone.json()["case_filter"]["conditions"] == newer_filter
 
 
 def test_undo_nothing(client, df):

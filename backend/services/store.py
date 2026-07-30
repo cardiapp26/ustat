@@ -11,6 +11,7 @@ import json
 import os
 import tempfile
 import threading
+from copy import deepcopy
 import pandas as pd
 from typing import Dict, List, Optional
 import time
@@ -29,7 +30,7 @@ _metadata: Dict[str, dict] = {}
 _kinds: Dict[str, Dict[str, str]] = {}  # {session_id: {col: "numeric"|"categorical"|...}}
 _decimals: Dict[str, Dict[str, int]] = {}  # {session_id: {col: decimal_places}} for cell-format overrides
 _filenames: Dict[str, str] = {}  # {session_id: user-chosen display name}
-_undo: Dict[str, list] = {}   # {session_id: [DataFrame snapshots]}
+_undo: Dict[str, list] = {}   # {session_id: [data + dependent-state snapshots]}
 _redo: Dict[str, list] = {}
 _lock = Lock()
 MAX_UNDO = 30
@@ -116,7 +117,15 @@ def _flush_dirty_to_disk() -> None:
         for sid in pending:
             entry = _store.get(sid)
             if entry is not None:
-                snapshot[sid] = (entry["df"], entry["timestamp"])
+                snapshot[sid] = {
+                    "df": entry["df"].copy(),
+                    "timestamp": entry["timestamp"],
+                    "kinds": deepcopy(_kinds.get(sid, {})),
+                    "decimals": deepcopy(_decimals.get(sid, {})),
+                    "filename": _filenames.get(sid),
+                    "metadata": deepcopy(_metadata.get(sid, {})),
+                    "filters": deepcopy(_filters.get(sid, [])),
+                }
 
     if not snapshot:
         return
@@ -125,16 +134,17 @@ def _flush_dirty_to_disk() -> None:
     except OSError:
         return  # No writable/mounted cache dir — degrade to memory-only silently.
 
-    for sid, (df, ts) in snapshot.items():
+    for sid, state in snapshot.items():
         df_path, meta_path = _cache_paths(sid)
         try:
-            _atomic_write_pickle(df, df_path)
+            _atomic_write_pickle(state["df"], df_path)
             meta = {
-                "timestamp": ts,
-                "kinds": _kinds.get(sid, {}),
-                "decimals": _decimals.get(sid, {}),
-                "filename": _filenames.get(sid),
-                "metadata": _metadata.get(sid, {}),
+                "timestamp": state["timestamp"],
+                "kinds": state["kinds"],
+                "decimals": state["decimals"],
+                "filename": state["filename"],
+                "metadata": state["metadata"],
+                "filters": state["filters"],
             }
             with open(meta_path + ".tmp", "w") as f:
                 json.dump(meta, f)
@@ -222,6 +232,8 @@ def load_persisted_sessions() -> None:
                 _filenames[sid] = meta["filename"]
             if meta.get("metadata"):
                 _metadata[sid] = meta["metadata"]
+            if meta.get("filters"):
+                _filters[sid] = meta["filters"]
 
 
 def purge_session(session_id: str) -> None:
@@ -289,7 +301,9 @@ def save(session_id: str, df: pd.DataFrame, track_undo: bool = True) -> None:
         # Push current state to undo stack before overwriting
         if track_undo and session_id in _store:
             old_df = _store[session_id]["df"]
-            _undo.setdefault(session_id, []).append(old_df.copy())
+            _undo.setdefault(session_id, []).append(
+                _undo_snapshot(session_id, old_df, include_column_state=False)
+            )
             if len(_undo[session_id]) > MAX_UNDO:
                 _undo[session_id] = _undo[session_id][-MAX_UNDO:]
             # Clear redo stack on new action
@@ -335,15 +349,20 @@ def get(session_id: str) -> Optional[pd.DataFrame]:
 
 
 def save_filter(session_id: str, conditions: List[dict]) -> None:
-    _filters[session_id] = conditions
+    with _lock:
+        _filters[session_id] = deepcopy(conditions)
+        _dirty.add(session_id)
 
 
 def get_filter(session_id: str) -> List[dict]:
-    return _filters.get(session_id, [])
+    with _lock:
+        return deepcopy(_filters.get(session_id, []))
 
 
 def clear_filter(session_id: str) -> None:
-    _filters.pop(session_id, None)
+    with _lock:
+        _filters.pop(session_id, None)
+        _dirty.add(session_id)
 
 
 def validate_conditions(df: pd.DataFrame, conditions: List[dict]) -> None:
@@ -460,20 +479,61 @@ def list_sessions() -> list[str]:
     return list(_store.keys())
 
 
+def _undo_snapshot(
+    session_id: str,
+    df: pd.DataFrame,
+    *,
+    include_column_state: bool,
+) -> dict:
+    """Capture dataframe and, only for structural edits, dependent state."""
+    column_state = None
+    if include_column_state:
+        column_state = {
+            "filters": deepcopy(_filters.get(session_id, [])),
+            "metadata": deepcopy(_metadata.get(session_id, {})),
+            "kinds": deepcopy(_kinds.get(session_id, {})),
+            "decimals": deepcopy(_decimals.get(session_id, {})),
+        }
+    return {
+        "df": df.copy(),
+        "column_state": column_state,
+    }
+
+
+def _restore_column_state(session_id: str, snapshot: dict) -> pd.DataFrame:
+    """Restore a snapshot while caller holds ``_lock``."""
+    df = snapshot["df"]
+    column_state = snapshot.get("column_state")
+    if column_state is not None:
+        _filters[session_id] = column_state["filters"]
+        _metadata[session_id] = column_state["metadata"]
+        _kinds[session_id] = column_state["kinds"]
+        _decimals[session_id] = column_state["decimals"]
+    _store[session_id] = {"df": df, "timestamp": time.time()}
+    _dirty.add(session_id)
+    return df
+
+
 def undo(session_id: str) -> Optional[pd.DataFrame]:
     """Pop the last undo snapshot and restore it. Returns the restored DataFrame or None."""
     with _lock:
         stack = _undo.get(session_id, [])
         if not stack:
             return None
-        prev_df = stack.pop()
+        previous = stack.pop()
         # Push current state to redo
         if session_id in _store:
-            _redo.setdefault(session_id, []).append(_store[session_id]["df"].copy())
+            _redo.setdefault(session_id, []).append(
+                _undo_snapshot(
+                    session_id,
+                    _store[session_id]["df"],
+                    include_column_state=previous.get("column_state") is not None,
+                )
+            )
             if len(_redo[session_id]) > MAX_UNDO:
                 _redo[session_id] = _redo[session_id][-MAX_UNDO:]
-        _store[session_id] = {"df": prev_df, "timestamp": time.time()}
-    return prev_df
+        restored = _restore_column_state(session_id, previous)
+    return restored
 
 
 def redo(session_id: str) -> Optional[pd.DataFrame]:
@@ -482,14 +542,20 @@ def redo(session_id: str) -> Optional[pd.DataFrame]:
         stack = _redo.get(session_id, [])
         if not stack:
             return None
-        next_df = stack.pop()
+        next_snapshot = stack.pop()
         # Push current state to undo
         if session_id in _store:
-            _undo.setdefault(session_id, []).append(_store[session_id]["df"].copy())
+            _undo.setdefault(session_id, []).append(
+                _undo_snapshot(
+                    session_id,
+                    _store[session_id]["df"],
+                    include_column_state=next_snapshot.get("column_state") is not None,
+                )
+            )
             if len(_undo[session_id]) > MAX_UNDO:
                 _undo[session_id] = _undo[session_id][-MAX_UNDO:]
-        _store[session_id] = {"df": next_df, "timestamp": time.time()}
-    return next_df
+        restored = _restore_column_state(session_id, next_snapshot)
+    return restored
 
 
 def undo_depth(session_id: str) -> int:
@@ -523,21 +589,23 @@ def save_metadata(session_id: str, meta: dict) -> None:
     column (e.g. a previously-saved ``value_labels`` map). A full map still
     works — every supplied key overwrites its prior value.
     """
-    cur = dict(_metadata.get(session_id, {}))
-    for col, m in (meta or {}).items():
-        if isinstance(m, dict):
-            prev = dict(cur.get(col, {}) or {})
-            prev.update(m)
-            cur[col] = prev
-        else:
-            cur[col] = m
-    _metadata[session_id] = cur
-    _mark_dirty(session_id)
+    with _lock:
+        cur = dict(_metadata.get(session_id, {}))
+        for col, m in (meta or {}).items():
+            if isinstance(m, dict):
+                prev = dict(cur.get(col, {}) or {})
+                prev.update(m)
+                cur[col] = prev
+            else:
+                cur[col] = m
+        _metadata[session_id] = cur
+        _dirty.add(session_id)
 
 
 def get_metadata(session_id: str) -> dict:
     """Return column-level metadata for a session."""
-    return _metadata.get(session_id, {})
+    with _lock:
+        return deepcopy(_metadata.get(session_id, {}))
 
 
 # ── Column kind overrides ────────────────────────────────────────────────────
@@ -548,25 +616,30 @@ def get_metadata(session_id: str) -> dict:
 
 def save_kind_overrides(session_id: str, overrides: Dict[str, str]) -> None:
     """Merge a dict of {column: kind} into the per-session override map."""
-    current = _kinds.get(session_id, {})
-    current.update({k: v for k, v in overrides.items() if v})
-    _kinds[session_id] = current
-    _mark_dirty(session_id)
+    with _lock:
+        current = _kinds.get(session_id, {})
+        current.update({k: v for k, v in overrides.items() if v})
+        _kinds[session_id] = current
+        _dirty.add(session_id)
 
 
 def set_kind_overrides(session_id: str, overrides: Dict[str, str]) -> None:
     """Replace the override map wholesale (used on load_session restore)."""
-    _kinds[session_id] = dict(overrides or {})
-    _mark_dirty(session_id)
+    with _lock:
+        _kinds[session_id] = dict(overrides or {})
+        _dirty.add(session_id)
 
 
 def get_kind_overrides(session_id: str) -> Dict[str, str]:
-    return _kinds.get(session_id, {})
+    with _lock:
+        return dict(_kinds.get(session_id, {}))
 
 
 def clear_kind_override(session_id: str, column: str) -> None:
-    if session_id in _kinds:
-        _kinds[session_id].pop(column, None)
+    with _lock:
+        if session_id in _kinds:
+            _kinds[session_id].pop(column, None)
+            _dirty.add(session_id)
 
 
 # ── Column decimal-places overrides ──────────────────────────────────────────
@@ -577,41 +650,42 @@ def clear_kind_override(session_id: str, column: str) -> None:
 
 def save_decimals(session_id: str, decimals: Dict[str, int]) -> None:
     """Replace the decimal-places map wholesale."""
-    _decimals[session_id] = {k: int(v) for k, v in (decimals or {}).items()}
-    _mark_dirty(session_id)
+    with _lock:
+        _decimals[session_id] = {k: int(v) for k, v in (decimals or {}).items()}
+        _dirty.add(session_id)
 
 
 def get_decimals(session_id: str) -> Dict[str, int]:
-    return _decimals.get(session_id, {})
+    with _lock:
+        return dict(_decimals.get(session_id, {}))
 
 
 def set_decimal(session_id: str, column: str, decimals: int) -> None:
     """Set the decimal-places override for a single column."""
-    cur = _decimals.get(session_id, {})
-    cur[column] = int(decimals)
-    _decimals[session_id] = cur
-    _mark_dirty(session_id)
+    with _lock:
+        cur = _decimals.get(session_id, {})
+        cur[column] = int(decimals)
+        _decimals[session_id] = cur
+        _dirty.add(session_id)
 
 
 def clear_decimal(session_id: str, column: str) -> None:
-    if session_id in _decimals:
-        _decimals[session_id].pop(column, None)
-        _mark_dirty(session_id)
+    with _lock:
+        if session_id in _decimals:
+            _decimals[session_id].pop(column, None)
+            _dirty.add(session_id)
 
 
 def rename_decimal_key(session_id: str, old: str, new: str) -> None:
     """Move the decimal entry to a new column name (called on rename)."""
-    if session_id in _decimals and old in _decimals[session_id]:
-        _decimals[session_id][new] = _decimals[session_id].pop(old)
-        _mark_dirty(session_id)
+    with _lock:
+        if session_id in _decimals and old in _decimals[session_id]:
+            _decimals[session_id][new] = _decimals[session_id].pop(old)
+            _dirty.add(session_id)
 
 
-def rename_column_key(session_id: str, old: str, new: str) -> None:
-    """Move ALL per-column state to a new column name on rename so flags such
-    as value_labels, analysis_excluded, display_name and the kind override are
-    not orphaned under the old name."""
-    if old == new:
-        return
+def _rename_column_key_locked(session_id: str, old: str, new: str) -> None:
+    """Move per-column state while caller holds ``_lock``."""
     meta = _metadata.get(session_id)
     if meta and old in meta:
         meta[new] = meta.pop(old)
@@ -620,7 +694,94 @@ def rename_column_key(session_id: str, old: str, new: str) -> None:
         kinds[new] = kinds.pop(old)
     if session_id in _decimals and old in _decimals[session_id]:
         _decimals[session_id][new] = _decimals[session_id].pop(old)
-    _mark_dirty(session_id)
+    filters = _filters.get(session_id)
+    if filters:
+        _filters[session_id] = [
+            {**condition, "column": new}
+            if condition.get("column") == old
+            else condition
+            for condition in filters
+        ]
+
+
+def _delete_column_key_locked(session_id: str, column: str) -> None:
+    """Remove per-column state while caller holds ``_lock``."""
+    metadata = _metadata.get(session_id)
+    if metadata:
+        metadata.pop(column, None)
+    kinds = _kinds.get(session_id)
+    if kinds:
+        kinds.pop(column, None)
+    decimals = _decimals.get(session_id)
+    if decimals:
+        decimals.pop(column, None)
+    filters = _filters.get(session_id)
+    if filters:
+        remaining = [
+            condition for condition in filters
+            if condition.get("column") != column
+        ]
+        if remaining:
+            _filters[session_id] = remaining
+        else:
+            _filters.pop(session_id, None)
+
+
+def rename_dataframe_column(session_id: str, old: str, new: str) -> pd.DataFrame:
+    """Atomically rename dataframe column and every keyed dependency."""
+    with _lock:
+        entry = _store.get(session_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        current = entry["df"]
+        if old not in current.columns:
+            raise HTTPException(status_code=404, detail=f"Column '{old}' not found")
+        if new in current.columns and new != old:
+            raise HTTPException(status_code=422, detail=f"Column '{new}' already exists")
+        if old == new:
+            return current
+
+        _undo.setdefault(session_id, []).append(
+            _undo_snapshot(session_id, current, include_column_state=True)
+        )
+        if len(_undo[session_id]) > MAX_UNDO:
+            _undo[session_id] = _undo[session_id][-MAX_UNDO:]
+        _redo.pop(session_id, None)
+
+        renamed = current.rename(columns={old: new})
+        _store[session_id] = {"df": renamed, "timestamp": time.time()}
+        _rename_column_key_locked(session_id, old, new)
+        _dirty.add(session_id)
+        return renamed
+
+
+def delete_dataframe_columns(
+    session_id: str,
+    columns: List[str],
+) -> pd.DataFrame:
+    """Atomically delete dataframe columns and every keyed dependency."""
+    with _lock:
+        entry = _store.get(session_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        current = entry["df"]
+        missing = [column for column in columns if column not in current.columns]
+        if missing:
+            raise HTTPException(status_code=404, detail=f"Columns not found: {missing}")
+
+        _undo.setdefault(session_id, []).append(
+            _undo_snapshot(session_id, current, include_column_state=True)
+        )
+        if len(_undo[session_id]) > MAX_UNDO:
+            _undo[session_id] = _undo[session_id][-MAX_UNDO:]
+        _redo.pop(session_id, None)
+
+        reduced = current.drop(columns=columns)
+        _store[session_id] = {"df": reduced, "timestamp": time.time()}
+        for column in columns:
+            _delete_column_key_locked(session_id, column)
+        _dirty.add(session_id)
+        return reduced
 
 
 # ── Session display name (user-facing rename) ────────────────────────────────

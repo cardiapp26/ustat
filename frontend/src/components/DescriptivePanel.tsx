@@ -1,8 +1,14 @@
-import { useEffect, useState, useCallback, useRef, type ReactNode } from "react";
-import { useStore, PALETTES, isNumericKind } from "../store";
+import { useEffect, useLayoutEffect, useState, useCallback, useRef, type ReactNode } from "react";
+import { Pencil, Trash2 } from "lucide-react";
+import {
+  useStore,
+  PALETTES,
+  isNumericKind,
+  runColumnStructureMutation,
+} from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
 import { usePalette } from "../plotStyle";
-import api from "../api";
+import api, { deleteColumn, renameColumn } from "../api";
 import ResultExporter from "./ResultExporter";
 import TitledPlot from "./TitledPlot";
 import { fmtP } from "../lib/format";
@@ -598,30 +604,64 @@ function ScatterView({
   const [yCol,    setYCol]    = usePersistedPanelState<string>("descriptive_numeric", "yCol", numCols.find((c) => c !== defaultX) ?? "");
   const [color,   setColor]   = usePersistedPanelState<string>("descriptive_numeric", "color", "");
   const [shape,   setShape]   = usePersistedPanelState<string>("descriptive_numeric", "shape", "");
+  const scatterCache = useStore((s) => s.panelCache.descriptive_numeric) as
+    | Record<string, unknown>
+    | undefined;
   const [data,    setData]    = useState<ScatterResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState<string | null>(null);
   const prevKey = useRef("");
+  const scatterRequestIdRef = useRef(0);
   const scatterRef = useRef<PlotCaptureHandle | null>(null);
+
+  // Structural edits are initiated by the parent Summary list. Its shared
+  // cache remap must also update these already-mounted local selectors.
+  useEffect(() => {
+    const cachedX = typeof scatterCache?.xCol === "string" ? scatterCache.xCol : xCol;
+    const cachedY = typeof scatterCache?.yCol === "string" ? scatterCache.yCol : yCol;
+    const cachedColor = typeof scatterCache?.color === "string" ? scatterCache.color : color;
+    const cachedShape = typeof scatterCache?.shape === "string" ? scatterCache.shape : shape;
+    const nextX = numCols.includes(cachedX) ? cachedX : (numCols[0] ?? "");
+    const nextY = numCols.includes(cachedY) ? cachedY : "";
+    const nextColor = catCols.includes(cachedColor) ? cachedColor : "";
+    const nextShape = catCols.includes(cachedShape) ? cachedShape : "";
+    if (nextX !== xCol) setXCol(nextX);
+    if (nextY !== yCol) setYCol(nextY);
+    if (nextColor !== color) setColor(nextColor);
+    if (nextShape !== shape) setShape(nextShape);
+  }, [scatterCache, numCols, catCols, xCol, yCol, color, shape, setXCol, setYCol, setColor, setShape]);
 
   useEffect(() => {
     if (!xCol || !yCol) {
+      scatterRequestIdRef.current += 1;
+      prevKey.current = "";
       // eslint-disable-next-line react-hooks/set-state-in-effect -- clear stale fetch result
       setData((d) => (d === null ? d : null));
+      setLoading(false);
       return;
     }
     const key = `${xCol}|${yCol}|${color}|${shape}`;
     if (key === prevKey.current) return;
     prevKey.current = key;
+    const requestId = ++scatterRequestIdRef.current;
     setLoading(true); setError(null);
     api.post("/api/charts/scatter", {
       session_id: sessionId, x: xCol, y: yCol,
       color: color || undefined,
       shape: shape || undefined,
     })
-      .then((r) => setData(r.data))
-      .catch((e) => setError(e.response?.data?.detail ?? e.message))
-      .finally(() => setLoading(false));
+      .then((r) => {
+        if (scatterRequestIdRef.current === requestId) setData(r.data);
+      })
+      .catch((e) => {
+        if (scatterRequestIdRef.current === requestId) {
+          setError(e.response?.data?.detail ?? e.message);
+          setData(null);
+        }
+      })
+      .finally(() => {
+        if (scatterRequestIdRef.current === requestId) setLoading(false);
+      });
   }, [xCol, yCol, color, shape, sessionId]);
 
   const fmt = (v: number | null | undefined, d = 3) =>
@@ -843,10 +883,42 @@ const KIND_STYLE: Record<string, { label: string; cls: string }> = {
   date:        { label: "D", cls: "bg-purple-100 text-purple-700" },
 };
 
+const COLUMN_LIST_MIN_WIDTH = 224;
+const COLUMN_LIST_DEFAULT_WIDTH = 320;
+const COLUMN_LIST_MAX_WIDTH = 560;
+// Distribution plot needs 520 px; surrounding p-4 adds 32 px. Keep a small
+// extra gutter so the divider never clips the plot at the minimum window size.
+const RESULT_PANE_MIN_WIDTH = 560;
+
+function getColumnListMaxWidth() {
+  if (typeof window === "undefined") return COLUMN_LIST_MAX_WIDTH;
+  return Math.max(
+    COLUMN_LIST_MIN_WIDTH,
+    Math.min(COLUMN_LIST_MAX_WIDTH, window.innerWidth - RESULT_PANE_MIN_WIDTH),
+  );
+}
+
+function clampColumnListWidth(width: number) {
+  return Math.max(
+    COLUMN_LIST_MIN_WIDTH,
+    Math.min(getColumnListMaxWidth(), width),
+  );
+}
+
+function persistColumnListWidth(width: number) {
+  try {
+    localStorage.setItem("uStat.descriptiveColumnListW", String(width));
+  } catch {
+    // localStorage can be unavailable in private or embedded contexts.
+  }
+}
+
 export default function DescriptivePanel() {
   const session = useStore((s) => s.session);
   const updateColumnKind = useStore((s) => s.updateColumnKind);
   const reorderColumns   = useStore((s) => s.reorderColumns);
+  const renameSessionColumn = useStore((s) => s.renameSessionColumn);
+  const removeSessionColumn = useStore((s) => s.removeSessionColumn);
   // Per-column decimal overrides set in the Data tab. The backend has
   // already auto-detected integer columns (it returns `display_decimals`
   // on /api/stats/descriptive), but user overrides from the store win.
@@ -857,12 +929,135 @@ export default function DescriptivePanel() {
   const [sparklines, setSparklines] = useState<Record<string, SparkData>>({});
   const [nameTip, setNameTip] = useState<{ text: string; x: number; y: number } | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
+  const selectedRef = useRef<string | null>(null);
   const [summary, setSummary] = useState<ColumnSummary | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [search, setSearch] = useState("");
+  const [renameCol, setRenameCol] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [busyColumn, setBusyColumn] = useState<string | null>(null);
+  const [columnActionError, setColumnActionError] = useState<string | null>(null);
+  const [columnListWidth, setColumnListWidth] = useState(() => {
+    if (typeof window === "undefined") return COLUMN_LIST_DEFAULT_WIDTH;
+    try {
+      const stored = Number.parseInt(
+        localStorage.getItem("uStat.descriptiveColumnListW")
+          || String(COLUMN_LIST_DEFAULT_WIDTH),
+        10,
+      );
+      return clampColumnListWidth(stored || COLUMN_LIST_DEFAULT_WIDTH);
+    } catch {
+      return clampColumnListWidth(COLUMN_LIST_DEFAULT_WIDTH);
+    }
+  });
+  const [columnListMaxWidth, setColumnListMaxWidth] = useState(
+    getColumnListMaxWidth,
+  );
   const [view, setView] = usePersistedPanelState<"distribution" | "scatter">("descriptive", "view", "distribution");
   const chartTab = useStore((s) => s.descriptiveTab);
   const setChartTab = useStore((s) => s.setDescriptiveTab);
+
+  const columnListResizeRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startWidth: number;
+    currentWidth: number;
+    previousCursor: string;
+    previousUserSelect: string;
+  } | null>(null);
+  const stopColumnListResizeRef = useRef<(() => void) | null>(null);
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
+  const skipRenameCommitRef = useRef(false);
+  const renameCommitInFlightRef = useRef(false);
+
+  const onColumnListResizeMove = useCallback((e: PointerEvent) => {
+    const resize = columnListResizeRef.current;
+    if (!resize || e.pointerId !== resize.pointerId) return;
+    const nextWidth = clampColumnListWidth(
+      resize.startWidth + e.clientX - resize.startX,
+    );
+    resize.currentWidth = nextWidth;
+    setColumnListWidth(nextWidth);
+  }, []);
+
+  const startColumnListResize = (e: React.PointerEvent) => {
+    if (!e.isPrimary || e.button !== 0) return;
+    e.preventDefault();
+    stopColumnListResizeRef.current?.();
+    columnListResizeRef.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startWidth: columnListWidth,
+      currentWidth: columnListWidth,
+      previousCursor: document.body.style.cursor,
+      previousUserSelect: document.body.style.userSelect,
+    };
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    const stopResize = (event?: Event) => {
+      const resize = columnListResizeRef.current;
+      if (
+        resize
+        && event
+        && "pointerId" in event
+        && event.pointerId !== resize.pointerId
+      ) {
+        return;
+      }
+      columnListResizeRef.current = null;
+      stopColumnListResizeRef.current = null;
+      document.removeEventListener("pointermove", onColumnListResizeMove);
+      document.removeEventListener("pointerup", stopResize);
+      document.removeEventListener("pointercancel", stopResize);
+      window.removeEventListener("blur", stopResize);
+      if (resize) {
+        document.body.style.cursor = resize.previousCursor;
+        document.body.style.userSelect = resize.previousUserSelect;
+        persistColumnListWidth(resize.currentWidth);
+      }
+    };
+
+    stopColumnListResizeRef.current = stopResize;
+    document.addEventListener("pointermove", onColumnListResizeMove);
+    document.addEventListener("pointerup", stopResize);
+    document.addEventListener("pointercancel", stopResize);
+    window.addEventListener("blur", stopResize);
+  };
+
+  const resetColumnListWidth = () => {
+    const nextWidth = clampColumnListWidth(COLUMN_LIST_DEFAULT_WIDTH);
+    setColumnListWidth(nextWidth);
+    persistColumnListWidth(nextWidth);
+  };
+
+  const onColumnListResizeKeyDown = (e: React.KeyboardEvent) => {
+    let nextWidth: number | null = null;
+    if (e.key === "ArrowLeft") nextWidth = columnListWidth - 16;
+    if (e.key === "ArrowRight") nextWidth = columnListWidth + 16;
+    if (e.key === "Home") nextWidth = COLUMN_LIST_MIN_WIDTH;
+    if (e.key === "End") nextWidth = columnListMaxWidth;
+    if (e.key === "Enter") nextWidth = COLUMN_LIST_DEFAULT_WIDTH;
+    if (nextWidth != null) {
+      e.preventDefault();
+      const clampedWidth = clampColumnListWidth(nextWidth);
+      setColumnListWidth(clampedWidth);
+      persistColumnListWidth(clampedWidth);
+    }
+  };
+
+  useEffect(() => {
+    const onWindowResize = () => {
+      const nextMax = getColumnListMaxWidth();
+      setColumnListMaxWidth(nextMax);
+      setColumnListWidth((current) => Math.min(current, nextMax));
+    };
+    window.addEventListener("resize", onWindowResize);
+    return () => {
+      window.removeEventListener("resize", onWindowResize);
+      stopColumnListResizeRef.current?.();
+    };
+  }, []);
 
   // Dedicated resizer for Scatter Plot tab (divider on the RIGHT edge of the plot area)
   // Drag right → scatter grows (correct direction)
@@ -994,18 +1189,25 @@ export default function DescriptivePanel() {
   const summaryRequestIdRef = useRef(0);
 
   const loadSummary = useCallback((colName: string, kindOverride?: string) => {
-    if (!session) return;
-    const kind = kindOverride ?? session.columns.find((c) => c.name === colName)?.kind ?? undefined;
+    const currentSession = useStore.getState().session;
+    if (!currentSession || currentSession.session_id !== session?.session_id) return;
+    const sessionId = currentSession.session_id;
+    const kind = kindOverride
+      ?? currentSession.columns.find((c) => c.name === colName)?.kind
+      ?? undefined;
     const requestId = ++summaryRequestIdRef.current;
+    selectedRef.current = colName;
     setSelected(colName);
     setSummary(null);
     setSummaryLoading(true);
-    api.get(`/api/stats/${session.session_id}/column_summary`, { params: { column: colName, kind } })
+    api.get(`/api/stats/${sessionId}/column_summary`, { params: { column: colName, kind } })
       .then((r) => {
         if (summaryRequestIdRef.current !== requestId) return; // superseded by a newer request
+        const latestSession = useStore.getState().session;
+        if (latestSession?.session_id !== sessionId) return;
         const rawSummary = r.data as ColumnSummary;
         if (rawSummary && rawSummary.type === "categorical" && rawSummary.categories) {
-          const colMeta = session.columns.find((c) => c.name === colName);
+          const colMeta = latestSession.columns.find((c) => c.name === colName);
           const vLabels = colMeta?.value_labels ?? {};
           const relabeled: ColumnSummary = {
             ...rawSummary,
@@ -1027,10 +1229,153 @@ export default function DescriptivePanel() {
       .finally(() => {
         if (summaryRequestIdRef.current === requestId) setSummaryLoading(false);
       });
-    // Same reasoning as the metadata effect above — depend on the stable
-    // session_id, not the constantly-reidentified session object.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.session_id]);
+
+  useLayoutEffect(() => {
+    if (!renameCol) return;
+    renameInputRef.current?.focus();
+    renameInputRef.current?.select();
+  }, [renameCol]);
+
+  const markColumnMutation = () => {
+    useStore.setState((state) => ({
+      undoDepth: state.undoDepth + 1,
+      redoDepth: 0,
+      columnMutationRedo: [],
+    }));
+  };
+
+  const startColumnRename = (name: string) => {
+    if (busyColumn) return;
+    setColumnActionError(null);
+    skipRenameCommitRef.current = false;
+    setRenameCol(name);
+    setRenameDraft(name);
+  };
+
+  const cancelColumnRename = () => {
+    skipRenameCommitRef.current = true;
+    setRenameCol(null);
+    setRenameDraft("");
+  };
+
+  const commitColumnRename = async () => {
+    if (
+      !session
+      || !renameCol
+      || renameCommitInFlightRef.current
+      || skipRenameCommitRef.current
+    ) {
+      skipRenameCommitRef.current = false;
+      return;
+    }
+    const oldName = renameCol;
+    const newName = renameDraft.trim();
+    if (!newName || newName === oldName) {
+      setRenameCol(null);
+      return;
+    }
+    if (session.columns.some((column) => column.name === newName)) {
+      setColumnActionError(`Column "${newName}" already exists.`);
+      renameInputRef.current?.select();
+      return;
+    }
+
+    renameCommitInFlightRef.current = true;
+    setBusyColumn(oldName);
+    setColumnActionError(null);
+    const sessionId = session.session_id;
+    try {
+      await runColumnStructureMutation(sessionId, async () => {
+        const res = await renameColumn(sessionId, oldName, newName);
+        if (useStore.getState().session?.session_id !== sessionId) return;
+        renameSessionColumn(oldName, newName, res.data.case_filter);
+        setColMeta((current) => current.map((meta) =>
+          meta.name === oldName ? { ...meta, name: newName } : meta
+        ));
+        setSparklines((current) => {
+          if (!(oldName in current)) return current;
+          const next = { ...current, [newName]: current[oldName] };
+          delete next[oldName];
+          return next;
+        });
+        if (selectedRef.current === oldName) {
+          summaryRequestIdRef.current += 1;
+          selectedRef.current = newName;
+          setSelected(newName);
+          setSummary(null);
+          setSummaryLoading(false);
+          loadSummary(newName);
+        }
+        setNameTip(null);
+        setRenameCol(null);
+        setRenameDraft("");
+        markColumnMutation();
+      });
+    } catch (error: unknown) {
+      const detail =
+        (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+        ?? (error instanceof Error ? error.message : String(error));
+      setColumnActionError(`Rename failed: ${detail}`);
+    } finally {
+      renameCommitInFlightRef.current = false;
+      setBusyColumn(null);
+    }
+  };
+
+  const handleColumnDelete = async (name: string) => {
+    if (!session || busyColumn) return;
+    if (!window.confirm(`Delete column "${name}"? You can undo this from the Data tab.`)) {
+      return;
+    }
+
+    setBusyColumn(name);
+    setColumnActionError(null);
+    const sessionId = session.session_id;
+    try {
+      await runColumnStructureMutation(sessionId, async () => {
+        const res = await deleteColumn(sessionId, name);
+        if (useStore.getState().session?.session_id !== sessionId) return;
+        const currentSession = useStore.getState().session;
+        const currentIndex = currentSession?.columns.findIndex(
+          (column) => column.name === name,
+        ) ?? -1;
+        const remainingNames = currentSession?.columns
+          .filter((column) => column.name !== name)
+          .map((column) => column.name) ?? [];
+        const nextName = remainingNames[
+          Math.min(Math.max(currentIndex, 0), remainingNames.length - 1)
+        ];
+
+        removeSessionColumn(name, res.data.case_filter);
+        setColMeta((current) => current.filter((meta) => meta.name !== name));
+        setSparklines((current) => {
+          if (!(name in current)) return current;
+          const next = { ...current };
+          delete next[name];
+          return next;
+        });
+        if (renameCol === name) cancelColumnRename();
+        if (selectedRef.current === name) {
+          summaryRequestIdRef.current += 1;
+          selectedRef.current = null;
+          setSelected(null);
+          setSummary(null);
+          setSummaryLoading(false);
+          if (nextName) loadSummary(nextName);
+        }
+        setNameTip(null);
+        markColumnMutation();
+      });
+    } catch (error: unknown) {
+      const detail =
+        (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+        ?? (error instanceof Error ? error.message : String(error));
+      setColumnActionError(`Delete failed: ${detail}`);
+    } finally {
+      setBusyColumn(null);
+    }
+  };
 
   useEffect(() => {
     if (session && !selected && session.columns.length > 0) {
@@ -1079,7 +1424,10 @@ export default function DescriptivePanel() {
     <div className="flex gap-0 h-full" style={{ minHeight: 0 }}>
 
       {/* ── Left: column list ── */}
-      <div className="w-56 flex-shrink-0 flex flex-col border-r border-gray-200 bg-white overflow-hidden">
+      <div
+        className="relative flex-shrink-0 flex flex-col border-r border-gray-200 bg-white overflow-hidden"
+        style={{ width: columnListWidth }}
+      >
         <div className="p-2 border-b border-gray-200">
           <input
             className="select w-full text-xs"
@@ -1087,6 +1435,11 @@ export default function DescriptivePanel() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
+          {columnActionError && (
+            <p role="alert" className="mt-1 text-[10px] leading-tight text-red-600">
+              {columnActionError}
+            </p>
+          )}
         </div>
         <div className="overflow-y-auto flex-1">
           {filtered.map((c) => {
@@ -1097,19 +1450,38 @@ export default function DescriptivePanel() {
             return (
               <div
                 key={c.name}
-                draggable
-                onDragStart={(e) => { setDragIdx(realIdx); e.dataTransfer.effectAllowed = "move"; }}
+                data-testid={`summary-column-${c.name}`}
+                draggable={!renameCol && !busyColumn}
+                onDragStart={(e) => {
+                  if (renameCol || busyColumn) {
+                    e.preventDefault();
+                    return;
+                  }
+                  setDragIdx(realIdx);
+                  e.dataTransfer.effectAllowed = "move";
+                }}
                 onDragOver={(e) => { e.preventDefault(); setDropIdx(realIdx); }}
                 onDragLeave={() => { if (dropIdx === realIdx) setDropIdx(null); }}
-                onDrop={(e) => { e.preventDefault(); if (dragIdx !== null && dragIdx !== realIdx) reorderColumns(dragIdx, realIdx); setDragIdx(null); setDropIdx(null); }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  if (dragIdx !== null && dragIdx !== realIdx) {
+                    void reorderColumns(dragIdx, realIdx).catch((error: unknown) => {
+                      const detail = error instanceof Error ? error.message : String(error);
+                      setColumnActionError(`Reorder failed: ${detail}`);
+                    });
+                  }
+                  setDragIdx(null);
+                  setDropIdx(null);
+                }}
                 onDragEnd={() => { setDragIdx(null); setDropIdx(null); }}
                 onClick={() => { setView("distribution"); loadSummary(c.name); }}
-                className={`flex items-center justify-between px-3 py-2 cursor-grab active:cursor-grabbing border-b border-gray-100 transition-colors select-none
+                className={`group flex items-center justify-between px-3 py-2 cursor-grab active:cursor-grabbing border-b border-gray-100 transition-colors select-none
                   ${dragIdx === realIdx ? "opacity-40" : ""}
+                  ${busyColumn === c.name ? "opacity-50 pointer-events-none" : ""}
                   ${isDragOver ? "border-t-2 border-t-indigo-500" : ""}
                   ${isActive ? "bg-indigo-50 border-l-2 border-l-indigo-500" : "hover:bg-gray-50"}`}
               >
-                <div className="flex items-center gap-2 min-w-0">
+                <div className="flex items-center gap-2 min-w-0 flex-1">
                   <span className="text-gray-300 text-[8px] flex-shrink-0">⠿</span>
                   <span
                     title={`Type: ${c.kind} — click to change`}
@@ -1126,30 +1498,90 @@ export default function DescriptivePanel() {
                   {/* The list is narrow, so long names are clipped. Show the
                       full one on hover — same behaviour as the data grid's
                       header, and only when the text is actually cut off. */}
-                  <span
-                    className="text-xs text-gray-700 truncate"
-                    onMouseEnter={(e) => {
-                      const el = e.currentTarget;
-                      if (el.scrollWidth <= el.clientWidth) return;
-                      const r = el.getBoundingClientRect();
-                      setNameTip({
-                        text: c.label && c.label !== c.name ? `${c.name} — ${c.label}` : c.name,
-                        x: r.left,
-                        y: r.bottom + 6,
-                      });
-                    }}
-                    onMouseLeave={() => setNameTip(null)}
-                  >
-                    {c.name}
-                  </span>
+                  {renameCol === c.name ? (
+                    <input
+                      ref={renameInputRef}
+                      aria-label={`Rename ${c.name}`}
+                      value={renameDraft}
+                      onChange={(e) => setRenameDraft(e.target.value)}
+                      onClick={(e) => e.stopPropagation()}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onBlur={() => void commitColumnRename()}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          void commitColumnRename();
+                        }
+                        if (e.key === "Escape") {
+                          e.preventDefault();
+                          cancelColumnRename();
+                        }
+                      }}
+                      className="min-w-0 flex-1 rounded border border-indigo-300 bg-white px-1.5 py-0.5 text-xs text-gray-800 outline-none focus:ring-1 focus:ring-indigo-400"
+                    />
+                  ) : (
+                    <span
+                      className="text-xs text-gray-700 truncate"
+                      title="Double-click to rename"
+                      onDoubleClick={(e) => {
+                        e.stopPropagation();
+                        startColumnRename(c.name);
+                      }}
+                      onMouseEnter={(e) => {
+                        const el = e.currentTarget;
+                        if (el.scrollWidth <= el.clientWidth) return;
+                        const r = el.getBoundingClientRect();
+                        setNameTip({
+                          text: c.label && c.label !== c.name ? `${c.name} — ${c.label}` : c.name,
+                          x: r.left,
+                          y: r.bottom + 6,
+                        });
+                      }}
+                      onMouseLeave={() => setNameTip(null)}
+                    >
+                      {c.name}
+                    </span>
+                  )}
                 </div>
-                {sparklines[c.name] ? (
-                  <div className="flex-shrink-0 ml-1">
-                    <Sparkline spark={sparklines[c.name]} />
-                  </div>
-                ) : meta && (
-                  <div className="w-10 h-3 bg-gray-100 rounded flex-shrink-0 ml-1 animate-pulse" />
-                )}
+                <div className="ml-1 flex flex-shrink-0 items-center gap-1">
+                  {sparklines[c.name] ? (
+                    <div className="flex-shrink-0">
+                      <Sparkline spark={sparklines[c.name]} />
+                    </div>
+                  ) : meta && (
+                    <div className="w-10 h-3 bg-gray-100 rounded flex-shrink-0 animate-pulse" />
+                  )}
+                  {renameCol !== c.name && (
+                    <div className="flex items-center opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                      <button
+                        type="button"
+                        aria-label={`Rename ${c.name}`}
+                        title="Rename column"
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          startColumnRename(c.name);
+                        }}
+                        className="rounded p-1 text-gray-400 hover:bg-indigo-100 hover:text-indigo-600"
+                      >
+                        <Pencil size={12} />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`Delete ${c.name}`}
+                        title="Delete column"
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleColumnDelete(c.name);
+                        }}
+                        className="rounded p-1 text-gray-400 hover:bg-red-100 hover:text-red-600"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
             );
           })}
@@ -1157,6 +1589,20 @@ export default function DescriptivePanel() {
         <div className="p-2 border-t border-gray-200 text-xs text-gray-400 text-center">
           {session.columns.length} columns · {session.rows} rows
         </div>
+        <div
+          role="separator"
+          aria-label="Resize column list"
+          aria-orientation="vertical"
+          aria-valuemin={COLUMN_LIST_MIN_WIDTH}
+          aria-valuemax={columnListMaxWidth}
+          aria-valuenow={columnListWidth}
+          tabIndex={0}
+          onPointerDown={startColumnListResize}
+          onDoubleClick={resetColumnListWidth}
+          onKeyDown={onColumnListResizeKeyDown}
+          className="absolute right-0 top-0 bottom-0 z-20 w-1 cursor-col-resize touch-none bg-transparent hover:bg-indigo-400/70 active:bg-indigo-500 focus:bg-indigo-400/70 focus:outline-none"
+          title="Drag left or right to resize · Arrow keys resize · Enter or double-click resets"
+        />
       </div>
 
       {/* ── Right: view area ── */}

@@ -1,4 +1,7 @@
 import { create } from "zustand";
+import { runColumnStructureMutation } from "./lib/columnStructureLock";
+
+export { runColumnStructureMutation } from "./lib/columnStructureLock";
 
 export type ColKind = "numeric" | "categorical" | "ordinal" | "text" | "date";
 
@@ -98,6 +101,20 @@ export interface CaseFilter {
   total: number;
 }
 
+interface ColumnDependentState {
+  columnDecimals: Record<string, number>;
+  caseFilter: CaseFilter | null;
+  panelCache: Record<string, unknown>;
+  table1Result: unknown;
+}
+
+interface ColumnMutationSnapshot {
+  sessionId: string;
+  undoDepthAfter: number;
+  before: ColumnDependentState;
+  after: ColumnDependentState;
+}
+
 interface AppState {
   session: Session | null;
   originalSession: Session | null;
@@ -132,9 +149,21 @@ interface AppState {
   updatePreviewCell: (rowIdx: number, col: string, value: unknown) => void;
   // Computed columns (Compute tab)
   addSessionColumn: (col: ColMeta, previewValues: (number | string | null)[]) => void;
-  removeSessionColumn: (name: string) => void;
+  renameSessionColumn: (
+    oldName: string,
+    newName: string,
+    serverCaseFilter?: CaseFilter | null,
+  ) => void;
+  removeSessionColumn: (
+    name: string,
+    serverCaseFilter?: CaseFilter | null,
+  ) => void;
+  removeSessionColumns: (
+    names: string[],
+    serverCaseFilter?: CaseFilter | null,
+  ) => void;
   // Column reordering (drag & drop)
-  reorderColumns: (fromIndex: number, toIndex: number) => void;
+  reorderColumns: (fromIndex: number, toIndex: number) => Promise<void>;
   // Table 1 persistence across tab switches
   table1Result: unknown;
   setTable1Result: (r: unknown) => void;
@@ -171,6 +200,8 @@ interface AppState {
   // Undo / Redo (backend-driven)
   undoDepth: number;
   redoDepth: number;
+  columnMutationUndo: ColumnMutationSnapshot[];
+  columnMutationRedo: ColumnMutationSnapshot[];
   undo: () => Promise<void>;
   redo: () => Promise<void>;
   /** Monotonic counter bumped on every data mutation (column add/remove, cell
@@ -195,7 +226,85 @@ const loadTheme = (): PlotTheme => {
   catch { return DEFAULT_THEME; }
 };
 
-export const useStore = create<AppState>((set) => ({
+const REMOVED_COLUMN = Symbol("removed-column");
+function isCachedResultKey(key: string): boolean {
+  return /(result|results|delong)$/i.test(key);
+}
+
+function containsColumnReference(value: unknown, column: string): boolean {
+  if (value === column) return true;
+  if (Array.isArray(value)) {
+    return value.some((item) => containsColumnReference(item, column));
+  }
+  if (value && typeof value === "object") {
+    return Object.entries(value as Record<string, unknown>).some(
+      ([key, item]) => key === column || containsColumnReference(item, column),
+    );
+  }
+  return false;
+}
+
+function remapPanelCacheValue(
+  value: unknown,
+  oldName: string,
+  newName?: string,
+): unknown | typeof REMOVED_COLUMN {
+  if (value === oldName) return newName ?? REMOVED_COLUMN;
+  if (Array.isArray(value)) {
+    const next: unknown[] = [];
+    for (const item of value) {
+      // Nested tuples/specs form one compound selection. Removing one column
+      // invalidates that whole entry, not merely one tuple position.
+      if (
+        !newName
+        && item
+        && typeof item === "object"
+        && containsColumnReference(item, oldName)
+      ) {
+        continue;
+      }
+      const remapped = remapPanelCacheValue(item, oldName, newName);
+      if (remapped !== REMOVED_COLUMN) next.push(remapped);
+    }
+    return next;
+  }
+  if (value && typeof value === "object") {
+    const next: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      if (isCachedResultKey(key)) {
+        next[key] = Array.isArray(item) ? [] : null;
+        continue;
+      }
+      if (!newName && key === oldName) continue;
+      const remapped = remapPanelCacheValue(item, oldName, newName);
+      const nextKey = key === oldName ? (newName ?? key) : key;
+      next[nextKey] = remapped === REMOVED_COLUMN ? "" : remapped;
+    }
+    return next;
+  }
+  return value;
+}
+
+function updatePanelCacheColumn(
+  cache: Record<string, unknown>,
+  oldName: string,
+  newName?: string,
+) {
+  return remapPanelCacheValue(cache, oldName, newName) as Record<string, unknown>;
+}
+
+function dependentState(
+  state: Pick<AppState, "columnDecimals" | "caseFilter" | "panelCache" | "table1Result">,
+): ColumnDependentState {
+  return {
+    columnDecimals: state.columnDecimals,
+    caseFilter: state.caseFilter,
+    panelCache: state.panelCache,
+    table1Result: state.table1Result,
+  };
+}
+
+export const useStore = create<AppState>((set, get) => ({
   session: null,
   originalSession: null,
   localSessionId: null,
@@ -247,6 +356,8 @@ export const useStore = create<AppState>((set) => ({
       panelCache: {},
       undoDepth: 0,
       redoDepth: 0,
+      columnMutationUndo: [],
+      columnMutationRedo: [],
       dataVersion: 0,
       columnDecimals: {},
       sessionHistory: [],
@@ -268,7 +379,18 @@ export const useStore = create<AppState>((set) => ({
     localStorage.setItem("plotTheme", JSON.stringify(next));
     return { plotTheme: next };
   }),
-  clearSession: () => set({ session: null, originalSession: null, activeTab: "data", table1Result: null, caseFilter: null, panelCache: {}, undoDepth: 0, redoDepth: 0 }),
+  clearSession: () => set({
+    session: null,
+    originalSession: null,
+    activeTab: "data",
+    table1Result: null,
+    caseFilter: null,
+    panelCache: {},
+    undoDepth: 0,
+    redoDepth: 0,
+    columnMutationUndo: [],
+    columnMutationRedo: [],
+  }),
   updateColumnKind: (name, kind) => {
     set((state) => {
       if (!state.session) return state;
@@ -314,30 +436,189 @@ export const useStore = create<AppState>((set) => ({
       }));
       return { session: { ...state.session, columns, preview }, dataVersion: state.dataVersion + 1 };
     }),
-  removeSessionColumn: (name) =>
+  renameSessionColumn: (oldName, newName, serverCaseFilter) =>
+    set((state) => {
+      if (!state.session || oldName === newName) return state;
+      if (!state.session.columns.some((column) => column.name === oldName)) {
+        return state;
+      }
+      const before = dependentState(state);
+      const columns = state.session.columns.map((column) =>
+        column.name === oldName ? { ...column, name: newName } : column
+      );
+      const preview = state.session.preview.map((row) => {
+        if (!(oldName in row)) return row;
+        const nextRow = { ...row, [newName]: row[oldName] };
+        delete nextRow[oldName];
+        return nextRow;
+      });
+      const columnDecimals = { ...state.columnDecimals };
+      if (oldName in columnDecimals) {
+        columnDecimals[newName] = columnDecimals[oldName];
+        delete columnDecimals[oldName];
+      }
+      const caseFilter = serverCaseFilter === undefined
+        ? (state.caseFilter ? {
+            ...state.caseFilter,
+            conditions: state.caseFilter.conditions.map((condition) =>
+              condition.column === oldName
+                ? { ...condition, column: newName }
+                : condition
+            ),
+          } : null)
+        : serverCaseFilter;
+      const after: ColumnDependentState = {
+        columnDecimals,
+        caseFilter,
+        panelCache: updatePanelCacheColumn(state.panelCache, oldName, newName),
+        table1Result: null,
+      };
+      const snapshot: ColumnMutationSnapshot = {
+        sessionId: state.session.session_id,
+        undoDepthAfter: state.undoDepth + 1,
+        before,
+        after,
+      };
+      return {
+        session: {
+          ...state.session,
+          columns,
+          preview,
+          case_filter: caseFilter,
+        },
+        ...after,
+        columnMutationUndo: [...state.columnMutationUndo, snapshot].slice(-50),
+        columnMutationRedo: [],
+        dataVersion: state.dataVersion + 1,
+      };
+    }),
+  removeSessionColumn: (name, serverCaseFilter) => {
+    get().removeSessionColumns([name], serverCaseFilter);
+  },
+  removeSessionColumns: (names, serverCaseFilter) =>
     set((state) => {
       if (!state.session) return state;
-      const columns = state.session.columns.filter((c) => c.name !== name);
+      const removedNames = new Set(
+        names.filter((name) =>
+          state.session!.columns.some((column) => column.name === name)
+        ),
+      );
+      if (removedNames.size === 0) return state;
+      const before = dependentState(state);
+      const columns = state.session.columns.filter(
+        (column) => !removedNames.has(column.name),
+      );
       const preview = state.session.preview.map((row) => {
         const r = { ...row };
-        delete r[name];
+        for (const name of removedNames) delete r[name];
         return r;
       });
-      return { session: { ...state.session, columns, preview }, dataVersion: state.dataVersion + 1 };
+      const columnDecimals = { ...state.columnDecimals };
+      for (const name of removedNames) delete columnDecimals[name];
+      const remainingConditions = state.caseFilter?.conditions.filter(
+        (condition) => !removedNames.has(condition.column),
+      ) ?? [];
+      const caseFilter = serverCaseFilter === undefined
+        ? (state.caseFilter
+          ? (remainingConditions.length > 0
+            ? { ...state.caseFilter, conditions: remainingConditions }
+            : null)
+          : null)
+        : serverCaseFilter;
+      const after: ColumnDependentState = {
+        columnDecimals,
+        caseFilter,
+        panelCache: [...removedNames].reduce(
+          (cache, name) => updatePanelCacheColumn(cache, name),
+          state.panelCache,
+        ),
+        table1Result: null,
+      };
+      const snapshot: ColumnMutationSnapshot = {
+        sessionId: state.session.session_id,
+        undoDepthAfter: state.undoDepth + 1,
+        before,
+        after,
+      };
+      return {
+        session: {
+          ...state.session,
+          columns,
+          preview,
+          case_filter: caseFilter,
+        },
+        ...after,
+        columnMutationUndo: [...state.columnMutationUndo, snapshot].slice(-50),
+        columnMutationRedo: [],
+        dataVersion: state.dataVersion + 1,
+      };
     }),
-  reorderColumns: (fromIndex, toIndex) =>
-    set((state) => {
-      if (!state.session || fromIndex === toIndex) return state;
-      const cols = [...state.session.columns];
-      const [moved] = cols.splice(fromIndex, 1);
-      cols.splice(toIndex, 0, moved);
-      // Sync to backend so column order persists across refresh/export
-      const colNames = cols.map((c) => c.name);
-      import("./api").then((api) => {
-        api.default.post(`/api/sessions/${state.session!.session_id}/reorder_columns`, { columns: colNames }).catch(() => {});
+  reorderColumns: async (fromIndex, toIndex) => {
+    const state = get();
+    if (!state.session || fromIndex === toIndex) return;
+    const sessionId = state.session.session_id;
+    const originalNames = state.session.columns.map((column) => column.name);
+    const reorderedNames = [...originalNames];
+    const [moved] = reorderedNames.splice(fromIndex, 1);
+    if (!moved) return;
+    reorderedNames.splice(toIndex, 0, moved);
+    await runColumnStructureMutation(sessionId, async () => {
+      const { default: api } = await import("./api");
+      await api.post(`/api/sessions/${sessionId}/reorder_columns`, {
+        columns: reorderedNames,
       });
-      return { session: { ...state.session, columns: cols } };
-    }),
+
+      const afterRequest = get();
+      const afterRequestNames =
+        afterRequest.session?.session_id === sessionId
+          ? afterRequest.session.columns.map((column) => column.name)
+          : [];
+      const structureChanged =
+        afterRequestNames.length !== originalNames.length
+        || afterRequestNames.some(
+          (name, index) => name !== originalNames[index],
+        );
+      if (structureChanged) {
+        // A column was created/renamed/deleted outside this action while the
+        // reorder request was running. Read server's final order instead of
+        // silently keeping a divergent optimistic order.
+        const refreshed = await api.get(`/api/stats/${sessionId}/refresh`);
+        set((current) => {
+          if (current.session?.session_id !== sessionId) return current;
+          return {
+            session: { ...current.session, ...refreshed.data },
+            undoDepth: current.undoDepth + 1,
+            redoDepth: 0,
+            columnMutationRedo: [],
+          };
+        });
+        return;
+      }
+
+      set((current) => {
+        if (current.session?.session_id !== sessionId) return current;
+        const currentNames = current.session.columns.map((column) => column.name);
+        if (
+          currentNames.length !== originalNames.length
+          || currentNames.some((name, index) => name !== originalNames[index])
+        ) {
+          return current;
+        }
+        const columnsByName = new Map(
+          current.session.columns.map((column) => [column.name, column]),
+        );
+        const columns = reorderedNames
+          .map((name) => columnsByName.get(name))
+          .filter((column): column is ColMeta => Boolean(column));
+        return {
+          session: { ...current.session, columns },
+          undoDepth: current.undoDepth + 1,
+          redoDepth: 0,
+          columnMutationRedo: [],
+        };
+      });
+    });
+  },
   setTable1Result: (r) => set({ table1Result: r }),
   clearTable1: () => set({ table1Result: null }),
   panelCache: {},
@@ -347,21 +628,9 @@ export const useStore = create<AppState>((set) => ({
     delete next[panel];
     return { panelCache: next };
   }),
-  renameInPanelCache: (oldName, newName) => set((state) => {
-    const remapValue = (v: unknown): unknown => {
-      if (v === oldName) return newName;
-      if (Array.isArray(v)) return v.map((item) => (item === oldName ? newName : item));
-      return v;
-    };
-    const next: Record<string, unknown> = {};
-    for (const [panelId, data] of Object.entries(state.panelCache)) {
-      if (!data || typeof data !== "object" || Array.isArray(data)) { next[panelId] = data; continue; }
-      const remapped: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(data as Record<string, unknown>)) remapped[k] = remapValue(v);
-      next[panelId] = remapped;
-    }
-    return { panelCache: next };
-  }),
+  renameInPanelCache: (oldName, newName) => set((state) => ({
+    panelCache: updatePanelCacheColumn(state.panelCache, oldName, newName),
+  })),
   forestHandoff: null,
   forestHandoffLayout: null,
   setForestHandoff: (rows, layout = null) => set({ forestHandoff: rows, forestHandoffLayout: layout }),
@@ -412,26 +681,87 @@ export const useStore = create<AppState>((set) => ({
   // Undo / Redo — backend-driven (DataFrame snapshots on server)
   undoDepth: 0,
   redoDepth: 0,
+  columnMutationUndo: [],
+  columnMutationRedo: [],
   undo: async () => {
     const state = useStore.getState();
     if (!state.session) return;
+    const sessionId = state.session.session_id;
     try {
-      const { default: api } = await import("./api");
-      const res = await api.post(`/api/sessions/${state.session.session_id}/undo`);
-      const d = res.data;
-      set({ session: { ...state.session, rows: d.rows, columns: d.columns, preview: d.preview },
-            undoDepth: d.undo_depth ?? 0, redoDepth: d.redo_depth ?? 0, dataVersion: state.dataVersion + 1 });
+      await runColumnStructureMutation(sessionId, async () => {
+        const { default: api } = await import("./api");
+        const res = await api.post(`/api/sessions/${sessionId}/undo`);
+        const d = res.data;
+        set((current) => {
+          if (current.session?.session_id !== sessionId) return current;
+          const snapshotIndex = current.columnMutationUndo.findLastIndex(
+            (snapshot) =>
+              snapshot.sessionId === sessionId
+              && snapshot.undoDepthAfter === current.undoDepth,
+          );
+          const snapshot = current.columnMutationUndo[snapshotIndex];
+          return {
+            session: {
+              ...current.session,
+              rows: d.rows,
+              columns: d.columns,
+              preview: d.preview,
+              case_filter: snapshot?.before.caseFilter ?? current.caseFilter,
+            },
+            ...(snapshot?.before ?? {}),
+            columnMutationUndo: snapshot
+              ? current.columnMutationUndo.filter((_, index) => index !== snapshotIndex)
+              : current.columnMutationUndo,
+            columnMutationRedo: snapshot
+              ? [...current.columnMutationRedo, snapshot]
+              : current.columnMutationRedo,
+            undoDepth: d.undo_depth ?? 0,
+            redoDepth: d.redo_depth ?? 0,
+            dataVersion: current.dataVersion + 1,
+          };
+        });
+      });
     } catch { /* nothing to undo */ }
   },
   redo: async () => {
     const state = useStore.getState();
     if (!state.session) return;
+    const sessionId = state.session.session_id;
     try {
-      const { default: api } = await import("./api");
-      const res = await api.post(`/api/sessions/${state.session.session_id}/redo`);
-      const d = res.data;
-      set({ session: { ...state.session, rows: d.rows, columns: d.columns, preview: d.preview },
-            undoDepth: d.undo_depth ?? 0, redoDepth: d.redo_depth ?? 0, dataVersion: state.dataVersion + 1 });
+      await runColumnStructureMutation(sessionId, async () => {
+        const { default: api } = await import("./api");
+        const res = await api.post(`/api/sessions/${sessionId}/redo`);
+        const d = res.data;
+        set((current) => {
+          if (current.session?.session_id !== sessionId) return current;
+          const nextUndoDepth = d.undo_depth ?? 0;
+          const snapshotIndex = current.columnMutationRedo.findLastIndex(
+            (snapshot) =>
+              snapshot.sessionId === sessionId
+              && snapshot.undoDepthAfter === nextUndoDepth,
+          );
+          const snapshot = current.columnMutationRedo[snapshotIndex];
+          return {
+            session: {
+              ...current.session,
+              rows: d.rows,
+              columns: d.columns,
+              preview: d.preview,
+              case_filter: snapshot?.after.caseFilter ?? current.caseFilter,
+            },
+            ...(snapshot?.after ?? {}),
+            columnMutationUndo: snapshot
+              ? [...current.columnMutationUndo, snapshot]
+              : current.columnMutationUndo,
+            columnMutationRedo: snapshot
+              ? current.columnMutationRedo.filter((_, index) => index !== snapshotIndex)
+              : current.columnMutationRedo,
+            undoDepth: nextUndoDepth,
+            redoDepth: d.redo_depth ?? 0,
+            dataVersion: current.dataVersion + 1,
+          };
+        });
+      });
     } catch { /* nothing to redo */ }
   },
   deleteRow: async (rowIdx: number) => {
@@ -446,7 +776,8 @@ export const useStore = create<AppState>((set) => ({
         session: { ...state.session, rows: d.rows, columns: d.columns, preview: d.preview },
         // Add 1 to undo depth because delete is a destructive action we pushed
         undoDepth: state.undoDepth + 1,
-        redoDepth: 0 
+        redoDepth: 0,
+        columnMutationRedo: [],
       });
     } catch (e) {
       console.error("Failed to delete row", e);

@@ -1089,9 +1089,16 @@ def delete_column(session_id: str, col_name: str):
     df = _get_df(session_id)
     if col_name not in df.columns:
         raise HTTPException(status_code=404, detail=f"Column '{col_name}' not found")
-    df = df.drop(columns=[col_name])
-    store.save(session_id, df)
-    return {"deleted": col_name}
+    df = store.delete_dataframe_columns(session_id, [col_name])
+    store.log_action(session_id, "delete_column", {"column": col_name})
+    conditions = store.get_filter(session_id)
+    filtered = store.get_filtered(session_id)
+    case_filter = {
+        "conditions": conditions,
+        "selected": len(filtered),
+        "total": len(df),
+    } if conditions else None
+    return {"deleted": col_name, "case_filter": case_filter}
 
 
 @router.get("/{session_id}/column_values/{col_name:path}")
@@ -1187,10 +1194,20 @@ def delete_columns(session_id: str, req: DeleteColumnsRequest):
         raise HTTPException(status_code=404, detail=f"Columns not found: {missing}")
     if len(unique_cols) >= len(df.columns):
         raise HTTPException(status_code=422, detail="Cannot delete every column")
-    df = df.drop(columns=unique_cols)
-    store.save(session_id, df)
+    df = store.delete_dataframe_columns(session_id, unique_cols)
     store.log_action(session_id, "delete_columns", {"n_deleted": len(unique_cols)})
-    return {"deleted": unique_cols, "remaining_columns": list(df.columns)}
+    conditions = store.get_filter(session_id)
+    filtered = store.get_filtered(session_id)
+    case_filter = {
+        "conditions": conditions,
+        "selected": len(filtered),
+        "total": len(df),
+    } if conditions else None
+    return {
+        "deleted": unique_cols,
+        "remaining_columns": list(df.columns),
+        "case_filter": case_filter,
+    }
 
 
 # ── 6. Fill blanks ──────────────────────────────────────────────────────────
@@ -1563,13 +1580,20 @@ def rename_column(session_id: str, req: RenameRequest):
         raise HTTPException(status_code=422, detail="New column name cannot be empty")
     if new in df.columns and new != req.old_name:
         raise HTTPException(status_code=422, detail=f"Column '{new}' already exists")
-    df = df.rename(columns={req.old_name: new})
-    store.save(session_id, df)
-    # Keep server-side decimal-places override in sync with the rename so the
-    # save_session export carries the formatting choice over to the new name.
-    store.rename_column_key(session_id, req.old_name, new)
+    df = store.rename_dataframe_column(session_id, req.old_name, new)
     store.log_action(session_id, "rename_column", {"old": req.old_name, "new": new})
-    return {"old_name": req.old_name, "new_name": new}
+    conditions = store.get_filter(session_id)
+    filtered = store.get_filtered(session_id)
+    case_filter = {
+        "conditions": conditions,
+        "selected": len(filtered),
+        "total": len(df),
+    } if conditions else None
+    return {
+        "old_name": req.old_name,
+        "new_name": new,
+        "case_filter": case_filter,
+    }
 
 
 # ── 12. Duplicate column ──────────────────────────────────────────────────────

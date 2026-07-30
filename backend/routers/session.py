@@ -713,7 +713,21 @@ def _session_preview(df: pd.DataFrame, session_id: str | None = None) -> dict:
         _attach_value_labels(columns, session_id)
     preview_df = df.head(2000).replace([np.inf, -np.inf], np.nan)
     preview = _json.loads(preview_df.to_json(orient="records", default_handler=str, date_format="iso", date_unit="s"))
-    return {"rows": len(df), "columns": columns, "preview": preview}
+    case_filter = None
+    if session_id:
+        conditions = store.get_filter(session_id)
+        if conditions:
+            case_filter = {
+                "conditions": conditions,
+                "selected": len(store.get_filtered(session_id)),
+                "total": len(df),
+            }
+    return {
+        "rows": len(df),
+        "columns": columns,
+        "preview": preview,
+        "case_filter": case_filter,
+    }
 
 
 @router.post("/{session_id}/undo")

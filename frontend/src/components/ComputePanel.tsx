@@ -9,8 +9,8 @@
  */
 
 import { useState, useRef, useEffect } from "react";
-import { useStore, isNumericKind } from "../store";
-import type { ColMeta } from "../store";
+import { useStore, isNumericKind, runColumnStructureMutation } from "../store";
+import type { CaseFilter, ColMeta } from "../store";
 import {
   computeFormula,
   computeTransform,
@@ -101,15 +101,17 @@ function ComputedColumnsList({
 }: {
   sessionId: string;
   computed: ColMeta[];
-  onDelete: (name: string) => void;
+  onDelete: (name: string, caseFilter: CaseFilter | null) => void;
 }) {
   const [deleting, setDeleting] = useState<string | null>(null);
 
   const handleDelete = async (name: string) => {
     setDeleting(name);
     try {
-      await deleteColumn(sessionId, name);
-      onDelete(name);
+      await runColumnStructureMutation(sessionId, async () => {
+        const res = await deleteColumn(sessionId, name);
+        onDelete(name, res.data.case_filter);
+      });
     } catch {
       // ignore
     } finally {
@@ -636,6 +638,7 @@ function RecodeTab({
     };
     try {
       const res = await computeRecode(sessionId, payload);
+      if (useStore.getState().session?.session_id !== sessionId) return;
       setSuccess(res.data);
       onResult(res.data);
       // Guard the common mistake: a recode whose rules matched no rows produces
@@ -1280,13 +1283,25 @@ export default function ComputePanel() {
   if (!session) return null;
 
   const handleResult = (result: ComputeResult) => {
+    if (useStore.getState().session?.session_id !== session.session_id) return;
     const col: ColMeta = { name: result.name, dtype: result.dtype, kind: result.kind };
     addSessionColumn(col, result.preview_values);
+    useStore.setState((state) => ({
+      undoDepth: state.undoDepth + 1,
+      redoDepth: 0,
+      columnMutationRedo: [],
+    }));
     setComputedNames((prev) => prev.includes(result.name) ? prev : [...prev, result.name]);
   };
 
-  const handleDelete = (name: string) => {
-    removeSessionColumn(name);
+  const handleDelete = (name: string, caseFilter: CaseFilter | null) => {
+    if (useStore.getState().session?.session_id !== session.session_id) return;
+    removeSessionColumn(name, caseFilter);
+    useStore.setState((state) => ({
+      undoDepth: state.undoDepth + 1,
+      redoDepth: 0,
+      columnMutationRedo: [],
+    }));
     setComputedNames((prev) => prev.filter((n) => n !== name));
   };
 

@@ -478,6 +478,29 @@ def test_delete_column_not_found(client, synth):
     assert r.status_code == 404, r.text
 
 
+def test_delete_column_removes_filter_and_column_state(client, synth):
+    sid = _fresh(synth, "delcol_state")
+    store.save_filter(sid, [
+        {"column": "LDL", "operator": "gt", "value": "100", "join": "AND"},
+        {"column": "AGE", "operator": "gt", "value": "50", "join": "AND"},
+    ])
+    store.save_metadata(sid, {"LDL": {"label": "LDL cholesterol"}})
+    store.save_kind_overrides(sid, {"LDL": "numeric"})
+    store.set_decimal(sid, "LDL", 2)
+
+    r = client.delete(f"{BASE}/{sid}/column/LDL")
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["case_filter"]["conditions"] == [
+        {"column": "AGE", "operator": "gt", "value": "50", "join": "AND"},
+    ]
+    assert body["case_filter"]["selected"] <= body["case_filter"]["total"]
+    assert "LDL" not in store.get_metadata(sid)
+    assert "LDL" not in store.get_kind_overrides(sid)
+    assert "LDL" not in store.get_decimals(sid)
+
+
 def test_column_values_returns_every_row(client, synth):
     """Copy-column must see the whole column, not just the 2000-row preview."""
     sid = _fresh(synth, "colvals")
@@ -567,12 +590,27 @@ def test_paste_column_empty_name(client, synth):
 
 def test_delete_columns_bulk(client, synth):
     sid = _fresh(synth, "delcols")
+    store.save_filter(sid, [
+        {"column": "LDL", "operator": "gt", "value": "100", "join": "AND"},
+        {"column": "GROUP", "operator": "eq", "value": "A", "join": "AND"},
+    ])
+    for column in ("LDL", "AGE", "WEIGHT"):
+        store.save_metadata(sid, {column: {"label": column}})
+        store.save_kind_overrides(sid, {column: "numeric"})
+        store.set_decimal(sid, column, 1)
+
     r = client.post(f"{BASE}/{sid}/delete_columns", json={"columns": ["LDL", "AGE", "WEIGHT"]})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["deleted"] == ["LDL", "AGE", "WEIGHT"]
     for col in ("LDL", "AGE", "WEIGHT"):
         assert col not in body["remaining_columns"]
+        assert col not in store.get_metadata(sid)
+        assert col not in store.get_kind_overrides(sid)
+        assert col not in store.get_decimals(sid)
+    assert body["case_filter"]["conditions"] == [
+        {"column": "GROUP", "operator": "eq", "value": "A", "join": "AND"},
+    ]
 
 
 def test_delete_columns_dedupes(client, synth):
@@ -722,6 +760,23 @@ def test_rename_column(client, synth):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["new_name"] == "LDL_C"
+
+
+def test_rename_column_remaps_active_filter(client, synth):
+    sid = _fresh(synth, "rename_filter")
+    store.save_filter(sid, [
+        {"column": "LDL", "operator": "gt", "value": "100", "join": "AND"},
+    ])
+
+    r = client.post(f"{BASE}/{sid}/rename",
+                    json={"old_name": "LDL", "new_name": "LDL_C"})
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["case_filter"]["conditions"] == [
+        {"column": "LDL_C", "operator": "gt", "value": "100", "join": "AND"},
+    ]
+    assert body["case_filter"]["selected"] <= body["case_filter"]["total"]
 
 
 def test_rename_column_not_found(client, synth):

@@ -2,7 +2,7 @@ import { useState, useMemo, useRef, useEffect, useLayoutEffect } from "react";
 import type { CSSProperties, Dispatch, ReactNode, RefObject, SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import { BookOpen, X } from "lucide-react";
-import { useStore } from "../store";
+import { runColumnStructureMutation, useStore } from "../store";
 import type { ColMeta, Session } from "../store";
 import api from "../api";
 import { renameColumn, getColumnBadges } from "../api";
@@ -254,6 +254,7 @@ function DataTableBody({ session }: { session: Session }) {
   const updateColumnKind = useStore((s) => s.updateColumnKind);
   const updatePreviewCell = useStore((s) => s.updatePreviewCell);
   const reorderColumns   = useStore((s) => s.reorderColumns);
+  const removeSessionColumns = useStore((s) => s.removeSessionColumns);
   const caseFilter       = useStore((s) => s.caseFilter);
   const setCaseFilter    = useStore((s) => s.setCaseFilter);
   const undo             = useStore((s) => s.undo);
@@ -556,19 +557,36 @@ function DataTableBody({ session }: { session: Session }) {
   }, [ctxMenu, rowCtx, cellCtx]);
 
   // Bump undo depth after each backend mutation
-  const bumpUndo = () => useStore.setState((s) => ({ undoDepth: s.undoDepth + 1, redoDepth: 0, dataVersion: s.dataVersion + 1 }));
+  const bumpUndo = (bumpDataVersion = true) => useStore.setState((s) => ({
+    undoDepth: s.undoDepth + 1,
+    redoDepth: 0,
+    columnMutationRedo: [],
+    dataVersion: s.dataVersion + (bumpDataVersion ? 1 : 0),
+  }));
+
+  const commitColumnReorder = (fromIndex: number, toIndex: number) => {
+    void reorderColumns(fromIndex, toIndex).catch((error: unknown) => {
+      const detail =
+        (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+        ?? (error instanceof Error ? error.message : String(error));
+      alert(`Reorder failed: ${detail}`);
+    });
+  };
 
   const deleteColumn = async (colName: string) => {
     if (!session) return;
 
+    const sessionId = session.session_id;
     setCtxMenu(null);
     try {
-      await api.delete(`/api/compute/${session.session_id}/column/${encodeURIComponent(colName)}`);
-      const updatedCols = session.columns.filter((c) => c.name !== colName);
-      const updatedPreview = session.preview.map((row) => {
-        const r = { ...row }; delete r[colName]; return r;
+      await runColumnStructureMutation(sessionId, async () => {
+        const res = await api.delete(
+          `/api/compute/${sessionId}/column/${encodeURIComponent(colName)}`,
+        );
+        if (useStore.getState().session?.session_id !== sessionId) return;
+        useStore.getState().removeSessionColumn(colName, res.data.case_filter);
+        bumpUndo(false);
       });
-      useStore.getState().setSession({ ...session, columns: updatedCols, preview: updatedPreview }); bumpUndo();
     } catch { /* ignore */ }
   };
 
@@ -859,6 +877,7 @@ function DataTableBody({ session }: { session: Session }) {
 
   const deleteChecked = async () => {
     if (!session) return;
+    const sessionId = session.session_id;
     const rows = [...checkedRows];
     const cols = [...checkedCols];
     if (rows.length === 0 && cols.length === 0) return;
@@ -874,16 +893,42 @@ function DataTableBody({ session }: { session: Session }) {
       // Rows first: delete_rows drops by position and resets the index; column
       // deletion is unaffected by that, so the order is safe.
       if (rows.length) {
-        await api.post(`/api/compute/${session.session_id}/delete_rows`, { row_indices: rows });
+        await api.post(`/api/compute/${sessionId}/delete_rows`, { row_indices: rows });
+        if (useStore.getState().session?.session_id !== sessionId) return;
+        bumpUndo();
       }
       if (cols.length) {
-        await api.post(`/api/compute/${session.session_id}/delete_columns`, { columns: cols });
+        await runColumnStructureMutation(sessionId, async () => {
+          const deleted = await api.post(
+            `/api/compute/${sessionId}/delete_columns`,
+            { columns: cols },
+          );
+          if (useStore.getState().session?.session_id !== sessionId) return;
+          removeSessionColumns(cols, deleted.data.case_filter);
+          bumpUndo(false);
+        });
       }
-      const res = await api.get(`/api/stats/${session.session_id}/refresh`);
-      useStore.getState().setSession({ ...session, ...res.data });
-      bumpUndo();
+      const res = await api.get(`/api/stats/${sessionId}/refresh`);
+      const currentSession = useStore.getState().session;
+      if (currentSession?.session_id !== sessionId) return;
+      useStore.getState().setSession({ ...currentSession, ...res.data });
       clearChecks();
     } catch (e: unknown) {
+      const currentSession = useStore.getState().session;
+      if (currentSession?.session_id === sessionId) {
+        try {
+          const refreshed = await api.get(`/api/stats/${sessionId}/refresh`);
+          const latestSession = useStore.getState().session;
+          if (latestSession?.session_id === sessionId) {
+            useStore.getState().setSession({
+              ...latestSession,
+              ...refreshed.data,
+            });
+          }
+        } catch {
+          // Preserve original mutation error below if reconciliation also fails.
+        }
+      }
       alert((e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? "Bulk delete failed");
     }
   };
@@ -1121,7 +1166,7 @@ function DataTableBody({ session }: { session: Session }) {
     setCtxMenu(null);
     const idx = session.columns.findIndex((c) => c.name === colName);
     if (idx < 0 || idx === session.columns.length - 1) return;
-    reorderColumns(idx, session.columns.length - 1);
+    commitColumnReorder(idx, session.columns.length - 1);
   };
 
   // Move a column to an explicit 1-based position (shifts the rest along).
@@ -1130,7 +1175,7 @@ function DataTableBody({ session }: { session: Session }) {
     const idx = session.columns.findIndex((c) => c.name === colName);
     if (idx < 0) return;
     const target = Math.max(0, Math.min(oneBased - 1, session.columns.length - 1));
-    if (target !== idx) reorderColumns(idx, target);
+    if (target !== idx) commitColumnReorder(idx, target);
     setMoveCol(null);
   };
 
@@ -1166,14 +1211,30 @@ function DataTableBody({ session }: { session: Session }) {
       .map((n) => [n, suggestDraft[n].trim()] as [string, string]);
     if (pairs.length === 0) { setSuggestOpen(false); return; }
     setSuggestBusy(true);
+    const sessionId = session.session_id;
     try {
-      const { renameColumn } = await import("../api");
-      for (const [oldName, newName] of pairs) {
-        try { await renameColumn(session.session_id, oldName, newName); } catch { /* skip dup/invalid */ }
-      }
-      const res = await api.get(`/api/stats/${session.session_id}/refresh`);
-      const cur = useStore.getState().session;
-      if (cur) { useStore.getState().setSession({ ...cur, ...res.data }); bumpUndo(); }
+      await runColumnStructureMutation(sessionId, async () => {
+        const { renameColumn } = await import("../api");
+        for (const [oldName, newName] of pairs) {
+          try {
+            const renamed = await renameColumn(sessionId, oldName, newName);
+            if (useStore.getState().session?.session_id !== sessionId) return;
+            useStore.getState().renameSessionColumn(
+              oldName,
+              newName,
+              renamed.data.case_filter,
+            );
+            bumpUndo(false);
+          } catch {
+            // Skip duplicate/invalid suggestion and continue valid rows.
+          }
+        }
+        const res = await api.get(`/api/stats/${sessionId}/refresh`);
+        const current = useStore.getState().session;
+        if (current?.session_id === sessionId) {
+          useStore.getState().setSession({ ...current, ...res.data });
+        }
+      });
     } catch { /* ignore */ } finally { setSuggestBusy(false); setSuggestOpen(false); }
   };
 
@@ -1221,32 +1282,18 @@ function DataTableBody({ session }: { session: Session }) {
     }
 
     setRenameCol(null);
+    const sessionId = session.session_id;
     try {
-      await renameColumn(session.session_id, oldName, newName);
-      // Update local state
-      const updatedCols = session.columns.map((c) =>
-        c.name === oldName ? { ...c, name: newName } : c
-      );
-      const updatedPreview = session.preview.map((row) => {
-        const r = { ...row };
-        if (oldName in r) { r[newName] = r[oldName]; delete r[oldName]; }
-        return r;
+      await runColumnStructureMutation(sessionId, async () => {
+        const res = await renameColumn(sessionId, oldName, newName);
+        if (useStore.getState().session?.session_id !== sessionId) return;
+        useStore.getState().renameSessionColumn(
+          oldName,
+          newName,
+          res.data.case_filter,
+        );
+        bumpUndo(false);
       });
-      // Remap per-column decimal formatting so the rename carries the user's
-      // formatting choice over to the new column name.
-      if (oldName in columnDecimals) {
-        const next: Record<string, number> = { ...columnDecimals };
-        next[newName] = next[oldName];
-        delete next[oldName];
-        useStore.setState({ columnDecimals: next });
-      }
-      useStore.getState().setSession({ ...session, columns: updatedCols, preview: updatedPreview });
-      // Every other panel's persisted variable/covariate selection still
-      // points at the old name (they're plain cached strings, not live
-      // references) — remap them so a rename doesn't silently break the
-      // next analysis run in a panel the user isn't currently looking at.
-      useStore.getState().renameInPanelCache(oldName, newName);
-      bumpUndo();
     } catch (e: unknown) {
       // Surface backend errors (422 duplicate, network, etc.) instead of
       // silently dropping the rename. Falls back to a generic message.
@@ -1789,7 +1836,7 @@ function DataTableBody({ session }: { session: Session }) {
                     onDrop={(e) => {
                       e.preventDefault();
                       if (dragIdx !== null && dragIdx !== colIdx && isFrozenCol(dragIdx) === frozen) {
-                        reorderColumns(dragIdx, colIdx);
+                        commitColumnReorder(dragIdx, colIdx);
                       }
                       setDragIdx(null);
                       setDropIdx(null);
