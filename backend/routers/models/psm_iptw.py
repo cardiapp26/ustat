@@ -4,6 +4,7 @@ import asyncio
 import traceback
 from typing import List, Optional, Tuple
 import numpy as np
+from scipy import stats as scipy_stats
 import pandas as pd
 import statsmodels.api as sm
 from fastapi import APIRouter, HTTPException
@@ -799,8 +800,20 @@ def _run_iptw(req: IPTWRequest):
             glm = sm.GLM(y, X_treat, family=sm.families.Binomial(),
                          var_weights=w).fit(cov_type="HC0")
             b = float(glm.params[treat_name])
-            se = float(glm.bse[treat_name])
-            lo, hi = b - 1.959963984540054 * se, b + 1.959963984540054 * se
+            # Survey convention, matching R's svyglm: the sandwich carries a
+            # finite-sample correction for the number of sampling units, and
+            # the statistic is a t on the design degrees of freedom rather
+            # than a z. A z is the large-sample limit and always the smaller
+            # p — the same shortcut that was understating the Gamma GLM's
+            # p-values. On the audit weights this reproduces svyglm's
+            # 0.27240986 exactly, against 0.27195546 without it.
+            n_units = int(glm.nobs)
+            dof = max(n_units - 1, 1)
+            se = float(glm.bse[treat_name]) * float(np.sqrt(n_units / dof))
+            t_crit = float(scipy_stats.t.ppf(0.975, dof))
+            stat = b / se if se > 0 else float("nan")
+            p_val = float(2 * scipy_stats.t.sf(abs(stat), dof))
+            lo, hi = b - t_crit * se, b + t_crit * se
             outcome_result = {
                 "type": "weighted_glm",
                 "model": "Weighted logistic regression (IPTW), robust SE",
@@ -809,8 +822,8 @@ def _run_iptw(req: IPTWRequest):
                 "coefficients": [{
                     "variable": treat_name,
                     "estimate": b, "se": se,
-                    "z": float(glm.tvalues[treat_name]),
-                    "p": float(glm.pvalues[treat_name]),
+                    "t": stat, "z": stat, "df": dof,
+                    "p": p_val,
                     "ci_low": lo, "ci_high": hi,
                     "odds_ratio": float(np.exp(b)),
                     "or_ci_low": float(np.exp(lo)), "or_ci_high": float(np.exp(hi)),
@@ -818,7 +831,9 @@ def _run_iptw(req: IPTWRequest):
                 "method_note": (
                     "The outcome is modelled on the treatment alone; the IPTW "
                     "weights carry the adjustment for the covariates. Standard "
-                    "errors are robust (HC0)."
+                    "errors are robust, with the survey finite-sample "
+                    "correction, and tested with a t on the design degrees of "
+                    "freedom — the same convention as R's svyglm."
                 ),
             }
         except Exception as e:

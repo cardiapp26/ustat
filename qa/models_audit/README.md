@@ -39,6 +39,22 @@ interval, the Youden operating point and the two-sample DeLong test.
 Restricted cubic splines match `rms::lrm` on Harrell knot placement and on
 the nonlinearity Wald test.
 
+## Checking the two halves separately
+
+PSM, IPTW and GEE each build something before they estimate anything — a
+matched set, a weight vector, an encoded design. Comparing only the final
+number cannot say which half is wrong, so for these three uSTAT's own
+intermediate output is exported and handed to R:
+
+| endpoint | intermediate given to R | R fits | agreement |
+|---|---|---|---|
+| PSM | matched pairs (`_psm` session) | `survival::clogit` | every reported digit |
+| IPTW | weights (`_iptw` session) | `survey::svyglm` | estimate 1e-7, SE exact |
+| GEE | dummy-encoded design | `geepack::geeglm` | 4e-11 worst case |
+
+That split is what found the IPTW standard error: the estimate had always
+been right, so a whole-pipeline comparison would have read as "close enough".
+
 ## Propensity score matching
 
 uSTAT and `MatchIt` retain the same 138 matched pairs at a 0.2 SD caliper on

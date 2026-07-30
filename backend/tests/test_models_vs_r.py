@@ -489,3 +489,63 @@ def test_psm_matched_effect_matches_clogit(client, frame):
     assert res["n_informative_sets"] + res["n_uninformative_sets"] == 138
     assert res["n_matched_rows"] == 276
     assert res["n_rows_contributing"] == res["n_informative_sets"] * 2
+
+
+# ── IPTW and GEE, checked on uSTAT's own intermediate output ─────────────────
+# Same split as the PSM check: the weights (IPTW) and the encoded design (GEE)
+# are exported and handed to R, so what is computed FROM them is verified
+# independently of how they were built.
+
+
+def test_iptw_effect_matches_svyglm_on_ustats_own_weights(client, frame):
+    """survey::svyglm run on the weights uSTAT produced.
+
+    The estimate agreed from the start. The standard error did not: the
+    sandwich was reported raw and tested against a normal, where the survey
+    convention applies a finite-sample correction for the number of sampling
+    units and tests against a t on the design degrees of freedom. A z is the
+    large-sample limit and always the smaller p."""
+    df = frame.copy()
+    df["treat01"] = (df["arm"] == "treat").astype(int)
+    sid2 = make_session(df, "models_vs_r_iptw_se")
+    out = client.post("/api/models/iptw", json={
+        "session_id": sid2, "treatment_col": "treat01",
+        "covariates": ["age", "bmi", "sex"], "outcome_col": "event_binary",
+        "estimand": "ate", "stabilize": True, "outcome_type": "binary"}).json()
+    co = out["outcome_result"]["coefficients"][0]
+
+    # svyglm(event_binary ~ treat01, design=svydesign(~1, ~iptw_weight))
+    assert co["estimate"] == pytest.approx(0.74619646, abs=1e-6)
+    assert co["se"] == pytest.approx(0.27240986, abs=1e-7)
+    assert co["p"] == pytest.approx(0.00652914, abs=1e-5)
+    assert co["df"] == 299
+    # Without the correction the SE was 0.27195546 — smaller, so a smaller p.
+    assert co["se"] > 0.272
+
+
+def test_gee_matches_geeglm_on_ustats_own_design(client):
+    """geepack::geeglm run on the design matrix uSTAT encodes, so the dummy
+    coding and the estimation are checked separately. Worst relative
+    difference across every coefficient and standard error: 4e-11."""
+    sid_l = make_session(_long_frame(), "models_vs_r_gee_design")
+    out = client.post("/api/models/gee", json={
+        "session_id": sid_l, "outcome": "score",
+        "predictors": ["visit", "arm", "age"], "group_col": "pid",
+        "family": "gaussian", "cov_struct": "independence"}).json()
+    got = {c["variable"]: c for c in out["coefficients"]}
+
+    expected = {
+        "const": (46.1055799652, 2.0625721153),
+        "visit_v2": (3.1244766667, 0.2360519661),
+        "visit_v3": (6.5108466667, 0.2314628582),
+        "arm_treat": (2.7817317409, 0.7328592337),
+        "age": (0.0573979532, 0.0319277240),
+    }
+    # The literals above carry ten significant digits; the tolerance reflects
+    # that, not the size of any disagreement — the measured worst relative
+    # difference across all ten values is 4e-11.
+    for name, (est, se) in expected.items():
+        assert got[name]["estimate"] == pytest.approx(est, rel=1e-8), name
+        assert got[name]["se"] == pytest.approx(se, rel=1e-8), name
+    assert out["n_obs"] == 900
+    assert out["n_clusters"] == 300
