@@ -207,11 +207,40 @@ describe('DescriptivePanel', () => {
     const originalInnerWidth = window.innerWidth
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 900 })
     fireEvent.resize(window)
-    expect(divider).toHaveAttribute('aria-valuemax', '340')
+    // 900 - 560 = 340, but the divider keeps at least 120 px of travel above
+    // its minimum, so the reservation gives way to 224 + 120.
+    expect(divider).toHaveAttribute('aria-valuemax', '344')
     fireEvent.keyDown(divider, { key: 'End' })
-    expect(divider).toHaveAttribute('aria-valuenow', '340')
+    expect(divider).toHaveAttribute('aria-valuenow', '344')
     fireEvent.keyDown(divider, { key: 'Enter' })
     expect(divider).toHaveAttribute('aria-valuenow', '320')
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      value: originalInnerWidth,
+    })
+  })
+
+  it('leaves the divider movable on a window too narrow to reserve the result pane', async () => {
+    // Below a 784 px window the reservation used to collapse the maximum onto
+    // the minimum, so aria-valuemin and aria-valuemax were both 224 and the
+    // divider could not move — at exactly the width where the column names
+    // are too clipped to read.
+    installSession()
+    mockCommonEndpoints()
+    server.use(
+      http.get('/api/stats/test-session/column_summary', () => HttpResponse.json(numericSummary)),
+    )
+    const originalInnerWidth = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 744 })
+
+    render(<DescriptivePanel />)
+    const divider = await screen.findByRole('separator', { name: 'Resize column list' })
+    fireEvent.resize(window)
+
+    expect(divider.getAttribute('aria-valuemax')).not.toBe(divider.getAttribute('aria-valuemin'))
+    fireEvent.keyDown(divider, { key: 'End' })
+    expect(divider).toHaveAttribute('aria-valuenow', '344')
+
     Object.defineProperty(window, 'innerWidth', {
       configurable: true,
       value: originalInnerWidth,

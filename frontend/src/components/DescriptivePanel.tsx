@@ -889,11 +889,19 @@ const COLUMN_LIST_MAX_WIDTH = 560;
 // Distribution plot needs 520 px; surrounding p-4 adds 32 px. Keep a small
 // extra gutter so the divider never clips the plot at the minimum window size.
 const RESULT_PANE_MIN_WIDTH = 560;
+// …but never at the cost of freezing the divider. Reserving 560 px
+// unconditionally meant that below a 784 px window the maximum collapsed onto
+// the minimum: aria-valuemin and aria-valuemax both read 224, and the divider
+// was a control that could not move at all. That is precisely the window size
+// at which the column names are too clipped to read and widening the list
+// matters most. The plot carries its own width slider, so a narrower result
+// pane is a trade the user can make; a divider that does nothing is not.
+const COLUMN_LIST_MIN_TRAVEL = 120;
 
 function getColumnListMaxWidth() {
   if (typeof window === "undefined") return COLUMN_LIST_MAX_WIDTH;
   return Math.max(
-    COLUMN_LIST_MIN_WIDTH,
+    COLUMN_LIST_MIN_WIDTH + COLUMN_LIST_MIN_TRAVEL,
     Math.min(COLUMN_LIST_MAX_WIDTH, window.innerWidth - RESULT_PANE_MIN_WIDTH),
   );
 }
@@ -1589,20 +1597,30 @@ export default function DescriptivePanel() {
         <div className="p-2 border-t border-gray-200 text-xs text-gray-400 text-center">
           {session.columns.length} columns · {session.rows} rows
         </div>
-        <div
-          role="separator"
-          aria-label="Resize column list"
-          aria-orientation="vertical"
-          aria-valuemin={COLUMN_LIST_MIN_WIDTH}
-          aria-valuemax={columnListMaxWidth}
-          aria-valuenow={columnListWidth}
-          tabIndex={0}
-          onPointerDown={startColumnListResize}
-          onDoubleClick={resetColumnListWidth}
-          onKeyDown={onColumnListResizeKeyDown}
-          className="absolute right-0 top-0 bottom-0 z-20 w-1 cursor-col-resize touch-none bg-transparent hover:bg-indigo-400/70 active:bg-indigo-500 focus:bg-indigo-400/70 focus:outline-none"
-          title="Drag left or right to resize · Arrow keys resize · Enter or double-click resets"
-        />
+      </div>
+
+      {/* The divider is its own flex item, not an overlay pinned inside the
+          list. As a 1 px transparent strip on top of the list's right edge it
+          was a real control that could not be hit: the target was one pixel
+          wide, invisible until the pointer was already on it, and it sat over
+          the row's own rename and delete buttons. Here it owns its space,
+          takes a normal-sized grab area, and shows a hairline so it reads as
+          draggable before you touch it. */}
+      <div
+        role="separator"
+        aria-label="Resize column list"
+        aria-orientation="vertical"
+        aria-valuemin={COLUMN_LIST_MIN_WIDTH}
+        aria-valuemax={columnListMaxWidth}
+        aria-valuenow={columnListWidth}
+        tabIndex={0}
+        onPointerDown={startColumnListResize}
+        onDoubleClick={resetColumnListWidth}
+        onKeyDown={onColumnListResizeKeyDown}
+        className="group relative z-20 flex w-2 flex-shrink-0 cursor-col-resize touch-none items-center justify-center bg-gray-100 hover:bg-indigo-100 active:bg-indigo-200 focus:bg-indigo-100 focus:outline-none"
+        title="Drag left or right to resize · Arrow keys resize · Enter or double-click resets"
+      >
+        <span className="h-8 w-0.5 rounded bg-gray-300 transition-colors group-hover:bg-indigo-400 group-active:bg-indigo-500" />
       </div>
 
       {/* ── Right: view area ── */}
