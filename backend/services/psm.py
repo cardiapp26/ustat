@@ -160,25 +160,51 @@ def _match_greedy(
         return matched_t, matched_c
 
     ctrl_dist = distance_vec[control_idx].reshape(-1, 1)
-    knn = NearestNeighbors(
-        n_neighbors=min(ratio * 5, len(control_idx)), metric="euclidean"
-    )
-    knn.fit(ctrl_dist)
+    n_controls = len(control_idx)
 
     used: set[int] = set()
     ordered = treated_idx[np.argsort(-distance_vec[treated_idx])]
+
+    # The neighbour search used to ask for a fixed ratio * 5 candidates — five
+    # of them at 1:1 — and drop the treated unit if every one of those five
+    # was already taken. Greedy matching works down from the highest
+    # propensity, so the units processed later are exactly the ones whose
+    # nearest controls have been spent, and they were being discarded while
+    # free controls sat well inside the caliper. On the audit dataset that
+    # lost 17 of 138 matchable patients, a seventh of the matched sample, for
+    # no statistical reason at all.
+    #
+    # The candidate list now grows until either enough free controls inside
+    # the caliper are found, or the returned neighbours have run past the
+    # caliper — at which point there genuinely are none left.
+    k = min(max(ratio * 5, 10), n_controls)
+    knn = NearestNeighbors(n_neighbors=k, metric="euclidean")
+    knn.fit(ctrl_dist)
+
     for ti in ordered:
         q = np.array([[distance_vec[ti]]])
-        distances, neighbours = knn.kneighbors(q)
         chosen: list[int] = []
-        for dist, nb in zip(distances[0], neighbours[0]):
-            c_real = int(control_idx[nb])
-            if dist <= caliper_dist and c_real not in used:
-                chosen.append(c_real)
-                used.add(c_real)
-                if len(chosen) == ratio:
+        k_search = k
+        while True:
+            distances, neighbours = knn.kneighbors(q, n_neighbors=k_search)
+            chosen = []
+            for dist, nb in zip(distances[0], neighbours[0]):
+                if dist > caliper_dist:
                     break
+                c_real = int(control_idx[nb])
+                if c_real not in used:
+                    chosen.append(c_real)
+                    if len(chosen) == ratio:
+                        break
+            if len(chosen) == ratio or k_search >= n_controls:
+                break
+            # Everything returned was inside the caliper but taken; there may
+            # be more beyond the current horizon.
+            if float(distances[0][-1]) > caliper_dist:
+                break
+            k_search = min(k_search * 2, n_controls)
         if len(chosen) == ratio:
+            used.update(chosen)
             matched_t.append(int(ti))
             matched_c.extend(chosen)
     return matched_t, matched_c

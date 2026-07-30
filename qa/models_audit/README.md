@@ -24,8 +24,7 @@ three visits per subject for the mixed model. Fixed seed, no patient data.
 
 Installed: `survival`, `MASS`, `lme4`, `logistf`, `ordinal`, `geepack`,
 `MatchIt`, `survey`, `car`, `rms`, `pROC`, `sandwich`, `lmtest`. Every model
-the panel offers now has an R counterpart except propensity-score matching,
-which is compared on balance rather than on the matched set (see below).
+the panel offers has an R counterpart.
 
 ## Agreement
 
@@ -42,13 +41,12 @@ the nonlinearity Wald test.
 
 ## Propensity score matching
 
-uSTAT retains 121 matched pairs where `MatchIt` retains 138 on the same
-caliper. The two use different matching implementations — greedy nearest
-neighbour against MatchIt's, and the caliper is applied on a different scale
-— so the matched sets are not expected to be identical. Balance after
-matching is comparable (average SMD 0.016). The endpoint is not held to
-MatchIt's sample size in the tests; only its balance and its reported effect
-are checked.
+uSTAT and `MatchIt` retain the same 138 matched pairs at a 0.2 SD caliper on
+this dataset. The matched sets are not identical — greedy nearest-neighbour
+matching is order-dependent and the two implementations break ties
+differently — so the endpoint is held to the pair count and to its balance
+(average SMD 0.040 against MatchIt's 0.028, both far inside the conventional
+0.1) rather than to MatchIt's exact matched set.
 
 ## Differences that are real and deliberate
 

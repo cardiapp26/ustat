@@ -419,3 +419,42 @@ def test_rcs_matches_rms(client, sid):
     assert out["nonlinearity_wald"] == pytest.approx(0.21084121, abs=5e-4)
     assert out["nonlinearity_df"] == 2
     assert out["nonlinearity_p"] == pytest.approx(0.89994592, abs=1e-5)
+
+
+# ── propensity score matching, against MatchIt ───────────────────────────────
+
+def test_psm_keeps_every_matchable_patient(client, frame):
+    """The neighbour search asked for a fixed five candidates and dropped the
+    treated unit if all five were taken. Greedy matching works down from the
+    highest propensity, so the units processed later are exactly the ones
+    whose nearest controls have been spent — 17 of 138 matchable patients
+    were discarded with free controls sitting inside the caliper.
+
+    MatchIt retains 138 pairs at the same caliper on this dataset."""
+    df = frame.copy()
+    df["treat01"] = (df["arm"] == "treat").astype(int)
+    sid2 = make_session(df, "models_vs_r_psm")
+    out = client.post("/api/models/psm", json={
+        "session_id": sid2, "treatment_col": "treat01",
+        "covariates": ["age", "bmi", "sex"], "outcome_col": "event_binary",
+        "caliper": 0.2, "ratio": 1, "outcome_type": "binary"}).json()
+
+    assert out["n_matched_pairs"] == 138
+    # Matching is only worth doing if it improves balance.
+    assert out["avg_smd_after"] < out["avg_smd_before"]
+    assert out["avg_smd_after"] < 0.1
+
+
+def test_psm_still_respects_the_caliper(client, frame):
+    """Searching further must not mean matching outside the caliper — a
+    tighter caliper has to retain fewer pairs, not the same number."""
+    df = frame.copy()
+    df["treat01"] = (df["arm"] == "treat").astype(int)
+    sid2 = make_session(df, "models_vs_r_psm_tight")
+    wide = client.post("/api/models/psm", json={
+        "session_id": sid2, "treatment_col": "treat01",
+        "covariates": ["age", "bmi", "sex"], "caliper": 0.2, "ratio": 1}).json()
+    tight = client.post("/api/models/psm", json={
+        "session_id": sid2, "treatment_col": "treat01",
+        "covariates": ["age", "bmi", "sex"], "caliper": 0.01, "ratio": 1}).json()
+    assert tight["n_matched_pairs"] < wide["n_matched_pairs"]
