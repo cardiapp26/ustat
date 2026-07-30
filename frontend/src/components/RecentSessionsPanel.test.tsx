@@ -6,6 +6,7 @@ import { server } from '../test/server'
 import { clearSession } from '../test/testUtils'
 import RecentSessionsPanel from './RecentSessionsPanel'
 import * as sessionDb from '../lib/sessionDb'
+import * as exportSnapshot from '../lib/exportSnapshot'
 import { cloudSync } from '../lib/cloudSync'
 
 vi.mock('../lib/sessionDb', () => ({
@@ -22,6 +23,13 @@ vi.mock('../lib/sessionDb', () => ({
   clearAllRecentSessions: vi.fn(),
   duplicateRecentSession: vi.fn(),
 }))
+
+vi.mock('../lib/exportSnapshot', async () => {
+  const actual = await vi.importActual<typeof import('../lib/exportSnapshot')>(
+    '../lib/exportSnapshot',
+  )
+  return { ...actual, exportSnapshot: vi.fn() }
+})
 
 vi.mock('../lib/cloudSync', () => ({
   cloudSync: {
@@ -171,5 +179,58 @@ describe('RecentSessionsPanel', () => {
     // The copy must not be made by trashing or overwriting the source.
     expect(sessionDb.trashSession).not.toHaveBeenCalled()
     expect(sessionDb.purgeSession).not.toHaveBeenCalled()
+  })
+
+  it('offers Save as on a card and writes the chosen format from the snapshot', async () => {
+    // The point of building the file locally: the card's dataset is usually
+    // not loaded on the backend, so nothing here may go near the server.
+    mockLists([baseMeta])
+    const payload = JSON.stringify({
+      filename: 'patients.csv',
+      columns: [{ name: 'id' }],
+      data: [{ id: 1 }],
+    })
+    vi.mocked(sessionDb.getRecentSession).mockResolvedValue({ ...baseMeta, payload })
+    const user = userEvent.setup()
+    render(<RecentSessionsPanel />)
+    await screen.findByText('patients.csv')
+
+    await user.click(screen.getByTitle(/save as/i))
+    await user.click(screen.getByRole('menuitem', { name: 'CSV' }))
+
+    await waitFor(() =>
+      expect(exportSnapshot.exportSnapshot).toHaveBeenCalledWith(
+        { name: 'patients.csv', payload }, 'csv',
+      ),
+    )
+  })
+
+  it('closes the Save as menu without exporting when dismissed', async () => {
+    mockLists([baseMeta])
+    const user = userEvent.setup()
+    render(<RecentSessionsPanel />)
+    await screen.findByText('patients.csv')
+
+    await user.click(screen.getByTitle(/save as/i))
+    expect(screen.getByRole('menuitem', { name: 'Excel' })).toBeInTheDocument()
+    await user.click(screen.getByTitle(/save as/i))
+
+    await waitFor(() =>
+      expect(screen.queryByRole('menuitem', { name: 'Excel' })).not.toBeInTheDocument(),
+    )
+    expect(exportSnapshot.exportSnapshot).not.toHaveBeenCalled()
+  })
+
+  it('surfaces a failed export instead of failing silently', async () => {
+    mockLists([baseMeta])
+    vi.mocked(sessionDb.getRecentSession).mockResolvedValue(undefined)
+    const user = userEvent.setup()
+    render(<RecentSessionsPanel />)
+    await screen.findByText('patients.csv')
+
+    await user.click(screen.getByTitle(/save as/i))
+    await user.click(screen.getByRole('menuitem', { name: 'TSV' }))
+
+    await waitFor(() => expect(screen.getByText(/snapshot not found/i)).toBeInTheDocument())
   })
 })

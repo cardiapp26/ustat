@@ -13,7 +13,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { Clock, Database, RotateCcw, Trash2, Copy, Pencil, Sparkles, FileText, HardDrive, Cloud, CloudDownload } from "lucide-react";
+import { Clock, Database, RotateCcw, Trash2, Copy, Pencil, Sparkles, FileText, HardDrive, Cloud, CloudDownload, Download } from "lucide-react";
 import api from "../api";
 import { useStore } from "../store";
 import {
@@ -34,6 +34,7 @@ import {
   type RecentSessionMeta,
 } from "../lib/sessionDb";
 import { cloudSync } from "../lib/cloudSync";
+import { exportSnapshot, SNAPSHOT_FORMATS, type SnapshotFmt } from "../lib/exportSnapshot";
 
 function fmtBytes(b: number): string {
   if (b < 1024) return `${b} B`;
@@ -86,6 +87,8 @@ export default function RecentSessionsPanel() {
   const [restoring, setRestoring] = useState<string | null>(null);
   const [duplicating, setDuplicating] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [saveAsOpen, setSaveAsOpen] = useState<string | null>(null);
+  const [exportingId, setExportingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -165,6 +168,24 @@ export default function RecentSessionsPanel() {
       setError(e instanceof Error ? e.message : "Could not load the snapshot");
     } finally {
       setRestoring(null);
+    }
+  };
+
+  // Save as… builds the file from the stored snapshot rather than going
+  // through the backend's export endpoint, which would need this session
+  // uploaded there first. See lib/exportSnapshot.
+  const onSaveAs = async (id: string, fmt: SnapshotFmt) => {
+    setSaveAsOpen(null);
+    setExportingId(id);
+    setError(null);
+    try {
+      const rec = await getRecentSession(id);
+      if (!rec) throw new Error("Snapshot not found");
+      await exportSnapshot({ name: rec.name, payload: rec.payload }, fmt);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not save the snapshot");
+    } finally {
+      setExportingId(null);
     }
   };
 
@@ -396,6 +417,43 @@ export default function RecentSessionsPanel() {
                 <RotateCcw size={11} />
                 {restoring === it.id ? "Loading…" : "Resume"}
               </button>
+              <div className="relative">
+                <button
+                  onClick={() => setSaveAsOpen((cur) => (cur === it.id ? null : it.id))}
+                  disabled={exportingId === it.id}
+                  aria-haspopup="menu"
+                  aria-expanded={saveAsOpen === it.id}
+                  className="text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 disabled:opacity-50 px-2 py-1.5 rounded-lg transition-colors"
+                  title="Save as — download this dataset without opening it"
+                >
+                  <Download size={12} />
+                </button>
+                {saveAsOpen === it.id && (
+                  <>
+                    {/* Click-away catcher; the menu is small enough that a
+                        full popover library would cost more than it saves. */}
+                    <div
+                      className="fixed inset-0 z-10"
+                      onClick={() => setSaveAsOpen(null)}
+                    />
+                    <div
+                      role="menu"
+                      className="absolute right-0 bottom-full mb-1 z-20 w-36 bg-white border border-gray-200 rounded-lg shadow-lg py-1"
+                    >
+                      {SNAPSHOT_FORMATS.map((f) => (
+                        <button
+                          key={f.fmt}
+                          role="menuitem"
+                          onClick={() => void onSaveAs(it.id, f.fmt)}
+                          className="w-full text-left text-[11px] text-gray-700 hover:bg-indigo-50 hover:text-indigo-700 px-2.5 py-1.5 transition-colors"
+                        >
+                          {f.label}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
               <button
                 onClick={() => startRename(it.id, it.name)}
                 className="text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 px-2 py-1.5 rounded-lg transition-colors"
