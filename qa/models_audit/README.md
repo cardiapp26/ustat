@@ -23,8 +23,9 @@ three visits per subject for the mixed model. Fixed seed, no patient data.
 ## What R can and cannot check here
 
 Installed: `survival`, `MASS`, `lme4`, `logistf`, `ordinal`, `geepack`,
-`MatchIt`, `survey`. Absent: `car`, `rms`, `pROC` — VIF, RCS/nomogram and ROC
-comparisons have no R counterpart here.
+`MatchIt`, `survey`, `car`, `rms`, `pROC`, `sandwich`, `lmtest`. Every model
+the panel offers now has an R counterpart except propensity-score matching,
+which is compared on balance rather than on the matched set (see below).
 
 ## Agreement
 
@@ -34,6 +35,10 @@ fixed effects and variance components. Linear AIC/BIC now match R to 1e-9.
 GEE matches `geepack::geeglm` to 1e-8 on every coefficient and standard
 error. The IPTW treatment effect matches `survey::svyglm` to about 0.2%,
 the small gap coming from a slightly different propensity-score fit.
+VIF matches `car::vif` to 1e-6. ROC matches `pROC` on the AUC, its DeLong
+interval, the Youden operating point and the two-sample DeLong test.
+Restricted cubic splines match `rms::lrm` on Harrell knot placement and on
+the nonlinearity Wald test.
 
 ## Propensity score matching
 

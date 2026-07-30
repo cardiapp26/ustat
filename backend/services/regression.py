@@ -7,24 +7,36 @@ import numpy as np
 
 
 def compute_vif(X: pd.DataFrame) -> dict:
-    """Variance Inflation Factor per column of the design matrix X.
+    """Variance Inflation Factor per predictor, as R's car::vif defines it.
 
-    Excludes the intercept ('const' column) from the calculation.
-    Returns {column_name: vif_float}.
+    The intercept has to be IN the matrix the auxiliary regressions are run
+    on, and out of the results. Dropping the constant column first — which is
+    what this used to do, and what four copies of it in the model routers
+    also did — makes every auxiliary regression pass through the origin, so
+    its R-squared absorbs the mean structure and the VIF comes out inflated.
+
+    On the audit dataset that reported age at 21.17 and bmi at 21.69 where
+    car::vif gives 1.008 and 1.012. Ten is the conventional "severe
+    collinearity, drop this predictor" threshold, so the numbers were telling
+    users to throw away sound predictors on data with no collinearity at all.
+
+    Returns {column_name: vif_float}, intercept excluded from the output.
     """
     from statsmodels.stats.outliers_influence import variance_inflation_factor
 
     Xn = X.copy().astype(float)
-    if "const" in Xn.columns:
-        Xn = Xn.drop(columns=["const"])
-    if Xn.shape[1] < 2:
-        return {c: 1.0 for c in Xn.columns}
+    if "const" not in Xn.columns:
+        Xn.insert(0, "const", 1.0)
+    predictors = [c for c in Xn.columns if c != "const"]
+    if len(predictors) < 2:
+        return {c: 1.0 for c in predictors}
 
     arr = Xn.values
+    cols = list(Xn.columns)
     out: dict = {}
-    for i, col in enumerate(Xn.columns):
+    for col in predictors:
         try:
-            v = float(variance_inflation_factor(arr, i))
+            v = float(variance_inflation_factor(arr, cols.index(col)))
             if not np.isfinite(v):
                 v = None
         except Exception:

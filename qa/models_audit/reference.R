@@ -337,6 +337,55 @@ if (requireNamespace("survey", quietly = TRUE)) {
     kv("note", str_("stabilised ATE weights; svyglm quasibinomial with design-based (robust) SEs")))
 }
 
+# ── 16. VIF (car) ────────────────────────────────────────────────────────────
+if (requireNamespace("car", quietly = TRUE)) {
+  suppressPackageStartupMessages(library(car))
+  vl <- car::vif(lm(sbp ~ age + bmi + arm + sex, data = d))
+  vg <- car::vif(glm(event_binary ~ age + bmi + arm + sex, family = binomial, data = d))
+  vrow <- function(v) arr(vapply(names(v), function(n)
+    obj(kv("term", str_(n)), kv("vif", num(v[[n]]))), character(1)))
+  models$vif <- obj(
+    kv("linear", vrow(vl)), kv("logistic", vrow(vg)),
+    kv("note", str_(paste("car::vif runs the auxiliary regressions on the model's",
+                          "design matrix, intercept included"))))
+}
+
+# ── 17. ROC (pROC) ───────────────────────────────────────────────────────────
+if (requireNamespace("pROC", quietly = TRUE)) {
+  suppressPackageStartupMessages(library(pROC))
+  r1 <- pROC::roc(d$event_binary, d$age, quiet = TRUE)
+  r2 <- pROC::roc(d$event_binary, d$bmi, quiet = TRUE)
+  ci1 <- pROC::ci.auc(r1)
+  co <- pROC::coords(r1, "best", best.method = "youden", transpose = FALSE)
+  tt <- pROC::roc.test(r1, r2, method = "delong")
+  models$roc <- obj(
+    kv("auc_age", num(as.numeric(pROC::auc(r1)))),
+    kv("auc_age_ci_low", num(ci1[1])), kv("auc_age_ci_high", num(ci1[3])),
+    kv("auc_bmi", num(as.numeric(pROC::auc(r2)))),
+    kv("youden_sensitivity", num(co$sensitivity)),
+    kv("youden_specificity", num(co$specificity)),
+    kv("delong_z", num(as.numeric(tt$statistic))),
+    kv("delong_p", num(tt$p.value)),
+    kv("note", str_("DeLong CI and DeLong two-sample test")))
+}
+
+# ── 18. Restricted cubic spline (rms) ────────────────────────────────────────
+if (requireNamespace("rms", quietly = TRUE)) {
+  suppressPackageStartupMessages(library(rms))
+  dd <- rms::datadist(d); options(datadist = "dd")
+  fr <- rms::lrm(event_binary ~ rcs(age, 4), data = d)
+  ar <- anova(fr)
+  models$rcs <- obj(
+    kv("knots", arr(vapply(as.numeric(attr(rcs(d$age, 4), "parms")), num, character(1)))),
+    kv("nonlinear_chisq", num(ar[grep("Nonlinear", rownames(ar))[1], "Chi-Square"])),
+    kv("nonlinear_df", num(ar[grep("Nonlinear", rownames(ar))[1], "d.f."])),
+    kv("nonlinear_p", num(ar[grep("Nonlinear", rownames(ar))[1], "P"])),
+    kv("overall_chisq", num(ar["age", "Chi-Square"])),
+    kv("overall_p", num(ar["age", "P"])),
+    kv("note", str_("Harrell knot placement at the default quantiles")))
+  options(datadist = NULL)
+}
+
 # ── write ────────────────────────────────────────────────────────────────────
 pkgs <- obj(vapply(c("survival", "MASS", "lme4", "logistf", "ordinal"), function(p)
   kv(p, str_(if (requireNamespace(p, quietly = TRUE))

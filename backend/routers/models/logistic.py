@@ -103,25 +103,17 @@ def _add_pairwise_interactions(
 
 
 def _compute_vif(X: pd.DataFrame) -> dict:
-    """Variance Inflation Factor per column of the design matrix X."""
-    from statsmodels.stats.outliers_influence import variance_inflation_factor
-    Xn = X.copy().astype(float)
-    if "const" in Xn.columns:
-        Xn = Xn.drop(columns=["const"])
-    if Xn.shape[1] < 2:
-        return {c: 1.0 for c in Xn.columns}
-    arr = Xn.values
-    out: dict = {}
-    for i, col in enumerate(Xn.columns):
-        try:
-            v = float(variance_inflation_factor(arr, i))
-            if not np.isfinite(v):
-                v = None
-        except Exception:
-            logger.exception("VIF calculation failed in logistic router")
-            v = None
-        out[str(col)] = v
-    return out
+    """Delegates to the one correct implementation.
+
+    This file used to carry its own copy, which dropped the intercept before
+    calling statsmodels and therefore reported inflated VIFs — four routers
+    each held the same copy of the same mistake, while /api/diagnostics
+    computed it correctly, so the same quantity had two answers depending on
+    which screen you were on.
+    """
+    from services.regression import compute_vif
+
+    return compute_vif(X)
 
 
 # ── Standard Logistic Regression ───────────────────────────────────────────

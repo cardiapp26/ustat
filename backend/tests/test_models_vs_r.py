@@ -345,3 +345,77 @@ def test_iptw_survival_reports_uncertainty_too(client, frame):
     assert [c["variable"] for c in co] == ["treat01"]
     for k in ("hr", "se", "p", "hr_ci_low", "hr_ci_high"):
         assert co[0][k] is not None, k
+
+
+# ── VIF / ROC / RCS, cross-checked against car, pROC and rms ─────────────────
+
+R_VIF = {
+    "age": 1.0079827477581905,
+    "bmi": 1.0121540120716646,
+    "arm_treat": 1.0172047746180316,
+    "sex_M": 1.0002050436966766,
+}
+
+
+def test_vif_matches_car(client, sid):
+    """statsmodels' variance_inflation_factor needs the intercept IN the
+    design matrix. Four model routers each dropped it first, so every
+    auxiliary regression ran through the origin and its R-squared absorbed the
+    mean structure: age came back at 21.17 and bmi at 21.69 where car::vif
+    gives 1.008 and 1.012. Ten is the conventional "drop this predictor"
+    threshold, so the numbers were telling users to throw away sound
+    predictors on data with no collinearity at all."""
+    out = client.post("/api/models/linear", json={
+        "session_id": sid, "outcome": "sbp",
+        "predictors": ["age", "bmi", "arm", "sex"]}).json()
+    got = {c["variable"]: c.get("vif") for c in out["coefficients"]}
+    for name, expected in R_VIF.items():
+        assert got[name] == pytest.approx(expected, rel=1e-6), name
+        assert got[name] < 2, f"{name} was reported at 21 before this fix"
+
+
+def test_vif_agrees_across_endpoints(client, sid):
+    """/api/diagnostics computed VIF correctly while the model endpoints did
+    not, so the same quantity had two answers depending on the screen."""
+    lin = client.post("/api/models/linear", json={
+        "session_id": sid, "outcome": "sbp",
+        "predictors": ["age", "bmi", "arm", "sex"]}).json()
+    diag = client.post("/api/diagnostics/linear_full", json={
+        "session_id": sid, "outcome": "sbp",
+        "predictors": ["age", "bmi", "arm", "sex"]}).json()
+    from_model = {c["variable"]: c.get("vif") for c in lin["coefficients"]}
+    from_diag = {v["variable"]: v["vif"] for v in diag["vif"]}
+    # /api/diagnostics rounds to 3 decimals for display; the underlying value
+    # is what has to agree.
+    for name in from_diag:
+        assert from_model[name] == pytest.approx(from_diag[name], abs=5e-4), name
+
+
+def test_roc_matches_proc(client, sid):
+    out = client.post("/api/stats/roc", json={
+        "session_id": sid, "score_column": "age",
+        "outcome_column": "event_binary"}).json()
+    assert out["auc"] == pytest.approx(0.6043181690140845, abs=5e-5)
+    assert out["ci_lower"] == pytest.approx(0.5313312764, abs=5e-5)
+    assert out["ci_upper"] == pytest.approx(0.6773050616, abs=5e-5)
+    assert out["sensitivity"] == pytest.approx(0.7214611872, abs=5e-4)
+    assert out["specificity"] == pytest.approx(0.4938271605, abs=5e-4)
+
+
+def test_roc_delong_comparison_matches_proc(client, sid):
+    out = client.post("/api/stats/roc_compare", json={
+        "session_id": sid, "score_column_1": "age", "score_column_2": "bmi",
+        "outcome_column": "event_binary"}).json()
+    assert out["z"] == pytest.approx(0.2083022993, abs=5e-4)
+    assert out["p"] == pytest.approx(0.8349929364, abs=1e-5)
+
+
+def test_rcs_matches_rms(client, sid):
+    """Harrell knot placement and the nonlinearity Wald test."""
+    out = client.post("/api/models/rcs", json={
+        "session_id": sid, "predictor": "age", "outcome": "event_binary",
+        "model_type": "logistic", "n_knots": 4, "covariates": []}).json()
+    assert out["knots"] == pytest.approx([44.595, 58.025, 67.0, 79.82], abs=0.01)
+    assert out["nonlinearity_wald"] == pytest.approx(0.21084121, abs=5e-4)
+    assert out["nonlinearity_df"] == 2
+    assert out["nonlinearity_p"] == pytest.approx(0.89994592, abs=1e-5)
