@@ -769,15 +769,50 @@ def _run_iptw(req: IPTWRequest):
     )
     balance_achieved = bool(smd_after) and all(v < 0.10 for v in smd_after.values())
 
+    # The weighted outcome model regresses the outcome on the TREATMENT.
+    #
+    # It used to regress it on the covariate matrix X — the propensity-score
+    # design — with the treatment column absent entirely. The response
+    # therefore carried coefficients for age, bmi and sex and no treatment
+    # effect at all, which is the one number an IPTW analysis exists to
+    # produce. A reader would take "age p = 0.018" for the result.
+    #
+    # Weighting is what removes the confounding, so the outcome model is
+    # y ~ treatment on the weighted sample — the same specification as R's
+    # svyglm(y ~ treat, design). Standard errors are robust; model-based ones
+    # understate the uncertainty in a weighted fit.
+    treat_name = str(req.treatment_col)
     outcome_result = None
     if req.outcome_type == "binary" and req.outcome_col:
         y = pd.to_numeric(df[req.outcome_col], errors="coerce")
-        Xw = sm.add_constant(X, has_constant="add")
+        X_treat = sm.add_constant(
+            pd.DataFrame({treat_name: np.asarray(treat, dtype=float)}, index=df.index),
+            has_constant="add")
         try:
-            glm = sm.GLM(y, Xw, family=sm.families.Binomial(), var_weights=w).fit()
+            glm = sm.GLM(y, X_treat, family=sm.families.Binomial(),
+                         var_weights=w).fit(cov_type="HC0")
+            b = float(glm.params[treat_name])
+            se = float(glm.bse[treat_name])
+            lo, hi = b - 1.959963984540054 * se, b + 1.959963984540054 * se
             outcome_result = {
                 "type": "weighted_glm",
-                "coefficients": [{"variable": p, "estimate": round(float(glm.params[p]), 6), "p": round(float(glm.pvalues[p]), 6)} for p in glm.params.index if p != "const"]
+                "model": "Weighted logistic regression (IPTW), robust SE",
+                "outcome": req.outcome_col,
+                "treatment": treat_name,
+                "coefficients": [{
+                    "variable": treat_name,
+                    "estimate": b, "se": se,
+                    "z": float(glm.tvalues[treat_name]),
+                    "p": float(glm.pvalues[treat_name]),
+                    "ci_low": lo, "ci_high": hi,
+                    "odds_ratio": float(np.exp(b)),
+                    "or_ci_low": float(np.exp(lo)), "or_ci_high": float(np.exp(hi)),
+                }],
+                "method_note": (
+                    "The outcome is modelled on the treatment alone; the IPTW "
+                    "weights carry the adjustment for the covariates. Standard "
+                    "errors are robust (HC0)."
+                ),
             }
         except Exception as e:
             logger.exception("IPTW Weighted GLM outcome fit failed")
@@ -786,15 +821,39 @@ def _run_iptw(req: IPTWRequest):
     elif req.outcome_type == "survival" and req.survival_duration_col and req.survival_event_col:
         try:
             from lifelines import CoxPHFitter
-            surv_df = df[[req.survival_duration_col, req.survival_event_col] + list(X.columns)].copy()
+            surv_df = df[[req.survival_duration_col, req.survival_event_col]].copy()
+            surv_df[treat_name] = np.asarray(treat, dtype=float)
             surv_df["w"] = w
             surv_df[req.survival_event_col] = pd.to_numeric(surv_df[req.survival_event_col], errors="coerce")
             surv_df[req.survival_duration_col] = pd.to_numeric(surv_df[req.survival_duration_col], errors="coerce")
             cph = CoxPHFitter()
-            cph.fit(surv_df, duration_col=req.survival_duration_col, event_col=req.survival_event_col, weights_col="w", robust=True)
+            cph.fit(surv_df, duration_col=req.survival_duration_col,
+                    event_col=req.survival_event_col, weights_col="w", robust=True)
+            summ = cph.summary
+            rows = []
+            for v in cph.params_.index:
+                r_ = summ.loc[v]
+                rows.append({
+                    "variable": str(v),
+                    "log_hr": float(cph.params_[v]),
+                    "hr": float(cph.hazard_ratios_[v]),
+                    # The HR alone was all this returned — no uncertainty at
+                    # all, so the estimate could not be read as a result.
+                    "se": float(r_["se(coef)"]),
+                    "z": float(r_["z"]),
+                    "p": float(r_["p"]),
+                    "hr_ci_low": float(np.exp(r_["coef lower 95%"])),
+                    "hr_ci_high": float(np.exp(r_["coef upper 95%"])),
+                })
             outcome_result = {
                 "type": "weighted_cox",
-                "coefficients": [{"variable": v, "hr": round(float(cph.hazard_ratios_.get(v, 0)), 4)} for v in cph.params_.index]
+                "model": "Weighted Cox regression (IPTW), robust SE",
+                "treatment": treat_name,
+                "coefficients": rows,
+                "method_note": (
+                    "The hazard is modelled on the treatment alone; the IPTW "
+                    "weights carry the adjustment for the covariates."
+                ),
             }
         except Exception as e:
             logger.exception("IPTW Weighted Cox outcome fit failed")

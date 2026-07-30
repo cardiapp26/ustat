@@ -267,6 +267,76 @@ if (requireNamespace("lme4", quietly = TRUE)) {
     kv("note", str_("lme4 reports no p-values for fixed effects")))
 }
 
+# ── 13. GEE (geepack::geeglm) ────────────────────────────────────────────────
+if (requireNamespace("geepack", quietly = TRUE)) {
+  suppressPackageStartupMessages(library(geepack))
+  lg <- long[order(long$pid), ]
+  for (cs in c("independence", "exchangeable", "ar1")) {
+    fg <- geepack::geeglm(score ~ visit + arm + age, id = pid, data = lg,
+                          family = gaussian, corstr = cs)
+    cgee <- summary(fg)$coefficients
+    key <- paste0("gee_", cs)
+    models[[key]] <- obj(
+      kv("terms", arr(vapply(seq_len(nrow(cgee)), function(i)
+        term_obj(rownames(cgee)[i], cgee[i, 1], cgee[i, 2], cgee[i, 3], cgee[i, 4]),
+        character(1)))),
+      kv("corstr", str_(cs)),
+      kv("n", num(nrow(lg))),
+      kv("n_clusters", num(length(unique(lg$pid)))),
+      kv("note", str_("geeglm reports sandwich (robust) standard errors and a Wald chi-square")))
+  }
+}
+
+# ── 14. Propensity score matching (MatchIt) ──────────────────────────────────
+if (requireNamespace("MatchIt", quietly = TRUE)) {
+  suppressPackageStartupMessages(library(MatchIt))
+  d$treat01 <- as.integer(d$arm == "treat")
+  mi <- MatchIt::matchit(treat01 ~ age + bmi + sex, data = d,
+                         method = "nearest", distance = "glm",
+                         caliper = 0.2, ratio = 1, replace = FALSE)
+  sm <- summary(mi, standardize = TRUE)
+  bal_rows <- vapply(seq_len(nrow(sm$sum.matched)), function(i)
+    obj(kv("covariate", str_(rownames(sm$sum.matched)[i])),
+        kv("smd_matched", num(sm$sum.matched[i, "Std. Mean Diff."])),
+        kv("smd_all", num(sm$sum.all[i, "Std. Mean Diff."]))), character(1))
+  md <- MatchIt::match.data(mi)
+  models$psm <- obj(
+    kv("n_treated_all", num(sum(d$treat01 == 1))),
+    kv("n_control_all", num(sum(d$treat01 == 0))),
+    kv("n_matched_pairs", num(sum(md$treat01 == 1))),
+    kv("n_matched_total", num(nrow(md))),
+    kv("balance", arr(bal_rows)),
+    kv("note", str_("nearest-neighbour on the logit propensity, caliper 0.2 SD, 1:1, no replacement")))
+}
+
+# ── 15. IPTW (survey) ────────────────────────────────────────────────────────
+if (requireNamespace("survey", quietly = TRUE)) {
+  suppressPackageStartupMessages(library(survey))
+  d$treat01 <- as.integer(d$arm == "treat")
+  ps_fit <- glm(treat01 ~ age + bmi + sex, family = binomial, data = d)
+  ps <- fitted(ps_fit)
+  # Stabilised ATE weights, the same estimand uSTAT defaults to.
+  pt <- mean(d$treat01)
+  w_stab <- ifelse(d$treat01 == 1, pt / ps, (1 - pt) / (1 - ps))
+  w_raw <- ifelse(d$treat01 == 1, 1 / ps, 1 / (1 - ps))
+  dw <- d
+  dw$w <- w_stab
+  des <- survey::svydesign(ids = ~1, weights = ~w, data = dw)
+  fit_w <- survey::svyglm(event_binary ~ treat01, design = des,
+                          family = quasibinomial())
+  cw <- summary(fit_w)$coefficients
+  models$iptw <- obj(
+    kv("terms", arr(vapply(seq_len(nrow(cw)), function(i)
+      term_obj(rownames(cw)[i], cw[i, 1], cw[i, 2], cw[i, 3], cw[i, 4]),
+      character(1)))),
+    kv("ps_mean", num(mean(ps))), kv("ps_min", num(min(ps))), kv("ps_max", num(max(ps))),
+    kv("w_stab_mean", num(mean(w_stab))), kv("w_stab_max", num(max(w_stab))),
+    kv("w_raw_mean", num(mean(w_raw))), kv("w_raw_max", num(max(w_raw))),
+    kv("ess", num(sum(w_stab)^2 / sum(w_stab^2))),
+    kv("n", num(nrow(d))),
+    kv("note", str_("stabilised ATE weights; svyglm quasibinomial with design-based (robust) SEs")))
+}
+
 # ── write ────────────────────────────────────────────────────────────────────
 pkgs <- obj(vapply(c("survival", "MASS", "lme4", "logistf", "ordinal"), function(p)
   kv(p, str_(if (requireNamespace(p, quietly = TRUE))

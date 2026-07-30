@@ -22,15 +22,28 @@ three visits per subject for the mixed model. Fixed seed, no patient data.
 
 ## What R can and cannot check here
 
-Installed: `survival`, `MASS`, `lme4`, `logistf`, `ordinal`.
-Absent: `geepack`, `MatchIt`, `survey`, `car`, `rms` — so **GEE, PSM and IPTW
-have no R counterpart in this harness** and are not covered.
+Installed: `survival`, `MASS`, `lme4`, `logistf`, `ordinal`, `geepack`,
+`MatchIt`, `survey`. Absent: `car`, `rms`, `pROC` — VIF, RCS/nomogram and ROC
+comparisons have no R counterpart here.
 
 ## Agreement
 
 Exact to at least 1e-5 relative: linear, polynomial, logistic, Poisson, Cox
 (coefficients, SEs, HRs, concordance), Kaplan-Meier, and the mixed model's
 fixed effects and variance components. Linear AIC/BIC now match R to 1e-9.
+GEE matches `geepack::geeglm` to 1e-8 on every coefficient and standard
+error. The IPTW treatment effect matches `survey::svyglm` to about 0.2%,
+the small gap coming from a slightly different propensity-score fit.
+
+## Propensity score matching
+
+uSTAT retains 121 matched pairs where `MatchIt` retains 138 on the same
+caliper. The two use different matching implementations — greedy nearest
+neighbour against MatchIt's, and the caliper is applied on a different scale
+— so the matched sets are not expected to be identical. Balance after
+matching is comparable (average SMD 0.016). The endpoint is not held to
+MatchIt's sample size in the tests; only its balance and its reported effect
+are checked.
 
 ## Differences that are real and deliberate
 

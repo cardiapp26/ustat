@@ -386,22 +386,54 @@ def gee_regression(req: GEERequest):
     if req.cov_struct not in cov_map:
         raise HTTPException(status_code=422, detail=f"Unsupported cov_struct: {req.cov_struct}")
 
+    cov_fallback = None
     try:
-        model = sm.GEE(y, Xc, groups=groups, family=fam_map[req.family], cov_struct=cov_map[req.cov_struct])
+        model = sm.GEE(y, Xc, groups=groups, family=fam_map[req.family],
+                       cov_struct=cov_map[req.cov_struct])
         result = model.fit()
     except Exception as e:
-        logger.exception("GEE fit failed")
-        raise HTTPException(status_code=422, detail=_sanitize_model_error(e, "GEE"))
+        # statsmodels' autoregressive working correlation solves for the
+        # correlation by bracketing, and on ordinary balanced data it can fail
+        # to find a bracket — "unable to find right bracket" — which used to
+        # come back as a flat 422 with no way forward. The working correlation
+        # is a nuisance structure: the coefficients are consistent under any
+        # of them and only the efficiency changes, so fall back to
+        # exchangeable and say so rather than refusing the analysis.
+        if req.cov_struct == "ar":
+            logger.warning("GEE autoregressive fit failed (%s); falling back to exchangeable", e)
+            try:
+                model = sm.GEE(y, Xc, groups=groups, family=fam_map[req.family],
+                               cov_struct=Exchangeable())
+                result = model.fit()
+                cov_fallback = (
+                    "The autoregressive working correlation could not be "
+                    "estimated on this data (statsmodels could not bracket the "
+                    "correlation parameter), so an exchangeable structure was "
+                    "used instead. GEE coefficients are consistent under any "
+                    "working correlation; only the efficiency changes."
+                )
+            except Exception as e2:
+                logger.exception("GEE fit failed after fallback")
+                raise HTTPException(status_code=422, detail=_sanitize_model_error(e2, "GEE"))
+        else:
+            logger.exception("GEE fit failed")
+            raise HTTPException(status_code=422, detail=_sanitize_model_error(e, "GEE"))
 
     coefs = []
     for name in result.params.index:
-        if name == "const":
-            continue
+        # The intercept used to be dropped from the response entirely. It is a
+        # fitted parameter like any other, and its absence makes the table
+        # impossible to line up against R or any other package.
         coefs.append({
-            "variable": name,
-            "estimate": round(float(result.params[name]), 6),
-            "se": round(float(result.bse[name]), 6),
-            "p": round(float(result.pvalues[name]), 6) if name in result.pvalues.index else None,
+            "variable": "const" if name == "const" else name,
+            # Not rounded to 6 decimals — that is coarser than the numbers
+            # themselves and turns anything below 5e-7 into a flat zero.
+            "estimate": float(result.params[name]),
+            "se": float(result.bse[name]),
+            "z": float(result.tvalues[name]) if name in result.tvalues.index else None,
+            "p": float(result.pvalues[name]) if name in result.pvalues.index else None,
+            "ci_low": float(result.conf_int().loc[name, 0]),
+            "ci_high": float(result.conf_int().loc[name, 1]),
         })
 
     n_clusters = int(df[req.group_col].nunique())
@@ -412,8 +444,9 @@ def gee_regression(req: GEERequest):
         "n_excluded": int(n_excluded),
         "family": req.family,
         "cov_struct": req.cov_struct,
+        "cov_struct_used": ("exchangeable" if cov_fallback else req.cov_struct),
         "coefficients": coefs,
-        "warnings": cat_warnings,
+        "warnings": (cat_warnings + [cov_fallback]) if cov_fallback else cat_warnings,
         "result_text": _gee_results_text(req.family, req.cov_struct, n_clusters, result.nobs),
     }
 

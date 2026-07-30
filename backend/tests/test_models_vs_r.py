@@ -56,6 +56,16 @@ def frame() -> pd.DataFrame:
     return pd.read_csv(buf)
 
 
+def _long_frame() -> pd.DataFrame:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "models_audit_gen", _GEN / "generate_dataset.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.build_long(mod.build())
+
+
 @pytest.fixture()
 def sid(frame) -> str:
     return make_session(frame.copy(), "models_vs_r")
@@ -238,3 +248,100 @@ def test_poisson_matches_r(client, sid):
         "session_id": sid, "outcome": "admissions",
         "predictors": ["age", "arm"]}).json())
     _check(got, R_POIS, est_key="log_irr", rel=1e-5)
+
+
+# ── GEE / IPTW, cross-checked against geepack and survey ─────────────────────
+# geepack, MatchIt and survey were installed for this pass, so the three
+# endpoints the first cross-check could not reach are covered here.
+
+R_GEE = {
+    "const": (46.10557996522679, 2.0625721153125016, 0),
+    "visit_v2": (3.1244766666666646, 0.2360519660968432, 0),
+    "visit_v3": (6.510846666666665, 0.23146285823831597, 0),
+    "arm_treat": (2.781731740947323, 0.73285923372758, 0.00014721291440400464),
+    "age": (0.057397953237171784, 0.03192772403423477, 0.07221719339812627),
+}
+
+R_IPTW_TREAT = (0.7449893683584642, 0.27245732447528, 0.00662480058482372)
+R_IPTW_ESS = 295.0297144835016
+
+
+def test_gee_matches_geeglm_including_the_intercept(client, frame):
+    """The intercept row was dropped from the response, so the table could not
+    be lined up against R or any other package, and every number was rounded
+    to six decimals on the way out."""
+    long = _long_frame()
+    sid_l = make_session(long, "models_vs_r_long")
+    out = client.post("/api/models/gee", json={
+        "session_id": sid_l, "outcome": "score",
+        "predictors": ["visit", "arm", "age"], "group_col": "pid",
+        "family": "gaussian", "cov_struct": "independence"}).json()
+    got = {c["variable"]: c for c in out["coefficients"]}
+
+    assert "const" in got, "the intercept is a fitted parameter like any other"
+    for name, (est, se, p) in R_GEE.items():
+        assert got[name]["estimate"] == pytest.approx(est, rel=1e-8), name
+        assert got[name]["se"] == pytest.approx(se, rel=1e-8), name
+    # Rounding to 6 dp would have flattened this to 0.057398.
+    assert got["age"]["estimate"] != pytest.approx(round(R_GEE["age"][0], 6), abs=0)
+
+
+def test_gee_autoregressive_degrades_instead_of_refusing(client):
+    """statsmodels cannot always bracket the AR correlation parameter and used
+    to surface that as a flat 422. The working correlation is a nuisance
+    structure — the coefficients are consistent under any of them."""
+    sid_l = make_session(_long_frame(), "models_vs_r_long_ar")
+    r_ = client.post("/api/models/gee", json={
+        "session_id": sid_l, "outcome": "score",
+        "predictors": ["visit", "arm", "age"], "group_col": "pid",
+        "family": "gaussian", "cov_struct": "ar"})
+    assert r_.status_code == 200, r_.text
+    out = r_.json()
+    assert out["cov_struct"] == "ar"
+    assert out["cov_struct_used"] == "exchangeable"
+    assert any("autoregressive" in str(w) for w in out["warnings"])
+
+
+def test_iptw_reports_the_treatment_effect(client, frame):
+    """The weighted outcome model regressed the outcome on the COVARIATES and
+    never included the treatment, so the response carried coefficients for age,
+    bmi and sex and no treatment effect at all — the one number an IPTW
+    analysis exists to produce."""
+    df = frame.copy()
+    df["treat01"] = (df["arm"] == "treat").astype(int)
+    sid2 = make_session(df, "models_vs_r_iptw")
+    out = client.post("/api/models/iptw", json={
+        "session_id": sid2, "treatment_col": "treat01",
+        "covariates": ["age", "bmi", "sex"], "outcome_col": "event_binary",
+        "estimand": "ate", "stabilize": True, "outcome_type": "binary"}).json()
+
+    res = out["outcome_result"]
+    assert res["treatment"] == "treat01"
+    names = [c["variable"] for c in res["coefficients"]]
+    assert names == ["treat01"], names
+
+    co = res["coefficients"][0]
+    est, se, p = R_IPTW_TREAT
+    assert co["estimate"] == pytest.approx(est, rel=0.01)
+    assert co["se"] == pytest.approx(se, rel=0.02)
+    assert co["p"] == pytest.approx(p, rel=0.2)
+    # An estimate with no uncertainty attached cannot be read as a result.
+    for k in ("se", "ci_low", "ci_high", "odds_ratio", "or_ci_low", "or_ci_high"):
+        assert co[k] is not None, k
+    assert out["weight_summary"]["effective_n"] == pytest.approx(R_IPTW_ESS, rel=0.01)
+
+
+def test_iptw_survival_reports_uncertainty_too(client, frame):
+    """The weighted Cox returned a bare hazard ratio — no SE, no CI, no p."""
+    df = frame.copy()
+    df["treat01"] = (df["arm"] == "treat").astype(int)
+    sid2 = make_session(df, "models_vs_r_iptw_surv")
+    out = client.post("/api/models/iptw", json={
+        "session_id": sid2, "treatment_col": "treat01",
+        "covariates": ["age", "bmi", "sex"], "outcome_type": "survival",
+        "survival_duration_col": "time", "survival_event_col": "status",
+        "estimand": "ate", "stabilize": True}).json()
+    co = out["outcome_result"]["coefficients"]
+    assert [c["variable"] for c in co] == ["treat01"]
+    for k in ("hr", "se", "p", "hr_ci_low", "hr_ci_high"):
+        assert co[0][k] is not None, k
