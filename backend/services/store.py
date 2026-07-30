@@ -213,7 +213,12 @@ def load_persisted_sessions() -> None:
             _delete_disk_snapshot(sid)
             continue
         try:
-            df = pd.read_pickle(df_path)
+            # nosec B301 - this pickle is not untrusted input. It is written by
+            # _atomic_write_pickle above, into a cache directory this process
+            # owns, and read back only when the session id matches a file this
+            # process wrote. Anyone able to plant a file there can already run
+            # code as this user. The cache is off by default (SESSION_DISK_CACHE=0).
+            df = pd.read_pickle(df_path)  # nosec B301
             meta = {}
             if os.path.exists(meta_path):
                 with open(meta_path) as f:

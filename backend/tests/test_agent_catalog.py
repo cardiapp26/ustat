@@ -133,7 +133,10 @@ def test_serialize_tools_roundtrips(generator) -> None:
     ]
     source = generator.serialize_tools(sample)
     namespace: dict = {}
-    exec(source + "\nresult = TOOLS", namespace)
+    # nosec B102 - `source` is this repo's own generated catalog module,
+    # produced by serialize_tools two lines above. Executing it is the only
+    # way to assert the generated file is valid Python that round-trips.
+    exec(source + "\nresult = TOOLS", namespace)  # nosec B102
     assert namespace["result"] == sample
 
 
@@ -204,7 +207,7 @@ __all__ = ["TOOLS"]
     assert "new" in new_source
 
     namespace: dict = {}
-    exec(new_source + "\nresult = TOOLS", namespace)
+    exec(new_source + "\nresult = TOOLS", namespace)  # nosec B102
     assert namespace["result"] == new_tools
 
 

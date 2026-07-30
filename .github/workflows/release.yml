@@ -141,16 +141,23 @@ jobs:
 
       - name: Update version in tauri.conf.json
         shell: bash
+        env:
+          # The tag name is untrusted input. It used to be interpolated into
+          # the run: block AND then spliced into the body of a node -e script,
+          # so a tag containing a quote would have run as JavaScript on the
+          # release runner, which holds the signing secrets. Now it crosses
+          # into node through the environment and is never parsed as code.
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          TAG="${{ github.ref_name }}"
-          VERSION="${TAG#v}"
+          VERSION="${REF_NAME#v}"
           echo "Updating tauri.conf.json version to $VERSION"
-          node -e "
-            const fs = require('fs');
-            const conf = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8'));
-            conf.version = '$VERSION';
-            fs.writeFileSync('src-tauri/tauri.conf.json', JSON.stringify(conf, null, 2), 'utf8');
-          "
+          VERSION="$VERSION" node -e '
+            const fs = require("fs");
+            const path = "src-tauri/tauri.conf.json";
+            const conf = JSON.parse(fs.readFileSync(path, "utf8"));
+            conf.version = process.env.VERSION;
+            fs.writeFileSync(path, JSON.stringify(conf, null, 2), "utf8");
+          '
 
       - name: Generate Tauri icons from logo
         run: npx -y @tauri-apps/cli icon frontend/public/pwa-512.png
@@ -189,13 +196,18 @@ jobs:
         if: matrix.platform == 'windows-latest'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # `github` context data reaches the runner as untrusted input and
+          # interpolating it straight into a run: block splices it into the
+          # script. Passed through the environment it stays a value.
+          REF_NAME: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
         run: |
-          $TAG = "${{ github.ref_name }}"
+          $TAG = "$env:REF_NAME"
           $VERSION = $TAG -replace '^v', ''
           $EXE = "src-tauri/target/release/ustat-desktop.exe"
           $DEST = "uSTAT_${VERSION}_x64-portable.exe"
           if (Test-Path $EXE) {
             Copy-Item $EXE $DEST
-            gh release upload $TAG $DEST --repo ${{ github.repository }} --clobber
+            gh release upload $TAG $DEST --repo "$env:REPOSITORY" --clobber
           }
         shell: pwsh
