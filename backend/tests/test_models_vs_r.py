@@ -458,3 +458,34 @@ def test_psm_still_respects_the_caliper(client, frame):
         "session_id": sid2, "treatment_col": "treat01",
         "covariates": ["age", "bmi", "sex"], "caliper": 0.01, "ratio": 1}).json()
     assert tight["n_matched_pairs"] < wide["n_matched_pairs"]
+
+
+def test_psm_matched_effect_matches_clogit(client, frame):
+    """R's survival::clogit run on uSTAT's OWN matched pairs, so the matching
+    and the estimation are checked separately: this pins the estimation."""
+    df = frame.copy()
+    df["treat01"] = (df["arm"] == "treat").astype(int)
+    sid2 = make_session(df, "models_vs_r_psm_effect")
+    out = client.post("/api/models/psm", json={
+        "session_id": sid2, "treatment_col": "treat01",
+        "covariates": ["age", "bmi", "sex"], "outcome_col": "event_binary",
+        "caliper": 0.2, "ratio": 1, "outcome_type": "binary"}).json()
+
+    res = out["outcome_result"]
+    assert res["type"] == "conditional_logistic"
+    co = res["coefficients"][0]
+    assert co["variable"] == "treat01"
+    # clogit(event_binary ~ treat01 + strata(match_set_id)) on the exported
+    # matched set: coef 0.69314718, se 0.27386128, z 2.531016, p 0.01137328.
+    assert co["estimate"] == pytest.approx(0.69314718, abs=1e-5)
+    assert co["se"] == pytest.approx(0.27386128, abs=1e-5)
+    assert co["z"] == pytest.approx(2.531016, abs=1e-3)
+    assert co["p"] == pytest.approx(0.01137328, abs=1e-5)
+    assert co["or"] == pytest.approx(2.0, abs=1e-4)
+    assert res["log_likelihood"] == pytest.approx(-38.190850, abs=1e-3)
+
+    # The counts have to add up and be readable on their own.
+    assert res["n_matched_sets"] == 138
+    assert res["n_informative_sets"] + res["n_uninformative_sets"] == 138
+    assert res["n_matched_rows"] == 276
+    assert res["n_rows_contributing"] == res["n_informative_sets"] * 2

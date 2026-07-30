@@ -475,7 +475,14 @@ def _run_psm(req: PSMRequest):
                         outcome_result = {
                             "type": "conditional_logistic",
                             "model": "Conditional logistic regression (matched-set stratification)",
+                            # Rows the conditional likelihood actually used —
+                            # the informative sets only. Named plainly because
+                            # a bare "n" sitting next to n_matched_sets = 138
+                            # reads as "only 120 patients were matched", which
+                            # is not what it means.
+                            "n_rows_contributing": int(len(df_clogit)),
                             "n": int(len(df_clogit)),
+                            "n_matched_rows": int(len(df_out)),
                             "n_matched_sets": int(df_out["_match_id_"].nunique()),
                             "n_informative_sets": n_informative_pairs,
                             "n_uninformative_sets": int(df_out["_match_id_"].nunique())
