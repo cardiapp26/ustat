@@ -1,7 +1,7 @@
 """Server-side Plotly render endpoint: POST /api/charts/render.
 
 Verifies the figure-spec → image-bytes contract, format/MIME handling, input
-validation, and graceful degradation when kaleido is absent.
+validation, and graceful degradation when the render stack is absent.
 """
 
 import importlib.util
@@ -14,7 +14,12 @@ from services import plot_render
 
 client = TestClient(app)
 
-_HAS_KALEIDO = importlib.util.find_spec("kaleido") is not None
+# Rendering needs BOTH, and plot_render says so in its own error message.
+# Guarding on kaleido alone meant that installing kaleido without plotly
+# un-skipped these tests into a 503 instead of running them.
+_CAN_RENDER = all(
+    importlib.util.find_spec(mod) is not None for mod in ("plotly", "kaleido")
+)
 
 FIGURE = {
     "data": [{"type": "scatter", "mode": "lines", "x": [0, 1, 2], "y": [0, 1, 4]}],
@@ -22,7 +27,7 @@ FIGURE = {
 }
 
 
-@pytest.mark.skipif(not _HAS_KALEIDO, reason="kaleido not installed")
+@pytest.mark.skipif(not _CAN_RENDER, reason="plotly or kaleido not installed")
 def test_render_png_returns_image_bytes():
     r = client.post("/api/charts/render",
                     json={"figure": FIGURE, "format": "png", "width": 400, "height": 300})
@@ -32,7 +37,7 @@ def test_render_png_returns_image_bytes():
     assert len(r.content) > 1000
 
 
-@pytest.mark.skipif(not _HAS_KALEIDO, reason="kaleido not installed")
+@pytest.mark.skipif(not _CAN_RENDER, reason="plotly or kaleido not installed")
 def test_render_svg_mime():
     r = client.post("/api/charts/render", json={"figure": FIGURE, "format": "svg"})
     assert r.status_code == 200

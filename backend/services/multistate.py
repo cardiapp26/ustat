@@ -36,6 +36,40 @@ def _safe(v: Any) -> Any:
     return v
 
 
+def encode_predictors(
+    df: pd.DataFrame, predictors: List[str]
+) -> Tuple[pd.DataFrame, List[str]]:
+    """Dummy-code categorical predictors, the way every other model does.
+
+    The transition models used to convert a categorical predictor with
+    `pd.Categorical(x).codes`, which maps k levels onto 0, 1, ... k-1 and
+    fits ONE coefficient. For a two-level factor that happens to equal a
+    dummy; for three or more it silently imposes a linear ordering on an
+    unordered category — `stage` I/II/III became a single hazard ratio "per
+    step of stage", in alphabetical order, and the II-vs-I and III-vs-I
+    contrasts a reader expects were nowhere in the output.
+
+    Returns the frame with dummy columns added and the encoded names, so the
+    prediction step averages the same columns the model was fitted on.
+    """
+    work = df.copy()
+    encoded: List[str] = []
+    for col in predictors:
+        if col not in work.columns:
+            continue
+        if pd.api.types.is_numeric_dtype(work[col]):
+            encoded.append(col)
+            continue
+        dummies = pd.get_dummies(
+            work[col].astype("object"), prefix=col, drop_first=True, dummy_na=False
+        )
+        for name in dummies.columns:
+            work[str(name)] = dummies[name].astype(float)
+        encoded.extend(str(c) for c in dummies.columns)
+        work = work.drop(columns=[col])
+    return work, encoded
+
+
 def _fit_multistate_models(
     long_df: pd.DataFrame,
     id_col: str,
@@ -79,10 +113,9 @@ def _fit_multistate_models(
             continue
 
         # Prepare design matrix
+        # Predictors arrive already dummy-coded; see encode_predictors.
         X = sub[predictors].copy()
         for c in predictors:
-            if X[c].dtype == object or str(X[c].dtype).startswith("category"):
-                X[c] = pd.Categorical(X[c]).codes
             X[c] = pd.to_numeric(X[c], errors="coerce")
 
         work = pd.concat([
@@ -214,10 +247,9 @@ def test_markov_assumption(
             continue
 
         # Prepare design matrix
+        # Predictors arrive already dummy-coded; see encode_predictors.
         X = sub[predictors].copy()
-        for c in X.columns:
-            if X[c].dtype == object or str(X[c].dtype).startswith("category"):
-                X[c] = pd.Categorical(X[c]).codes
+        for c in predictors:
             X[c] = pd.to_numeric(X[c], errors="coerce")
 
         work = pd.concat([
@@ -301,6 +333,7 @@ def fit_multistate_transitions(
     """
     Fit transition-specific Cox or Weibull models on long-format multi-state data.
     """
+    long_df, predictors = encode_predictors(long_df, predictors)
     models, results = _fit_multistate_models(
         long_df=long_df,
         id_col=id_col,
@@ -646,8 +679,6 @@ def compute_multistate_bootstrap_ci(
                     
                 X = sub[predictors].copy()
                 for c in predictors:
-                    if X[c].dtype == object or str(X[c].dtype).startswith("category"):
-                        X[c] = pd.Categorical(X[c]).codes
                     X[c] = pd.to_numeric(X[c], errors="coerce")
                 
                 work = pd.concat([
@@ -740,6 +771,12 @@ def dynamic_prediction_from_landmark(
         horizon_times = np.linspace(landmark_time, landmark_time + 5, 20)
     else:
         horizon_times = np.sort(horizon_times)
+
+    # Encode before anything reads the predictor columns. The prediction step
+    # takes the mean of the at-risk subjects' covariates, and on a raw text
+    # column that mean is a TypeError — so any categorical predictor at all
+    # turned this endpoint into a 500.
+    long_df, predictors = encode_predictors(long_df, predictors)
 
     # Filter to subjects still at risk at landmark in the current state
     at_risk = long_df[

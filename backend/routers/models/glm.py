@@ -12,6 +12,11 @@ from loguru import logger
 from services import store
 from services.category_health import clean_two_level, rare_level_warnings
 from services.impute import apply_imputation
+from services.regression import (
+    constant_column_warnings,
+    design_with_constant,
+    drop_constant_columns,
+)
 from services.assumptions import (
     check_gee_assumptions_placeholder,
     check_ordinal_assumptions_placeholder,
@@ -95,7 +100,7 @@ def poisson_regression(req: PoissonRequest):
     df, cat_warnings = _clean_predictor_categories(df, req.predictors)
     n_excluded = n_total - len(df)
     X = pd.get_dummies(df[req.predictors], drop_first=True)
-    X = sm.add_constant(X.astype(float))
+    X, dropped_const = design_with_constant(X)
     y = pd.to_numeric(df[req.outcome], errors="coerce")
     if y.isna().all():
         raise HTTPException(status_code=422, detail="Outcome column has no numeric values.")
@@ -131,7 +136,7 @@ def poisson_regression(req: PoissonRequest):
         "imputation": req.imputation or "listwise",
         "aic": float(model.aic),
         "bic": float(model.bic),
-        "warnings": cat_warnings,
+        "warnings": cat_warnings + constant_column_warnings(dropped_const),
         "coefficients": coefs,
         "result_text": _poisson_results_text(req.outcome, coefs),
     })
@@ -170,7 +175,7 @@ def gamma_regression(req: GammaRequest):
     df, cat_warnings = _clean_predictor_categories(df, req.predictors)
     n_excluded = n_total - len(df)
     X = pd.get_dummies(df[req.predictors], drop_first=True)
-    X = sm.add_constant(X.astype(float))
+    X, dropped_const = design_with_constant(X)
     y = pd.to_numeric(df[req.outcome], errors="coerce")
     if (y.dropna() <= 0).any():
         raise HTTPException(status_code=422, detail="Gamma regression requires strictly positive outcomes (> 0). Non-positive values found.")
@@ -234,7 +239,7 @@ def gamma_regression(req: GammaRequest):
             "estimates the shape by maximum likelihood, so its value can "
             "differ slightly from this one."
         ),
-        "warnings": cat_warnings,
+        "warnings": cat_warnings + constant_column_warnings(dropped_const),
         "coefficients": coefs,
     })
 
@@ -257,7 +262,7 @@ def negative_binomial_regression(req: NegBinomRequest):
     df, cat_warnings = _clean_predictor_categories(df, req.predictors)
     n_excluded = n_total - len(df)
     X = pd.get_dummies(df[req.predictors], drop_first=True)
-    X = sm.add_constant(X.astype(float))
+    X, dropped_const = design_with_constant(X)
     y = pd.to_numeric(df[req.outcome], errors="coerce")
     if (y.dropna() < 0).any():
         raise HTTPException(status_code=422, detail="Negative binomial requires non-negative integer counts.")
@@ -327,7 +332,7 @@ def negative_binomial_regression(req: NegBinomRequest):
             "MASS::glm.nb parameterisation. alpha near 0 means the counts are "
             "close to Poisson."
         ),
-        "warnings": cat_warnings,
+        "warnings": cat_warnings + constant_column_warnings(dropped_const),
         "coefficients": coefs,
     })
 
@@ -611,6 +616,7 @@ def ordinal_regression(req: OrdinalRequest):
 
     y = pd.Categorical(y_raw, categories=cats, ordered=True).codes
     X = pd.get_dummies(df[req.predictors], drop_first=True).astype(float)
+    X, dropped_const = drop_constant_columns(X)
     if X.shape[1] == 0:
         raise HTTPException(status_code=422, detail="No usable predictors after encoding.")
     X = X.reset_index(drop=True)
@@ -685,7 +691,7 @@ def ordinal_regression(req: OrdinalRequest):
         "aic": float(result.aic) if result.aic is not None else None,
         "bic": float(result.bic) if result.bic is not None else None,
         "brant_proportional_odds": _brant_test(np.asarray(y), X),
-        "warnings": cat_warnings,
+        "warnings": cat_warnings + constant_column_warnings(dropped_const),
         "result_text": "",
     }
     res["result_text"] = _ordinal_results_text(len(cats), len(df), res["brant_proportional_odds"])

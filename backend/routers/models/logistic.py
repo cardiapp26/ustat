@@ -19,6 +19,8 @@ from services.missing_data import (
 )
 from services.category_health import rare_level_warnings
 from services.regression import (
+    constant_column_warnings,
+    design_with_constant,
     stepwise_forward as _stepwise_forward,
     stepwise_backward as _stepwise_backward,
     _uni_p_for_pred,
@@ -147,7 +149,7 @@ def logistic_regression(req: LogisticRequest):
             df_imp, pred_list_imp = _apply_scaling(df_imp, req.predictors, req.scale_factors)
             X_imp = pd.get_dummies(df_imp[pred_list_imp], drop_first=True).astype(float)
             X_imp, _ = _add_pairwise_interactions(X_imp, req.interactions, pred_list_imp)
-            Xc = sm.add_constant(X_imp)
+            Xc, _dropped_const = design_with_constant(X_imp)
             y_imp = df_imp[req.outcome]
             if y_imp.dtype == object:
                 le = LabelEncoder()
@@ -174,7 +176,7 @@ def logistic_regression(req: LogisticRequest):
         df, pred_list = _apply_scaling(df, req.predictors, req.scale_factors)
         X = pd.get_dummies(df[pred_list], drop_first=True).astype(float)
         X, _ix_added = _add_pairwise_interactions(X, req.interactions, pred_list)
-        X_const = sm.add_constant(X)
+        X_const, dropped_const = design_with_constant(X)
         y = df[req.outcome]
         use_mice_pooled = True
     else:
@@ -183,7 +185,7 @@ def logistic_regression(req: LogisticRequest):
         df, pred_list = _apply_scaling(df, req.predictors, req.scale_factors)
         X = pd.get_dummies(df[pred_list], drop_first=True).astype(float)
         X, _ix_added = _add_pairwise_interactions(X, req.interactions, pred_list)
-        X_const = sm.add_constant(X)
+        X_const, dropped_const = design_with_constant(X)
         y = df[req.outcome]
         use_mice_pooled = False
 
@@ -317,6 +319,9 @@ def logistic_regression(req: LogisticRequest):
     }
 
     result = add_assumption_warnings_to_result(result, logistic_assumption_report)
+
+    if dropped_const:
+        result["warnings"] = (result.get("warnings") or []) + constant_column_warnings(dropped_const)
 
     # Dirty / very rare categorical levels silently become extra dummy
     # predictors with n<5 — that's how a typo'd 'sex' column ("M", "F", "x",

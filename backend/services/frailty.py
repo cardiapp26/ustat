@@ -69,16 +69,36 @@ def _safe_float(x: Any) -> Optional[float]:
         return None
 
 
-def _encode_predictors(work: pd.DataFrame, predictors: List[str]) -> pd.DataFrame:
+def _encode_predictors(
+    work: pd.DataFrame, predictors: List[str]
+) -> tuple[pd.DataFrame, List[str]]:
+    """Dummy-code categorical predictors and return their encoded names.
+
+    Integer codes were used here, which turns a k-level category into one
+    numeric column and one coefficient — a linear trend across levels in
+    whatever order they happened to sort. Two-level factors survive that
+    intact; `stage` I/II/III does not.
+    """
     pred_df = work[predictors].copy()
+    encoded: List[str] = []
+    frames = []
     for c in predictors:
-        if pred_df[c].dtype == object or isinstance(pred_df[c].dtype, pd.CategoricalDtype):
-            pred_df[c] = pd.Categorical(pred_df[c]).codes
-    pred_df = pred_df.apply(pd.to_numeric, errors="coerce")
-    return pd.concat([
+        col = pred_df[c]
+        if col.dtype == object or isinstance(col.dtype, pd.CategoricalDtype):
+            dummies = pd.get_dummies(
+                col.astype("object"), prefix=c, drop_first=True, dummy_na=False
+            ).astype(float)
+            frames.append(dummies)
+            encoded.extend(str(x) for x in dummies.columns)
+        else:
+            frames.append(pd.to_numeric(col, errors="coerce").rename(c).to_frame())
+            encoded.append(c)
+    pred_df = pd.concat([f.reset_index(drop=True) for f in frames], axis=1)
+    out = pd.concat([
         work[[c for c in work.columns if c not in predictors]].reset_index(drop=True),
-        pred_df.reset_index(drop=True),
+        pred_df,
     ], axis=1).dropna()
+    return out, encoded
 
 
 def _cluster_frailties_from_fit(
@@ -335,7 +355,7 @@ def fit_shared_gamma_frailty(
     event_col: str,
     cluster_col: str,
     predictors: List[str],
-    penalizer: float = 0.05,          # small ridge helps stability with frailty
+    penalizer: float = 0.0,           # ridge is opt-in; it biases the effects
     max_iter: int = 8,                 # EM-style iterations for theta
     seed: int = 42,
     frailty_distribution: str = "gamma",
@@ -397,7 +417,7 @@ def fit_shared_gamma_frailty(
     if len(work) < 20:
         raise ValueError("Need at least 20 complete rows for frailty model")
 
-    work = _encode_predictors(work, predictors)
+    work, predictors = _encode_predictors(work, predictors)
 
     clusters = work[cluster_col].unique()
     n_clusters = len(clusters)
@@ -436,10 +456,32 @@ def fit_shared_gamma_frailty(
             break
         theta = (1.0 - smoothing) * theta + smoothing * new_theta
 
-    # Final fit with converged theta-informed penalization
-    final_penalizer = penalizer + 0.25 * theta
-    cph = CoxPHFitter(penalizer=final_penalizer)
-    cph.fit(work[cox_cols], duration_col=duration_col, event_col=event_col, robust=True)
+    # The reported fit is NOT ridge-penalized by theta.
+    #
+    # It used to be: the final model was refitted with penalizer + 0.25 * theta
+    # and those coefficients were reported as the frailty-adjusted effects. The
+    # cluster never entered the likelihood at any point, so nothing was being
+    # adjusted for — an L2 penalty simply shrinks every coefficient toward zero,
+    # and the shrinkage grew with the estimated heterogeneity. The more the
+    # sites looked like they differed, the smaller the treatment effect was
+    # reported to be, and the standard error shrank with it, so the estimate was
+    # biased toward the null AND its precision overstated at the same time.
+    # On the 30-row audit frame that read as a log-HR of 1.073 with SE 0.373
+    # where R's coxph with frailty(site) gives 1.232 with SE 0.459.
+    #
+    # Inference now comes from a cluster-robust sandwich on the unpenalized
+    # partial likelihood, which is the marginal analysis R's cluster() term
+    # performs and which this reproduces to six decimals. Theta is kept, and
+    # reported, as a heterogeneity diagnostic — it is a moment approximation,
+    # not a fitted variance component, and the response says so.
+    cph = CoxPHFitter(penalizer=penalizer)
+    cph.fit(
+        work[cox_cols + [cluster_col]],
+        duration_col=duration_col,
+        event_col=event_col,
+        cluster_col=cluster_col,
+        robust=True,
+    )
 
     # Posterior frailties (very approximate EB)
     cluster_frailties = _cluster_frailties_from_fit(

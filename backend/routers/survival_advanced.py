@@ -281,7 +281,7 @@ class FrailtyRequest(BaseModel):
     event_col: str
     cluster_col: str
     predictors: List[str]
-    penalizer: float = 0.05
+    penalizer: float = 0.0
     frailty_distribution: str = "gamma"
     estimation_method: str = "penalized"
     nested_cluster_cols: List[str] = Field(default_factory=list)

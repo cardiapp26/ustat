@@ -6,6 +6,53 @@ import pandas as pd
 import numpy as np
 
 
+def design_with_constant(X: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    """Add the intercept, first dropping any predictor that has no variance.
+
+    `sm.add_constant` defaults to has_constant="skip": if the design already
+    contains a column of a single repeated value, it adds nothing and that
+    column BECOMES the intercept. A predictor that is constant across every
+    row — a single-site study still carrying its `site` column, a filtered
+    cohort where a flag is 1 everywhere — was then reported as a predictor,
+    with the intercept's estimate divided by its value, its standard error,
+    and its p-value. On the audit frame a column holding 5.0 in all 30 rows
+    came back at p = 1.2e-12 in the linear model and p = 0.044 in the
+    logistic one, and no intercept row appeared at all.
+
+    A constant column carries no information about the outcome. R aliases it
+    away and reports NA; this drops it and says so.
+
+    Returns (design with a `const` column, names of the dropped predictors).
+    """
+    import statsmodels.api as sm
+
+    kept, dropped = drop_constant_columns(X)
+    return sm.add_constant(kept.astype(float), has_constant="add"), dropped
+
+
+def drop_constant_columns(X: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    """Remove predictors that take the same value in every row.
+
+    For models without an intercept column of their own — the ordinal fit
+    carries thresholds instead — a constant predictor is collinear with those
+    thresholds rather than with an intercept, but it is just as uninformative.
+    """
+    dropped = [
+        c for c in X.columns
+        if float(np.nanstd(X[c].astype(float).values)) == 0.0
+    ]
+    return (X.drop(columns=dropped) if dropped else X), dropped
+
+
+def constant_column_warnings(dropped: list[str]) -> list[str]:
+    """One user-facing sentence per predictor dropped for having no variance."""
+    return [
+        f"Predictor '{c}' has the same value in every row and carries no "
+        "information about the outcome; it was excluded from the model."
+        for c in dropped
+    ]
+
+
 def compute_vif(X: pd.DataFrame) -> dict:
     """Variance Inflation Factor per predictor, as R's car::vif defines it.
 

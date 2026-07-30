@@ -1352,7 +1352,13 @@ async def cox_rcs(req: CoxRCSRequest):
         raise HTTPException(status_code=400, detail=f"Columns not found in session: {missing_cols}")
 
     df = df_full[cols_needed].copy()
-    for c in cols_needed:
+    # Only the spline terms and the survival columns have to be numeric. The
+    # covariates are dummy-coded further down, so coercing them here turned
+    # every categorical value into NaN, dropped every row with it, and the
+    # analysis then failed as "not enough complete rows" — pointing the user
+    # at their data for what was this line's doing.
+    numeric_cols = list(dict.fromkeys(spline_cols + [req.duration_col, req.event_col]))
+    for c in numeric_cols:
         df[c] = pd.to_numeric(df[c], errors="coerce")
     if req.imputation and req.imputation != "listwise":
         df = apply_imputation(df, cols_needed, req.imputation)

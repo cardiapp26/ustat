@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import traceback
 from typing import List, Optional, Tuple
 import numpy as np
 from scipy import stats as scipy_stats
@@ -103,6 +102,34 @@ def _clean_covariate_categories(df: pd.DataFrame, covariates: List[str]) -> tupl
     return work, warnings
 
 
+def _binary_treatment(series: pd.Series, column: str) -> pd.Series:
+    """Coerce the treatment column to 0/1, or refuse with a message.
+
+    Both endpoints already carried a check for a non-binary treatment, and
+    neither could reach it: the cast to float/int ran first and raised, so a
+    text column — `arm` holding "control"/"treat", the ordinary way a trial
+    stores its allocation — came back as a 500 rather than the 422 that was
+    written for it. A two-level text column is not silently recoded here
+    either: which level is "treated" decides the sign of the effect, and
+    guessing it is worse than saying so.
+    """
+    numeric = pd.to_numeric(series, errors="coerce")
+    if numeric.notna().any():
+        values = set(numeric.dropna().unique().tolist())
+        if values <= {0, 1} and values:
+            return numeric.fillna(0).astype(int)
+    levels = sorted({str(v) for v in series.dropna().unique()})[:6]
+    raise HTTPException(
+        status_code=422,
+        detail=(
+            f"Treatment column '{column}' must be binary 0/1 "
+            f"(0 = control, 1 = treated). Found: {levels}. "
+            "Recode it to 0/1 first — which level counts as treated decides "
+            "the direction of the estimated effect."
+        ),
+    )
+
+
 def _run_match_strata(
     df: pd.DataFrame,
     treated_idx: np.ndarray,
@@ -153,7 +180,10 @@ async def propensity_score_matching(req: PSMRequest):
         logger.exception("PSM analysis failed")
         raise HTTPException(
             status_code=500,
-            detail=f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}",
+            # The traceback is in the server log. Sending it to the client
+            # published absolute paths and the installed library layout to
+            # anyone who could reach the endpoint.
+            detail=f"{type(exc).__name__}: {exc}",
         )
 
 
@@ -191,15 +221,10 @@ def _run_psm(req: PSMRequest):
     df_full_imputed = df_full_imputed.loc[df.index].copy().reset_index(drop=True)
     df = df.reset_index(drop=True)
 
-    treat_vals = df[req.treatment_col].astype(float)
-    if not set(treat_vals.unique().tolist()) <= {0, 1, 0.0, 1.0}:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Treatment column '{req.treatment_col}' must be binary (0 = control, 1 = treated).",
-        )
+    treat_vals = _binary_treatment(df[req.treatment_col], req.treatment_col)
 
     X = pd.get_dummies(df[req.covariates], drop_first=True).astype(float)
-    y = treat_vals.astype(int).values
+    y = treat_vals.values
 
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
@@ -646,7 +671,10 @@ async def iptw_analysis(req: IPTWRequest):
         logger.exception("IPTW analysis failed")
         raise HTTPException(
             status_code=500,
-            detail=f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}",
+            # The traceback is in the server log. Sending it to the client
+            # published absolute paths and the installed library layout to
+            # anyone who could reach the endpoint.
+            detail=f"{type(exc).__name__}: {exc}",
         )
 
 
@@ -661,12 +689,7 @@ def _run_iptw(req: IPTWRequest):
     df = apply_imputation(df_full, [c for c in needed if c], req.imputation or "listwise")
     df, cat_warnings = _clean_covariate_categories(df, req.covariates)
 
-    treat = pd.to_numeric(df[req.treatment_col], errors="coerce").astype(int)
-    if set(treat.dropna().unique()) - {0, 1}:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Treatment column '{req.treatment_col}' must be binary (0 = control, 1 = treated).",
-        )
+    treat = _binary_treatment(df[req.treatment_col], req.treatment_col)
     X = pd.get_dummies(df[req.covariates], drop_first=True).astype(float)
 
     scaler = StandardScaler()

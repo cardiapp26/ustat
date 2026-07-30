@@ -172,26 +172,39 @@ def correlation_pair(req: CorrelationPairRequest):
     else:
         norm_test_name = "Skewness (CLT bypass)"
 
-    method = req.method or "auto"
+    method = (req.method or "auto").lower()
+    # Anything that was not "pearson" used to fall through to Spearman without
+    # a word — including "kendall", which the matrix tab offers and which this
+    # endpoint then answered with Spearman's rho: 0.372 against Kendall's tau
+    # of 0.242 on this data, a different statistic under the requested name.
+    # A misspelling was answered the same way.
+    if method not in ("auto", "pearson", "spearman", "kendall"):
+        raise HTTPException(
+            status_code=422,
+            detail=(f"Unknown correlation method '{req.method}'. "
+                    "Use auto, pearson, spearman or kendall."),
+        )
     if method == "auto":
-        use_pearson = normal1 and normal2
-    else:
-        use_pearson = method == "pearson"
+        method = "pearson" if (normal1 and normal2) else "spearman"
 
-    if use_pearson:
+    if method == "pearson":
         r, p = scipy_stats.pearsonr(x, y)
-        method_used = "pearson"
-        label = "r"
+        method_used, label = "pearson", "r"
+    elif method == "kendall":
+        r, p = scipy_stats.kendalltau(x, y)
+        method_used, label = "kendall", "τ"
     else:
         r, p = scipy_stats.spearmanr(x, y)
-        method_used = "spearman"
-        label = "ρ"
+        method_used, label = "spearman", "ρ"
 
     if abs(r) < 1.0:
         z = np.arctanh(r)
         se = 1.0 / np.sqrt(n - 3)
-        ci_low = float(np.tanh(z - 1.96 * se))
-        ci_high = float(np.tanh(z + 1.96 * se))
+        # qnorm(0.975), not 1.96. The rounded constant shifted the Fisher-z
+        # limits in the sixth decimal against R's cor.test.
+        z_crit = float(scipy_stats.norm.ppf(0.975))
+        ci_low = float(np.tanh(z - z_crit * se))
+        ci_high = float(np.tanh(z + z_crit * se))
     else:
         ci_low, ci_high = float(r), float(r)
 
@@ -361,11 +374,37 @@ def icc_endpoint(req: ICCRequest):
     icc_val = (MS_b - MS_e) / (MS_b + (k - 1) * MS_e + k * (MS_r - MS_e) / n)
     icc_val = float(np.clip(icc_val, -1.0, 1.0))
 
-    F_lower = scipy_stats.f.ppf(0.975, df_b, df_e)
-    F_upper = scipy_stats.f.ppf(0.025, df_b, df_e)
     F_obs = MS_b / MS_e if MS_e > 0 else 0.0
-    ci_low = float((F_obs / F_lower - 1) / (F_obs / F_lower + k - 1)) if F_lower > 0 else 0.0
-    ci_high = float((F_obs / F_upper - 1) / (F_obs / F_upper + k - 1)) if F_upper > 0 else 1.0
+
+    # The interval has to belong to the same ICC as the estimate.
+    #
+    # The point estimate above is ICC(A,1): two-way random, ABSOLUTE
+    # agreement — the rater mean square is in the denominator, so a
+    # systematic offset between raters counts against agreement. The interval
+    # used to be the consistency one, (F/F_crit - 1)/(F/F_crit + k - 1),
+    # which ignores that term entirely. On the audit frame, where rater B
+    # scores 2.1 points high by construction, that reported
+    # [0.814, 0.955] where the agreement interval is [0.800, 0.952] — a
+    # narrower interval than the estimate supports, in the direction that
+    # pushes an ICC over a reporting threshold it has not earned.
+    #
+    # McGraw & Wong (1996), Table 7, ICC(A,1).
+    ci_low, ci_high = -1.0, 1.0
+    if MS_e > 0 and 0 < icc_val < 1 and n > 1 and k > 1:
+        a = k * icc_val / (n * (1 - icc_val))
+        b_coef = 1 + k * icc_val * (n - 1) / (n * (1 - icc_val))
+        denom_v = (a * MS_r) ** 2 / df_r + (b_coef * MS_e) ** 2 / df_e
+        if denom_v > 0:
+            v = (a * MS_r + b_coef * MS_e) ** 2 / denom_v
+            F_lower = scipy_stats.f.ppf(0.975, df_b, v)
+            F_upper = scipy_stats.f.ppf(0.975, v, df_b)
+            spread = k * MS_r + (k * n - k - n) * MS_e
+            lo_den = F_lower * spread + n * MS_b
+            hi_den = spread + n * F_upper * MS_b
+            if lo_den != 0:
+                ci_low = float(n * (MS_b - F_lower * MS_e) / lo_den)
+            if hi_den != 0:
+                ci_high = float(n * (F_upper * MS_b - MS_e) / hi_den)
     ci_low = float(np.clip(ci_low, -1.0, 1.0))
     ci_high = float(np.clip(ci_high, -1.0, 1.0))
 
@@ -440,8 +479,25 @@ def cohens_kappa(req: KappaRequest):
     pe = float(np.sum(row_sums * col_sums) / po_denom) if po_denom > 0 else 0.0
     se_denom = n * (1 - pe) ** 2
     se = float(np.sqrt(po * (1 - po) / se_denom)) if se_denom > 0 else 0.0
-    ci_low = float(kappa - 1.96 * se)
-    ci_high = float(kappa + 1.96 * se)
+    # Kappa is bounded above by 1 by construction. The unclipped normal
+    # interval reported an upper limit of 1.011 on this data.
+    crit = float(scipy_stats.norm.ppf(0.975))
+    ci_low = float(np.clip(kappa - crit * se, -1.0, 1.0))
+    ci_high = float(np.clip(kappa + crit * se, -1.0, 1.0))
+
+    # Test against no agreement. The variance under H0 is not the one used
+    # for the interval — the interval is around the estimate, the test is
+    # around zero — and there was no test at all in the response before.
+    se_null = 0.0
+    if se_denom > 0:
+        row_p = row_sums / n
+        col_p = col_sums / n
+        se_null = float(np.sqrt(
+            (pe + pe ** 2 - float(np.sum(row_p * col_p * (row_p + col_p))))
+            / se_denom))
+    z_stat = float(kappa / se_null) if se_null > 0 else float("nan")
+    p_value = (float(2 * scipy_stats.norm.sf(abs(z_stat)))
+               if se_null > 0 else None)
 
     if kappa >= 0.81:
         interp = "Almost Perfect"
@@ -461,9 +517,16 @@ def cohens_kappa(req: KappaRequest):
         "ci_low": ci_low,
         "ci_high": ci_high,
         "se": se,
+        "se_null": se_null,
+        "z": z_stat,
+        "p": p_value,
         "n": n,
         "po": po,
-        "pe": po,
+        # This used to return `po` — the observed agreement, labelled as the
+        # expected one. A reader comparing "observed 0.90" against "expected
+        # 0.90" would conclude the raters agreed no better than chance, on
+        # data where chance agreement is 0.33 and kappa is 0.85.
+        "pe": pe,
         "interpretation": interp,
         "labels": labels,
         "confusion_matrix": cm.tolist(),
@@ -496,15 +559,31 @@ def fleiss_kappa_endpoint(req: FleissKappaRequest):
     n_raters = int(table.sum(axis=1).mean())
     p_j = table.sum(axis=0) / (n_subjects * n_raters)
     p_e = float(np.sum(p_j ** 2))
-    if (1 - p_e) > 0 and n_subjects > 0 and n_raters > 1:
-        var_k = 2.0 / (n_subjects * n_raters * (n_raters - 1) * (1 - p_e) ** 2) * (
-            p_e - (2 * n_raters - 3) * p_e ** 2 + 2 * (n_raters - 2) * float(np.sum(p_j ** 3))
+    # Fleiss (1971), the variance irr::kappam.fleiss uses:
+    #
+    #   var = 2 / (S² · N · n · (n-1)) · [ S² - Σ pj qj (qj - pj) ],  S = Σ pj qj
+    #
+    # The form previously here — pe - (2n-3)pe² + 2(n-2)Σpj³ — is a different
+    # published null variance (Fleiss, Nee & Landis 1979) and gives a
+    # noticeably different answer: 0.0813 against 0.0792 on this data, a 2.6%
+    # wider interval and z = 9.07 against 9.30. Anyone checking the result in
+    # R sees the discrepancy, so this matches the reference implementation.
+    q_j = 1.0 - p_j
+    s_pq = float(np.sum(p_j * q_j))
+    if s_pq > 0 and n_subjects > 0 and n_raters > 1:
+        var_k = (2.0 / (s_pq ** 2 * n_subjects * n_raters * (n_raters - 1))) * (
+            s_pq ** 2 - float(np.sum(p_j * q_j * (q_j - p_j)))
         )
         se = float(np.sqrt(max(var_k, 0.0)))
     else:
         se = 0.0
-    ci_low = float(kappa - 1.96 * se)
-    ci_high = float(kappa + 1.96 * se)
+    # Same two corrections as Cohen's: the exact normal quantile rather than
+    # 1.96, and a bound at 1, which kappa cannot exceed.
+    crit = float(scipy_stats.norm.ppf(0.975))
+    ci_low = float(np.clip(kappa - crit * se, -1.0, 1.0))
+    ci_high = float(np.clip(kappa + crit * se, -1.0, 1.0))
+    z_stat = float(kappa / se) if se > 0 else float("nan")
+    p_value = float(2 * scipy_stats.norm.sf(abs(z_stat))) if se > 0 else None
 
     if kappa >= 0.81:
         interp = "Almost Perfect"
@@ -537,10 +616,14 @@ def fleiss_kappa_endpoint(req: FleissKappaRequest):
 
     return {
         "test": "Fleiss' κ",
-        "kappa": round(kappa, 4),
-        "ci_low": round(ci_low, 4),
-        "ci_high": round(ci_high, 4),
-        "se": round(se, 4),
+        # Not rounded on the way out. Four decimals is coarser than the number
+        # itself and formatting is the display layer's job.
+        "kappa": kappa,
+        "ci_low": ci_low,
+        "ci_high": ci_high,
+        "se": se,
+        "z": z_stat,
+        "p": p_value,
         "n_subjects": int(n_subjects),
         "n_raters": int(n_raters),
         "n_categories": int(k_cats),

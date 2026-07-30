@@ -10,6 +10,7 @@ from loguru import logger
 
 from services import store
 from services.category_health import clean_two_level, rare_level_warnings
+from services.regression import constant_column_warnings, design_with_constant
 from services.impute import apply_imputation
 from services.missing_data import (
     mice_multiple,
@@ -180,9 +181,16 @@ def linear_regression(req: LinearRequest):
         for df_imp in imputed_dfs:
             X_enc = pd.get_dummies(df_imp[req.predictors], drop_first=True).astype(float)
             X_enc, _ = _add_pairwise_interactions(X_enc, req.interactions, req.predictors)
-            X = sm.add_constant(X_enc)
+            X, _dropped_const = design_with_constant(X_enc)
             y_imp = df_imp[req.outcome].astype(float)
-            m = sm.OLS(y_imp, X).fit(cov_type="HC3" if req.robust_se else "nonrobust")
+            # use_t=True on every branch. statsmodels keeps the t on residual
+            # df for an ordinary OLS fit but silently switches to a normal the
+            # moment cov_type is set, so asking for robust standard errors
+            # also changed the reference distribution. HC3 is itself a
+            # small-sample correction — pairing it with the large-sample
+            # distribution takes the correction back out. At n = 30 the
+            # robust p for age read 0.016 where R's coeftest gives 0.025.
+            m = sm.OLS(y_imp, X).fit(cov_type="HC3" if req.robust_se else "nonrobust", use_t=True)
             individual_results.append({
                 "coefficients": [
                     {"variable": str(var), "estimate": float(m.params[var]), "se": float(m.bse[var])}
@@ -197,17 +205,17 @@ def linear_regression(req: LinearRequest):
         n_excluded = n_total - len(df)
         X_enc = pd.get_dummies(df[req.predictors], drop_first=True).astype(float)
         X_enc, ix_added = _add_pairwise_interactions(X_enc, req.interactions, req.predictors)
-        X = sm.add_constant(X_enc)
+        X, dropped_const = design_with_constant(X_enc)
         y = df[req.outcome].astype(float)
-        model = sm.OLS(y, X).fit(cov_type="HC3" if req.robust_se else "nonrobust")
+        model = sm.OLS(y, X).fit(cov_type="HC3" if req.robust_se else "nonrobust", use_t=True)
     else:
         df = apply_imputation(df_full, [req.outcome] + req.predictors, imputation_method)
         n_excluded = n_total - len(df)
         X_enc = pd.get_dummies(df[req.predictors], drop_first=True).astype(float)
         X_enc, ix_added = _add_pairwise_interactions(X_enc, req.interactions, req.predictors)
-        X = sm.add_constant(X_enc)
+        X, dropped_const = design_with_constant(X_enc)
         y = df[req.outcome].astype(float)
-        model = sm.OLS(y, X).fit(cov_type="HC3" if req.robust_se else "nonrobust")
+        model = sm.OLS(y, X).fit(cov_type="HC3" if req.robust_se else "nonrobust", use_t=True)
 
     vifs = _compute_vif(X)
 
@@ -296,6 +304,9 @@ def linear_regression(req: LinearRequest):
         result["pooled_from_imputations"] = True
 
     result = add_assumption_warnings_to_result(result, assumption_report)
+
+    if dropped_const:
+        result["warnings"] = (result.get("warnings") or []) + constant_column_warnings(dropped_const)
 
     missing_info = missing_pattern_summary(df_full, [req.outcome] + req.predictors)
     result = add_missing_data_diagnostics(result, missing_info)
@@ -512,7 +523,7 @@ def polynomial_regression(req: PolynomialRequest):
     y = df[req.outcome].astype(float)
 
     base = sm.OLS(y, X)
-    model = base.fit(cov_type="HC3" if req.robust_se else "nonrobust") if req.robust_se else base.fit()
+    model = base.fit(cov_type="HC3" if req.robust_se else "nonrobust", use_t=True) if req.robust_se else base.fit()
     ci = model.conf_int()
 
     coefs = []
@@ -802,7 +813,7 @@ def linear_diagnostics(req: DiagRequest):
     df_full = _get_df(req.session_id)
     df = apply_imputation(df_full, [req.outcome] + req.predictors, req.imputation or "listwise")
     X = pd.get_dummies(df[req.predictors], drop_first=True)
-    X = sm.add_constant(X.astype(float))
+    X, _dropped_const = design_with_constant(X)
     y = df[req.outcome].astype(float)
     model = sm.OLS(y, X).fit()
 

@@ -135,43 +135,62 @@ def _fine_gray_fit(df: pd.DataFrame, duration: str, event: str,
             ),
         )
 
-    # Build augmented dataset
+    # Build the augmented dataset as (start, stop] intervals.
+    #
+    # Every row needs a start time. Without one, lifelines reads a row as
+    # covering (0, stop], so a competing-event subject — who gets one row per
+    # later event time — sat in EVERY earlier risk set once per row instead of
+    # once in total, while having no row at all for the period before their
+    # own competing event. The subdistribution risk set was inflated in
+    # proportion to how much competing risk the data carried, and the
+    # coefficients shrank toward the null by the same amount. Against
+    # cmprsk::crr on 1000 rows with 543 competing events the treatment
+    # coefficient came out at 0.306 where crr gives 0.610 — half the effect,
+    # in the one analysis whose entire purpose is to handle competing events.
+    #
+    # The construction below is Geskus': a subject is at risk normally until
+    # their own event; a competing-event subject then STAYS in the risk set
+    # afterwards with weight Ĝ(s)/Ĝ(ti), carried on consecutive intervals so
+    # that exactly one of their rows is at risk at any one time.
     rows: List[dict] = []
     cov_arr = work[cov_cols].values
     for i in range(len(work)):
         ti = float(t[i])
         ei = int(e[i])
         cov_i = cov_arr[i]
+        covariates = {name: float(cov_i[cj]) for cj, name in enumerate(cov_cols)}
+
         if ei == cause:
-            row = {"_stop_": ti, "_event_": 1, "_w_": 1.0}
-            for cj, name in enumerate(cov_cols):
-                row[name] = float(cov_i[cj])
-            rows.append(row)
-        elif ei == 0:
-            row = {"_stop_": ti, "_event_": 0, "_w_": 1.0}
-            for cj, name in enumerate(cov_cols):
-                row[name] = float(cov_i[cj])
-            rows.append(row)
-        else:
-            g_ti = _g(ti)
-            if g_ti <= 0:
-                continue
-            future_ev = cause_event_times[cause_event_times > ti]
-            for s in future_ev:
-                w_s = _g(float(s)) / g_ti
-                if w_s <= 0:
-                    break
-                row = {"_stop_": float(s), "_event_": 0, "_w_": float(w_s)}
-                for cj, name in enumerate(cov_cols):
-                    row[name] = float(cov_i[cj])
-                rows.append(row)
+            rows.append({"_start_": 0.0, "_stop_": ti, "_event_": 1, "_w_": 1.0,
+                         **covariates})
+            continue
+        if ei == 0:
+            rows.append({"_start_": 0.0, "_stop_": ti, "_event_": 0, "_w_": 1.0,
+                         **covariates})
+            continue
+
+        # Competing event: fully at risk up to ti, then retained at declining
+        # weight for as long as the censoring distribution supports it.
+        rows.append({"_start_": 0.0, "_stop_": ti, "_event_": 0, "_w_": 1.0,
+                     **covariates})
+        g_ti = _g(ti)
+        if g_ti <= 0:
+            continue
+        prev = ti
+        for s in cause_event_times[cause_event_times > ti]:
+            w_s = _g(float(s)) / g_ti
+            if w_s <= 0:
+                break
+            rows.append({"_start_": prev, "_stop_": float(s), "_event_": 0,
+                         "_w_": float(w_s), **covariates})
+            prev = float(s)
 
     aug = pd.DataFrame(rows)
     if aug["_event_"].sum() == 0:
         raise HTTPException(status_code=422, detail="No cause-of-interest events present after building the augmented dataset.")
 
     cph = CoxPHFitter()
-    cph.fit(aug, duration_col="_stop_", event_col="_event_",
+    cph.fit(aug, duration_col="_stop_", event_col="_event_", entry_col="_start_",
             weights_col="_w_", robust=True)
 
     ci = cph.confidence_intervals_
@@ -1500,6 +1519,13 @@ def fit_landmark(req):
                 raise HTTPException(status_code=400, detail=f"Predictor '{p}' not found")
             needed.append(p)
 
+    # Grouping by a variable AND adjusting for it is the ordinary request:
+    # plot the landmark curves by arm, then give the Cox model that adjusts
+    # for arm and age. Left duplicated, `df[needed]` returns a frame with two
+    # columns of the same name and every later `work[col]` is a DataFrame
+    # rather than a Series, which surfaced as a 500 on .unique().
+    needed = list(dict.fromkeys(needed))
+
     work = df[needed].dropna().copy()
     work[req.duration_col] = pd.to_numeric(work[req.duration_col], errors="coerce")
     work[req.event_col] = pd.to_numeric(work[req.event_col], errors="coerce")
@@ -2342,6 +2368,15 @@ def fit_recurrent_lwyy(req):
         "total_followup": round(total_fu, 4),
         "concordance": round(float(cph.concordance_index_), 4) if cph is not None else None,
         "coefficients": coefs,
+        "se_note": (
+            "Robust standard errors come from lifelines' cluster sandwich on "
+            "left-truncated (start, stop] data, which does not reproduce "
+            "survival::coxph(..., cluster=id). On the 30-subject audit frame "
+            "the age standard error is 0.0125 here against 0.0145 from R — "
+            "about 14% smaller, i.e. anti-conservative. Treat borderline "
+            "p-values from this endpoint with caution and confirm them in R "
+            "before reporting."
+        ),
         "lwyy": lwyy_result,
         "wlw": wlw_result,
         "mcf": mcf_by_group,

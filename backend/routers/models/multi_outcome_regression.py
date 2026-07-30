@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from services import store
 from services.impute import apply_imputation
+from services.regression import constant_column_warnings, design_with_constant
 
 router = APIRouter()
 
@@ -78,7 +79,7 @@ def _fit_outcome(
 ) -> dict:
     df = apply_imputation(df_full, [outcome] + rhs_cols, imputation)
     X_enc = pd.get_dummies(df[rhs_cols], drop_first=True).astype(float)
-    X = sm.add_constant(X_enc)
+    X, dropped_const = design_with_constant(X_enc)
     y = pd.to_numeric(df[outcome], errors="coerce").astype(float)
 
     n = int(len(df))
@@ -117,6 +118,7 @@ def _fit_outcome(
         "k": k,
         "terms": [_label_term(str(term)) for term in model.params.index],
         "coefficients": coefficients,
+        "warnings": constant_column_warnings(dropped_const),
         "fit": {
             "r2": _round_or_none(model.rsquared),
             "adj_r2": _round_or_none(model.rsquared_adj),
