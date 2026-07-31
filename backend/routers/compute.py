@@ -201,6 +201,29 @@ def _eval_formula_with_custom_functions(df: pd.DataFrame, formula: str) -> pd.Se
         "FLOOR": np.floor,
         "CEIL":  np.ceil,
     }
+    def _mult(a, b):
+        """Multiply, keeping simpleeval's guard only where it was aimed.
+
+        simpleeval replaces `*` with safe_mult, whose first line is
+
+            if hasattr(a, "__len__") and b * len(a) > MAX_STRING_LENGTH
+
+        to stop `"x" * 10**9` exhausting memory. A column Series has __len__,
+        so for two columns `b * len(a)` is itself a Series, the comparison is
+        a boolean Series, and `and` cannot reduce it to one bool — every
+        product of two columns died with "the truth value of a Series is
+        ambiguous". FIB-4, BSA, any risk score that multiplies two variables:
+        none of them could be written, while a + b, a - b and a / b all
+        worked, so the formula builder looked mostly fine.
+
+        The repetition attack the guard exists for needs a sequence on one
+        side, so keep safe_mult for those and multiply arrays directly.
+        """
+        sequence = (str, bytes, bytearray, list, tuple, range)
+        if isinstance(a, sequence) or isinstance(b, sequence):
+            return DEFAULT_OPERATORS[ast.Mult](a, b)
+        return op.mul(a, b)
+
     # Allow element-wise boolean combination of Series conditions (&, |, ^, ~)
     # in addition to simpleeval's defaults; needed for IF(A>0 & B<5, ...).
     # Also override ast.Pow: simpleeval's default safe_power calls abs(base),
@@ -214,6 +237,7 @@ def _eval_formula_with_custom_functions(df: pd.DataFrame, formula: str) -> pd.Se
         ast.BitXor: op.xor,
         ast.Invert: op.invert,
         ast.Pow:    op.pow,
+        ast.Mult:   _mult,
     }
     names = {col: df[col] for col in df.columns}
 
@@ -559,6 +583,56 @@ def clinical_bmi(session_id: str, req: ClinicalRequest):
 
     store.save(session_id, df)
     return _build_result(df, new_col)
+
+
+@router.post("/{session_id}/clinical/fib4")
+def clinical_fib4(session_id: str, req: ClinicalRequest):
+    """FIB-4 index for hepatic fibrosis (Sterling 2006).
+
+        FIB-4 = (age x AST) / (platelets x sqrt(ALT))
+
+    Units matter and are not interchangeable: age in years, AST and ALT in
+    U/L, platelets in 10^9/L — which is the same number as the "thousands per
+    µL" most labs report, so a count entered as 200 000 is a hundred-thousand
+    -fold error rather than a unit quibble. Values that cannot be that are
+    left as missing rather than turned into a plausible-looking index.
+    """
+    df = _get_df(session_id)
+    cm = req.column_map
+    _req_cols(cm, "age", "ast", "alt", "platelets")
+
+    age = pd.to_numeric(df[cm["age"]], errors="coerce")
+    ast = pd.to_numeric(df[cm["ast"]], errors="coerce")
+    alt = pd.to_numeric(df[cm["alt"]], errors="coerce")
+    plt = pd.to_numeric(df[cm["platelets"]], errors="coerce")
+
+    # A zero or negative ALT or platelet count is not a low value, it is a
+    # missing or mis-entered one, and dividing by it would produce an
+    # infinity that reads as an extreme fibrosis score.
+    alt = alt.where(alt > 0)
+    plt = plt.where(plt > 0)
+
+    fib4 = (age * ast) / (plt * np.sqrt(alt))
+
+    df = df.copy()
+    new_col = req.new_col or "FIB4"
+    df[new_col] = fib4.replace([np.inf, -np.inf], np.nan).round(2)
+
+    store.save(session_id, df)
+    result = _build_result(df, new_col)
+    n_valid = int(df[new_col].notna().sum())
+    result.update({
+        "n_low": int((df[new_col] < 1.30).sum()),
+        "n_indeterminate": int(((df[new_col] >= 1.30) & (df[new_col] <= 2.67)).sum()),
+        "n_high": int((df[new_col] > 2.67).sum()),
+        "result_text": (
+            f"FIB-4 computed for {n_valid} of {len(df)} rows. "
+            "Cut-offs (Sterling 2006): <1.30 advanced fibrosis unlikely, "
+            "1.30–2.67 indeterminate, >2.67 advanced fibrosis likely. "
+            "Platelets must be in 10^9/L (thousands/µL)."
+        ),
+    })
+    return result
 
 
 @router.post("/{session_id}/clinical/egfr")

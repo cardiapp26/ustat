@@ -928,6 +928,23 @@ const CALC_GROUPS: CalcGroup[] = [
     ],
   },
   {
+    label: "Liver",
+    icon: "🫀",
+    calcs: [
+      {
+        id: "fib4", icon: "🧪", title: "FIB-4", subtitle: "Hepatic fibrosis (Sterling 2006)",
+        defaultCol: "FIB4",
+        info: "<1.30 advanced fibrosis unlikely · 1.30–2.67 indeterminate · >2.67 likely. Platelets must be in 10⁹/L (thousands/µL) — a count entered as 200000 is off by a factor of a thousand.",
+        fields: [
+          { key: "age",       label: "Age (years)",            required: true },
+          { key: "ast",       label: "AST (U/L)",              required: true },
+          { key: "alt",       label: "ALT (U/L)",              required: true },
+          { key: "platelets", label: "Platelets (10⁹/L)",      required: true },
+        ],
+      },
+    ],
+  },
+  {
     label: "Atrial Fibrillation",
     icon: "💓",
     calcs: [
