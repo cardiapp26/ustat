@@ -15,6 +15,7 @@ from fastapi import APIRouter, HTTPException, Query, UploadFile, File
 from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
 from services import store
+from services.dirty_value_guard import values_are_numeric
 
 router = APIRouter()
 
@@ -149,6 +150,23 @@ class ClearCellsRequest(BaseModel):
     cells: list  # [{row_index: int, column: str}, ...]
 
 
+class SetCellsRequest(BaseModel):
+    """Write one value into a selection of cells.
+
+    The counterpart of clear_cells: the same arbitrary cell list, but setting
+    a value instead of removing one. Two filters make it cover both things a
+    user wants from a selection — replacing a particular value everywhere it
+    appears, and filling only the gaps:
+
+      only_blank  write only where the cell is currently missing or empty
+      match_value write only where the current value equals this
+    """
+    cells: list                       # [{row_index: int, column: str}, ...]
+    value: Optional[str] = None       # None clears, like clear_cells
+    only_blank: bool = False
+    match_value: Optional[str] = None
+
+
 @router.patch("/{session_id}/cell")
 async def update_cell(session_id: str, body: CellUpdate):
     df = store.get(session_id)
@@ -171,7 +189,20 @@ async def update_cell(session_id: str, body: CellUpdate):
 
     kind_override = store.get_kind_overrides(session_id).get(body.column)
     kind = kind_override or _detect_kind(df[body.column])
-    is_numeric_kind = col_dtype.kind in ("i", "u", "f") or kind == "numeric"
+    # _detect_kind calls a column of numeric STRINGS "categorical", and calls
+    # an empty column that too — so the first number typed into a freshly
+    # added column was stored as the string "3", and every number after it as
+    # well. Nothing later repairs that: the header's range badge disappears,
+    # sorting is lexicographic, and any model built on the column treats its
+    # numbers as labels. As long as everything already in the column is a
+    # number — including when there is nothing in it at all — a typed number
+    # is stored as one. A column holding a genuine word is left alone.
+    numeric_so_far = values_are_numeric(df[body.column])
+    is_numeric_kind = (
+        col_dtype.kind in ("i", "u", "f")
+        or kind == "numeric"
+        or (numeric_so_far and kind_override is None)
+    )
 
     if val is not None and val != "":
         try:
@@ -221,6 +252,93 @@ async def clear_cells(session_id: str, body: ClearCellsRequest):
 
     store.save(session_id, df)
     return {"cleared": cleared}
+
+
+def _is_blank(value) -> bool:
+    """Missing, or a string that is empty once trimmed.
+
+    A cell holding "" or "   " reads as a value to pandas but is a gap to the
+    person looking at the sheet, and "fill the blanks" has to mean the same
+    thing to both.
+    """
+    if value is None:
+        return True
+    try:
+        if pd.isna(value):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return isinstance(value, str) and value.strip() == ""
+
+
+def _matches(current, typed: str) -> bool:
+    """Does this cell hold the value the user typed?
+
+    The user types what the grid shows them. A float column shows 0 and holds
+    0.0, so comparing str(0.0) with "0" would miss every cell in the one case
+    this is most used for — recoding a 0/1 column. Compare numerically when
+    both sides are numbers, and as trimmed text otherwise.
+    """
+    typed = typed.strip()
+    try:
+        return float(current) == float(typed)
+    except (TypeError, ValueError):
+        return str(current).strip() == typed
+
+
+@router.post("/{session_id}/set_cells")
+async def set_cells(session_id: str, body: SetCellsRequest):
+    """Write one value into a selection of cells."""
+    df = store.get(session_id)
+    if df is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if body.only_blank and body.match_value is not None:
+        raise HTTPException(
+            status_code=422,
+            detail="Use only_blank or match_value, not both: a blank cell "
+                   "cannot also equal a value.",
+        )
+
+    df = df.copy()
+    changed = 0
+    skipped = 0
+    for cell in body.cells:
+        r = cell.get("row_index") if isinstance(cell, dict) else None
+        c = cell.get("column") if isinstance(cell, dict) else None
+        if r is None or c is None:
+            continue
+        if c not in df.columns or r < 0 or r >= len(df):
+            continue
+
+        current = df.at[r, c]
+        if body.only_blank and not _is_blank(current):
+            skipped += 1
+            continue
+        if body.match_value is not None:
+            if _is_blank(current) or not _matches(current, body.match_value):
+                skipped += 1
+                continue
+
+        if body.value is None:
+            df.at[r, c] = np.nan
+            changed += 1
+            continue
+
+        # Keep a numeric column numeric where the typed value allows it;
+        # writing "3" into a float column as text would turn the whole column
+        # into strings and silently break every model built on it.
+        written = body.value
+        if pd.api.types.is_numeric_dtype(df[c]):
+            try:
+                written = float(body.value)
+            except ValueError:
+                df[c] = df[c].astype(object)
+        df.at[r, c] = written
+        changed += 1
+
+    store.save(session_id, df)
+    return {"changed": changed, "skipped": skipped}
 
 
 @router.delete("/{session_id}/row/{row_index}")

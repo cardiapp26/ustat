@@ -15,6 +15,7 @@ from services.dirty_value_guard import (
     coerce_numeric,
     flag_sentinels,
     plausibility_max_for_column,
+    values_are_numeric,
 )
 from services.stat_utils import (
     sorted_groups,
@@ -260,12 +261,26 @@ def get_column_badges(session_id: str):
         # reason they count as missing: a max of 999 for a heart rate is the
         # placeholder, not the largest observation.
         s = df[col][~(raw_missing | implausible)]
-        if pd.api.types.is_numeric_dtype(df[col]) and len(s) > 0:
-            s = pd.to_numeric(s, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
-            if len(s) > 0:
-                entry["min"] = float(s.min())
-                entry["max"] = float(s.max())
-                entry["n_valid"] = int(len(s))
+        if len(s) > 0:
+            # Gate on whether the VALUES are numbers, not on the dtype pandas
+            # happens to be holding them in. A column added after upload comes
+            # back as object, and everything typed into it is stored as text,
+            # so `is_numeric_dtype` was False and a column full of numbers got
+            # no range at all — while the columns beside it, numeric since
+            # upload, showed theirs.
+            #
+            # Every non-missing value has to parse: one genuine word makes this
+            # a text column, and a min/max over "apple" and "3" is an artefact
+            # of sort order rather than a fact about the data. Same predicate
+            # the cell writer uses, so what gets a range and what gets stored
+            # as a number cannot drift apart.
+            if values_are_numeric(s):
+                numeric = pd.to_numeric(s, errors="coerce").replace(
+                    [np.inf, -np.inf], np.nan).dropna()
+                if len(numeric) > 0:
+                    entry["min"] = float(numeric.min())
+                    entry["max"] = float(numeric.max())
+                    entry["n_valid"] = int(len(numeric))
         out[col] = entry
 
     return {"n_rows": n_rows, "columns": out}

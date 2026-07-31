@@ -82,3 +82,25 @@ def sentinel_values(series: pd.Series, max_plausible: Optional[float]) -> Set[fl
 def mask_sentinels(series: pd.Series, max_plausible: Optional[float]) -> pd.Series:
     numeric = coerce_numeric(series)
     return numeric.mask(flag_sentinels(series, max_plausible), np.nan)
+
+
+def values_are_numeric(series: pd.Series) -> bool:
+    """Does every value present in this column parse as a number?
+
+    Not the same question as `is_numeric_dtype`. A column added after upload
+    arrives as object and everything typed into it is stored as text, so a
+    column holding nothing but numbers answers False to the dtype question and
+    True to this one — which is the question the grid's range badge and the
+    cell writer both actually need.
+
+    An empty column answers True: there is nothing in it to contradict a
+    number, so the first value typed decides what it is. One genuine word
+    answers False, and keeps it false.
+    """
+    present = series.dropna()
+    if present.dtype == object:
+        # A cell holding "" or "   " is a gap on screen, not a value.
+        present = present[present.astype(str).str.strip() != ""]
+    if len(present) == 0:
+        return True
+    return bool(pd.to_numeric(present, errors="coerce").notna().all())
