@@ -1,0 +1,34 @@
+[
+  {"key": "t_two_power",      "test": "t_two",       "solve_for": "power",       "effect_size": 0.5,  "n": 64,  "alpha": 0.05, "tails": 2},
+  {"key": "t_two_n",          "test": "t_two",       "solve_for": "n",           "effect_size": 0.5,  "power": 0.8, "alpha": 0.05, "tails": 2},
+  {"key": "t_two_es",         "test": "t_two",       "solve_for": "effect_size", "n": 64,  "power": 0.8, "alpha": 0.05, "tails": 2},
+  {"key": "t_two_power_1t",   "test": "t_two",       "solve_for": "power",       "effect_size": 0.35, "n": 100, "alpha": 0.05, "tails": 1},
+  {"key": "t_two_small_n",    "test": "t_two",       "solve_for": "power",       "effect_size": 0.8,  "n": 10,  "alpha": 0.05, "tails": 2},
+
+  {"key": "t_one_power",      "test": "t_one",       "solve_for": "power",       "effect_size": 0.5,  "n": 34,  "alpha": 0.05, "tails": 2},
+  {"key": "t_one_n",          "test": "t_one",       "solve_for": "n",           "effect_size": 0.5,  "power": 0.8, "alpha": 0.05, "tails": 2},
+  {"key": "t_one_small_n",    "test": "t_one",       "solve_for": "power",       "effect_size": 0.9,  "n": 8,   "alpha": 0.05, "tails": 2},
+
+  {"key": "anova_power",      "test": "anova",       "solve_for": "power",       "effect_size": 0.25, "n": 52,  "alpha": 0.05, "k_groups": 4},
+  {"key": "anova_n",          "test": "anova",       "solve_for": "n",           "effect_size": 0.25, "power": 0.8, "alpha": 0.05, "k_groups": 4},
+  {"key": "anova_k3",         "test": "anova",       "solve_for": "power",       "effect_size": 0.4,  "n": 20,  "alpha": 0.05, "k_groups": 3},
+
+  {"key": "corr_power",       "test": "correlation", "solve_for": "power",       "effect_size": 0.3,  "n": 85,  "alpha": 0.05, "tails": 2},
+  {"key": "corr_n",           "test": "correlation", "solve_for": "n",           "effect_size": 0.3,  "power": 0.8, "alpha": 0.05, "tails": 2},
+  {"key": "corr_small_n",     "test": "correlation", "solve_for": "power",       "effect_size": 0.5,  "n": 12,  "alpha": 0.05, "tails": 2},
+  {"key": "corr_1t",          "test": "correlation", "solve_for": "power",       "effect_size": 0.3,  "n": 85,  "alpha": 0.05, "tails": 1},
+
+  {"key": "prop_power",       "test": "proportion",  "solve_for": "power",       "p1": 0.5,  "p2": 0.3,  "n": 100, "alpha": 0.05, "tails": 2},
+  {"key": "prop_n",           "test": "proportion",  "solve_for": "n",           "p1": 0.5,  "p2": 0.3,  "power": 0.8, "alpha": 0.05, "tails": 2},
+  {"key": "prop_rare",        "test": "proportion",  "solve_for": "power",       "p1": 0.05, "p2": 0.01, "n": 300, "alpha": 0.05, "tails": 2},
+
+  {"key": "chi2_power",       "test": "chi2",        "solve_for": "power",       "effect_size": 0.3,  "n": 150, "alpha": 0.05, "k_groups": 4},
+  {"key": "chi2_n",           "test": "chi2",        "solve_for": "n",           "effect_size": 0.3,  "power": 0.8, "alpha": 0.05, "k_groups": 4},
+
+  {"key": "cox_n",            "test": "survival_cox","solve_for": "n",           "hr": 1.8,  "event_rate": 0.4, "power": 0.8, "alpha": 0.05, "tails": 2, "p_exposed": 0.5},
+  {"key": "cox_power",        "test": "survival_cox","solve_for": "power",       "hr": 1.8,  "event_rate": 0.4, "n": 300, "alpha": 0.05, "tails": 2, "p_exposed": 0.5},
+  {"key": "cox_unbalanced",   "test": "survival_cox","solve_for": "n",           "hr": 2.0,  "event_rate": 0.3, "power": 0.9, "alpha": 0.05, "tails": 2, "p_exposed": 0.3},
+
+  {"key": "logistic_n",       "test": "logistic",    "solve_for": "n",           "log_or": 1.5,  "p_event": 0.3, "power": 0.8, "alpha": 0.05, "tails": 2},
+  {"key": "logistic_power",   "test": "logistic",    "solve_for": "power",       "log_or": 1.5,  "p_event": 0.3, "n": 200, "alpha": 0.05, "tails": 2}
+]

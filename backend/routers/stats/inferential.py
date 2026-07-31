@@ -824,32 +824,76 @@ def run_power(req: PowerRequest):
 
     # ── One-way ANOVA ──
     elif req.test == "anova":
+        # statsmodels' FTestAnovaPower takes `nobs` as the TOTAL sample size.
+        # The panel asks the user for participants PER GROUP — its own field
+        # help says so and its own label reports "n/group" — and the two were
+        # never translated. With four groups that made every answer wrong by a
+        # factor of k, in both directions and in the dangerous one:
+        #
+        #   power for f = 0.25, 52/group, k = 4 → reported 0.275, truth 0.864
+        #   n for f = 0.25, 80% power, k = 4    → reported 179/group (716 total)
+        #                                         where 45/group (179 total) does
+        #
+        # So a properly powered study was called hopeless, and a study needing
+        # 179 participants was told to recruit 716. Both agree with
+        # pwr.anova.test once the per-group count is converted here.
         ana, k = FTestAnovaPower(), req.k_groups
-        def pw(n): return ana.solve_power(effect_size=req.effect_size, nobs=n, alpha=a, power=None, k_groups=k)
+
+        def pw(n_per_group):
+            return ana.solve_power(effect_size=req.effect_size,
+                                   nobs=n_per_group * k, alpha=a, power=None,
+                                   k_groups=k)
 
         if req.solve_for == "n":
-            n = _ceil(ana.solve_power(effect_size=req.effect_size, nobs=None, alpha=a, power=req.power, k_groups=k))
+            total = ana.solve_power(effect_size=req.effect_size, nobs=None,
+                                    alpha=a, power=req.power, k_groups=k)
+            n = _ceil(total / k)
             result, label, curve = n, f"n/group = {n},  total N = {n*k}", _curve(pw, max(n*4, 100))
         elif req.solve_for == "power":
-            result = float(ana.solve_power(effect_size=req.effect_size, nobs=req.n, alpha=a, power=None, k_groups=k))
+            result = float(pw(int(req.n)))
             label  = f"Power (1-β) = {result:.4f}  ({result*100:.1f}%)"
             curve  = _curve(pw, max(int(req.n)*4, 100))
         else:
-            result = float(ana.solve_power(effect_size=None, nobs=req.n, alpha=a, power=req.power, k_groups=k))
+            result = float(ana.solve_power(effect_size=None, nobs=int(req.n) * k,
+                                           alpha=a, power=req.power, k_groups=k))
             label  = f"Minimum detectable Cohen's f = {result:.4f}"
             f_es = result
-            curve  = _curve(lambda n: ana.solve_power(effect_size=f_es, nobs=n, alpha=a, power=None, k_groups=k), max(int(req.n)*4, 100))
+            curve  = _curve(
+                lambda n_per_group: ana.solve_power(
+                    effect_size=f_es, nobs=n_per_group * k, alpha=a,
+                    power=None, k_groups=k),
+                max(int(req.n)*4, 100))
 
     # ── Pearson correlation (Fisher-z) ──
     elif req.test == "correlation":
         tails = req.tails
 
         def corr_power(r, n):
+            """Cohen (1988) as pwr.r.test implements it.
+
+            Two things were missing from the plain Fisher-z version that was
+            here. The critical value came from a normal, where the test that
+            will actually be run is a t on n-2 df; and the Fisher z of a
+            sample correlation is biased upward by r/(2(n-1)), which the
+            transform is normally applied with. Both matter most at the small
+            n a power calculation is usually about: at n = 12, r = 0.5 this
+            reported 0.378 against pwr.r.test's 0.400, and at n = 85, r = 0.3
+            it reported 0.800 — landing exactly on the 80% convention that
+            decides whether a study goes ahead — where the correct value is
+            0.804.
+            """
             if abs(r) >= 1 or n <= 3:
                 return float("nan")
-            ncp = np.arctanh(abs(r)) * np.sqrt(n - 3)
-            z_c = norm.ppf(1 - a / (1 if tails == 1 else 2))
-            return float(norm.sf(z_c - ncp) + (norm.cdf(-z_c - ncp) if tails == 2 else 0))
+            r = abs(r)
+            tside = 1 if tails == 1 else 2
+            t_c = scipy_stats.t.ppf(1 - a / tside, df=n - 2)
+            r_c = np.sqrt(t_c ** 2 / (t_c ** 2 + n - 2))
+            z_r = np.arctanh(r) + r / (2 * (n - 1))
+            z_rc = np.arctanh(r_c)
+            power = norm.cdf((z_r - z_rc) * np.sqrt(n - 3))
+            if tails == 2:
+                power += norm.cdf((-z_r - z_rc) * np.sqrt(n - 3))
+            return float(power)
 
         def corr_solve_n(r, pwr):
             for n in range(4, 100001):
