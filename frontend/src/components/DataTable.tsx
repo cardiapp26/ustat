@@ -115,17 +115,27 @@ function useViewportContextMenuStyle(
     updatePosition();
     window.addEventListener("resize", updatePosition);
 
-    const resizeObserver = new ResizeObserver(updatePosition);
-    const mutationObserver = new MutationObserver(updatePosition);
+    // ResizeObserver is absent in jsdom and in older embedded webviews — the
+    // same reason the row virtualisation below guards its use. Unguarded, an
+    // environment without it does not merely lose the repositioning: the
+    // constructor throws while the menu is mounting and the context menu
+    // never opens at all. The single position measurement above already
+    // happened, so the menu is placed correctly either way.
+    const resizeObserver = typeof ResizeObserver !== "undefined"
+      ? new ResizeObserver(updatePosition)
+      : null;
+    const mutationObserver = typeof MutationObserver !== "undefined"
+      ? new MutationObserver(updatePosition)
+      : null;
     if (menuRef.current) {
-      resizeObserver.observe(menuRef.current);
-      mutationObserver.observe(menuRef.current, { childList: true, subtree: true });
+      resizeObserver?.observe(menuRef.current);
+      mutationObserver?.observe(menuRef.current, { childList: true, subtree: true });
     }
 
     return () => {
       window.removeEventListener("resize", updatePosition);
-      resizeObserver.disconnect();
-      mutationObserver.disconnect();
+      resizeObserver?.disconnect();
+      mutationObserver?.disconnect();
     };
   }, [anchor, fallbackWidth, menuRef]);
 
@@ -340,6 +350,17 @@ function DataTableBody({ session }: { session: Session }) {
   const [cellCtx, setCellCtx] = useState<{ x: number; y: number; row: number; col: string } | null>(null);
   const cellCtxRef = useRef<HTMLDivElement>(null);
 
+  // "Convert value" / "Fill blanks with" on a cell selection. Both write one
+  // value into the selection; they differ only in which cells they touch, so
+  // they share a dialog and an endpoint.
+  const [cellOp, setCellOp] = useState<
+    { kind: "convert" | "fill"; x: number; y: number } | null
+  >(null);
+  const [cellOpFrom, setCellOpFrom] = useState("");
+  const [cellOpTo, setCellOpTo] = useState("");
+  const [cellOpBusy, setCellOpBusy] = useState(false);
+  const cellOpRef = useRef<HTMLDivElement>(null);
+
   // Right-click context menu (rows)
   const [rowCtx, setRowCtx] = useState<{ x: number; y: number; idx: number } | null>(null);
   const rowCtxRef = useRef<HTMLDivElement>(null);
@@ -542,7 +563,7 @@ function DataTableBody({ session }: { session: Session }) {
 
   // Close context menus on outside click
   useEffect(() => {
-    if (!ctxMenu && !rowCtx && !cellCtx) return;
+    if (!ctxMenu && !rowCtx && !cellCtx && !cellOp) return;
     const handler = (e: MouseEvent) => {
       // Submenu flyouts are portalled to <body>, so they're outside ctxRef —
       // without this the menu would close on mousedown and the click would
@@ -551,10 +572,14 @@ function DataTableBody({ session }: { session: Session }) {
       if (ctxMenu && ctxRef.current && !ctxRef.current.contains(e.target as Node)) setCtxMenu(null);
       if (rowCtx && rowCtxRef.current && !rowCtxRef.current.contains(e.target as Node)) setRowCtx(null);
       if (cellCtx && cellCtxRef.current && !cellCtxRef.current.contains(e.target as Node)) setCellCtx(null);
+      // The dialog owns text inputs, so only a click genuinely outside it
+      // closes — otherwise selecting text inside would dismiss the thing
+      // being typed into.
+      if (cellOp && cellOpRef.current && !cellOpRef.current.contains(e.target as Node)) setCellOp(null);
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
-  }, [ctxMenu, rowCtx, cellCtx]);
+  }, [ctxMenu, rowCtx, cellCtx, cellOp]);
 
   // Bump undo depth after each backend mutation
   const bumpUndo = (bumpDataVersion = true) => useStore.setState((s) => ({
@@ -1077,6 +1102,38 @@ function DataTableBody({ session }: { session: Session }) {
     } catch { /* ignore */ }
   };
 
+  const applyCellOp = async () => {
+    if (!session || !cellOp || selectedCells.size === 0) return;
+    const cells = Array.from(selectedCells).map((k) => {
+      const [r, ...cParts] = k.split(":");
+      return { row_index: Number(r), column: cParts.join(":") };
+    });
+    // "Convert" with an empty From is "set every selected cell": there is no
+    // value to match, so nothing is filtered out.
+    const from = cellOpFrom.trim();
+    const body = cellOp.kind === "fill"
+      ? { cells, value: cellOpTo, only_blank: true }
+      : { cells, value: cellOpTo, ...(from ? { match_value: from } : {}) };
+    setCellOpBusy(true);
+    try {
+      const res = await api.post(`/api/sessions/${session.session_id}/set_cells`, body);
+      const refresh = await api.get(`/api/stats/${session.session_id}/refresh`);
+      useStore.getState().setSession({ ...session, ...refresh.data }); bumpUndo();
+      const n = res.data?.changed ?? 0;
+      setPasteMsg(n === 0
+        ? "No cells matched — nothing changed"
+        : `${n} cell${n === 1 ? "" : "s"} updated`);
+      setTimeout(() => setPasteMsg(null), 2500);
+      setCellOp(null);
+    } catch (err: unknown) {
+      setPasteMsg((err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+        ?? "Update failed");
+      setTimeout(() => setPasteMsg(null), 3500);
+    } finally {
+      setCellOpBusy(false);
+    }
+  };
+
   // ── Clipboard for cell copy/paste ──────────────────────────────────────────
   const [copiedCells, setCopiedCells] = useState<{ tsv: string; rows: number; cols: number } | null>(null);
 
@@ -1555,6 +1612,21 @@ function DataTableBody({ session }: { session: Session }) {
           {displayRows.length !== preview.length && (
             <span className="text-gray-400"> of {preview.length} previewed</span>
           )}{" "}rows ·{" "}
+          {/* A column's missing badge turns on the global missing-only filter
+              AND adds a filter on that column, so one click on a small badge
+              in a header can drop 371 rows to 33. That is what was asked for,
+              but nothing said so where the row count is read, and the state
+              was two separate controls to find and undo. Say it here, and
+              undo it in one click. */}
+          {(showMissingOnly || Object.values(filters).some(Boolean)) && (
+            <button
+              onClick={() => { setShowMissingOnly(false); setFilters({}); }}
+              title="Rows are being filtered — click to show all of them again"
+              className="mr-2 rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-xs font-medium text-amber-700 hover:bg-amber-100 transition-colors"
+            >
+              filtered · clear
+            </button>
+          )}
           <span className="text-gray-900 font-medium">{session.rows.toLocaleString()}</span> total
           {" "}· {columns.length} columns
           {saving && <span className="ml-3 text-indigo-500 text-xs animate-pulse">saving…</span>}
@@ -2462,6 +2534,85 @@ function DataTableBody({ session }: { session: Session }) {
             className="w-full text-left px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50 flex items-center gap-2">
             📌 Paste here
           </button>
+          <div className="border-t border-gray-100 mt-0.5" />
+          <button onClick={() => {
+            setCellOpFrom(""); setCellOpTo("");
+            setCellOp({ kind: "convert", x: cellCtx.x, y: cellCtx.y });
+            setCellCtx(null);
+          }}
+            className="w-full text-left px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50 flex items-center gap-2">
+            🔁 Convert value…
+          </button>
+          <button onClick={() => {
+            setCellOpFrom(""); setCellOpTo("");
+            setCellOp({ kind: "fill", x: cellCtx.x, y: cellCtx.y });
+            setCellCtx(null);
+          }}
+            className="w-full text-left px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50 flex items-center gap-2">
+            🩹 Fill blanks with…
+          </button>
+        </div>
+      )}
+
+      {/* ── Convert value / Fill blanks dialog ── */}
+      {cellOp && (
+        <div ref={cellOpRef}
+          className="fixed z-50 w-64 rounded-xl border border-gray-200 bg-white py-2 shadow-xl"
+          style={{ left: Math.min(cellOp.x, (typeof window !== "undefined" ? window.innerWidth : 0) - 272), top: cellOp.y }}
+          role="dialog"
+          aria-label={cellOp.kind === "fill" ? "Fill blanks with" : "Convert value"}>
+          <div className="border-b border-gray-100 px-3 pb-1.5 text-xs font-medium text-gray-500">
+            {cellOp.kind === "fill" ? "Fill blanks with" : "Convert value"}
+            <span className="ml-1 text-gray-400">
+              · {selectedCells.size} cell{selectedCells.size === 1 ? "" : "s"} selected
+            </span>
+          </div>
+          <div className="space-y-2 px-3 pt-2">
+            {cellOp.kind === "convert" && (
+              <label className="block text-[11px] text-gray-500">
+                From
+                <input
+                  autoFocus
+                  aria-label="Convert from"
+                  value={cellOpFrom}
+                  onChange={(e) => setCellOpFrom(e.target.value)}
+                  placeholder="leave empty to set every selected cell"
+                  className="mt-0.5 w-full rounded border border-gray-300 px-1.5 py-1 text-xs text-gray-800 outline-none focus:border-indigo-400"
+                />
+              </label>
+            )}
+            <label className="block text-[11px] text-gray-500">
+              {cellOp.kind === "fill" ? "Value" : "To"}
+              <input
+                autoFocus={cellOp.kind === "fill"}
+                aria-label={cellOp.kind === "fill" ? "Fill value" : "Convert to"}
+                value={cellOpTo}
+                onChange={(e) => setCellOpTo(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") { e.preventDefault(); void applyCellOp(); }
+                  if (e.key === "Escape") { e.preventDefault(); setCellOp(null); }
+                }}
+                className="mt-0.5 w-full rounded border border-gray-300 px-1.5 py-1 text-xs text-gray-800 outline-none focus:border-indigo-400"
+              />
+            </label>
+            <p className="text-[10px] leading-snug text-gray-400">
+              {cellOp.kind === "fill"
+                ? "Only cells that are currently empty are written; everything else is left alone."
+                : cellOpFrom.trim()
+                  ? "Only selected cells holding that value are changed."
+                  : "Every selected cell is set to this value."}
+            </p>
+            <div className="flex justify-end gap-1.5 pt-0.5">
+              <button onClick={() => setCellOp(null)}
+                className="rounded px-2 py-1 text-xs text-gray-500 hover:bg-gray-100">
+                Cancel
+              </button>
+              <button onClick={() => void applyCellOp()} disabled={cellOpBusy}
+                className="rounded bg-indigo-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50">
+                {cellOpBusy ? "Applying…" : "Apply"}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

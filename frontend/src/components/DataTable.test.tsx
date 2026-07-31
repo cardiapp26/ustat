@@ -1,4 +1,5 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { ColMeta, Session } from '../store'
 import { clearSession, installSession, makeSession } from '../test/testUtils'
@@ -121,5 +122,114 @@ describe('DataTable column-name tooltip', () => {
     } finally {
       restore()
     }
+  })
+})
+
+describe('DataTable filter visibility', () => {
+  /** Three rows, one of which has a missing cell. */
+  function sessionWithMissing(): Session {
+    const columns: ColMeta[] = [
+      { name: 'id', dtype: 'int64', kind: 'numeric' },
+      { name: 'ldl', dtype: 'float64', kind: 'numeric' },
+    ]
+    const preview = [
+      { id: 1, ldl: 3.1 },
+      { id: 2, ldl: null },
+      { id: 3, ldl: 2.4 },
+    ]
+    return makeSession({ columns, preview, rows: 3 })
+  }
+
+  it('says the rows are filtered and clears it in one click', async () => {
+    // A column's missing badge turns on the global missing-only filter and
+    // adds a filter on that column, so one click on a small badge in a header
+    // could drop the row count with nothing next to it saying why.
+    installSession(sessionWithMissing())
+    const user = userEvent.setup()
+    render(<DataTable />)
+    expect(bodyRows()).toBe(3)
+    expect(screen.queryByRole('button', { name: /filtered/i })).not.toBeInTheDocument()
+
+    await user.click(screen.getByTitle(/click to show only those rows/i))
+    expect(bodyRows()).toBe(1)
+
+    const clear = screen.getByRole('button', { name: /filtered/i })
+    await user.click(clear)
+    expect(bodyRows()).toBe(3)
+    expect(screen.queryByRole('button', { name: /filtered/i })).not.toBeInTheDocument()
+  })
+})
+
+describe('DataTable cell selection actions', () => {
+  function sheet(): Session {
+    const columns: ColMeta[] = [
+      { name: 'id', dtype: 'int64', kind: 'numeric' },
+      { name: 'grp', dtype: 'object', kind: 'categorical' },
+    ]
+    const preview = [
+      { id: 1, grp: 'a' },
+      { id: 2, grp: '' },
+      { id: 3, grp: 'a' },
+    ]
+    return makeSession({ columns, preview, rows: 3 })
+  }
+
+  /** Right-click the first body cell after selecting it. */
+  async function openCellMenu(user: ReturnType<typeof userEvent.setup>) {
+    const cell = document.querySelectorAll('tbody tr td')[1] as HTMLElement
+    await user.click(cell)
+    fireEvent.contextMenu(cell)
+  }
+
+  it('offers Convert value and Fill blanks on a cell selection', async () => {
+    installSession(sheet())
+    const user = userEvent.setup()
+    render(<DataTable />)
+
+    await openCellMenu(user)
+    expect(await screen.findByText(/Convert value/)).toBeInTheDocument()
+    expect(screen.getByText(/Fill blanks with/)).toBeInTheDocument()
+  })
+
+  it('says what Convert will do, and changes it when a From value is typed', async () => {
+    installSession(sheet())
+    const user = userEvent.setup()
+    render(<DataTable />)
+
+    await openCellMenu(user)
+    await user.click(await screen.findByText(/Convert value/))
+
+    // With From empty the whole selection is written; that is a different
+    // action from a recode and the dialog has to say which one it is.
+    expect(screen.getByText(/Every selected cell is set to this value/)).toBeInTheDocument()
+    await user.type(screen.getByLabelText('Convert from'), 'a')
+    expect(screen.getByText(/Only selected cells holding that value are changed/)).toBeInTheDocument()
+  })
+
+  it('Fill blanks says it leaves everything else alone', async () => {
+    installSession(sheet())
+    const user = userEvent.setup()
+    render(<DataTable />)
+
+    await openCellMenu(user)
+    await user.click(await screen.findByText(/Fill blanks with/))
+
+    expect(screen.getByLabelText('Fill value')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Convert from')).not.toBeInTheDocument()
+    expect(screen.getByText(/Only cells that are currently empty are written/)).toBeInTheDocument()
+  })
+
+  it('closes the dialog on Cancel without writing anything', async () => {
+    installSession(sheet())
+    const user = userEvent.setup()
+    render(<DataTable />)
+
+    await openCellMenu(user)
+    await user.click(await screen.findByText(/Fill blanks with/))
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() =>
+      expect(screen.queryByLabelText('Fill value')).not.toBeInTheDocument(),
+    )
   })
 })
