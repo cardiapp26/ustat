@@ -533,7 +533,10 @@ function CategoricalView({ summary }: { summary: ColumnSummary }) {
     labels: cats.map((c) => c.value),
     hole: 0.5,
     marker: { colors: colors },
-    textinfo: "percent" as const,
+    // Count AND percent on the slice. A percentage on its own cannot be
+    // reported: "22.6%" of an unstated denominator is not a result, and the
+    // convention this panel states in its own summary line is n (%).
+    textinfo: "value+percent" as const,
     hovertemplate: "%{label}: %{value} (%{percent})<extra></extra>",
   }];
 
@@ -939,6 +942,10 @@ export default function DescriptivePanel() {
   const [selected, setSelected] = useState<string | null>(null);
   const selectedRef = useRef<string | null>(null);
   const [summary, setSummary] = useState<ColumnSummary | null>(null);
+  // Drives which distribution sub-tabs are offered: box plot, violin and Q-Q
+  // are numeric-only. While a summary is still loading this stays false, so
+  // the tab bar is never disabled on a column whose kind is not known yet.
+  const summaryIsCategorical = summary?.type === "categorical";
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [search, setSearch] = useState("");
   const [renameCol, setRenameCol] = useState<string | null>(null);
@@ -1635,10 +1642,27 @@ export default function DescriptivePanel() {
             { id: "qq",        label: "Q-Q Plot" },
             { id: "scatter",   label: "Scatter Plot" },
           ].map(({ id, label }) => {
-            const isActive = (id === "scatter" ? view === "scatter" : view === "distribution" && chartTab === id);
+            // A box plot, a violin and a Q-Q plot all need an ordered numeric
+            // scale; none of them is defined for an unordered category. The
+            // categorical view drew its own chart whatever the tab said, so
+            // all four tabs rendered the identical pie-and-bar while the tab
+            // bar highlighted whichever one had been clicked — a live control
+            // that did nothing, and looked like the chart had failed to load.
+            const numericOnly = id === "boxplot" || id === "violin" || id === "qq";
+            const disabled = numericOnly && summaryIsCategorical;
+            // Highlight what is actually on screen: for a categorical column
+            // that is always the category breakdown.
+            const shownTab = summaryIsCategorical ? "histogram" : chartTab;
+            const isActive = (id === "scatter"
+              ? view === "scatter"
+              : view === "distribution" && shownTab === id);
             return (
               <button
                 key={id}
+                disabled={disabled}
+                title={disabled
+                  ? `${label} needs an ordered numeric scale — ${selected} is categorical`
+                  : undefined}
                 onClick={() => {
                   if (id === "scatter") {
                     setView("scatter");
@@ -1648,9 +1672,11 @@ export default function DescriptivePanel() {
                   }
                 }}
                 className={`px-3 py-1 rounded-md text-xs font-medium whitespace-nowrap transition-colors
-                  ${isActive
-                    ? "bg-indigo-600 text-white shadow-sm"
-                    : "text-gray-600 hover:text-gray-800 hover:bg-gray-200"}`}
+                  ${disabled
+                    ? "text-gray-300 cursor-not-allowed"
+                    : isActive
+                      ? "bg-indigo-600 text-white shadow-sm"
+                      : "text-gray-600 hover:text-gray-800 hover:bg-gray-200"}`}
               >
                 {label}
               </button>

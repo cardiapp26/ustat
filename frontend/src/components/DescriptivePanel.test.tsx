@@ -708,4 +708,54 @@ describe('DescriptivePanel', () => {
     expect(screen.getByText((_, el) => el?.textContent === 'Categorical · n=3')).toBeInTheDocument()
     expect(screen.queryByText((_, el) => el?.textContent === 'Continuous · n=3')).not.toBeInTheDocument()
   })
+
+  it('offers only the plots the column supports', async () => {
+    // A box plot, a violin and a Q-Q plot need an ordered numeric scale. The
+    // categorical view drew its own pie-and-bar whatever the tab said, so all
+    // four tabs rendered the same chart while the bar highlighted whichever
+    // had been clicked — a live control that did nothing.
+    installSession()
+    mockCommonEndpoints()
+    server.use(
+      http.get('/api/stats/test-session/column_summary', ({ request }) =>
+        HttpResponse.json(
+          new URL(request.url).searchParams.get('column') === 'group'
+            ? categoricalSummary
+            : numericSummary,
+        ),
+      ),
+    )
+    const user = userEvent.setup()
+    render(<DescriptivePanel />)
+
+    await waitFor(() => expect(screen.getAllByText('AGE').length).toBeGreaterThan(0))
+    // The name also appears in the summary header once a column is selected,
+    // so take the one in the list.
+    await user.click(screen.getAllByText('AGE')[0])
+    await waitFor(() =>
+      expect(screen.getByText((_, el) => el?.textContent === 'Continuous · n=3')).toBeInTheDocument(),
+    )
+    expect(screen.getByRole('button', { name: 'Box Plot' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Violin' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Q-Q Plot' })).toBeEnabled()
+
+    server.use(
+      http.get('/api/stats/test-session/column_summary', () =>
+        HttpResponse.json(categoricalSummary),
+      ),
+    )
+    await user.click(screen.getAllByText('GROUP')[0])
+    await waitFor(() =>
+      expect(screen.getByText((_, el) => el?.textContent === 'Categorical · n=3')).toBeInTheDocument(),
+    )
+    expect(screen.getByRole('button', { name: 'Box Plot' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Violin' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Q-Q Plot' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Box Plot' })).toHaveAttribute(
+      'title', expect.stringContaining('categorical') as unknown as string,
+    )
+    // Histogram is what is actually drawn, so that is what is highlighted.
+    expect(screen.getByRole('button', { name: 'Histogram' }).className)
+      .toContain('bg-indigo-600')
+  })
 })
