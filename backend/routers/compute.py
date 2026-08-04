@@ -551,6 +551,7 @@ class ClinicalRequest(BaseModel):
     column_map: Dict[str, str]   # logical_name → actual df column name
     female_value: Optional[str] = None  # which value in sex column = Female
     new_col: Optional[str] = None       # override output column name
+    units: Optional[str] = None         # lipid calculators: "mg/dl" or "mmol/l"
 
 
 def _req_cols(column_map: dict, *keys: str):
@@ -630,6 +631,318 @@ def clinical_fib4(session_id: str, req: ClinicalRequest):
             "Cut-offs (Sterling 2006): <1.30 advanced fibrosis unlikely, "
             "1.30–2.67 indeterminate, >2.67 advanced fibrosis likely. "
             "Platelets must be in 10^9/L (thousands/µL)."
+        ),
+    })
+    return result
+
+
+# Lipid unit conversion.  Cholesterol and triglyceride have different molar
+# masses, so the two scales are related by different factors — a single
+# "lipid factor" would be wrong for one of them.
+MGDL_PER_MMOL = {"chol": 38.67, "tg": 88.57}
+
+
+def _looks_like_mmol(series: pd.Series) -> bool:
+    """A lipid column reported in mmol/L instead of mg/dL.
+
+    The two scales differ by a factor of ~38.7 (cholesterol) or ~88.6
+    (triglycerides), so in practice they do not overlap: an HDL of 1.3 is
+    mmol/L, an HDL of 50 is mg/dL.  None of the cut-offs below is unit-free,
+    so a column on the wrong scale would pass through silently and land in
+    the wrong band rather than fail.
+    """
+    present = series.dropna()
+    if len(present) < 3:
+        return False
+    return bool(present.median() < 12)
+
+
+def _resolve_units(declared: Optional[str], *series: pd.Series) -> str:
+    """Which scale the lipid columns are on: 'mg/dL' or 'mmol/L'.
+
+    An explicit `units` on the request always wins — detection is a fallback
+    for the common case where the caller says nothing, not a second opinion.
+    """
+    text = (declared or "").strip().lower().replace(" ", "")
+    if text in {"mmol/l", "mmol", "mmoll"}:
+        return "mmol/L"
+    if text in {"mg/dl", "mgdl", "mg"}:
+        return "mg/dL"
+    return "mmol/L" if any(_looks_like_mmol(s) for s in series) else "mg/dL"
+
+
+def _as_mgdl(series: pd.Series, kind: str, units: str) -> pd.Series:
+    return series * MGDL_PER_MMOL[kind] if units == "mmol/L" else series
+
+
+def _as_mmol(series: pd.Series, kind: str, units: str) -> pd.Series:
+    return series if units == "mmol/L" else series / MGDL_PER_MMOL[kind]
+
+
+def _units_note(units: str, declared: Optional[str]) -> str:
+    how = "as declared" if declared else "detected from the values"
+    return f"Inputs read as {units} ({how})."
+
+
+@router.post("/{session_id}/clinical/tg_hdl_ratio")
+def clinical_tg_hdl_ratio(session_id: str, req: ClinicalRequest):
+    """Triglyceride to HDL-cholesterol ratio.
+
+        TG/HDL-C = triglycerides / HDL-C, both in mg/dL
+
+    A surrogate marker of insulin resistance and of small dense LDL
+    particles.  The conventional cut-off is 3.0 (Gaziano 1997, McLaughlin
+    2005); some authors use 3.5, and the ratio is known to run lower in
+    Black patients at the same level of insulin resistance, so it is a
+    screening aid rather than a diagnosis.
+    """
+    df = _get_df(session_id)
+    cm = req.column_map
+    _req_cols(cm, "tg", "hdl")
+
+    tg = _num(df, cm, "tg")
+    hdl = _num(df, cm, "hdl")
+    units = _resolve_units(req.units, tg, hdl)
+
+    # A zero or negative HDL is a missing or mis-entered value, not a low one;
+    # dividing by it yields an infinity that reads as extreme risk.
+    hdl = hdl.where(hdl > 0)
+    tg = tg.where(tg >= 0)
+
+    # The 3.0 cut-off is a mg/dL one, so the ratio is formed on that scale
+    # whatever the column arrived in.
+    tg = _as_mgdl(tg, "tg", units)
+    hdl = _as_mgdl(hdl, "chol", units)
+
+    df = df.copy()
+    new_col = req.new_col or "TG_HDL"
+    df[new_col] = (tg / hdl).replace([np.inf, -np.inf], np.nan).round(2)
+
+    store.save(session_id, df)
+    result = _build_clinical_result(df, new_col, cm)
+    n_valid = int(df[new_col].notna().sum())
+    result.update({
+        "n_normal": int((df[new_col] < 3.0).sum()),
+        "n_elevated": int((df[new_col] >= 3.0).sum()),
+        "units": units,
+        "result_text": (
+            f"TG/HDL-C computed for {n_valid} of {len(df)} rows. "
+            "Cut-off 3.0: at or above it suggests insulin resistance and a "
+            "small dense LDL phenotype. The ratio is not unit-free — it is "
+            f"formed on mg/dL. {_units_note(units, req.units)}"
+        ),
+    })
+    return result
+
+
+@router.post("/{session_id}/clinical/non_hdl")
+def clinical_non_hdl(session_id: str, req: ClinicalRequest):
+    """Non-HDL cholesterol = total cholesterol - HDL-C (mg/dL).
+
+    Every atherogenic apoB-carrying particle, in one number, and unlike LDL-C
+    it needs neither fasting nor the Friedewald equation, so it stays valid
+    when triglycerides are high.  Bands follow the NCEP/AHA convention, which
+    sets each one 30 mg/dL above the corresponding LDL-C goal.
+    """
+    df = _get_df(session_id)
+    cm = req.column_map
+    _req_cols(cm, "total_cholesterol", "hdl")
+
+    tc = _num(df, cm, "total_cholesterol")
+    hdl = _num(df, cm, "hdl")
+    units = _resolve_units(req.units, tc, hdl)
+    tc = _as_mgdl(tc, "chol", units)
+    hdl = _as_mgdl(hdl, "chol", units)
+
+    non_hdl = tc - hdl
+    # HDL is a component of total cholesterol, so a negative difference means
+    # one of the two is wrong; it is not a very low value.
+    non_hdl = non_hdl.where(non_hdl >= 0)
+
+    df = df.copy()
+    new_col = req.new_col or "NonHDL"
+    df[new_col] = non_hdl.round(1)
+
+    store.save(session_id, df)
+    result = _build_clinical_result(df, new_col, cm)
+    col = df[new_col]
+    n_valid = int(col.notna().sum())
+    result.update({
+        "n_optimal": int((col < 130).sum()),
+        "n_above_optimal": int(((col >= 130) & (col < 160)).sum()),
+        "n_borderline_high": int(((col >= 160) & (col < 190)).sum()),
+        "n_high": int(((col >= 190) & (col < 220)).sum()),
+        "n_very_high": int((col >= 220).sum()),
+        "result_text": (
+            f"Non-HDL cholesterol computed for {n_valid} of {len(df)} rows. "
+            "Bands (mg/dL): <130 optimal, 130-159 above optimal, 160-189 "
+            "borderline high, 190-219 high, >=220 very high. Each is the "
+            f"matching LDL-C goal plus 30. {_units_note(units, req.units)}"
+        ),
+        "units": units,
+    })
+    return result
+
+
+@router.post("/{session_id}/clinical/tc_hdl_ratio")
+def clinical_tc_hdl_ratio(session_id: str, req: ClinicalRequest):
+    """Total cholesterol to HDL-C ratio — Castelli Risk Index I.
+
+    Both terms are cholesterol, so the mg/dL and mmol/L conversion factors
+    cancel: this is the one ratio here that is genuinely scale-free, and it
+    needs no unit handling.  Only the two columns must share a unit.
+
+    Reference points: ~3.5 is the commonly quoted optimum; above 5 in men and
+    4.4 in women is the conventional high-risk mark.
+    """
+    df = _get_df(session_id)
+    cm = req.column_map
+    _req_cols(cm, "total_cholesterol", "hdl")
+
+    tc = _num(df, cm, "total_cholesterol")
+    hdl = _num(df, cm, "hdl").where(lambda s: s > 0)
+
+    df = df.copy()
+    new_col = req.new_col or "TC_HDL"
+    df[new_col] = (tc / hdl).replace([np.inf, -np.inf], np.nan).round(2)
+
+    store.save(session_id, df)
+    result = _build_clinical_result(df, new_col, cm)
+    col = df[new_col]
+    n_valid = int(col.notna().sum())
+    result.update({
+        "n_optimal": int((col < 3.5).sum()),
+        "n_above_male_threshold": int((col >= 5.0).sum()),
+        "n_above_female_threshold": int((col >= 4.4).sum()),
+        "result_text": (
+            f"TC/HDL-C (Castelli Risk Index I) computed for {n_valid} of "
+            f"{len(df)} rows. Both terms are cholesterol, so the ratio is the "
+            "same in mg/dL and mmol/L — only the two columns have to share a "
+            "unit. Reference: ~3.5 optimal; >5 in men and >4.4 in women is the "
+            "conventional high-risk mark, so the two counts above overlap."
+        ),
+    })
+    return result
+
+
+@router.post("/{session_id}/clinical/aip")
+def clinical_aip(session_id: str, req: ClinicalRequest):
+    """Atherogenic Index of Plasma (Dobiasova & Frohlich 2001).
+
+        AIP = log10(TG / HDL-C), both in MOLAR units (mmol/L)
+
+    The molar scale is not incidental: the index was derived against the
+    directly measured LDL particle size, and the mg/dL ratio is larger by a
+    constant factor of 88.57/38.67 = 2.29, which shifts every value up by
+    log10(2.29) = 0.36 — more than the whole width of the middle risk band.
+    So mg/dL inputs are converted before the logarithm rather than after.
+
+    Cut-offs: <0.11 low cardiovascular risk, 0.11-0.24 intermediate,
+    >0.24 high.
+
+    A second column holds the calibrated form log10[(TG/HDL-C) x 100], used
+    to keep the values positive.  Since log10(100x) = log10(x) + 2 exactly,
+    it is the same variable shifted by 2: it changes no correlation, no
+    regression coefficient and no distributional shape, and the cut-offs
+    above become 2.11 and 2.24.
+    """
+    df = _get_df(session_id)
+    cm = req.column_map
+    _req_cols(cm, "tg", "hdl")
+
+    tg = _num(df, cm, "tg")
+    hdl = _num(df, cm, "hdl")
+    units = _resolve_units(req.units, tg, hdl)
+
+    # The logarithm is defined only for a strictly positive ratio; a zero or
+    # negative lipid value is a missing one.
+    tg = tg.where(tg > 0)
+    hdl = hdl.where(hdl > 0)
+
+    ratio = _as_mmol(tg, "tg", units) / _as_mmol(hdl, "chol", units)
+    aip = np.log10(ratio.where(ratio > 0))
+
+    df = df.copy()
+    new_col = req.new_col or "AIP"
+    calibrated_col = f"{new_col}_100"
+    df[new_col] = aip.replace([np.inf, -np.inf], np.nan).round(3)
+    df[calibrated_col] = (df[new_col] + 2).round(3)
+
+    store.save(session_id, df)
+    result = _build_clinical_result(df, new_col, cm)
+    col = df[new_col]
+    n_valid = int(col.notna().sum())
+    result.update({
+        "n_low": int((col < 0.11).sum()),
+        "n_intermediate": int(((col >= 0.11) & (col <= 0.24)).sum()),
+        "n_high": int((col > 0.24).sum()),
+        "calibrated_column": calibrated_col,
+        # The calculators write one column each, so the client tracks one per
+        # call; this one writes two, and the second has to travel with the
+        # first or the client's copy of the session silently loses it.
+        "extra_columns": [_build_result(df, calibrated_col)],
+        "units": units,
+        "result_text": (
+            f"AIP computed for {n_valid} of {len(df)} rows, on molar (mmol/L) "
+            f"triglyceride and HDL-C. {_units_note(units, req.units)} "
+            "Cut-offs: <0.11 low risk, 0.11-0.24 intermediate, >0.24 high. "
+            f"'{calibrated_col}' holds the calibrated form log10[(TG/HDL)x100], "
+            "which is exactly AIP + 2 — the same variable without negative "
+            "values, so its cut-offs are 2.11 and 2.24."
+        ),
+    })
+    return result
+
+
+@router.post("/{session_id}/clinical/cmi")
+def clinical_cmi(session_id: str, req: ClinicalRequest):
+    """Cardiometabolic Index (Wakabayashi & Daimon 2015).
+
+        CMI = (TG / HDL-C) x WHtR,  WHtR = waist circumference / height
+
+    The lipid ratio is the molar one, as in the source paper, so mg/dL
+    inputs are converted first — otherwise every CMI comes out 2.29x too
+    large.  Waist and height only have to share a unit; the ratio itself is
+    dimensionless, so cm/cm and m/m both work, and mixing them does not.
+
+    There is no single published cut-off: the reported thresholds are
+    sex-specific and derived per cohort, so this returns the index and its
+    distribution rather than bands it cannot justify.
+    """
+    df = _get_df(session_id)
+    cm = req.column_map
+    _req_cols(cm, "tg", "hdl", "waist", "height")
+
+    tg = _num(df, cm, "tg")
+    hdl = _num(df, cm, "hdl")
+    units = _resolve_units(req.units, tg, hdl)
+
+    tg = tg.where(tg >= 0)
+    hdl = hdl.where(hdl > 0)
+    waist = _num(df, cm, "waist").where(lambda s: s > 0)
+    height = _num(df, cm, "height").where(lambda s: s > 0)
+
+    ratio = _as_mmol(tg, "tg", units) / _as_mmol(hdl, "chol", units)
+    whtr = waist / height
+    cmi = ratio * whtr
+
+    df = df.copy()
+    new_col = req.new_col or "CMI"
+    df[new_col] = cmi.replace([np.inf, -np.inf], np.nan).round(3)
+
+    store.save(session_id, df)
+    result = _build_clinical_result(df, new_col, cm)
+    col = df[new_col]
+    n_valid = int(col.notna().sum())
+    result.update({
+        "units": units,
+        "whtr_median": None if whtr.dropna().empty else round(float(whtr.median()), 3),
+        "result_text": (
+            f"CMI computed for {n_valid} of {len(df)} rows, as the molar "
+            f"TG/HDL-C ratio times waist/height. {_units_note(units, req.units)} "
+            "Waist and height must be in the same unit. Published cut-offs are "
+            "sex-specific and cohort-derived, so none is applied here — compare "
+            "against your own quantiles or a stated reference."
         ),
     })
     return result

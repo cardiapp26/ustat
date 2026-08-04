@@ -31,6 +31,12 @@ interface ComputeResult {
   preview_values: (number | string | null)[];
   n_computed: number;
   n_missing: number;
+  result_text?: string;
+  warnings?: string[];
+  // A calculator that writes more than one column (AIP writes its calibrated
+  // form alongside) reports the others here, so the client's copy of the
+  // session does not silently miss them.
+  extra_columns?: ComputeResult[];
 }
 
 interface FormulaTemplate { name: string; formula: string; }
@@ -73,13 +79,30 @@ function deleteTemplate(name: string) {
 }
 
 function SuccessBadge({ result }: { result: ComputeResult }) {
+  const extra = result.extra_columns ?? [];
   return (
-    <div className="flex items-center gap-2 bg-green-50 border border-green-200 rounded-lg px-3 py-2 text-xs text-green-800">
-      <span>✓</span>
-      <span>
-        <strong>{result.name}</strong> created — {result.n_computed} values computed
-        {result.n_missing > 0 && `, ${result.n_missing} missing (NaN)`}
-      </span>
+    <div className="space-y-2">
+      <div className="flex items-center gap-2 bg-green-50 border border-green-200 rounded-lg px-3 py-2 text-xs text-green-800">
+        <span>✓</span>
+        <span>
+          <strong>{result.name}</strong> created — {result.n_computed} values computed
+          {result.n_missing > 0 && `, ${result.n_missing} missing (NaN)`}
+          {extra.length > 0 && ` · also wrote ${extra.map((c) => c.name).join(", ")}`}
+        </span>
+      </div>
+      {/* What the calculator assumed is part of the result, not decoration: the
+          lipid calculators pick a unit scale from the values when the caller
+          does not name one, and a reader cannot check a number without it. */}
+      {result.result_text && (
+        <div className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-[11px] text-gray-600 leading-relaxed">
+          {result.result_text}
+        </div>
+      )}
+      {(result.warnings ?? []).map((w) => (
+        <div key={w} className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-[11px] text-amber-800 leading-relaxed">
+          ⚠ {w}
+        </div>
+      ))}
     </div>
   );
 }
@@ -945,6 +968,59 @@ const CALC_GROUPS: CalcGroup[] = [
     ],
   },
   {
+    label: "Lipids & Cardiometabolic",
+    icon: "🧈",
+    calcs: [
+      {
+        id: "non_hdl", icon: "🧮", title: "Non-HDL-C", subtitle: "Total cholesterol − HDL-C",
+        defaultCol: "NonHDL",
+        info: "mg/dL: <130 optimal · 130–159 above optimal · 160–189 borderline high · 190–219 high · ≥220 very high. Needs no fasting and no Friedewald equation, so it stays valid when triglycerides are high.",
+        fields: [
+          { key: "total_cholesterol", label: "Total cholesterol", required: true, note: "mg/dL or mmol/L — scale is detected" },
+          { key: "hdl",               label: "HDL-C",             required: true },
+        ],
+      },
+      {
+        id: "tg_hdl_ratio", icon: "➗", title: "TG/HDL-C", subtitle: "Insulin-resistance surrogate",
+        defaultCol: "TG_HDL",
+        info: "Cut-off 3.0 (mg/dL scale): at or above it suggests insulin resistance and a small dense LDL phenotype. Screening aid, not a diagnosis — it runs lower in Black patients at the same level of insulin resistance.",
+        fields: [
+          { key: "tg",  label: "Triglycerides", required: true, note: "mg/dL or mmol/L — scale is detected" },
+          { key: "hdl", label: "HDL-C",         required: true },
+        ],
+      },
+      {
+        id: "tc_hdl_ratio", icon: "🧬", title: "TC/HDL-C", subtitle: "Castelli Risk Index I",
+        defaultCol: "TC_HDL",
+        info: "~3.5 optimal · >5 in men and >4.4 in women is the conventional high-risk mark. Both terms are cholesterol, so the ratio is the same number in mg/dL and mmol/L — only the two columns have to share a unit.",
+        fields: [
+          { key: "total_cholesterol", label: "Total cholesterol", required: true, note: "same unit as HDL-C" },
+          { key: "hdl",               label: "HDL-C",             required: true },
+        ],
+      },
+      {
+        id: "aip", icon: "📈", title: "AIP", subtitle: "Atherogenic Index of Plasma",
+        defaultCol: "AIP",
+        info: "log₁₀(TG/HDL-C) on the molar scale: <0.11 low risk · 0.11–0.24 intermediate · >0.24 high. A second column holds log₁₀[(TG/HDL)×100], which is exactly AIP + 2 — the same variable with no negative values.",
+        fields: [
+          { key: "tg",  label: "Triglycerides", required: true, note: "mg/dL is converted to mmol/L first — the index is defined on molar units" },
+          { key: "hdl", label: "HDL-C",         required: true },
+        ],
+      },
+      {
+        id: "cmi", icon: "📐", title: "CMI", subtitle: "Cardiometabolic Index",
+        defaultCol: "CMI",
+        info: "(TG/HDL-C) × waist/height, lipid ratio on the molar scale as published. Waist and height must share a unit. No cut-off is applied: the published ones are sex-specific and cohort-derived.",
+        fields: [
+          { key: "tg",     label: "Triglycerides",       required: true, note: "mg/dL or mmol/L — scale is detected" },
+          { key: "hdl",    label: "HDL-C",               required: true },
+          { key: "waist",  label: "Waist circumference", required: true, note: "same unit as height" },
+          { key: "height", label: "Height",              required: true },
+        ],
+      },
+    ],
+  },
+  {
     label: "Atrial Fibrillation",
     icon: "💓",
     calcs: [
@@ -1301,14 +1377,20 @@ export default function ComputePanel() {
 
   const handleResult = (result: ComputeResult) => {
     if (useStore.getState().session?.session_id !== session.session_id) return;
-    const col: ColMeta = { name: result.name, dtype: result.dtype, kind: result.kind };
-    addSessionColumn(col, result.preview_values);
+    const written = [result, ...(result.extra_columns ?? [])];
+    for (const r of written) {
+      const col: ColMeta = { name: r.name, dtype: r.dtype, kind: r.kind };
+      addSessionColumn(col, r.preview_values);
+    }
     useStore.setState((state) => ({
       undoDepth: state.undoDepth + 1,
       redoDepth: 0,
       columnMutationRedo: [],
     }));
-    setComputedNames((prev) => prev.includes(result.name) ? prev : [...prev, result.name]);
+    setComputedNames((prev) => [
+      ...prev,
+      ...written.map((r) => r.name).filter((n) => !prev.includes(n)),
+    ]);
   };
 
   const handleDelete = (name: string, caseFilter: CaseFilter | null) => {

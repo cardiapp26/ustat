@@ -200,6 +200,47 @@ describe('ChartsPanel', () => {
     omnibus: {},
   }
 
+  async function drawRaincloud() {
+    installSession()
+    server.use(http.post('/api/charts/boxplot', () => HttpResponse.json(boxplotResponse)))
+    const user = userEvent.setup()
+    render(<ChartsPanel />)
+    await user.click(screen.getByRole('radio', { name: /raincloud/i }))
+    const colorSelect = screen.getAllByRole('combobox').find(
+      (s) => s.previousElementSibling?.textContent?.match(/color \/ group/i),
+    )
+    await user.selectOptions(colorSelect!, 'GROUP')
+    await user.click(screen.getByRole('button', { name: /generate chart/i }))
+    await waitFor(() => expect(screen.getByTestId('plotly-mock')).toBeInTheDocument())
+    return { user, traces: JSON.parse(screen.getByTestId('plotly-mock').dataset.plotly!) }
+  }
+
+  it('draws a raincloud as a half violin, a box and every raw point', async () => {
+    const { traces } = await drawRaincloud()
+    expect(traces).toHaveLength(2)
+    for (const t of traces) {
+      expect(t.type).toBe('violin')
+      expect(t.side).toBe('positive')      // density on one side only
+      expect(t.points).toBe('all')          // the cloud is the whole point
+      expect(t.pointpos).toBeLessThan(0)    // scattered on the other side
+      expect(t.box.visible).toBe(true)      // box on the centre line
+    }
+  })
+
+  it('clips the raincloud density to the observed range', async () => {
+    const { traces } = await drawRaincloud()
+    // Without this the kernel runs past the smallest observation, which on a
+    // strictly positive measure draws density below zero.
+    expect(traces.every((t: { spanmode: string }) => t.spanmode === 'hard')).toBe(true)
+  })
+
+  it('hides the point toggle for a raincloud, which is made of points', async () => {
+    const { user } = await drawRaincloud()
+    expect(screen.queryByRole('checkbox', { name: /show every point/i })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('radio', { name: /boxplot/i }))
+    expect(screen.getByRole('checkbox', { name: /show every point/i })).toBeInTheDocument()
+  })
+
   it('draws significance brackets and states the test and adjustment', async () => {
     installSession()
     server.use(

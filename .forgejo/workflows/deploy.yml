@@ -1,0 +1,56 @@
+# Forgejo Actions: the same gate as .github/workflows/ci.yml, plus the deploy
+# call that GitHub never made. Nothing reaches production unless the backend
+# tests, the typecheck, the frontend tests and the build all pass.
+#
+# Repo → Settings → Actions → Secrets:
+#   COOLIFY_URL    https://coolify.example.com   (no trailing slash)
+#   COOLIFY_TOKEN  Coolify → Keys & Tokens → API tokens
+#   COOLIFY_UUID   the resource UUID, taken from its Coolify URL
+name: deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  backend:
+    runs-on: docker
+    container:
+      image: python:3.10
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest --cov=routers --cov=services --cov-fail-under=60 -q
+
+  frontend:
+    runs-on: docker
+    container:
+      image: node:20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm ci --legacy-peer-deps
+      # tsc -b is the only typecheck that means anything here: the root
+      # tsconfig has files: [], so tsc --noEmit passes on a broken tree.
+      - run: npx tsc -b
+      - run: npx vitest run
+      - run: npm run build
+
+  deploy:
+    needs: [backend, frontend]
+    runs-on: docker
+    container:
+      image: alpine:3.20
+    steps:
+      - run: apk add --no-cache curl
+      # -f so a 4xx from Coolify fails the job instead of passing quietly.
+      - name: Trigger Coolify
+        run: |
+          curl -fsSL \
+            -H "Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}" \
+            "${{ secrets.COOLIFY_URL }}/api/v1/deploy?uuid=${{ secrets.COOLIFY_UUID }}&force=false"

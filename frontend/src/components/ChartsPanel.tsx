@@ -131,7 +131,7 @@ function ChartsPanelBody({ session }: { session: Session }) {
         label: labelCol || undefined, shape: shapeCol || undefined,
         ellipse, marginal,
       });
-      else if (chartType === "boxplot" || chartType === "violin") res = await getBoxplot({ ...base, color: color || undefined });
+      else if (chartType === "boxplot" || chartType === "violin" || chartType === "raincloud") res = await getBoxplot({ ...base, color: color || undefined });
       else if (chartType === "paired") res = await getPairedBox({ session_id: session.session_id, y: x, group: color, pair_id: pairId });
       else if (chartType === "dumbbell") res = await getDumbbell({
         session_id: session.session_id, category: x,
@@ -182,7 +182,7 @@ function ChartsPanelBody({ session }: { session: Session }) {
 
       // The summary table is a separate result printed under the plot, so a
       // failure there must not cost the user the chart.
-      if (showSummary && ["boxplot", "violin", "errorplot", "ecdf"].includes(chartType)) {
+      if (showSummary && ["boxplot", "violin", "raincloud", "errorplot", "ecdf"].includes(chartType)) {
         try {
           const s = await getSummaryStats({
             session_id: session.session_id, y: x, group: color || undefined,
@@ -194,7 +194,7 @@ function ChartsPanelBody({ session }: { session: Session }) {
       // Brackets are a second call: the comparison is a statistical result in
       // its own right, and a failure there must not lose the plot the user
       // already has.
-      if (showBrackets && color && (chartType === "boxplot" || chartType === "violin")) {
+      if (showBrackets && color && (chartType === "boxplot" || chartType === "violin" || chartType === "raincloud")) {
         try {
           const cmp = await getCompareMeans({
             session_id: session.session_id, y: x, group: color,
@@ -229,7 +229,7 @@ function ChartsPanelBody({ session }: { session: Session }) {
         autoTitle = `${yLabelText} vs ${xLabelText}`;
         autoX = xLabelText;
         autoY = yLabelText;
-      } else if (chartType === "boxplot" || chartType === "violin") {
+      } else if (chartType === "boxplot" || chartType === "violin" || chartType === "raincloud") {
         autoTitle = colorLabelText ? `Distribution of ${xLabelText} by ${colorLabelText}` : `Distribution of ${xLabelText}`;
         autoX = colorLabelText || "Overall";
         autoY = xLabelText;
@@ -281,7 +281,7 @@ function ChartsPanelBody({ session }: { session: Session }) {
       <div className="w-60 flex-shrink-0 space-y-4 overflow-y-auto pr-1" style={{ maxHeight: "calc(100vh - 120px)" }}>
         <div className="panel space-y-3 bg-white border border-gray-200 shadow-sm rounded-2xl p-4">
           <h3 className="text-sm font-semibold text-gray-700">Chart Type</h3>
-          {["histogram", "scatter", "boxplot", "violin", "bar", "paired", "dumbbell", "errorplot", "ecdf", "pie", "balloon", "facet", "lineplot", "slopeplot", "sankey", "stackplot", "ridgeplot", "sets"].map((t) => (
+          {["histogram", "scatter", "boxplot", "violin", "raincloud", "bar", "paired", "dumbbell", "errorplot", "ecdf", "pie", "balloon", "facet", "lineplot", "slopeplot", "sankey", "stackplot", "ridgeplot", "sets"].map((t) => (
             <label key={t} className="flex items-center gap-2 cursor-pointer">
               <input type="radio" name="chartType" value={t} checked={chartType === t}
                 onChange={() => setChartType(t)} className="accent-indigo-500" />
@@ -291,7 +291,8 @@ function ChartsPanelBody({ session }: { session: Session }) {
                   : t === "balloon" ? "Balloon" : t === "facet" ? "Facet grid"
                   : t === "lineplot" ? "Line (over visits)" : t === "slopeplot" ? "Slope (before / after)"
                   : t === "sankey" ? "Sankey (flow)" : t === "stackplot" ? "Stacked bar"
-                  : t === "ridgeplot" ? "Ridge" : t === "sets" ? "Set overlap" : t}
+                  : t === "ridgeplot" ? "Ridge" : t === "sets" ? "Set overlap"
+                  : t === "raincloud" ? "Raincloud" : t}
               </span>
             </label>
           ))}
@@ -313,7 +314,7 @@ function ChartsPanelBody({ session }: { session: Session }) {
                 : "X axis"}
             </label>
             <select className="select w-full" value={x} onChange={(e) => setX(e.target.value)}>
-              {(chartType === "boxplot" || chartType === "violin" || chartType === "paired"
+              {(chartType === "boxplot" || chartType === "violin" || chartType === "raincloud" || chartType === "paired"
                 || chartType === "errorplot" || chartType === "ecdf" || chartType === "facet"
                 || chartType === "ridgeplot" ? numCols
                 : chartType === "dumbbell" || chartType === "pie" || chartType === "balloon"
@@ -567,13 +568,17 @@ function ChartsPanelBody({ session }: { session: Session }) {
               </div>
             </>
           )}
-          {(chartType === "boxplot" || chartType === "violin") && (
+          {(chartType === "boxplot" || chartType === "violin" || chartType === "raincloud") && (
             <div className="pt-2 border-t border-gray-100 space-y-2">
               <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Comparisons</p>
-              <label className="flex items-center gap-2 cursor-pointer" title="Draws every raw observation over the box. A box alone hides the sample size and any clustering; with small clinical samples showing the points is now expected.">
-                <input type="checkbox" checked={showPoints} onChange={(e) => setShowPoints(e.target.checked)} className="accent-indigo-500" />
-                <span className="text-xs text-gray-600">Show every point</span>
-              </label>
+              {/* A raincloud IS the scattered points, so the toggle would be a
+                  control that cannot change anything. */}
+              {chartType !== "raincloud" && (
+                <label className="flex items-center gap-2 cursor-pointer" title="Draws every raw observation over the box. A box alone hides the sample size and any clustering; with small clinical samples showing the points is now expected.">
+                  <input type="checkbox" checked={showPoints} onChange={(e) => setShowPoints(e.target.checked)} className="accent-indigo-500" />
+                  <span className="text-xs text-gray-600">Show every point</span>
+                </label>
+              )}
               <label className="flex items-center gap-2 cursor-pointer" title="Adds a significance bracket over each pair of groups, like ggpubr's stat_compare_means. Needs a Color / Group column.">
                 <input type="checkbox" checked={showBrackets} onChange={(e) => setShowBrackets(e.target.checked)} className="accent-indigo-500" />
                 <span className="text-xs text-gray-600">Significance brackets</span>
@@ -1541,6 +1546,46 @@ function buildTraces(
     const colorLabels = valueLabelsFor(d.color);
     const groups = d.groups as Array<{ values: unknown[]; group: unknown; row_indices?: number[] }>;
 
+    // A raincloud is a violin taken apart: the density is drawn on one side
+    // only, the box sits on the centre line, and every raw observation is
+    // scattered on the other side. One trace does all three, which keeps the
+    // category axis — and so the significance brackets — exactly as they are
+    // for a box plot.
+    if (chartType === "raincloud") {
+      const n = groups.reduce((acc, g) => acc + g.values.length, 0);
+      return groups.map((g, i) => ({
+        type: "violin",
+        y: g.values,
+        name: colorLabels[String(g.group)] ?? g.group,
+        side: "positive",
+        width: 1.0,
+        points: "all",
+        pointpos: -0.75,
+        jitter: 0.5,
+        // Without this the kernel runs past the smallest and largest
+        // observation — on a strictly positive measure such as CMI the
+        // density then reaches below zero, which is not a value the variable
+        // can take.
+        spanmode: "hard",
+        // White-filled box on the centre line, as the published raincloud
+        // draws it: filled in the group colour it disappears into the violin.
+        box: { visible: true, width: 0.12, fillcolor: "#ffffff", line: { color: C[i % C.length], width: 1 } },
+        meanline: { visible: false },
+        scalemode: "width",
+        line: { color: C[i % C.length], width: 1 },
+        fillcolor: C[i % C.length] + "55",
+        // The cloud is the point of the figure, so the markers are never
+        // thinned out — only made smaller and fainter as they crowd.
+        marker: {
+          color: C[i % C.length],
+          size: n > 2000 ? 2 : n > 500 ? 3 : 5,
+          opacity: n > 2000 ? 0.35 : n > 500 ? 0.45 : 0.6,
+        },
+        hoveron: "points",
+        text: g.row_indices?.map((idx) => `Row ${idx + 1}`),
+      }));
+    }
+
     if (chartType === "violin") {
       return groups.map((g, i) => ({
         type: "violin",
@@ -1550,7 +1595,9 @@ function buildTraces(
         meanline: { visible: true },
         line: { color: C[i % C.length] },
         fillcolor: C[i % C.length] + "25",
-        points: g.values.length < 200 ? "all" : false,
+        // The checkbox above offers the points, so it has to decide them here
+        // too; the n cap only stops a violin turning into a smear.
+        points: showPoints && g.values.length < 2000 ? "all" : false,
         jitter: 0.3,
         pointpos: -1.5,
         marker: { color: C[i % C.length], size: 3, opacity: 0.5 },

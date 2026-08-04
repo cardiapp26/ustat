@@ -156,6 +156,46 @@ describe('ComputePanel', () => {
     expect(cols).toContain('BMI')
   })
 
+  it('Clinical tab: AIP reports the unit scale it read and both columns it wrote', async () => {
+    // The lipid calculators pick mg/dL or mmol/L from the values when the
+    // caller names neither, and AIP writes a second column. Both were
+    // invisible: the panel showed only "created — n values computed", so the
+    // user could not check which scale the number rests on.
+    installSession(computeSession())
+    server.use(
+      http.post('/api/compute/test-session/clinical/aip', () =>
+        HttpResponse.json({
+          name: 'AIP',
+          dtype: 'float64',
+          kind: 'numeric',
+          preview_values: [0.117, 0.64, -0.184],
+          n_computed: 3,
+          n_missing: 0,
+          extra_columns: [{
+            name: 'AIP_100', dtype: 'float64', kind: 'numeric',
+            preview_values: [2.117, 2.64, 1.816], n_computed: 3, n_missing: 0,
+          }],
+          result_text: 'Inputs read as mg/dL (detected from the values).',
+        }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<ComputePanel />)
+
+    await user.click(screen.getByRole('button', { name: /Clinical/ }))
+    await user.click(screen.getByRole('button', { name: /AIP.*Atherogenic Index of Plasma/ }))
+    await user.click(screen.getByRole('button', { name: 'Calculate AIP' }))
+
+    await waitFor(() =>
+      expect(screen.getByText(/Inputs read as mg\/dL/)).toBeInTheDocument(),
+    )
+    expect(screen.getByText(/also wrote AIP_100/)).toBeInTheDocument()
+    const cols = useStore.getState().session?.columns.map((c) => c.name)
+    expect(cols).toContain('AIP')
+    expect(cols).toContain('AIP_100')
+  })
+
   it('Transform tab: never suggests the source column as the output name', async () => {
     // Reported: applying a tertile replaced the variable it was computed
     // from. The prefix map had no entry for tertile, quartile or median
