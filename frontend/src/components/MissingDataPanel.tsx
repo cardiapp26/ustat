@@ -16,6 +16,7 @@ import ResultExporter from "./ResultExporter";
 import api from "../api";
 import { CleaningTab } from "./CleaningTab";
 import { fmtP } from "../lib/format";
+import { useMissing } from "./MissingGuard";
 
 interface DiagCol { name: string; n_missing: number; pct: number; kind: string; is_numeric: boolean; depends_on: string[]; likely: string }
 interface DiagResult { columns: DiagCol[]; overall_hint: string; recommendation: string; any_mar: boolean }
@@ -211,20 +212,25 @@ export default function MissingDataPanel() {
   const columns = session?.columns ?? [];
   const numCols = columns.filter((c) => isNumericKind(c.kind));
   const sid = session?.session_id ?? "";
+  const dataVersion = useStore((s) => s.dataVersion);
+  const columnNames = columns.map((c) => c.name);
+  const { info: fullMissingInfo } = useMissing(sid, columnNames, dataVersion);
   const [activeSubTab, setActiveSubTab] = useState<"overview" | "cleaning" | "reference" | "mnar">("overview");
 
   const preview = session?.preview ?? [];
   const missingInfo = columns
     .map((c) => {
-      const nMiss = preview.filter(
+      const previewMissing = preview.filter(
         (r) => r[c.name] === null || r[c.name] === undefined || r[c.name] === ""
       ).length;
+      const serverMissing = fullMissingInfo?.per_column[c.name];
+      const nMiss = serverMissing?.count ?? previewMissing;
       return {
         name: c.name,
         kind: c.kind,
         isNum: isNumericKind(c.kind),
         nMiss,
-        pct: preview.length > 0 ? (nMiss / preview.length) * 100 : 0,
+        pct: serverMissing?.pct ?? (preview.length > 0 ? (nMiss / preview.length) * 100 : 0),
       };
     })
     .filter((m) => m.nMiss > 0);

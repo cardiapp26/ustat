@@ -1,7 +1,9 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { ColMeta, Session } from '../store'
+import { server } from '../test/server'
 import { clearSession, installSession, makeSession } from '../test/testUtils'
 import DataTable from './DataTable'
 
@@ -231,5 +233,41 @@ describe('DataTable cell selection actions', () => {
     await waitFor(() =>
       expect(screen.queryByLabelText('Fill value')).not.toBeInTheDocument(),
     )
+  })
+})
+
+describe('DataTable column missing-value actions', () => {
+  it('offers fill methods when the full-data server count finds missing sentinels', async () => {
+    installSession(makeSession({
+      columns: [{ name: 'CREATININ', dtype: 'float64', kind: 'numeric' }],
+      preview: [
+        { CREATININ: 0.62 },
+        { CREATININ: 999 },
+        { CREATININ: 1.17 },
+      ],
+      rows: 3,
+    }))
+    server.use(
+      http.get('/api/stats/test-session/column_badges', () =>
+        HttpResponse.json({
+          n_rows: 3,
+          columns: {
+            CREATININ: { n_missing: 1, pct_missing: 33.3, min: 0.62, max: 1.17, n_valid: 2 },
+          },
+        }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<DataTable />)
+
+    await screen.findByTitle(/1 missing value/)
+    fireEvent.contextMenu(screen.getByText('CREATININ').closest('th')!)
+
+    const fillGroup = await screen.findByRole('button', { name: /Fill 1 blanks/i })
+    await user.hover(fillGroup)
+    expect(await screen.findByRole('button', { name: '📊 Mean' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '📊 Median' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /MICE \(multiple imputation\)/i })).toBeInTheDocument()
   })
 })

@@ -439,6 +439,14 @@ function DataTableBody({ session }: { session: Session }) {
     return counts;
   }, [preview, columns]);
 
+  const resolvedMissingCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const col of columns) {
+      counts[col.name] = columnBadges[col.name]?.n_missing ?? missingCounts[col.name] ?? 0;
+    }
+    return counts;
+  }, [columnBadges, columns, missingCounts]);
+
   const totalMissingRows = useMemo(
     () => indexedRows.filter((row) =>
       columns.some((col) => row[col.name] === null || row[col.name] === undefined || row[col.name] === "")
@@ -1860,7 +1868,7 @@ function DataTableBody({ session }: { session: Session }) {
                 const serverBadge = columnBadges[col.name];
                 // Server counts cover the whole frame; the preview-derived
                 // count is the fallback until that request lands.
-                const nMissing = serverBadge?.n_missing ?? missingCounts[col.name] ?? 0;
+                const nMissing = resolvedMissingCounts[col.name] ?? 0;
                 const range =
                   serverBadge && serverBadge.min != null && serverBadge.max != null
                     ? { min: serverBadge.min, max: serverBadge.max, n_valid: serverBadge.n_valid ?? 0 }
@@ -2272,8 +2280,8 @@ function DataTableBody({ session }: { session: Session }) {
           role="menu">
           <div className="sticky top-0 z-10 bg-white px-3 py-1.5 text-xs text-gray-400 font-medium border-b border-gray-100 truncate">
             {ctxMenu.col}
-            {(missingCounts[ctxMenu.col] ?? 0) > 0 && (
-              <span className="ml-1 text-amber-500">({missingCounts[ctxMenu.col]} missing)</span>
+            {(resolvedMissingCounts[ctxMenu.col] ?? 0) > 0 && (
+              <span className="ml-1 text-amber-500">({resolvedMissingCounts[ctxMenu.col]} missing)</span>
             )}
           </div>
           {/* Everyday actions stay at the top level; the rest live in the
@@ -2445,9 +2453,9 @@ function DataTableBody({ session }: { session: Session }) {
             </button>
           </ColMenuGroup>
 
-          {(missingCounts[ctxMenu.col] ?? 0) > 0 && (
+          {(resolvedMissingCounts[ctxMenu.col] ?? 0) > 0 && (
             <ColMenuGroup
-              label={`📊 Fill ${missingCounts[ctxMenu.col]} blanks`}
+              label={`📊 Fill ${resolvedMissingCounts[ctxMenu.col]} blanks`}
               groupKey="fill" activeKey={openSub} setActiveKey={setOpenSub} flip={subFlip} tone="amber">
               <button onClick={() => { fillBlanks(ctxMenu.col, "__mean__"); }}
                 className="w-full text-left px-3 py-1 text-xs text-gray-700 hover:bg-amber-50 flex items-center gap-2">

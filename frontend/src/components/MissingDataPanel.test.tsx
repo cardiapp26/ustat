@@ -1,13 +1,41 @@
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { afterEach, describe, expect, it } from 'vitest'
-import type { ColMeta } from '../store'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { useStore, type ColMeta } from '../store'
 import { server } from '../test/server'
 import { clearSession, installSession, makeSession } from '../test/testUtils'
 import MissingDataPanel from './MissingDataPanel'
 
 afterEach(() => clearSession())
+
+beforeEach(() => {
+  server.use(
+    http.get('/api/stats/test-session/missing', () => {
+      const session = useStore.getState().session
+      const totalRows = session?.rows ?? 0
+      const perColumn = Object.fromEntries((session?.columns ?? []).map((column) => {
+        const count = (session?.preview ?? []).filter((row) => {
+          const value = row[column.name]
+          return value === null || value === undefined || value === ''
+        }).length
+        return [column.name, {
+          count,
+          raw_count: count,
+          n_implausible: 0,
+          implausible_values: [],
+          pct: totalRows > 0 ? (count / totalRows) * 100 : 0,
+        }]
+      }))
+      return HttpResponse.json({
+        total_rows: totalRows,
+        rows_affected: 0,
+        pct_affected: 0,
+        per_column: perColumn,
+      })
+    }),
+  )
+})
 
 // MSW + jsdom cannot round-trip multipart File parts: the XHR interceptor
 // re-serializes jsdom FormData through undici, which emits the file as an
@@ -71,6 +99,42 @@ describe('MissingDataPanel', () => {
     expect(within(table).getByText('AGE')).toBeInTheDocument()
     expect(within(table).getByText('LDL')).toBeInTheDocument()
     expect(within(table).getByText('GROUP')).toBeInTheDocument()
+  })
+
+  it('lists a column whose missing sentinel is reported only by the server', async () => {
+    installSession(makeSession({
+      columns: [{ name: 'CREATININ', dtype: 'float64', kind: 'numeric' }],
+      preview: [
+        { CREATININ: 0.62 },
+        { CREATININ: 999 },
+        { CREATININ: 1.17 },
+      ],
+      rows: 3,
+    }))
+    server.use(
+      http.get('/api/stats/test-session/missing', () =>
+        HttpResponse.json({
+          total_rows: 3,
+          rows_affected: 1,
+          pct_affected: 33.3,
+          per_column: {
+            CREATININ: {
+              count: 1,
+              raw_count: 0,
+              n_implausible: 1,
+              implausible_values: [999],
+              pct: 33.3,
+            },
+          },
+        }),
+      ),
+    )
+
+    render(<MissingDataPanel />)
+
+    const table = await screen.findByRole('table')
+    expect(within(table).getByText('CREATININ')).toBeInTheDocument()
+    expect(within(table).getByText('33.3%')).toBeInTheDocument()
   })
 
   it('runs Little\'s MCAR test + missingness diagnostics after selecting columns', async () => {

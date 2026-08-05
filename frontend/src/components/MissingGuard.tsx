@@ -21,12 +21,12 @@ import { Tip } from "./Tip";
 
 export type ImputationStrategy = "listwise" | "median" | "mice";
 
-interface PerColumnInfo {
+export interface PerColumnInfo {
   count: number;
   pct: number;
 }
 
-interface MissingInfo {
+export interface MissingInfo {
   total_rows: number;
   rows_affected: number;
   pct_affected: number;
@@ -72,7 +72,7 @@ const STRATEGIES: {
 
 // ── Hook ───────────────────────────────────────────────────────────────────────
 
-export function useMissing(sessionId: string, columns: string[]) {
+export function useMissing(sessionId: string, columns: string[], refreshKey = 0) {
   const [info, setInfo] = useState<MissingInfo | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -88,7 +88,7 @@ export function useMissing(sessionId: string, columns: string[]) {
       .then((r) => setInfo(r.data as MissingInfo))
       .catch((e) => setError(e?.response?.data?.detail ?? "Failed to check missing data"))
       .finally(() => setLoading(false));
-  }, [sessionId, columns.join(",")]);  // eslint-disable-line
+  }, [sessionId, columns.join(","), refreshKey]);  // eslint-disable-line
 
   useEffect(() => { refetch(); }, [refetch]);
 
