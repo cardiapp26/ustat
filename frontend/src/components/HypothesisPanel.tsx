@@ -370,7 +370,7 @@ function HypothesisPanelBody({ session }: { session: Session }) {
     setLoading(true); setError(null); setResult(null);
     const sid = session.session_id;
     try {
-      let res: Awaited<ReturnType<typeof runTTest>> | undefined;
+      let res: { data: unknown } | undefined;
       if (test === "ttest_1sample")  res = await runTTest({ session_id: sid, column: col, mu: +mu });
       else if (test === "ttest_2sample") res = await runTTest({ session_id: sid, column: col, group_column: groupCol });
       else if (test === "anova")     res = await runAnova({ session_id: sid, column: col, group_column: groupCol });

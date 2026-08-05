@@ -32,6 +32,7 @@ backend/sessions/
 *.xls
 *.sav
 *.dta
+*.zip
 
 # OS
 .DS_Store
