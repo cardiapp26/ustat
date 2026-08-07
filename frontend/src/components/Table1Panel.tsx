@@ -251,8 +251,12 @@ function Table1PanelBody({ session }: { session: Session }) {
   );
   const [showStats, setShowStats] = useState(false);
   const [showSMD, setShowSMD] = useState(false);
+  // On by default: the t-test and ANOVA assume normality WITHIN each group,
+  // and the pooled sample of two groups that differ is a mixture that can fail
+  // Shapiro for that reason alone. Anyone checking the same data by hand in R
+  // or Python runs Shapiro per group, and uSTAT used to disagree with them.
   const [withinGroupNormality, setWithinGroupNormality] = useState<boolean>(
-    cachedForm?.withinGroupNormality ?? false
+    cachedForm?.withinGroupNormality ?? true
   );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -632,7 +636,7 @@ function Table1PanelBody({ session }: { session: Session }) {
             </label>
             <label
               className="flex items-start gap-2 cursor-pointer"
-              title="Run Shapiro-Wilk / Lilliefors on each group separately. Parametric test (t-test / ANOVA) is used only when every group passes normality (p > 0.05). Matches the actual assumption of parametric tests and is more conservative than the overall normality check."
+              title="Run Shapiro-Wilk / Lilliefors on each group separately — the default, and what the t-test and ANOVA actually assume. The parametric test is used only when every group passes (p > 0.05). Unticking it tests the pooled sample instead, which mixes the groups together and can fail normality because they differ rather than because either is skewed."
             >
               <input
                 type="checkbox"
@@ -642,7 +646,7 @@ function Table1PanelBody({ session }: { session: Session }) {
               />
               <div className="leading-tight">
                 <span className="text-xs text-gray-600 font-medium">Test normality within each group</span>
-                <span className="block text-[9px] text-gray-400">Stricter parametric criterion · every group must be normal</span>
+                <span className="block text-[9px] text-gray-400">Default · every group must be normal. Untick to test the pooled sample.</span>
               </div>
             </label>
           </div>

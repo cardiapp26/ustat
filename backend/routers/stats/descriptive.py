@@ -522,7 +522,11 @@ class Table1Request(BaseModel):
     variables: list[str]
     variable_kinds: Optional[dict] = None
     selected_stats: Optional[list[str]] = None
-    normality_mode: Optional[str] = "overall"
+    # None means "decide from the request": with a grouping column the
+    # assumption behind the t-test and ANOVA is normality WITHIN each group,
+    # so that is what gets tested. Pass "overall" explicitly to test the
+    # pooled sample instead.
+    normality_mode: Optional[str] = None
     # Optional per-column decimal overrides keyed by column name. Values
     # supplied here win over (a) the session-persisted decimals map and
     # (b) the auto integer-detection logic in _col_decimals().
@@ -826,6 +830,16 @@ def table1(req: Table1Request):
         group_labels = [str(g) for g in groups]
         group_ns = {str(g): int((df[req.group_column] == g).sum()) for g in groups}
 
+    # What the parametric tests below actually assume is normality within each
+    # group — the pooled sample of two groups that differ is a mixture, and can
+    # fail Shapiro because the groups differ rather than because either is
+    # skewed (or pass it while both groups are skewed the opposite way). R and
+    # Python users testing this by hand run Shapiro per group, and uSTAT
+    # disagreeing with them was a wrong default, not a difference of opinion.
+    # "overall" is still honoured when asked for explicitly.
+    requested_mode = (req.normality_mode or "").strip().lower() or None
+    normality_mode = requested_mode or ("within_group" if groups is not None else "overall")
+
     for var in req.variables:
         if var not in df.columns:
             continue
@@ -862,7 +876,7 @@ def table1(req: Table1Request):
 
             per_group_norm: dict[str, dict] = {}
             if (
-                req.normality_mode == "within_group"
+                normality_mode == "within_group"
                 and groups is not None
                 and len(group_arrs) >= 2
             ):
@@ -907,13 +921,15 @@ def table1(req: Table1Request):
             test_name_str: Optional[str] = None
             significant = False
             p_raw: Optional[float] = None
-            # A parametric test needs a variance in each group. With one
-            # observation in a group scipy returns nan, which used to be
-            # printed as an em dash beside a confident "t-test (Welch)" label.
+            # A group with fewer than two values supports no comparison at
+            # all: scipy returns nan for the t-test and for Mann-Whitney
+            # alike, and that nan used to be printed as an em dash beside a
+            # confident test name. The guard used to fire only on the
+            # parametric branch, so the non-parametric one still printed it.
             thin = [
                 gl for gl, arr in zip(group_labels, group_arrs) if len(arr) < 2
             ]
-            if groups is not None and normal and thin:
+            if groups is not None and thin:
                 warnings.append(
                     f"'{var}': no p-value — group(s) "
                     + ", ".join(repr(g) for g in thin)
@@ -991,7 +1007,9 @@ def table1(req: Table1Request):
                 "normal": normal,
                 "normality_test": norm_test_name,
                 "normality_p": round(p_norm, 4),
-                "normality_mode": req.normality_mode or "overall",
+                # The effective mode, not the requested one: a caller that
+                # sends nothing has to be able to read back what was tested.
+                "normality_mode": normality_mode,
                 "per_group_normality": per_group_norm,
                 "stat_rows": stat_rows,
                 "missing_row": missing_row,

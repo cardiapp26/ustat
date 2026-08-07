@@ -109,10 +109,25 @@ def _run_table1_analysis(req: TableDocxRequest) -> dict:
             # Column-aware decimals \u2014 SAME precision for mean/median/Q1/Q3 so the
             # IQR bounds never get a different rounding than the median.
             d = _col_decimals(df, var, decimals_override, fallback=2)
-            # Canonical normality chooser (Shapiro n<50 / Lilliefors-KS 50\u20132000 /
-            # CLT-skew n>2000); identical to the on-screen Table 1.
+            # Canonical normality chooser (Shapiro n<50 / Lilliefors-KS 50–2000 /
+            # CLT-skew n>2000); identical to the on-screen Table 1 — including
+            # WHERE it is applied. With a grouping column the assumption under
+            # the t-test and ANOVA is normality within each group, so each group
+            # is tested and the parametric form is used only if all of them
+            # pass. Testing the pooled mixture instead would let the export
+            # disagree with the table the user approved on screen.
             p_norm, _norm_test = _normality_test(s_all)
             normal = p_norm >= 0.05
+            if groups is not None:
+                per_group = [
+                    df[df[req.group_column] == g][var].dropna().astype(float)
+                    for g in groups
+                ]
+                if len(per_group) >= 2:
+                    normal = all(
+                        len(arr) >= 3 and _normality_test(arr)[0] >= 0.05
+                        for arr in per_group
+                    )
 
             if normal:
                 overall = f"{_f(s_all.mean(), d)} \u00b1 {_f(s_all.std(), d)}"
