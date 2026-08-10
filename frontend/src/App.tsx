@@ -62,6 +62,7 @@ import ScoreCompositePanel from "./components/ScoreCompositePanel";
 import KMCompositePanel from "./components/KMCompositePanel";
 import ForestBuilderPanel from "./components/ForestBuilderPanel";
 import HypothesisPanel from "./components/HypothesisPanel";
+import NormalityPanel from "./components/NormalityPanel";
 import CorrelationPanel from "./components/CorrelationPanel";
 import ModelsPanel from "./components/ModelsPanel";
 import VisualModelPanel from "./components/VisualModelPanel";
@@ -364,11 +365,11 @@ function SaveBeforeOpenModal({
 }
 
 function TestsCombo() {
-  const [sub, setSub] = usePersistedPanelState<"hypothesis" | "repeated" | "categorical" | "reliability" | "noninferiority" | "gatekeeping" | "factor" | "bayesian">("combo_tests", "sub", "hypothesis");
+  const [sub, setSub] = usePersistedPanelState<"hypothesis" | "normality" | "repeated" | "categorical" | "reliability" | "noninferiority" | "gatekeeping" | "factor" | "bayesian">("combo_tests", "sub", "hypothesis");
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       <div className="flex gap-1 px-4 pt-2 pb-1 bg-tint border-b border-line flex-shrink-0">
-        {([["hypothesis", "Hypothesis"], ["repeated", "Repeated Measures"], ["categorical", "Categorical"], ["reliability", "Reliability"], ["noninferiority", "Non-Inferiority"], ["gatekeeping", "Gatekeeping"], ["factor", "Factor Analysis"], ["bayesian", "Bayesian Statistics"]] as const).map(([id, label]) => (
+        {([["hypothesis", "Hypothesis"], ["normality", "Normality"], ["repeated", "Repeated Measures"], ["categorical", "Categorical"], ["reliability", "Reliability"], ["noninferiority", "Non-Inferiority"], ["gatekeeping", "Gatekeeping"], ["factor", "Factor Analysis"], ["bayesian", "Bayesian Statistics"]] as const).map(([id, label]) => (
           <button key={id} onClick={() => setSub(id)}
             className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
               sub === id ? "bg-surface text-ink-600 shadow-card border border-line" : "text-slate-500 hover:text-slate-700 hover:bg-chip"
@@ -379,6 +380,7 @@ function TestsCombo() {
       </div>
       <div className="flex-1 p-4 overflow-y-auto">
         {sub === "hypothesis" && <HypothesisPanel />}
+        {sub === "normality" && <NormalityPanel />}
         {sub === "repeated" && <RepeatedMeasuresPanel />}
         {sub === "categorical" && <CategoricalTestsPanel />}
         {sub === "reliability" && <ReliabilityPanel />}

@@ -307,6 +307,16 @@ export const runConcordance  = (data: object) => api.post("/api/agreement/concor
 // Reliability
 export const runCronbach     = (data: object) => api.post("/api/reliability/cronbach", data);
 
+// Normality
+export interface NormalityRequest {
+  session_id: string;
+  variables: string[];
+  group_column?: string;
+  alpha?: number;
+}
+export const runNormality = (data: NormalityRequest) =>
+  api.post("/api/stats/normality", data);
+
 // Missing data
 export const runMissingPattern = (data: object) => api.post("/api/missing_data/pattern", data);
 export const runMCARTest     = (data: object) => api.post("/api/missing_data/mcar_test", data);
