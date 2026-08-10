@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef, type ReactNode } from "react";
 import TitledPlot from "./TitledPlot";
 import ResultExporter from "./ResultExporter";
-import { useStore, PALETTES, isNumericKind, type Session } from "../store";
+import { useStore, paletteOf, isNumericKind, type Session } from "../store";
 import { runROC, runROCCompare, runROCMultiCompare, runROCCombined } from "../api";
 import { Tip, InfoBanner } from "./Tip";
 import { MissingGuard, type ImputationStrategy } from "./MissingGuard";
@@ -120,20 +120,22 @@ function apiErrorMessage(e: unknown, fallback: string): string {
 }
 
 // ── Helper to get current palette primary color ────────────────────────────
-const _pal = () => PALETTES[useStore.getState().plotTheme.palette] ?? PALETTES.indigo;
-const _p0 = () => _pal()[0];
+const _p0 = () => paletteOf(useStore.getState().plotTheme)[0];
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
+// Geometry only. Background, font and colourway come from the global chart
+// theme at render — hard-coded here, they made the theme picker a no-op on
+// every ROC figure.
 const PLOT_LAYOUT: Record<string, unknown> = {
-  paper_bgcolor: "transparent",
-  plot_bgcolor: "#ffffff",
-  font: { color: "#374151", size: 12 },
   margin: { t: 40, r: 20, b: 50, l: 60 },
   xaxis: { gridcolor: "#e5e7eb", title: { text: "1 − Specificity (FPR)" }, range: [0, 1] },
   yaxis: { gridcolor: "#e5e7eb", title: { text: "Sensitivity (TPR)" }, range: [0, 1] },
 };
 
+// Fallback only: a new curve takes its colour from the active palette, and
+// this list is what remains if that palette is somehow empty. Each curve's
+// colour stays editable per curve afterwards.
 const MULTI_PALETTE = [
   "#dc2626","#2563eb","#f59e0b","#16a34a",
   "#7c3aed","#0891b2","#be185d","#92400e",
@@ -186,7 +188,9 @@ interface MultiResult {
 }
 
 const defaultStyle = (i: number): CurveStyle => ({
-  color: MULTI_PALETTE[i % MULTI_PALETTE.length],
+  color: (paletteOf(useStore.getState().plotTheme) ?? MULTI_PALETTE)[
+    i % (paletteOf(useStore.getState().plotTheme) ?? MULTI_PALETTE).length
+  ],
   width: 2,
   dash: "solid",
 });
@@ -278,6 +282,16 @@ export default function ROCPanel() {
 
 function ROCPanelBody({ session }: { session: Session }) {
   const showGrid = useStore((s) => s.showGrid);
+  const plotTheme = useStore((s) => s.plotTheme);
+  // Subscribed, not read once: this is what repaints the figure the moment the
+  // palette or the font changes.
+  const themedLayout: Record<string, unknown> = {
+    ...PLOT_LAYOUT,
+    paper_bgcolor: "transparent",
+    plot_bgcolor: plotTheme.plotBg,
+    font: { family: plotTheme.fontFamily, color: "#374151", size: plotTheme.fontSize },
+    colorway: paletteOf(plotTheme),
+  };
 
   const numCols = session.columns.filter((c) => isNumericKind(c.kind) && !c.analysis_excluded).map((c) => c.name);
   const allCols = session.columns.filter((c) => !c.analysis_excluded).map((c) => c.name);
@@ -1210,7 +1224,7 @@ function ROCPanelBody({ session }: { session: Session }) {
                 }] : []),
               ]}
               layout={{
-                ...PLOT_LAYOUT,
+                ...themedLayout,
                 xaxis: {
                   ...(PLOT_LAYOUT.xaxis as object), showgrid: showGrid,
                   title: { text: "1 − Specificity (FPR)", font: { color: "#374151", size: 12 } },
@@ -1268,7 +1282,7 @@ function ROCPanelBody({ session }: { session: Session }) {
                 },
               ]}
               layout={{
-                ...PLOT_LAYOUT,
+                ...themedLayout,
                 xaxis: { ...(PLOT_LAYOUT.xaxis as object), showgrid: showGrid },
                 yaxis: { ...(PLOT_LAYOUT.yaxis as object), showgrid: showGrid },
                 autosize: true,
@@ -1316,7 +1330,7 @@ function ROCPanelBody({ session }: { session: Session }) {
               storageKey={`roc:multi:${outcomeCol}`}
               data={multiTraces as PlotData[]}
               layout={{
-                ...PLOT_LAYOUT,
+                ...themedLayout,
                 xaxis: {
                   ...(PLOT_LAYOUT.xaxis as object), showgrid: showGrid,
                   title: { text: "1 − Specificity (FPR)", font: { color: "#374151", size: 12 } },

@@ -2,12 +2,12 @@ import { useEffect, useLayoutEffect, useState, useCallback, useRef, type ReactNo
 import { Pencil, Trash2 } from "lucide-react";
 import {
   useStore,
-  PALETTES,
+  paletteOf,
   isNumericKind,
   runColumnStructureMutation,
 } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
-import { usePalette } from "../plotStyle";
+import { usePalette, usePlotLayout } from "../plotStyle";
 import api, { deleteColumn, renameColumn } from "../api";
 import ResultExporter from "./ResultExporter";
 import TitledPlot from "./TitledPlot";
@@ -223,11 +223,10 @@ function NormalityDeviants({ deviants, onDelete }: { deviants: NormalityDeviant[
   );
 }
 
-// BASE_LAYOUT kept as fallback — most charts now use usePlotLayout() instead
+// Geometry and axis colours only. The background, the font and the colourway
+// come from the global chart theme at render — kept here as literals, they
+// were three settings the theme picker could not reach.
 const BASE_LAYOUT = {
-  paper_bgcolor: "transparent",
-  plot_bgcolor: "#f9fafb",
-  font: { color: "#374151", size: 11 },
   margin: { t: 24, r: 16, b: 48, l: 56 },
   xaxis: { gridcolor: "#e5e7eb", zerolinecolor: "#d1d5db" },
   yaxis: { gridcolor: "#e5e7eb", zerolinecolor: "#d1d5db" },
@@ -237,6 +236,7 @@ const SUMMARY_CHART_HEIGHT = 360;
 // ── Main chart for numeric columns ──────────────────────────────────────────
 
 function NumericView({ summary, loadSummary, selected }: { summary: ColumnSummary; loadSummary: (col: string) => void; selected: string }) {
+  const themedBase = { ...usePlotLayout(), ...BASE_LAYOUT };
   const chartTab = useStore((s) => s.descriptiveTab);
   const showGrid = useStore((s) => s.showGrid);
   const pal = usePalette();
@@ -372,7 +372,7 @@ function NumericView({ summary, loadSummary, selected }: { summary: ColumnSummar
         <div className="relative">
         <TitledPlot plotRefOut={histRef} storageKey="desc:hist"
           data={histData}
-          layout={{ ...BASE_LAYOUT, autosize: true, height: SUMMARY_CHART_HEIGHT, bargap: 0.02,
+          layout={{ ...themedBase, autosize: true, height: SUMMARY_CHART_HEIGHT, bargap: 0.02,
             xaxis: { ...BASE_LAYOUT.xaxis, showgrid: showGrid, title: { text: "Value" } },
             yaxis: { ...BASE_LAYOUT.yaxis, showgrid: showGrid, title: { text: "Count" } },
           }}
@@ -390,7 +390,7 @@ function NumericView({ summary, loadSummary, selected }: { summary: ColumnSummar
         <TitledPlot plotRefOut={boxRef} storageKey="desc:boxplot"
           data={boxData}
           layout={{
-            ...BASE_LAYOUT,
+            ...themedBase,
             autosize: true,
             height: SUMMARY_CHART_HEIGHT,
             yaxis: { ...BASE_LAYOUT.yaxis, showgrid: showGrid, title: { text: "Value" } },
@@ -468,7 +468,7 @@ function NumericView({ summary, loadSummary, selected }: { summary: ColumnSummar
               `IQR: ${summary.q1?.toFixed(2)}–${summary.q3?.toFixed(2)}<extra></extra>`,
           }]}
           layout={{
-            ...BASE_LAYOUT,
+            ...themedBase,
             autosize: true,
             height: SUMMARY_CHART_HEIGHT,
             yaxis: { ...BASE_LAYOUT.yaxis, showgrid: showGrid, title: { text: "Value" } },
@@ -499,7 +499,7 @@ function NumericView({ summary, loadSummary, selected }: { summary: ColumnSummar
         <div className="relative">
         <TitledPlot plotRefOut={qqRef} storageKey="desc:qq"
           data={qqData}
-          layout={{ ...BASE_LAYOUT, autosize: true, height: SUMMARY_CHART_HEIGHT,
+          layout={{ ...themedBase, autosize: true, height: SUMMARY_CHART_HEIGHT,
             xaxis: { ...BASE_LAYOUT.xaxis, showgrid: showGrid, title: { text: "Theoretical quantiles" } },
             yaxis: { ...BASE_LAYOUT.yaxis, showgrid: showGrid, title: { text: "Sample quantiles" } },
           }}
@@ -521,6 +521,7 @@ function NumericView({ summary, loadSummary, selected }: { summary: ColumnSummar
 // ── Main chart for categorical columns ──────────────────────────────────────
 
 function CategoricalView({ summary }: { summary: ColumnSummary }) {
+  const themedBase = { ...usePlotLayout(), ...BASE_LAYOUT };
   const showGrid = useStore((s) => s.showGrid);
   const donutRef = useRef<PlotCaptureHandle | null>(null);
   const barRef = useRef<PlotCaptureHandle | null>(null);
@@ -545,7 +546,7 @@ function CategoricalView({ summary }: { summary: ColumnSummary }) {
     x: cats.map((c) => c.count),
     y: cats.map((c) => c.value),
     orientation: "h" as const,
-    marker: { color: PALETTES[useStore.getState().plotTheme.palette]?.[0] ?? "#6366f1", opacity: 0.85 },
+    marker: { color: paletteOf(useStore.getState().plotTheme)[0], opacity: 0.85 },
     text: cats.map((c) => `${c.count}`),
     textposition: "outside" as const,
     hovertemplate: "%{y}: %{x}<extra></extra>",
@@ -556,8 +557,10 @@ function CategoricalView({ summary }: { summary: ColumnSummary }) {
       <TitledPlot plotRefOut={donutRef} storageKey="desc:cat:donut"
         data={donutData}
         layout={{
-          paper_bgcolor: "transparent", plot_bgcolor: "transparent",
-          font: { color: "#374151", size: 11 }, margin: { t: 10, r: 160, b: 10, l: 10 },
+          ...themedBase,
+          // A donut has no plotting area to tint; the pie sits on the card.
+          plot_bgcolor: "transparent",
+          margin: { t: 10, r: 160, b: 10, l: 10 },
           autosize: true,
           height: SUMMARY_CHART_HEIGHT,
           legend: { font: { color: "#374151" }, bgcolor: "transparent" },
@@ -570,7 +573,7 @@ function CategoricalView({ summary }: { summary: ColumnSummary }) {
       />
       <TitledPlot plotRefOut={barRef} storageKey="desc:cat:bar"
         data={barData}
-        layout={{ ...BASE_LAYOUT, autosize: true, height: SUMMARY_CHART_HEIGHT,
+        layout={{ ...themedBase, autosize: true, height: SUMMARY_CHART_HEIGHT,
           xaxis: { ...BASE_LAYOUT.xaxis, showgrid: showGrid, title: { text: "Count" } },
           yaxis: { ...BASE_LAYOUT.yaxis, showgrid: showGrid, automargin: true },
           margin: { ...BASE_LAYOUT.margin, l: 90 },
@@ -588,7 +591,7 @@ function CategoricalView({ summary }: { summary: ColumnSummary }) {
 // ── Scatter view ─────────────────────────────────────────────────────────────
 
 // Use global palette — falls back to default if not set
-const _getPalette = () => PALETTES[useStore.getState().plotTheme.palette] ?? PALETTES.indigo;
+const _getPalette = () => paletteOf(useStore.getState().plotTheme);
 const SYMBOLS  = ["circle","square","diamond","triangle-up","cross","star","hexagram","pentagon"] as const;
 
 function ScatterView({
@@ -602,6 +605,7 @@ function ScatterView({
   catCols: string[];
   defaultX: string;
 }) {
+  const themedBase = { ...usePlotLayout(), ...BASE_LAYOUT };
   const showGrid = useStore((s) => s.showGrid);
   const [xCol,    setXCol]    = usePersistedPanelState<string>("descriptive_numeric", "xCol", defaultX || numCols[0] || "");
   const [yCol,    setYCol]    = usePersistedPanelState<string>("descriptive_numeric", "yCol", numCols.find((c) => c !== defaultX) ?? "");
@@ -835,7 +839,7 @@ function ScatterView({
             <TitledPlot plotRefOut={scatterRef} storageKey={`desc:scatter:${xCol}:${yCol}`}
               data={traces}
               layout={{
-                ...BASE_LAYOUT,
+                ...themedBase,
                 autosize: true,
                 height: SUMMARY_CHART_HEIGHT,
                 xaxis: { ...BASE_LAYOUT.xaxis, showgrid: showGrid, title: { text: xCol } },

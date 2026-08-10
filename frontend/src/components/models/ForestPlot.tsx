@@ -1,5 +1,6 @@
 /* eslint-disable react-refresh/only-export-components -- label helper co-located with the plot component */
 import { useState, useRef } from "react";
+import { usePlotLayout } from "../../plotStyle";
 import Plot from "../../PlotComponent";
 import { useStore } from "../../store";
 import PlotExporter from "../PlotExporter";
@@ -7,10 +8,9 @@ import { fmtP } from "../../lib/format";
 import type { PlotCaptureHandle, PlotData } from "../../lib/plotTypes";
 import type { Coefficient, ORRow, ForestResult } from "./shared";
 
+// Geometry and axis styling only; the background, font and colourway are the
+// global chart theme's to decide and are merged in at render.
 const FOREST_BASE = {
-  paper_bgcolor: "transparent",
-  plot_bgcolor: "#ffffff",
-  font: { color: "#374151", size: 11 },
   xaxis: {
     type: "log" as const,
     gridcolor: "#e5e7eb",
@@ -71,6 +71,7 @@ export function ForestPlot({ result, modelType, outcome }: {
   outcome?: string;
 }) {
   const forestRef = useRef<PlotCaptureHandle | null>(null);
+  const themed = usePlotLayout();
   const isORTable = modelType === "ortable" || modelType === "firth_ortable";
   const isCox     = modelType === "cox";
   const metric    = isCox ? "HR" : "OR";
@@ -426,7 +427,9 @@ export function ForestPlot({ result, modelType, outcome }: {
       <Plot
         data={[uniTrace, multiTrace]}
         layout={{
-          ...FOREST_BASE,
+          ...themed,
+          ...themed,
+        ...FOREST_BASE,
           height: effHeight,
           autosize: true,
           margin: { t: opts.customTitle ? (opts.customSubtitle ? 70 : 50) : 30, r: 20, b: bottomPad, l: 180 },

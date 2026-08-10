@@ -1,7 +1,8 @@
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { clearSession, installSession, makeSession } from '../test/testUtils'
+import { useStore } from '../store'
 import ForestBuilderPanel from './ForestBuilderPanel'
 
 afterEach(() => clearSession())
@@ -120,5 +121,78 @@ describe('ForestBuilderPanel', () => {
 
     expect(screen.getByText('2 of 2 valid')).toBeInTheDocument()
     expect(screen.getByTestId('plotly-mock')).toBeInTheDocument()
+  })
+
+  describe('cross-panel handoff', () => {
+    const row = (label: string, est: number) => ({
+      label, est, ci_low: est - 0.2, ci_high: est + 0.5, p: 0.01, extra: '',
+    })
+
+    // The sheet now lives in panelCache so it survives a tab switch, which
+    // also means it survives into the next test unless cleared.
+    beforeEach(() => {
+      clearSession()
+      useStore.setState({ panelCache: {}, forestHandoff: null, forestHandoffAppend: false })
+    })
+
+    it('a replacing handoff loads the rows and the sender\'s layout', () => {
+      useStore.getState().setForestHandoff([row('Model A', 1.5), row('Model B', 0.9)], {
+        rightHeader: 'HR (95% CI)', returnTab: 'models', returnLabel: '← Back to Cox model',
+      })
+      render(<ForestBuilderPanel />)
+
+      expect(screen.getByText('2 of 2 valid')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '← Back to Cox model' })).toBeInTheDocument()
+      // The buffer is cleared so a later visit does not re-inject stale rows.
+      expect(useStore.getState().forestHandoff).toBeNull()
+    })
+
+    it('an appending handoff adds to what is already there', async () => {
+      // The whole point: a continuous exposure and its dichotomised form come
+      // from two fits and belong in one figure.
+      clearSession()
+      const user = userEvent.setup()
+      const { rerender } = render(<ForestBuilderPanel />)
+      useStore.getState().setForestHandoff([row('LAR (per 0.1 unit)', 1.19)], { rightHeader: 'OR (95% CI)' })
+      rerender(<ForestBuilderPanel />)
+      await waitFor(() => expect(screen.getByText('1 of 1 valid')).toBeInTheDocument())
+
+      useStore.getState().setForestHandoff([row('High LAR (>0.555)', 4.27)], { rightHeader: 'OR (95% CI)' }, true)
+      rerender(<ForestBuilderPanel />)
+
+      await waitFor(() => expect(screen.getByText('2 of 2 valid')).toBeInTheDocument())
+      const labels = screen.getAllByPlaceholderText('Label').map((i) => (i as HTMLInputElement).value)
+      // Blank starter row dropped, not kept as a gap between the two fits.
+      expect(labels).toEqual(['LAR (per 0.1 unit)', 'High LAR (>0.555)'])
+      await user.click(screen.getByRole('button', { name: /Clear/ }))
+    })
+
+    it('accumulates across a tab switch, which is what unmounts the panel', async () => {
+      // Regression: the rows lived in component state, so "← Back to the
+      // model" and a second hand-off produced a figure with only the second
+      // fit in it — silently losing the first.
+      const first = render(<ForestBuilderPanel />)
+      useStore.getState().setForestHandoff([row('LAR (per 0.1 unit)', 1.19)], { rightHeader: 'OR (95% CI)' })
+      first.rerender(<ForestBuilderPanel />)
+      await waitFor(() => expect(screen.getByText('1 of 1 valid')).toBeInTheDocument())
+      first.unmount()
+
+      useStore.getState().setForestHandoff([row('High LAR (>0.555)', 4.27)], { rightHeader: 'OR (95% CI)' }, true)
+      render(<ForestBuilderPanel />)
+      await waitFor(() => expect(screen.getByText('2 of 2 valid')).toBeInTheDocument())
+      const labels = screen.getAllByPlaceholderText('Label').map((i) => (i as HTMLInputElement).value)
+      expect(labels).toEqual(['LAR (per 0.1 unit)', 'High LAR (>0.555)'])
+    })
+
+    it('an appending handoff into an empty sheet still takes the layout', async () => {
+      const { rerender } = render(<ForestBuilderPanel />)
+      useStore.getState().setForestHandoff([row('AGE', 1.07)], {
+        rightHeader: 'OR (95% CI)', returnTab: 'models', returnLabel: '← Back to the model',
+      }, true)
+      rerender(<ForestBuilderPanel />)
+
+      await waitFor(() => expect(screen.getByText('1 of 1 valid')).toBeInTheDocument())
+      expect(screen.getByRole('button', { name: '← Back to the model' })).toBeInTheDocument()
+    })
   })
 })

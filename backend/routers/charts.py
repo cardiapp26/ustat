@@ -218,6 +218,55 @@ def scatter(req: ChartRequest):
             # Back-transform so the frontend plots in data coordinates.
             line_x = [float(10**v) if req.log_x else float(v) for v in line_fit_x]
             line_y = [float(10**v) if req.log_y else float(v) for v in line_fit_y]
+            # Confidence band for the fitted LINE (not a prediction interval):
+            #   se_fit(x) = s * sqrt(1/n + (x - x̄)² / Sxx)
+            # A bare line says nothing about how well the slope is pinned down,
+            # and at the ends of the x range — where readers extrapolate — it is
+            # pinned down least. Drawn on the fitting scale and back-transformed
+            # with the line, so a log axis keeps its curve.
+            fx = np.asarray(fit_x, dtype=float)
+            fy = np.asarray(fit_y, dtype=float)
+            n_fit = int(len(fx))
+            band: dict = {}
+            if n_fit > 2:
+                sxx = float(((fx - fx.mean()) ** 2).sum())
+                resid = fy - (slope * fx + intercept)
+                dof = n_fit - 2
+                s_err = float(np.sqrt((resid ** 2).sum() / dof))
+                if sxx > 0 and np.isfinite(s_err):
+                    t_crit = float(scipy_stats.t.ppf(0.975, dof))
+                    grid = np.linspace(fit_lo, fit_hi, 60)
+                    centre = slope * grid + intercept
+                    half = t_crit * s_err * np.sqrt(1.0 / n_fit + (grid - fx.mean()) ** 2 / sxx)
+                    def _back_x(v: float) -> float:
+                        return float(10 ** v) if req.log_x else float(v)
+
+                    def _back_y(v: float) -> float:
+                        return float(10 ** v) if req.log_y else float(v)
+
+                    band = {
+                        "x": [_back_x(v) for v in grid],
+                        "lo": [_back_y(v) for v in (centre - half)],
+                        "hi": [_back_y(v) for v in (centre + half)],
+                        "level": 0.95,
+                    }
+            # Spearman alongside Pearson: the figure caption of a skewed
+            # clinical scatter usually quotes rho, and computing it here saves
+            # the reader pairing a number from another panel with this plot.
+            def _finite(v) -> Optional[float]:
+                # scipy answers n = 2 with rho = 1 and p = nan. A nan reaching
+                # the response is not a small annoyance here: the endpoint's
+                # non-finite guard rejects the WHOLE payload with a 400, so a
+                # two-point group would have cost the user the entire scatter.
+                fv = float(v)
+                return fv if np.isfinite(fv) else None
+
+            try:
+                rho, p_rho = scipy_stats.spearmanr(fit_x, fit_y)
+                spearman = {"rho": _finite(rho), "p": _finite(p_rho)}
+            except Exception:
+                spearman = {"rho": None, "p": None}
+
             reg = {
                 "slope": float(slope),
                 "intercept": float(intercept),
@@ -227,6 +276,9 @@ def scatter(req: ChartRequest):
                 "se": float(se),
                 "line_x": line_x,
                 "line_y": line_y,
+                "band": band,
+                "spearman": spearman,
+                "n": n_fit,
                 "space": space,
             }
         except Exception:
@@ -239,6 +291,8 @@ def scatter(req: ChartRequest):
                 "se": None,
                 "line_x": [],
                 "line_y": [],
+                "band": {},
+                "spearman": {"rho": None, "p": None},
                 "note": "Regression unavailable (constant or degenerate data)",
             }
     else:
@@ -251,6 +305,8 @@ def scatter(req: ChartRequest):
             "se": None,
             "line_x": [],
             "line_y": [],
+            "band": {},
+            "spearman": {"rho": None, "p": None},
             "note": "Regression requires two numeric axes",
         }
 
@@ -1143,11 +1199,111 @@ def sets(req: SetsRequest):
 class FacetRequest(BaseModel):
     session_id: str
     kind: str                      # boxplot | scatter
-    x: str
+    x: Optional[str] = None
     y: Optional[str] = None        # scatter only
-    facet: str                     # the column split into panels
+    facet: Optional[str] = None    # the column split into panels
+    # One panel per VARIABLE instead of per level of a column: the layout of a
+    # published multi-panel figure, where QT, QRS and an index sit side by side
+    # over the same two groups. Boxplot only.
+    variables: Optional[List[str]] = None
     color: Optional[str] = None
     max_panels: int = 12
+
+
+def _facet_by_variable(df: pd.DataFrame, req: FacetRequest) -> dict:
+    """One panel per variable, each split by the same grouping column.
+
+    The axis is deliberately NOT shared here. Sharing it is right when every
+    panel shows the same measurement — that is what stops small multiples
+    lying — but these panels are different measurements: QT in milliseconds
+    next to a unitless index, forced onto one scale, flattens the index into a
+    line at the bottom. Each panel gets its own range and the response says so.
+    """
+    if req.kind != "boxplot":
+        raise HTTPException(
+            status_code=400,
+            detail="A panel per variable is a boxplot layout; scatter panels "
+                   "need a facet column.",
+        )
+    variables = list(dict.fromkeys(req.variables or []))
+    if len(variables) < 1:
+        raise HTTPException(status_code=400, detail="Name at least one variable.")
+    missing = [v for v in variables if v not in df.columns]
+    if missing:
+        raise HTTPException(
+            status_code=400, detail=f"Column(s) not found: {', '.join(missing)}"
+        )
+    if req.color and req.color not in df.columns:
+        raise HTTPException(status_code=400, detail=f"Column '{req.color}' not found")
+    if req.max_panels < 1:
+        raise HTTPException(status_code=400, detail="max_panels must be at least 1")
+
+    dropped_panels = max(0, len(variables) - req.max_panels)
+    variables = variables[: req.max_panels]
+
+    names = sorted_groups(df[req.color]) if req.color else ["All"]
+    panels: list[dict] = []
+    empty_vars: list[str] = []
+    for var in variables:
+        values = coerce_numeric(df[var]).replace([np.inf, -np.inf], np.nan)
+        block = pd.DataFrame({"v": values})
+        if req.color:
+            block["g"] = df[req.color].values
+        block = block.dropna(subset=["v"])
+        if block.empty:
+            empty_vars.append(var)
+            continue
+        groups = []
+        for gname in names:
+            arm = block[block["g"] == gname] if req.color else block
+            vals = arm["v"].astype(float).tolist()
+            if vals:
+                groups.append({"group": str(gname), "values": vals})
+        panels.append({
+            "panel": var,
+            "n": int(len(block)),
+            "groups": groups,
+            # Per-panel range, since the panels are not on one scale.
+            "range": [float(block["v"].min()), float(block["v"].max())],
+        })
+
+    if not panels:
+        raise HTTPException(
+            status_code=400,
+            detail="No numeric values remain in any of the named variables.",
+        )
+
+    warnings: list[dict] = []
+    if dropped_panels:
+        warnings.append({
+            "type": "panels_truncated",
+            "n_dropped": dropped_panels,
+            "message": (
+                f"{dropped_panels} variable(s) beyond the {req.max_panels}-panel "
+                "limit are not drawn."
+            ),
+        })
+    if empty_vars:
+        warnings.append({
+            "type": "empty_variables",
+            "message": (
+                "No numeric values in: " + ", ".join(empty_vars) + "."
+            ),
+        })
+
+    return {
+        "type": "facet",
+        "kind": "boxplot",
+        "facet_by": "variable",
+        "x": None,
+        "y": None,
+        "facet": None,
+        "color": req.color,
+        "panels": panels,
+        # Explicitly empty: the frontend must not fall back to a shared range.
+        "shared_range": {},
+        "warnings": warnings,
+    }
 
 
 @router.post("/facet")
@@ -1162,6 +1318,14 @@ def facet(req: FacetRequest):
     if req.kind not in {"boxplot", "scatter"}:
         raise HTTPException(
             status_code=400, detail="kind must be boxplot or scatter"
+        )
+    if req.variables:
+        return _facet_by_variable(df, req)
+    if not req.x or not req.facet:
+        raise HTTPException(
+            status_code=400,
+            detail="Faceting needs an x column and a facet column, or a list "
+                   "of variables to put one per panel.",
         )
     needed = [req.x, req.facet]
     if req.kind == "scatter":
@@ -1243,6 +1407,7 @@ def facet(req: FacetRequest):
     return {
         "type": "facet",
         "kind": req.kind,
+        "facet_by": "level",
         "x": req.x,
         "y": req.y,
         "facet": req.facet,

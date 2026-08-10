@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from "react";
+import { usePlotLayout } from "../plotStyle";
 import Plot from "../PlotComponent";
 import { analysisCols, isNumericKind, isCategoricalKind, type Session } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
@@ -28,6 +29,7 @@ interface ICResult {
 const PALETTE = ["#2563eb", "#dc2626", "#16a34a", "#9333ea", "#ea580c", "#0891b2"];
 
 export default function IntervalCensoredPanel({ session }: { session: Session }) {
+  const themedBase = usePlotLayout();
   const numCols = useMemo(() => analysisCols(session.columns).filter((c) => isNumericKind(c.kind)).map((c) => c.name), [session.columns]);
   const catCols = useMemo(() => analysisCols(session.columns).filter((c) => isCategoricalKind(c.kind)).map((c) => c.name), [session.columns]);
   const allCols = useMemo(() => analysisCols(session.columns).map((c) => c.name), [session.columns]);
@@ -80,8 +82,7 @@ export default function IntervalCensoredPanel({ session }: { session: Session })
   }, [result, groupCol]);
 
   const layout: PlotLayout = {
-    paper_bgcolor: "transparent", plot_bgcolor: "#ffffff",
-    font: { color: "#374151", size: 12 },
+    ...themedBase,
     margin: { t: 16, r: 20, b: 48, l: 56 },
     xaxis: { title: { text: "Time" }, gridcolor: "#eef2f7", zeroline: false },
     yaxis: { title: { text: "Survival probability S(t)" }, gridcolor: "#eef2f7", range: [0, 1.02], zeroline: false },

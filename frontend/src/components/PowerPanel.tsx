@@ -1,7 +1,7 @@
 import { useState, useRef } from "react";
 import TitledPlot from "./TitledPlot";
 import { runPower, parseArticle } from "../api";
-import { useStore, PALETTES } from "../store";
+import { useStore, paletteOf } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
 import { Tip } from "./Tip";
 import type { PlotCaptureHandle, PlotData, PlotLayout } from "../lib/plotTypes";
@@ -22,7 +22,7 @@ interface ArticleFinding {
   source?: string;
 }
 
-const _pal = () => PALETTES[useStore.getState().plotTheme.palette] ?? PALETTES.indigo;
+const _pal = () => paletteOf(useStore.getState().plotTheme);
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -104,10 +104,9 @@ const TIPS = {
   cats:   "Number of categories in the chi-square table. A 2×2 table → 2 categories (df = 1). A 3-level variable → 3 categories.",
 };
 
+// Geometry only. Background, font and colourway follow the global chart theme
+// at render; hard-coded here they made the theme picker a no-op on this panel.
 const BASE_LAYOUT = {
-  paper_bgcolor: "transparent",
-  plot_bgcolor:  "#f9fafb",
-  font:   { color: "#374151", size: 11 },
   margin: { t: 12, r: 20, b: 48, l: 52 },
   xaxis:  { gridcolor: "#e5e7eb" },
   yaxis:  { gridcolor: "#e5e7eb", range: [0, 1.05], title: { text: "Power (1−β)" } },
@@ -152,6 +151,14 @@ function plainEnglish(
 
 export default function PowerPanel() {
   const showGrid = useStore((s) => s.showGrid);
+  const plotTheme = useStore((s) => s.plotTheme);
+  const themedLayout: Record<string, unknown> = {
+    ...BASE_LAYOUT,
+    paper_bgcolor: "transparent",
+    plot_bgcolor: plotTheme.plotBg,
+    font: { family: plotTheme.fontFamily, color: "#374151", size: plotTheme.fontSize },
+    colorway: paletteOf(plotTheme),
+  };
   const powerRef = useRef<PlotCaptureHandle | null>(null);
 
   const [test,       setTest]       = usePersistedPanelState<TestId>("power_sel", "test", "t_two");
@@ -762,7 +769,7 @@ export default function PowerPanel() {
                 storageKey="power:curve"
                 data={plotTraces as PlotData[]}
                 layout={{
-                  ...BASE_LAYOUT,
+                  ...themedLayout,
                   autosize: true, height: 320,
                   xaxis: { ...BASE_LAYOUT.xaxis, showgrid: showGrid, title: { text: xLabel } },
                   yaxis: { ...BASE_LAYOUT.yaxis, showgrid: showGrid },

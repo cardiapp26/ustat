@@ -9,7 +9,7 @@
  * 5. Optional outcome analysis on matched cohort
  */
 import { useState, useRef, useMemo } from "react";
-import { useStore, analysisCols, type Session } from "../store";
+import { useStore, paletteOf, analysisCols, type Session } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
 import { runPSM, getSessionInfo } from "../api";
 import { Tip } from "./Tip";
@@ -102,10 +102,9 @@ interface PSMResult {
 const smdColor = (smd: number) =>
   smd < 0.10 ? "text-emerald-600" : smd < 0.20 ? "text-amber-500" : "text-red-500";
 
+// Geometry only. Background, font and colourway follow the global chart
+// theme at render; hard-coded here they made the theme picker a no-op.
 const PLOT_BASE = {
-  paper_bgcolor: "transparent",
-  plot_bgcolor: "#f9fafb",
-  font: { color: "#374151", size: 11 },
   margin: { t: 30, r: 24, b: 56, l: 130 },
 };
 
@@ -122,6 +121,15 @@ function LovePlot({
   showConnectors: boolean;
   showGrid: boolean;
 }) {
+  const plotTheme = useStore((s) => s.plotTheme);
+  // Subscribed, not read once: this is what repaints when the palette changes.
+  const themedBase: Record<string, unknown> = {
+    ...PLOT_BASE,
+    paper_bgcolor: "transparent",
+    plot_bgcolor: plotTheme.plotBg,
+    font: { family: plotTheme.fontFamily, color: "#374151", size: plotTheme.fontSize },
+    colorway: paletteOf(plotTheme),
+  };
   const plotRef = useRef<PlotCaptureHandle | null>(null);
   const covariates = Object.keys(smdBefore).reverse(); // bottom-to-top
 
@@ -163,7 +171,7 @@ function LovePlot({
   }
 
   const layout: PlotLayout = {
-    ...PLOT_BASE,
+    ...themedBase,
     autosize: true,
     height: Math.max(260, covariates.length * 52 + 80),
     xaxis: {
@@ -226,6 +234,14 @@ function PSOverlapPlot({
   showGrid: boolean;
 }) {
   const plotRef = useRef<PlotCaptureHandle | null>(null);
+  const plotTheme = useStore((s) => s.plotTheme);
+  const themedBase: Record<string, unknown> = {
+    ...PLOT_BASE,
+    paper_bgcolor: "transparent",
+    plot_bgcolor: plotTheme.plotBg,
+    font: { family: plotTheme.fontFamily, color: "#374151", size: plotTheme.fontSize },
+    colorway: paletteOf(plotTheme),
+  };
   return (
     <TitledPlot
       plotRefOut={plotRef}
@@ -251,7 +267,7 @@ function PSOverlapPlot({
         },
       ]}
       layout={{
-        ...PLOT_BASE,
+        ...themedBase,
         barmode: "overlay",
         autosize: true,
         height: 230,

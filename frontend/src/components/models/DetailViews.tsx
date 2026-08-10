@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { usePlotLayout } from "../../plotStyle";
 import TitledPlot from "../TitledPlot";
 import type { PlotCaptureHandle } from "../../lib/plotTypes";
 import { fmtP } from "../../lib/format";
@@ -95,10 +96,13 @@ export function PredictionPanel({ result }: { result: PredictionResult }) {
   const numPreds = Object.entries(predictorInfo).filter(([, i]) => i.type === "numeric");
   const catPreds = Object.entries(predictorInfo).filter(([, i]) => i.type === "categorical");
 
-  // Shared Plotly base layout
+  // Shared Plotly base layout. Background, font family and colourway come from
+  // the global chart theme; only the small type size is local, because these
+  // panels are half-height.
+  const themed = usePlotLayout();
   const plotBase = {
-    paper_bgcolor: "transparent", plot_bgcolor: "#ffffff",
-    font: { color: "#374151", size: 10 },
+    ...themed,
+    font: { ...(themed.font as object), size: 10 },
     margin: { t: 32, r: 10, b: 44, l: 44 },
     showlegend: false,
   };
@@ -274,6 +278,7 @@ export function CoefDetailPanel({
   coef: Coefficient; nullHyp: string; onClose: () => void;
 }) {
   const coefPlotRef = useRef<PlotCaptureHandle | null>(null);
+  const plotBase = usePlotLayout();
   const beta = coef.log_odds ?? coef.log_irr ?? coef.log_hr ?? coef.estimate ?? 0;
   const se   = coef.se ?? 1;
   const adjP = adjustP(coef.p, beta, nullHyp);
@@ -318,8 +323,8 @@ export function CoefDetailPanel({
               name: `β = ${beta.toFixed(4)}`, hoverinfo: "skip" as const },
           ]}
           layout={{
-            paper_bgcolor: "transparent", plot_bgcolor: "#ffffff",
-            font: { color: "#374151", size: 11 },
+            ...plotBase,
+            font: { ...(plotBase.font as object), size: 11 },
             height: 200,
             margin: { t: 10, r: 20, b: 40, l: 50 },
             xaxis: { title: { text: "β (coefficient)", font: { size: 10 } }, gridcolor: "#e5e7eb", zeroline: false },

@@ -15,7 +15,7 @@
  */
 
 import { useState, useRef } from "react";
-import { useStore, isNumericKind, isCategoricalKind } from "../store";
+import { useStore, paletteOf, isNumericKind, isCategoricalKind } from "../store";
 import { runDCA, runIntegratedExtValDCA } from "../api";
 import { Tip } from "./Tip";
 import TitledPlot from "./TitledPlot";
@@ -88,6 +88,9 @@ type DcaPayload = Record<string, unknown>;
 
 export default function DecisionCurvePanel() {
   const session = useStore((s) => s.session);
+  // The figure used to hard-code its background, font and colours, so the
+  // global chart theme did nothing here.
+  const plotTheme = useStore((s) => s.plotTheme);
   // Columns live under session in the store; there is no top-level `columns`.
   // Reading a non-existent top-level field returned undefined and crashed the
   // tab on mount (`columns.filter` → "Cannot read properties of undefined").
@@ -410,7 +413,9 @@ export default function DecisionCurvePanel() {
       hovermode: "x unified",
       hoverlabel: { bgcolor: "white", bordercolor: "#4b5563" },
       paper_bgcolor: "transparent",
-      plot_bgcolor: "#fafafa",
+      plot_bgcolor: plotTheme.plotBg,
+      font: { family: plotTheme.fontFamily, color: "#374151", size: plotTheme.fontSize },
+      colorway: paletteOf(plotTheme),
     };
   }
 

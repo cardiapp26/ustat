@@ -1,10 +1,11 @@
 import { useState, useRef } from "react";
 import { useStore, isNumericKind, isCategoricalKind, type Session } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
-import { usePlotLayout, usePalette, useTraceDefaults } from "../plotStyle";
+import { usePlotLayout, usePalette, useTraceDefaults, applySeriesPins } from "../plotStyle";
 import { getHistogram, getScatter, getBoxplot, getBar, getPairedBox, getDumbbell, getCompareMeans, getErrorPlot, getEcdf, getPie, getBalloon, getSummaryStats, getFacet, getLinePlot, getSlopePlot, getSankey, getStackPlot, getRidgePlot, getSets } from "../api";
 import type { PlotData, PlotLayout, PlotCaptureHandle } from "../lib/plotTypes";
 import TitledPlot from "./TitledPlot";
+import { fmtP } from "../lib/format";
 
 export default function ChartsPanel() {
   const session  = useStore((s) => s.session);
@@ -43,6 +44,10 @@ function ChartsPanelBody({ session }: { session: Session }) {
   const [cmpAdjust, setCmpAdjust] = usePersistedPanelState<string>("charts", "cmpAdjust", "holm");
   const [cmpLabel, setCmpLabel] = usePersistedPanelState<string>("charts", "cmpLabel", "stars");
   const [showPoints, setShowPoints] = usePersistedPanelState<boolean>("charts", "showPoints", false);
+  // The box draws the median. A published box plot usually marks the mean too,
+  // and the gap between the two is what tells the reader the distribution is
+  // skewed — which is the same thing the test choice rests on.
+  const [showMean, setShowMean] = usePersistedPanelState<boolean>("charts", "showMean", false);
   // Error plot / ECDF
   const [errCentre, setErrCentre] = usePersistedPanelState<string>("charts", "errCentre", "mean");
   const [errSpread, setErrSpread] = usePersistedPanelState<string>("charts", "errSpread", "ci");
@@ -56,6 +61,11 @@ function ChartsPanelBody({ session }: { session: Session }) {
   const [balloonCol, setBalloonCol] = usePersistedPanelState<string>("charts", "balloonCol", "");
   const [facetCol, setFacetCol] = usePersistedPanelState<string>("charts", "facetCol", "");
   const [facetKind, setFacetKind] = usePersistedPanelState<string>("charts", "facetKind", "boxplot");
+  // "level" splits one measurement across the levels of a column; "variable"
+  // puts a different measurement in each panel — the layout of a published
+  // multi-panel figure (QT | QRS | index, each over the same two groups).
+  const [facetMode, setFacetMode] = usePersistedPanelState<string>("charts", "facetMode", "level");
+  const [facetVars, setFacetVars] = usePersistedPanelState<string[]>("charts", "facetVars", []);
   const [showSummary, setShowSummary] = usePersistedPanelState<boolean>("charts", "showSummary", false);
   // cnsplots shapes: line over an ordered axis, before/after slopes, flow,
   // stacked composition, stacked densities, set overlap.
@@ -97,7 +107,11 @@ function ChartsPanelBody({ session }: { session: Session }) {
     if (chartType === "balloon" && x === balloonCol) {
       setError("Row and column variables must differ."); return;
     }
-    if (chartType === "facet" && !facetCol) {
+    if (chartType === "facet" && facetMode === "variable" && facetKind === "boxplot") {
+      if (facetVars.length < 1) {
+        setError("Tick at least one variable to give a panel to."); return;
+      }
+    } else if (chartType === "facet" && !facetCol) {
       setError("Select the column to split into panels."); return;
     }
     if (chartType === "slopeplot") {
@@ -172,11 +186,17 @@ function ChartsPanelBody({ session }: { session: Session }) {
       else if (chartType === "sets") res = await getSets({
         session_id: session.session_id, columns: setCols,
       });
-      else if (chartType === "facet") res = await getFacet({
-        session_id: session.session_id, kind: facetKind, x,
-        y: facetKind === "scatter" ? y : undefined,
-        facet: facetCol, color: color || undefined,
-      });
+      else if (chartType === "facet") res = await getFacet(
+        facetMode === "variable" && facetKind === "boxplot"
+          ? {
+            session_id: session.session_id, kind: "boxplot",
+            variables: facetVars, color: color || undefined,
+          }
+          : {
+            session_id: session.session_id, kind: facetKind, x,
+            y: facetKind === "scatter" ? y : undefined,
+            facet: facetCol, color: color || undefined,
+          });
       else res = await getBar({ ...base, y: y || undefined, color: color || undefined });
       setPlotData(res.data);
 
@@ -271,7 +291,11 @@ function ChartsPanelBody({ session }: { session: Session }) {
   };
 
   const chartRef = useRef<PlotCaptureHandle | null>(null);
-  const traces = plotData ? buildTraces(plotData, chartType, pal, td, session, showPoints, donut ? 0.45 : 0) : null;
+  const seriesColors = useStore((s) => s.plotTheme.seriesColors);
+  const traces = applySeriesPins(
+    plotData ? buildTraces(plotData, chartType, pal, td, session, showPoints, donut ? 0.45 : 0, showMean) : null,
+    seriesColors,
+  );
   const brackets = buildBrackets(plotData, comparisons);
   const marginalAxes = marginalLayout(plotData);
 
@@ -524,6 +548,15 @@ function ChartsPanelBody({ session }: { session: Session }) {
                   <option value="scatter">Scatter</option>
                 </select>
               </div>
+              {facetKind === "boxplot" && (
+                <div>
+                  <label className="text-xs text-gray-400 block mb-1">One panel per</label>
+                  <select className="select w-full" value={facetMode} onChange={(e) => setFacetMode(e.target.value)}>
+                    <option value="level">Level of a column</option>
+                    <option value="variable">Variable</option>
+                  </select>
+                </div>
+              )}
               {facetKind === "scatter" && (
                 <div>
                   <label className="text-xs text-gray-400 block mb-1">Y axis</label>
@@ -532,16 +565,43 @@ function ChartsPanelBody({ session }: { session: Session }) {
                   </select>
                 </div>
               )}
-              <div>
-                <label className="text-xs text-gray-400 block mb-1">Split into panels by</label>
-                <select className="select w-full" value={facetCol} onChange={(e) => setFacetCol(e.target.value)}>
-                  <option value="">— select —</option>
-                  {catCols.map((c) => <option key={c}>{c}</option>)}
-                </select>
-                <p className="text-[10px] text-gray-400 mt-1">
-                  Every panel gets the same axis range, so panels can be compared by eye.
-                </p>
-              </div>
+              {facetKind === "boxplot" && facetMode === "variable" ? (
+                <div>
+                  <label className="text-xs text-gray-400 block mb-1">Variables (one panel each)</label>
+                  <div className="max-h-48 overflow-y-auto border border-gray-200 rounded p-2 space-y-1">
+                    {numCols.map((c) => (
+                      <label key={c} className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          className="accent-indigo-500"
+                          checked={facetVars.includes(c)}
+                          onChange={(e) =>
+                            setFacetVars(e.target.checked
+                              ? [...facetVars, c]
+                              : facetVars.filter((v) => v !== c))}
+                        />
+                        <span className="text-xs text-gray-600">{c}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <p className="text-[10px] text-gray-400 mt-1">
+                    Each panel keeps its own axis — milliseconds and a unitless index do not
+                    share a scale. Set Color / Group below to split every panel by the same groups.
+                  </p>
+                </div>
+              ) : (
+                <div>
+                  <label className="text-xs text-gray-400 block mb-1">Split into panels by</label>
+                  <select className="select w-full" value={facetCol} onChange={(e) => setFacetCol(e.target.value)}>
+                    <option value="">— select —</option>
+                    {catCols.map((c) => <option key={c}>{c}</option>)}
+                  </select>
+                  <p className="text-[10px] text-gray-400 mt-1">
+                    Every panel shows the same measurement, so they share one axis range and
+                    can be compared by eye.
+                  </p>
+                </div>
+              )}
             </>
           )}
           {chartType === "errorplot" && (
@@ -577,6 +637,12 @@ function ChartsPanelBody({ session }: { session: Session }) {
                 <label className="flex items-center gap-2 cursor-pointer" title="Draws every raw observation over the box. A box alone hides the sample size and any clustering; with small clinical samples showing the points is now expected.">
                   <input type="checkbox" checked={showPoints} onChange={(e) => setShowPoints(e.target.checked)} className="accent-indigo-500" />
                   <span className="text-xs text-gray-600">Show every point</span>
+                </label>
+              )}
+              {chartType === "boxplot" && (
+                <label className="flex items-center gap-2 cursor-pointer" title="Marks each group's mean with a diamond. The box draws the median; the distance between the two is the skew, and the skew is what the parametric-vs-non-parametric choice rests on.">
+                  <input type="checkbox" checked={showMean} onChange={(e) => setShowMean(e.target.checked)} className="accent-indigo-500" />
+                  <span className="text-xs text-gray-600">Mark the mean</span>
                 </label>
               )}
               <label className="flex items-center gap-2 cursor-pointer" title="Adds a significance bracket over each pair of groups, like ggpubr's stat_compare_means. Needs a Color / Group column.">
@@ -943,6 +1009,34 @@ function ChartsPanelBody({ session }: { session: Session }) {
             Configure and generate a chart
           </div>
         )}
+        {/* The numbers a scatter caption is written from. Pearson answers a
+            straight-line question and Spearman a monotone one; on skewed
+            clinical data they part company, and quoting one while the reader
+            assumes the other is how a figure legend goes wrong. */}
+        {plotData?.type === "scatter" && (() => {
+          const reg = plotData.regression as {
+            r?: number | null; r2?: number | null; p?: number | null; n?: number | null;
+            spearman?: { rho?: number | null; p?: number | null };
+            note?: string;
+          } | undefined;
+          if (!reg) return null;
+          if (reg.r === null || reg.r === undefined) {
+            return reg.note
+              ? <p className="mt-2 text-[11px] text-gray-400">{reg.note}</p>
+              : null;
+          }
+          const rho = reg.spearman?.rho;
+          return (
+            <p className="mt-2 text-[11px] text-gray-500">
+              Pearson r = {reg.r.toFixed(3)} (R² = {(reg.r2 ?? 0).toFixed(3)}), p = {fmtP(reg.p ?? NaN)}
+              {typeof rho === "number" && (
+                <> · Spearman ρ = {rho.toFixed(3)}, p = {fmtP(reg.spearman?.p ?? NaN)}</>
+              )}
+              {typeof reg.n === "number" && <> · n = {reg.n}</>}
+              . The shaded band is the 95% CI of the fitted line.
+            </p>
+          );
+        })()}
       </div>
     </div>
   );
@@ -976,11 +1070,15 @@ function marginalLayout(plotData: Record<string, unknown> | null): {
   };
 }
 
-/** Grid of subplots for a faceted chart, with one shared axis range.
+/** Grid of subplots for a faceted chart.
  *
- *  Every panel is given the same range, computed by the backend across all of
- *  them. Letting Plotly autoscale each panel is the classic small-multiples
- *  error: two panels look alike while their axes differ tenfold.
+ *  When every panel shows the SAME measurement they are given one range,
+ *  computed by the backend across all of them: letting Plotly autoscale each
+ *  panel is the classic small-multiples error, where two panels look alike
+ *  while their axes differ tenfold. When each panel is a DIFFERENT
+ *  measurement the backend sends no shared range and each panel keeps its
+ *  own — milliseconds and a unitless index on one axis would flatten the
+ *  index into a line at the bottom.
  */
 function facetLayout(plotData: Record<string, unknown> | null): Record<string, unknown> {
   if (!plotData || plotData.type !== "facet") return {};
@@ -1090,6 +1188,7 @@ function buildTraces(
   session: Session,
   showPoints = false,
   donutHole = 0,
+  showMean = false,
 ): PlotData[] | null {
   if (!d) return null;
 
@@ -1125,7 +1224,37 @@ function buildTraces(
 
   if (d.type === "scatter") {
     const points = d.points as Array<Record<string, unknown>>;
-    const regression = d.regression as { line_x: unknown; line_y: unknown; r2: number };
+    const regression = d.regression as {
+      line_x: unknown; line_y: unknown; r2: number;
+      band?: { x?: number[]; lo?: number[]; hi?: number[]; level?: number };
+    };
+    // The 95% band around the FITTED LINE. Drawn as one filled ribbon: the
+    // lower edge is invisible and the upper edge fills down to it. A bare line
+    // says nothing about how well the slope is pinned down, and it is pinned
+    // down least at the ends of the x range — which is where a reader
+    // extrapolates.
+    const band = regression.band;
+    const bandTraces: PlotData[] =
+      band?.x?.length && band.lo?.length && band.hi?.length
+        ? [
+          {
+            type: "scatter", mode: "lines",
+            x: band.x, y: band.lo,
+            line: { width: 0 },
+            hoverinfo: "skip",
+            showlegend: false,
+          } as PlotData,
+          {
+            type: "scatter", mode: "lines",
+            x: band.x, y: band.hi,
+            line: { width: 0 },
+            fill: "tonexty",
+            fillcolor: "rgba(107,114,128,0.18)",
+            name: `${Math.round((band.level ?? 0.95) * 100)}% CI of the fit`,
+            hoverinfo: "skip",
+          } as PlotData,
+        ]
+        : [];
     const xKey = String(d.x);
     const yKey = String(d.y);
     const labelKey = d.label ? String(d.label) : null;
@@ -1199,6 +1328,7 @@ function buildTraces(
       const colorLabels = valueLabelsFor(d.color);
       const groups = [...new Set(points.map((p) => p[colorKey]))];
       return [
+        ...bandTraces,
         ...groups.map((g, i) => {
           const rows = points.filter((p) => p[colorKey] === g);
           return {
@@ -1225,6 +1355,7 @@ function buildTraces(
       ];
     }
     return [
+      ...bandTraces,
       {
         type: "scatter", mode: markerMode,
         x: points.map((p) => p[xKey]),
@@ -1603,7 +1734,26 @@ function buildTraces(
         marker: { color: C[i % C.length], size: 3, opacity: 0.5 },
       }));
     }
-    return groups.map((g, i) => ({
+    // One diamond per group at its mean, as a published box plot marks it.
+    // Plotly's own boxmean draws a dashed line that disappears against the
+    // median when the two are close — which is exactly when the reader most
+    // needs to see that they are close.
+    const meanTraces: PlotData[] = showMean
+      ? [{
+        type: "scatter",
+        mode: "markers",
+        x: groups.map((g) => String(colorLabels[String(g.group)] ?? g.group)),
+        y: groups.map((g) => {
+          const nums = (g.values as unknown[]).map(Number).filter((v) => Number.isFinite(v));
+          return nums.length ? nums.reduce((a, b) => a + b, 0) / nums.length : null;
+        }),
+        marker: { symbol: "diamond", size: 9, color: "#ffffff", line: { color: "#111827", width: 1.5 } },
+        name: "Mean",
+        hovertemplate: "mean %{y}<extra></extra>",
+      } as PlotData]
+      : [];
+
+    return [...groups.map((g, i) => ({
       type: "box",
       y: g.values,
       name: colorLabels[String(g.group)] ?? g.group,
@@ -1618,7 +1768,7 @@ function buildTraces(
       pointpos: showPoints ? 0 : undefined,
       text: g.row_indices?.map((idx) => `Row ${idx + 1}`),
       hovertemplate: "%{y}<br>%{text}<extra>%{fullData.name}</extra>",
-    }));
+    })), ...meanTraces];
   }
 
   if (d.type === "bar") {

@@ -1,4 +1,5 @@
 import { useState, useRef, useMemo, useEffect } from "react";
+import { usePlotLayout } from "../plotStyle";
 import Plot from "../PlotComponent";
 import PlotExporter from "./PlotExporter";
 import ThreeCol from "./ThreeCol";
@@ -93,11 +94,24 @@ const emptyRow = (): ForestRowInput => ({
   label: "", est: null, ci_low: null, ci_high: null, p: null, extra: "",
 });
 
+/** A row the user has actually put something in. The sheet always carries a
+ *  blank starter row, which must not survive an appending hand-off as a gap. */
+const isFilled = (r: ForestRowInput): boolean =>
+  r.label.trim() !== "" || r.est != null || r.ci_low != null || r.ci_high != null || r.p != null;
+
 // ── Component ───────────────────────────────────────────────────────────────
 
+/** What survives leaving the tab. Switching to Models and back unmounts this
+ *  panel, and a half-built figure is not something to lose on a tab click —
+ *  nor can rows be accumulated from several fits if they vanish in between. */
+interface ForestSheet { rows: ForestRowInput[]; layout: ForestLayout; returnTo: { tab: string; label: string } | null }
+
 export default function ForestBuilderPanel() {
-  const [rows, setRows] = useState<ForestRowInput[]>([emptyRow()]);
-  const [layout, setLayout] = useState<ForestLayout>(DEFAULT_LAYOUT);
+  const themedBase = usePlotLayout();
+  const sheet = useStore.getState().panelCache.forestBuilder as ForestSheet | undefined;
+  const setPanelCache = useStore((s) => s.setPanelCache);
+  const [rows, setRows] = useState<ForestRowInput[]>(sheet?.rows ?? [emptyRow()]);
+  const [layout, setLayout] = useState<ForestLayout>(sheet?.layout ?? DEFAULT_LAYOUT);
   const plotRef = useRef<HTMLDivElement | null>(null);
   const plotCaptureRef = useRef<PlotCaptureHandle | null>(null);
   // Resizable plot box: the user can drag the bottom-right corner. A
@@ -112,19 +126,32 @@ export default function ForestBuilderPanel() {
   const session = useStore((s) => s.session);
   const forestHandoff = useStore((s) => s.forestHandoff);
   const forestHandoffLayout = useStore((s) => s.forestHandoffLayout);
+  const forestHandoffAppend = useStore((s) => s.forestHandoffAppend);
   const setForestHandoff = useStore((s) => s.setForestHandoff);
   const setActiveTab = useStore((s) => s.setActiveTab);
   // Where to jump back to (set when a panel handed off these rows), so the
   // user can return to the source model with their settings intact.
-  const [returnTo, setReturnTo] = useState<{ tab: string; label: string } | null>(null);
+  const [returnTo, setReturnTo] = useState<{ tab: string; label: string } | null>(sheet?.returnTo ?? null);
+
+  // Keep the sheet where a remount can find it.
+  useEffect(() => {
+    setPanelCache("forestBuilder", { rows, layout, returnTo });
+  }, [rows, layout, returnTo, setPanelCache]);
 
   // Consume a cross-panel handoff (e.g. from the Cox time-horizon panel):
   // load the supplied rows + layout, then clear the buffer so a later
   // visit doesn't re-inject stale rows.
   useEffect(() => {
     if (forestHandoff && forestHandoff.length > 0) {
-      setRows(forestHandoff.map((r) => ({ ...r })));
-      if (forestHandoffLayout) {
+      const incoming = forestHandoff.map((r) => ({ ...r }));
+      // An appending sender adds to what is already on the sheet, so two fits
+      // (a continuous exposure and its dichotomised form, say) end up in one
+      // figure. The starter blank row is dropped rather than kept as a gap.
+      const kept = forestHandoffAppend ? rows.filter(isFilled) : [];
+      setRows(kept.length ? [...kept, ...incoming] : incoming);
+      // Layout belongs to whoever started the sheet: overwriting it on the
+      // second hand-off would throw away a title the user has since edited.
+      if (forestHandoffLayout && !kept.length) {
         const { returnTab, returnLabel, ...rest } = forestHandoffLayout;
         setLayout((l) => ({
           ...l,
@@ -927,9 +954,7 @@ export default function ForestBuilderPanel() {
             <Plot
               data={forestTraces as unknown as Data[]}
               layout={{
-                paper_bgcolor: "transparent",
-                plot_bgcolor: "#ffffff",
-                font: { color: "#374151", size: 12 },
+                ...themedBase,
                 autosize: true,
                 // Extra top room when column headers are shown — they render
                 // in the margin (yref paper + yshift), not the plot area.

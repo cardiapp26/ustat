@@ -1,7 +1,7 @@
 import { useState, useRef, useMemo } from "react";
 import Plot from "../PlotComponent";
 import TitledPlot from "./TitledPlot";
-import { useStore, isNumericKind } from "../store";
+import { useStore, paletteOf, isNumericKind } from "../store";
 import { runRCS, runCoxRCS } from "../api";
 import { Tip, InfoBanner } from "./Tip";
 import ResultExporter from "./ResultExporter";
@@ -9,10 +9,9 @@ import { MissingGuard, type ImputationStrategy } from "./MissingGuard";
 import { fmtP } from "../lib/format";
 import type { PlotData, PlotLayout, PlotCaptureHandle } from "../lib/plotTypes";
 
+// Geometry only — background, font and colourway come from the global chart
+// theme at render, which this panel used to ignore entirely.
 const PLOT_LAYOUT = {
-  paper_bgcolor: "transparent",
-  plot_bgcolor: "#ffffff",
-  font: { color: "#374151", size: 12 },
   margin: { t: 30, r: 20, b: 50, l: 60 },
   xaxis: { gridcolor: "#e5e7eb" },
   yaxis: { gridcolor: "#e5e7eb" },
@@ -311,6 +310,14 @@ export default function RCSPanel() {
   // `session.columns` and crash the whole tab.
   const session = useStore((s) => s.session);
   const showGrid = useStore((s) => s.showGrid);
+  const plotTheme = useStore((s) => s.plotTheme);
+  const themedLayout: Record<string, unknown> = {
+    ...PLOT_LAYOUT,
+    paper_bgcolor: "transparent",
+    plot_bgcolor: plotTheme.plotBg,
+    font: { family: plotTheme.fontFamily, color: "#374151", size: plotTheme.fontSize },
+    colorway: paletteOf(plotTheme),
+  };
 
   // Columns flagged "exclude from analysis" (e.g. NAME, row-id) never appear
   // in any picker, including covariates.
@@ -923,7 +930,7 @@ export default function RCSPanel() {
                     defaultYAxis={yTitle}
                     data={traces}
                     layout={{
-                      ...PLOT_LAYOUT, autosize: true, height: 440,
+                      ...themedLayout, autosize: true, height: 440,
                       xaxis: { ...PLOT_LAYOUT.xaxis, showgrid: showGrid, title: { text: result.predictor }, zeroline: false, ...(xRange ? { range: xRange, autorange: false as const } : {}) },
                       yaxis: {
                         ...PLOT_LAYOUT.yaxis, showgrid: showGrid,

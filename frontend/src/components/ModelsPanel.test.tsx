@@ -4,6 +4,7 @@ import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
 import { server } from '../test/server'
 import { clearSession, installSession, makeSession } from '../test/testUtils'
+import { useStore } from '../store'
 import ModelsPanel from './ModelsPanel'
 
 afterEach(() => clearSession())
@@ -215,5 +216,85 @@ describe('ModelsPanel', () => {
     await user.click(screen.getByRole('button', { name: 'Fit Model' }))
 
     await waitFor(() => expect(screen.getByText('Need at least one predictor')).toBeInTheDocument())
+  })
+
+  it('sends a Firth fit to the Forest Builder as appendable rows', async () => {
+    // A published forest often spans two fits — a continuous exposure and its
+    // dichotomised form cannot share a model — so the hand-off appends rather
+    // than replacing, and the user does not retype the estimates.
+    stubBackgroundEndpoints()
+    installSession(regressionSession())
+    server.use(
+      http.post('/api/models/firth_logistic', () =>
+        HttpResponse.json({
+          model: 'Firth Penalized Logistic Regression',
+          outcome: 'DEATH',
+          coefficients: [
+            { variable: 'const', p: 0.5, odds_ratio: 0.01, or_ci_low: 0.001, or_ci_high: 0.1 },
+            { variable: 'LAR (per 0.1 units)', p: 0.0004, odds_ratio: 1.19, or_ci_low: 1.09, or_ci_high: 1.29 },
+            { variable: 'AGE', p: 0.014, odds_ratio: 1.07, or_ci_low: 1.01, or_ci_high: 1.14 },
+          ],
+        }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<ModelsPanel />)
+    await user.click(screen.getByText('Firth Logistic (penalized)'))
+    await user.selectOptions(selectAfterLabel(/^Outcome/), 'DEATH')
+    await user.click(checkPredictor('AGE'))
+    await user.click(screen.getByRole('button', { name: 'Fit Model' }))
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '→ Forest Builder' })).toBeInTheDocument())
+    await user.click(screen.getAllByRole('button', { name: '→ Forest Builder' })[0])
+
+    const s = useStore.getState()
+    expect(s.forestHandoffAppend).toBe(true)
+    // The intercept is not a row in a forest plot.
+    expect(s.forestHandoff).toEqual([
+      { label: 'LAR (per 0.1 units)', est: 1.19, ci_low: 1.09, ci_high: 1.29, p: 0.0004, extra: '' },
+      { label: 'AGE', est: 1.07, ci_low: 1.01, ci_high: 1.14, p: 0.014, extra: '' },
+    ])
+    expect(s.forestHandoffLayout).toMatchObject({
+      customTitle: 'Firth penalized logistic regression',
+      rightHeader: 'OR (95% CI)',
+      returnTab: 'models',
+    })
+    // and it takes the user there
+    expect(s.activeTab).toBe('visual')
+    expect(s.visualSubTab).toBe('forest')
+  })
+
+  it('sends the adjusted estimate from an OR table, flagging any row that only has a crude one', async () => {
+    stubBackgroundEndpoints()
+    installSession(regressionSession())
+    server.use(
+      http.post('/api/models/logistic_table', () =>
+        HttpResponse.json({
+          model: 'OR Table',
+          outcome: 'DEATH',
+          table: [
+            { variable: 'AGE', uni_or: 1.05, uni_ci_low: 1.0, uni_ci_high: 1.1, uni_p: 0.03, multi_or: 1.08, multi_ci_low: 1.01, multi_ci_high: 1.15, multi_p: 0.02 },
+            { variable: 'LDL', uni_or: 2.0, uni_ci_low: 1.2, uni_ci_high: 3.4, uni_p: 0.008 },
+          ],
+        }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<ModelsPanel />)
+    await user.click(document.querySelector('input[name="model"][value="ortable"]') as HTMLElement)
+    await user.selectOptions(selectAfterLabel(/^Outcome/), 'DEATH')
+    await user.click(checkPredictor('AGE'))
+    await user.click(screen.getByRole('button', { name: 'Fit Model' }))
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '→ Forest Builder' })).toBeInTheDocument())
+    await user.click(screen.getAllByRole('button', { name: '→ Forest Builder' })[0])
+
+    const rows = useStore.getState().forestHandoff
+    expect(rows?.[0]).toMatchObject({ label: 'AGE', est: 1.08, p: 0.02, extra: '' })
+    // A term the multivariable model dropped still carries its crude estimate,
+    // labelled as such rather than passed off as adjusted.
+    expect(rows?.[1]).toMatchObject({ label: 'LDL', est: 2.0, extra: 'unadjusted' })
   })
 })

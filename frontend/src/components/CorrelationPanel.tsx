@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import Plot from "../PlotComponent";
 import TitledPlot from "./TitledPlot";
 import PlotExporter from "./PlotExporter";
-import { useStore, PALETTES, isNumericKind, type Session } from "../store";
+import { useStore, paletteOf, isNumericKind, type Session } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
 import ResultExporter from "./ResultExporter";
 import ThreeCol from "./ThreeCol";
@@ -17,13 +17,25 @@ import {
 import { fmtP } from "../lib/format";
 import type { PlotData, PlotCaptureHandle } from "../lib/plotTypes";
 
-const _pal = () => PALETTES[useStore.getState().plotTheme.palette] ?? PALETTES.indigo;
+// Reads the live theme, so a custom palette — whose colours live on the theme
+// rather than in the PALETTES constant — is honoured here too.
+const _pal = () => paletteOf(useStore.getState().plotTheme);
 
-const PLOT_BG: Record<string, unknown> = {
-  paper_bgcolor: "transparent",
-  plot_bgcolor: "#f9fafb",
-  font: { color: "#374151", size: 11 },
-};
+/** Background, font and colourway from the global chart theme.
+ *
+ *  This panel hard-coded all three, so changing the theme did nothing to it.
+ *  A hook rather than a plain read: subscribing is what makes the chart
+ *  repaint when the palette changes, instead of at the next unrelated render.
+ */
+function usePlotBg(): Record<string, unknown> {
+  const t = useStore((s) => s.plotTheme);
+  return {
+    paper_bgcolor: "transparent",
+    plot_bgcolor: t.plotBg,
+    font: { family: t.fontFamily, color: "#374151", size: t.fontSize },
+    colorway: paletteOf(t),
+  };
+}
 
 const TABS = ["Pairwise", "Matrix", "ICC", "Cohen's κ"] as const;
 type Tab = (typeof TABS)[number];
@@ -81,6 +93,7 @@ interface PairResult {
 
 // ── PairwiseTab ───────────────────────────────────────────────────────────────
 function PairwiseTab({ sessionId, columns }: { sessionId: string; columns: string[] }) {
+  const plotBg = usePlotBg();
   const showGrid = useStore((s) => s.showGrid);
   const corrScatterRef = useRef<PlotCaptureHandle | null>(null);
   const [vars, setVars] = usePersistedPanelState<string[]>("correlation_pairwise", "vars", columns.slice(0, Math.min(4, columns.length)));
@@ -293,7 +306,7 @@ function PairwiseTab({ sessionId, columns }: { sessionId: string; columns: strin
           },
         ]}
         layout={{
-          ...PLOT_BG,
+          ...plotBg,
           autosize: true,
           xaxis: { title: active.var1, gridcolor: "#e5e7eb", showgrid: showGrid, zeroline: false },
           yaxis: { title: active.var2, gridcolor: "#e5e7eb", showgrid: showGrid, zeroline: false },
@@ -482,6 +495,7 @@ interface MatrixResult {
 
 // ── MatrixTab ─────────────────────────────────────────────────────────────────
 function MatrixTab({ sessionId, columns }: { sessionId: string; columns: string[] }) {
+  const plotBg = usePlotBg();
   const showGrid = useStore((s) => s.showGrid);
   const corrHeatmapRef = useRef<PlotCaptureHandle | null>(null);
   const corrSplomRef = useRef<PlotCaptureHandle | null>(null);
@@ -567,8 +581,9 @@ function MatrixTab({ sessionId, columns }: { sessionId: string; columns: string[
             marker: { color: _pal()[0], opacity: 0.8 },
             hovertemplate: "%{x:.2f}: %{y}<extra></extra>" }]}
           layout={{
-            paper_bgcolor: "transparent", plot_bgcolor: "#f9fafb",
-            font: { color: "#374151", size: 9 },
+            ...plotBg,
+            // A 130px strip needs smaller type than the global setting.
+            font: { ...(plotBg.font as object), size: 9 },
             height: 130, margin: { t: 8, r: 4, b: 28, l: 28 },
             xaxis: { gridcolor: "#f3f4f6", zeroline: false, title: { text: v, font: { size: 8 } } },
             yaxis: { gridcolor: "#f3f4f6", zeroline: false },
@@ -709,7 +724,7 @@ function MatrixTab({ sessionId, columns }: { sessionId: string; columns: string[
             hovertemplate: "%{x} vs %{y}: %{z:.4f}<extra></extra>",
           }]}
           layout={{
-            ...PLOT_BG,
+            ...plotBg,
             autosize: true,
             xaxis: { showgrid: showGrid, gridcolor: "#e5e7eb", zeroline: false },
             yaxis: { showgrid: showGrid, gridcolor: "#e5e7eb", zeroline: false },
@@ -758,9 +773,8 @@ function MatrixTab({ sessionId, columns }: { sessionId: string; columns: string[
               hovertemplate: "%{xaxis.title.text}: %{x:.3f}<br>%{yaxis.title.text}: %{y:.3f}<extra></extra>",
             } as PlotData]}
             layout={{
-              paper_bgcolor: "transparent",
-              plot_bgcolor: "#f9fafb",
-              font: { color: "#374151", size: 10 },
+              ...plotBg,
+              font: { ...(plotBg.font as object), size: 10 },
               autosize: true,
               margin: { t: 20, r: 20, b: 20, l: 20 },
               dragmode: "select" as const,
@@ -863,6 +877,7 @@ interface ICCResult {
 
 // ── ICCTab ────────────────────────────────────────────────────────────────────
 function ICCTab({ sessionId, columns }: { sessionId: string; columns: string[] }) {
+  const plotBg = usePlotBg();
   const showGrid = useStore((s) => s.showGrid);
   const blandAltmanRef = useRef<PlotCaptureHandle | null>(null);
   const [rater1, setRater1] = useState(columns[0] ?? "");
@@ -949,7 +964,7 @@ function ICCTab({ sessionId, columns }: { sessionId: string; columns: string[] }
           hovertemplate: "Mean: %{x:.3f}<br>Diff: %{y:.3f}<extra></extra>",
         }]}
         layout={{
-          ...PLOT_BG,
+          ...plotBg,
           autosize: true,
           xaxis: { title: `Mean of ${rater1} & ${rater2}`, gridcolor: "#e5e7eb", showgrid: showGrid, zeroline: false },
           yaxis: { title: `${rater1} − ${rater2}`, gridcolor: "#e5e7eb", showgrid: showGrid, zeroline: true, zerolinecolor: "#d1d5db" },
@@ -1050,6 +1065,7 @@ interface KappaResult {
 
 // ── KappaTab ──────────────────────────────────────────────────────────────────
 function KappaTab({ sessionId, columns }: { sessionId: string; columns: string[] }) {
+  const plotBg = usePlotBg();
   const showGrid = useStore((s) => s.showGrid);
   const kappaMatrixRef = useRef<PlotCaptureHandle | null>(null);
   const [rater1, setRater1] = useState(columns[0] ?? "");
@@ -1139,7 +1155,7 @@ function KappaTab({ sessionId, columns }: { sessionId: string; columns: string[]
           hovertemplate: "Rater1=%{y}<br>Rater2=%{x}<br>Count=%{z}<extra></extra>",
         }]}
         layout={{
-          ...PLOT_BG,
+          ...plotBg,
           autosize: true,
           title: { text: "Confusion Matrix", font: { color: "#374151", size: 13 } },
           xaxis: { side: "bottom", showgrid: showGrid, gridcolor: "#e5e7eb", zeroline: false },

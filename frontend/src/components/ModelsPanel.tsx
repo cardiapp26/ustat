@@ -1,18 +1,43 @@
 import { useState } from "react";
-import { useStore } from "../store";
+import { useStore, paletteOf } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
 import { runLinear, runLogistic, runFirthLogistic, runKM, runCox, runLogisticTable, runPoisson, runCoxUniMulti, runOrdinal, runMultiOutcomeRegression } from "../api";
 import { Tip, InfoBanner } from "./Tip";
 import ResultExporter from "./ResultExporter";
 import { fmtP, pCellTitle } from "../lib/format";
 import { MissingGuard, type ImputationStrategy } from "./MissingGuard";
-import { PALETTES, type ColMeta } from "../store";
+import { type ColMeta } from "../store";
 import { CoefTable, ORTable, ForestPlot, PredictionPanel, CoefDetailPanel, ModelSummaryTable } from "./models/resultViews";
 import CoxHRTable from "./models/CoxHRTable";
 import { useModelData } from "./models/useModelData";
 import type { ModelResult } from "./models/shared";
 
-const _pal = () => PALETTES[useStore.getState().plotTheme.palette] ?? PALETTES.indigo;
+const _pal = () => paletteOf(useStore.getState().plotTheme);
+
+/** Default figure title when a model's estimates are sent to the Forest
+ *  Builder — the penalty and the adjustment are part of what the figure
+ *  claims, so they belong in the title rather than only in the methods. */
+const MODEL_FOREST_TITLE: Record<string, string> = {
+  firth: "Firth penalized logistic regression",
+  firth_ortable: "Firth penalized logistic regression",
+  logistic: "Logistic regression",
+  ortable: "Logistic regression",
+  cox: "Cox proportional hazards",
+  ordinal: "Ordinal logistic regression",
+};
+
+/** Send-to-Forest-Builder control, shared by both forest cards. */
+function ForestBuilderButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      title="Add these estimates as rows in the Forest Builder, keeping whatever is already there — so a figure can combine several fits (e.g. a continuous exposure and its dichotomised form, which cannot share one model)."
+      className="flex-shrink-0 whitespace-nowrap rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-medium text-indigo-700 transition-colors hover:bg-indigo-100"
+    >
+      → Forest Builder
+    </button>
+  );
+}
 
 // ── Model guidance ──────────────────────────────────────────────────────────
 const MODEL_GUIDANCE: Record<string, { use: string; check: string; interpret: string }> = {
@@ -147,6 +172,9 @@ export default function ModelsPanel() {
   const [stratifyCol, setStratifyCol] = usePersistedPanelState<string>("models", "stratifyCol", "");
   const cachedModels = useStore((s) => s.panelCache.models) as { result?: ModelResult | null } | undefined;
   const setCacheModels = useStore((s) => s.setPanelCache);
+  const setForestHandoff = useStore((s) => s.setForestHandoff);
+  const setActiveTab = useStore((s) => s.setActiveTab);
+  const setVisualSubTab = useStore((s) => s.setVisualSubTab);
   const [result, _setResultRaw] = useState<ModelResult | null>(cachedModels?.result ?? null);
   const setResult = (r: ModelResult | null) => { _setResultRaw(r); setCacheModels("models", { result: r }); };
   const [error, setError] = useState<string | null>(null);
@@ -221,6 +249,66 @@ export default function ModelsPanel() {
       if (!isNaN(n) && n > 0 && n !== 1) out[col] = n;
     }
     return Object.keys(out).length > 0 ? out : undefined;
+  };
+
+  /**
+   * Hand this model's estimates to the Forest Builder, appending to whatever
+   * is already on the sheet.
+   *
+   * A published forest often spans several fits — a continuous exposure and
+   * its dichotomised form cannot share a model, so the figure is assembled
+   * from two. Appending is what makes that a two-click job instead of typing
+   * the estimates back in by hand.
+   */
+  const sendToForestBuilder = () => {
+    if (!result) return;
+    const isCox = model === "cox";
+    const metric = isCox ? "HR" : "OR";
+    const rows: Array<{ label: string; est: number | null; ci_low: number | null; ci_high: number | null; p: number | null; extra: string }> = [];
+
+    if (result.coefficients?.length) {
+      for (const c of result.coefficients) {
+        if (c.variable === "const" || c.variable === "Intercept") continue;
+        const est = isCox ? c.hr : c.odds_ratio;
+        const lo = isCox ? c.hr_ci_low : c.or_ci_low;
+        const hi = isCox ? c.hr_ci_high : c.or_ci_high;
+        if (est == null) continue;
+        rows.push({
+          label: c.variable, est, ci_low: lo ?? null, ci_high: hi ?? null,
+          p: c.p ?? null, extra: "",
+        });
+      }
+    } else if (result.table?.length) {
+      // Uni + multi table: the adjusted estimate is the one that goes in a
+      // figure; fall back to the unadjusted when a term was not carried into
+      // the multivariable model.
+      for (const r of result.table) {
+        const adjusted = r.multi_or != null;
+        const est = adjusted ? r.multi_or : r.uni_or;
+        if (est == null) continue;
+        rows.push({
+          label: r.variable,
+          est,
+          ci_low: (adjusted ? r.multi_ci_low : r.uni_ci_low) ?? null,
+          ci_high: (adjusted ? r.multi_ci_high : r.uni_ci_high) ?? null,
+          p: (adjusted ? r.multi_p : r.uni_p) ?? null,
+          extra: adjusted ? "" : "unadjusted",
+        });
+      }
+    }
+    if (!rows.length) { setError("No estimates to send — fit a model first."); return; }
+
+    setForestHandoff(rows, {
+      customTitle: MODEL_FOREST_TITLE[model] ?? "",
+      customSubtitle: result.outcome ? `Outcome: ${result.outcome}` : "",
+      xLabel: `${isCox ? "Hazard" : "Odds"} ratio (95% CI, log scale)`,
+      leftHeader: "Variable",
+      rightHeader: `${metric} (95% CI)`,
+      returnTab: "models",
+      returnLabel: "← Back to the model",
+    }, true);
+    setVisualSubTab("forest");
+    setActiveTab("visual");
   };
 
   // ── Multi-outcome pickers: enforce mutual exclusion ────────────────────────
@@ -1028,13 +1116,16 @@ export default function ModelsPanel() {
             {result.coefficients && (model === "logistic" || model === "firth" || model === "cox" || model === "ordinal") &&
               result.coefficients.filter((c) => c.variable !== "const").length > 0 && (
               <div className="panel">
-                <h4 className="font-semibold text-gray-900 mb-2">
-                  Forest Plot
-                  <Tip text="Each row shows one predictor. The square is the point estimate (OR or HR); the horizontal line is the 95% Confidence Interval. If the CI crosses 1 (the vertical dashed line), the effect is not statistically significant. Larger squares = more precise estimate." wide />
-                  <span className="ml-2 text-xs font-normal text-gray-400">
-                    {model === "cox" ? "HR" : "OR"} with 95% CI — colored = <i>p</i>&lt;0.05, square size = precision
-                  </span>
-                </h4>
+                <div className="mb-2 flex items-start justify-between gap-3">
+                  <h4 className="font-semibold text-gray-900">
+                    Forest Plot
+                    <Tip text="Each row shows one predictor. The square is the point estimate (OR or HR); the horizontal line is the 95% Confidence Interval. If the CI crosses 1 (the vertical dashed line), the effect is not statistically significant. Larger squares = more precise estimate." wide />
+                    <span className="ml-2 text-xs font-normal text-gray-400">
+                      {model === "cox" ? "HR" : "OR"} with 95% CI — colored = <i>p</i>&lt;0.05, square size = precision
+                    </span>
+                  </h4>
+                  <ForestBuilderButton onClick={sendToForestBuilder} />
+                </div>
                 <ForestPlot result={result} modelType={model} outcome={result.outcome} />
               </div>
             )}
@@ -1042,12 +1133,15 @@ export default function ModelsPanel() {
             {/* Forest plot — OR table (rendered after tables) */}
             {result.table && result.table.length > 0 && (
               <div className="panel">
-                <h4 className="font-semibold text-gray-900 mb-2">
-                  Forest Plot
-                  <span className="ml-2 text-xs font-normal text-gray-400">
-                    ● Univariate &nbsp;◆ Multivariate — colored = <i>p</i>&lt;0.05, square size = precision
-                  </span>
-                </h4>
+                <div className="mb-2 flex items-start justify-between gap-3">
+                  <h4 className="font-semibold text-gray-900">
+                    Forest Plot
+                    <span className="ml-2 text-xs font-normal text-gray-400">
+                      ● Univariate &nbsp;◆ Multivariate — colored = <i>p</i>&lt;0.05, square size = precision
+                    </span>
+                  </h4>
+                  <ForestBuilderButton onClick={sendToForestBuilder} />
+                </div>
                 <ForestPlot result={result} modelType={model} outcome={result.outcome} />
               </div>
             )}

@@ -3,7 +3,7 @@
  * Rendered inside the App header next to the grid toggle.
  */
 import { useState } from "react";
-import { useStore, PALETTES, DEFAULT_THEME, type PaletteName } from "../store";
+import { useStore, PALETTES, DEFAULT_THEME, paletteOf, type PaletteName } from "../store";
 import { Palette } from "lucide-react";
 
 const PALETTE_LABELS: Record<PaletteName, string> = {
@@ -13,6 +13,7 @@ const PALETTE_LABELS: Record<PaletteName, string> = {
   grayscale: "Grayscale",
   warm:      "Warm",
   jama:      "JAMA",
+  custom:    "Custom",
 };
 
 const FONTS = [
@@ -25,6 +26,8 @@ const FONTS = [
 export default function PlotThemeBar() {
   const { plotTheme, setPlotTheme } = useStore();
   const [open, setOpen] = useState(false);
+  const [pinName, setPinName] = useState("");
+  const [pinColour, setPinColour] = useState("#c0392b");
 
   return (
     <div className="relative">
@@ -55,11 +58,13 @@ export default function PlotThemeBar() {
                     className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg transition-colors
                       ${plotTheme.palette === p ? "bg-indigo-50 border border-indigo-200" : "hover:bg-gray-50 border border-transparent"}`}
                   >
-                    {/* Color swatches */}
+                    {/* Color swatches — the custom row shows the live list,
+                        not the module constant, so it reflects edits. */}
                     <div className="flex gap-0.5 flex-shrink-0">
-                      {PALETTES[p].slice(0, 5).map((c, i) => (
-                        <div key={i} className="w-4 h-4 rounded-sm" style={{ backgroundColor: c }} />
-                      ))}
+                      {(p === "custom" ? paletteOf({ ...plotTheme, palette: "custom" }) : PALETTES[p])
+                        .slice(0, 5).map((c, i) => (
+                          <div key={i} className="w-4 h-4 rounded-sm" style={{ backgroundColor: c }} />
+                        ))}
                     </div>
                     <span className={`text-xs ${plotTheme.palette === p ? "text-indigo-700 font-semibold" : "text-gray-600"}`}>
                       {PALETTE_LABELS[p]}
@@ -68,6 +73,111 @@ export default function PlotThemeBar() {
                   </button>
                 ))}
               </div>
+            </div>
+
+            {/* Custom colours — only where they apply */}
+            {plotTheme.palette === "custom" && (
+              <div>
+                <p className="text-xs text-gray-500 mb-1.5">
+                  Custom colours <span className="text-gray-400">(trace order)</span>
+                </p>
+                <div className="grid grid-cols-4 gap-1.5">
+                  {plotTheme.customPalette.map((c, i) => (
+                    <input
+                      key={i}
+                      type="color"
+                      aria-label={`Custom colour ${i + 1}`}
+                      value={c}
+                      onChange={(e) => {
+                        const next = [...plotTheme.customPalette];
+                        next[i] = e.target.value;
+                        setPlotTheme({ customPalette: next });
+                      }}
+                      className="h-7 w-full cursor-pointer rounded border border-gray-200 bg-white p-0.5"
+                    />
+                  ))}
+                </div>
+                <div className="mt-1.5 flex gap-2">
+                  <button
+                    onClick={() => setPlotTheme({ customPalette: [...plotTheme.customPalette, "#111827"] })}
+                    className="flex-1 rounded border border-gray-200 py-1 text-[10px] text-gray-500 hover:bg-gray-50">
+                    Add a colour
+                  </button>
+                  <button
+                    disabled={plotTheme.customPalette.length <= 1}
+                    onClick={() => setPlotTheme({ customPalette: plotTheme.customPalette.slice(0, -1) })}
+                    className="flex-1 rounded border border-gray-200 py-1 text-[10px] text-gray-500 hover:bg-gray-50 disabled:opacity-40">
+                    Remove the last
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Colours pinned to a named group. Palette order follows how the
+                groups happen to sort, so "treatment must be red" cannot be
+                expressed by a palette — adding a third arm would recolour the
+                first two. */}
+            <div>
+              <p className="text-xs text-gray-500 mb-1.5">Fixed colour for a group</p>
+              {Object.entries(plotTheme.seriesColors).length > 0 && (
+                <div className="mb-1.5 space-y-1">
+                  {Object.entries(plotTheme.seriesColors).map(([name, colour]) => (
+                    <div key={name} className="flex items-center gap-1.5">
+                      <input
+                        type="color"
+                        aria-label={`Colour for ${name}`}
+                        value={colour}
+                        onChange={(e) => setPlotTheme({
+                          seriesColors: { ...plotTheme.seriesColors, [name]: e.target.value },
+                        })}
+                        className="h-6 w-8 shrink-0 cursor-pointer rounded border border-gray-200 bg-white p-0.5"
+                      />
+                      <span className="truncate text-[11px] text-gray-600" title={name}>{name}</span>
+                      <button
+                        aria-label={`Unpin ${name}`}
+                        onClick={() => {
+                          const next = { ...plotTheme.seriesColors };
+                          delete next[name];
+                          setPlotTheme({ seriesColors: next });
+                        }}
+                        className="ml-auto px-1 text-[11px] text-gray-400 hover:text-red-500">
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <form
+                className="flex gap-1.5"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const name = pinName.trim();
+                  if (!name) return;
+                  setPlotTheme({ seriesColors: { ...plotTheme.seriesColors, [name]: pinColour } });
+                  setPinName("");
+                }}>
+                <input
+                  value={pinName}
+                  onChange={(e) => setPinName(e.target.value)}
+                  placeholder="Group label, e.g. Male"
+                  aria-label="Group label to pin"
+                  className="min-w-0 flex-1 rounded border border-gray-300 px-1.5 py-1 text-[11px] outline-none focus:border-indigo-400"
+                />
+                <input
+                  type="color"
+                  aria-label="Colour to pin"
+                  value={pinColour}
+                  onChange={(e) => setPinColour(e.target.value)}
+                  className="h-7 w-8 shrink-0 cursor-pointer rounded border border-gray-200 bg-white p-0.5"
+                />
+                <button type="submit"
+                  className="rounded bg-indigo-600 px-2 text-[11px] font-medium text-white hover:bg-indigo-700">
+                  Pin
+                </button>
+              </form>
+              <p className="mt-1 text-[10px] text-gray-400">
+                Matched against the label printed in the legend, exactly as shown.
+              </p>
             </div>
 
             {/* Font */}

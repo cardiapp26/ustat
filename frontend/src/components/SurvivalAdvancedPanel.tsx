@@ -330,6 +330,7 @@ function CoxUniMultiForest({
   onClose: () => void;
 }) {
   const rows = result.rows;
+  const themedBase = usePlotLayout();
   const [umW, setUmW] = useState<number | undefined>(undefined);   // px or auto
   const [umH, setUmH] = useState<number>(Math.max(320, rows.length * 64 + 130));
   const [umLabels, setUmLabels] = useState<Record<string, string>>({});  // per-row label overrides
@@ -507,7 +508,10 @@ function CoxUniMultiForest({
         <Plot
           data={[mkTrace("unadjusted"), mkTrace("adjusted")]}
           layout={{
-            paper_bgcolor: "#ffffff", plot_bgcolor: "#ffffff",
+            ...themedBase,
+            // Solid, not transparent: a transparent paper exports as black in
+            // most image viewers.
+            paper_bgcolor: "#ffffff",
             xaxis: {
               type: "log", title: { text: "Hazard ratio (log scale)" },
               tickvals: TICKS, ticktext: TICKS.map(String),
@@ -2569,10 +2573,10 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
                     tickformat: kmYAxisAsPct ? ".0%" : ".2f",
                   },
                   autosize: true,
-                  // Solid white backgrounds so PNG/JPEG export isn't transparent
-                  // (transparent renders as black in most image viewers).
+                  // The paper stays solid white whatever the theme says: a
+                  // transparent paper exports as black in most image viewers.
+                  // The plotting area follows the theme, as everywhere else.
                   paper_bgcolor: "#ffffff",
-                  plot_bgcolor: "#ffffff",
                   margin: { t: 20, r: 20, b: riskBottomMargin, l: riskLeftMargin }, showlegend: true,
                   legend: { title: { text: kmCustomGroupTitle || kmGroup || "Group" } },
                   annotations: riskAnnotations,

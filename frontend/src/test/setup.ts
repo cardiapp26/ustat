@@ -16,6 +16,13 @@ afterAll(() => server.close())
 // stub is enough to let react-plotly.js mount without crashing.
 vi.mock('react-plotly.js', () => ({
   default: (props: Record<string, unknown>) => {
-    return React.createElement('div', { 'data-testid': 'plotly-mock', 'data-plotly': JSON.stringify(props.data ?? []) })
+    // The layout carries axis ranges, subplot domains and the bracket
+    // annotations — assertions about what the reader will SEE need it as much
+    // as they need the traces.
+    return React.createElement('div', {
+      'data-testid': 'plotly-mock',
+      'data-plotly': JSON.stringify(props.data ?? []),
+      'data-layout': JSON.stringify(props.layout ?? {}),
+    })
   },
 }))

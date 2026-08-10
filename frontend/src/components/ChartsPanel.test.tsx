@@ -241,6 +241,109 @@ describe('ChartsPanel', () => {
     expect(screen.getByRole('checkbox', { name: /show every point/i })).toBeInTheDocument()
   })
 
+  it('marks each group mean with a diamond when asked', async () => {
+    installSession()
+    server.use(http.post('/api/charts/boxplot', () => HttpResponse.json(boxplotResponse)))
+    const user = userEvent.setup()
+    render(<ChartsPanel />)
+    await user.click(screen.getByRole('radio', { name: /boxplot/i }))
+    await user.click(screen.getByRole('checkbox', { name: /mark the mean/i }))
+    await user.click(screen.getByRole('button', { name: /generate chart/i }))
+
+    await waitFor(() => expect(screen.getByTestId('plotly-mock')).toBeInTheDocument())
+    const traces = JSON.parse(screen.getByTestId('plotly-mock').dataset.plotly!)
+    const mean = traces.find((t: { name?: string }) => t.name === 'Mean')
+    expect(mean.marker.symbol).toBe('diamond')
+    // The box draws the median (13 and 23); the diamond has to be the MEAN.
+    expect(mean.y).toEqual([13, 23])
+  })
+
+  it('has no mean marker unless it is asked for', async () => {
+    installSession()
+    server.use(http.post('/api/charts/boxplot', () => HttpResponse.json(boxplotResponse)))
+    const user = userEvent.setup()
+    render(<ChartsPanel />)
+    await user.click(screen.getByRole('radio', { name: /boxplot/i }))
+    await user.click(screen.getByRole('button', { name: /generate chart/i }))
+
+    await waitFor(() => expect(screen.getByTestId('plotly-mock')).toBeInTheDocument())
+    const traces = JSON.parse(screen.getByTestId('plotly-mock').dataset.plotly!)
+    expect(traces.some((t: { name?: string }) => t.name === 'Mean')).toBe(false)
+  })
+
+  const scatterWithBand = {
+    type: 'scatter', x: 'AGE', y: 'BMI',
+    points: [{ AGE: 40, BMI: 22 }, { AGE: 50, BMI: 25 }, { AGE: 60, BMI: 27 }],
+    regression: {
+      slope: 0.25, intercept: 12, r: 0.98, r2: 0.96, p: 0.0004, se: 0.05, n: 3,
+      line_x: [40, 60], line_y: [22, 27],
+      band: { x: [40, 50, 60], lo: [21, 24.5, 26], hi: [23, 25.5, 28], level: 0.95 },
+      spearman: { rho: 1, p: 0.0001 },
+    },
+  }
+
+  async function drawScatterWithBand() {
+    installSession()
+    server.use(http.post('/api/charts/scatter', () => HttpResponse.json(scatterWithBand)))
+    const user = userEvent.setup()
+    render(<ChartsPanel />)
+    await user.click(screen.getByRole('radio', { name: /scatter/i }))
+    await user.click(screen.getByRole('button', { name: /generate chart/i }))
+    await waitFor(() => expect(screen.getByTestId('plotly-mock')).toBeInTheDocument())
+    return JSON.parse(screen.getByTestId('plotly-mock').dataset.plotly!)
+  }
+
+  it('fills the confidence band under the fitted line', async () => {
+    const traces = await drawScatterWithBand()
+    const filled = traces.find((t: { fill?: string }) => t.fill === 'tonexty')
+    expect(filled.y).toEqual([23, 25.5, 28])
+    // The invisible lower edge must come first, or the fill has nothing to
+    // reach down to, and both must precede the markers so the band sits under.
+    expect(traces[0].y).toEqual([21, 24.5, 26])
+    expect(traces.indexOf(filled)).toBeLessThan(
+      traces.findIndex((t: { mode?: string }) => t.mode === 'markers'))
+  })
+
+  it('reports Pearson and Spearman under the scatter', async () => {
+    await drawScatterWithBand()
+    expect(screen.getByText(/Pearson r = 0\.980/)).toBeInTheDocument()
+    expect(screen.getByText(/Spearman ρ = 1\.000/)).toBeInTheDocument()
+    expect(screen.getByText(/n = 3/)).toBeInTheDocument()
+  })
+
+  it('gives one panel per variable, each on its own scale', async () => {
+    installSession()
+    server.use(http.post('/api/charts/facet', async ({ request }) => {
+      const body = await request.json() as { variables?: string[]; facet?: string }
+      expect(body.variables).toEqual(['AGE', 'LDL'])
+      expect(body.facet).toBeUndefined()
+      return HttpResponse.json({
+        type: 'facet', kind: 'boxplot', facet_by: 'variable', color: 'GROUP',
+        panels: [
+          { panel: 'AGE', n: 4, range: [40, 60], groups: [{ group: 'M', values: [40, 60] }] },
+          { panel: 'LDL', n: 4, range: [22, 27], groups: [{ group: 'M', values: [22, 27] }] },
+        ],
+        shared_range: {}, warnings: [],
+      })
+    }))
+
+    const user = userEvent.setup()
+    render(<ChartsPanel />)
+    await user.click(screen.getByRole('radio', { name: /facet grid/i }))
+    const mode = screen.getAllByRole('combobox').find(
+      (el) => el.previousElementSibling?.textContent?.match(/one panel per/i))
+    await user.selectOptions(mode!, 'variable')
+    await user.click(screen.getByRole('checkbox', { name: 'AGE' }))
+    await user.click(screen.getByRole('checkbox', { name: 'LDL' }))
+    await user.click(screen.getByRole('button', { name: /generate chart/i }))
+
+    await waitFor(() => expect(screen.getByTestId('plotly-mock')).toBeInTheDocument())
+    const layout = JSON.parse(screen.getByTestId('plotly-mock').dataset.layout!)
+    // No shared range: milliseconds and a unitless index do not share an axis.
+    expect(layout.yaxis.range).toBeUndefined()
+    expect(layout.yaxis2.range).toBeUndefined()
+  })
+
   it('draws significance brackets and states the test and adjustment', async () => {
     installSession()
     server.use(

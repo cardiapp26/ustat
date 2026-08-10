@@ -8,7 +8,7 @@
  * 4. Outcome analysis (Weighted GLM or Weighted Cox PH)
  */
 import { useState, useRef, useMemo } from "react";
-import { useStore, analysisCols, type Session } from "../store";
+import { useStore, paletteOf, analysisCols, type Session } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
 import { runIPTW, getSessionInfo } from "../api";
 import { Tip } from "./Tip";
@@ -87,12 +87,24 @@ const smdColor = (smd: number | undefined | null) =>
   smd == null || !Number.isFinite(smd) ? "text-gray-400"
     : smd < 0.10 ? "text-emerald-600" : smd < 0.20 ? "text-amber-500" : "text-red-500";
 
+// Geometry only. Background, font and colourway follow the global chart theme
+// at render; hard-coded here they made the theme picker a no-op on this panel.
 const PLOT_BASE = {
-  paper_bgcolor: "transparent",
-  plot_bgcolor: "#f9fafb",
-  font: { color: "#374151", size: 11 },
   margin: { t: 30, r: 24, b: 56, l: 130 },
 };
+
+/** The theme-driven half of the layout. Subscribed, so the figure repaints
+ *  the moment the palette or font changes rather than at the next render. */
+function useThemedBase(): Record<string, unknown> {
+  const t = useStore((s) => s.plotTheme);
+  return {
+    ...PLOT_BASE,
+    paper_bgcolor: "transparent",
+    plot_bgcolor: t.plotBg,
+    font: { family: t.fontFamily, color: "#374151", size: t.fontSize },
+    colorway: paletteOf(t),
+  };
+}
 
 function LovePlot({
   smdBefore,
@@ -107,6 +119,7 @@ function LovePlot({
   showConnectors: boolean;
   showGrid: boolean;
 }) {
+  const themedBase = useThemedBase();
   const plotRef = useRef<PlotCaptureHandle | null>(null);
   const covariates = Object.keys(smdBefore).reverse(); // bottom-to-top
 
@@ -148,7 +161,7 @@ function LovePlot({
   }
 
   const layout: PlotLayout = {
-    ...PLOT_BASE,
+    ...themedBase,
     autosize: true,
     height: Math.max(260, covariates.length * 52 + 80),
     xaxis: {
@@ -210,6 +223,7 @@ function PSOverlapPlot({
   psDist: { treated_unmatched: number[]; control_unmatched: number[]; treated_matched: number[]; control_matched: number[] };
   showGrid: boolean;
 }) {
+  const themedBase = useThemedBase();
   const plotRef = useRef<PlotCaptureHandle | null>(null);
   return (
     <TitledPlot
@@ -236,7 +250,7 @@ function PSOverlapPlot({
         },
       ]}
       layout={{
-        ...PLOT_BASE,
+        ...themedBase,
         barmode: "overlay",
         autosize: true,
         height: 230,
@@ -264,6 +278,7 @@ export default function IPTWPanel() {
 }
 
 function IPTWPanelBody({ session }: { session: Session }) {
+  const themedBase = useThemedBase();
   const showGrid = useStore((s) => s.showGrid);
   const setSession = useStore((s) => s.setSession);
   const setOriginalSession = useStore((s) => s.setOriginalSession);
@@ -785,7 +800,7 @@ function IPTWPanelBody({ session }: { session: Session }) {
                     },
                   ] as PlotData[]}
                   layout={{
-                    ...PLOT_BASE,
+                    ...themedBase,
                     barmode: "overlay",
                     height: 220, autosize: true,
                     margin: { t: 24, r: 20, b: 40, l: 60 },

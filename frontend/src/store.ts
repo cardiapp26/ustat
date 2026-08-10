@@ -55,7 +55,7 @@ export interface Session {
   case_filter?: CaseFilter | null;
 }
 
-export type PaletteName = "indigo" | "clinical" | "nature" | "grayscale" | "warm" | "jama";
+export type PaletteName = "indigo" | "clinical" | "nature" | "grayscale" | "warm" | "jama" | "custom";
 
 export interface PlotTheme {
   palette: PaletteName;
@@ -65,6 +65,15 @@ export interface PlotTheme {
   markerSize: number;
   markerOpacity: number;
   plotBg: string;
+  /** Colours used when palette is "custom". Order is the trace order. */
+  customPalette: string[];
+  /**
+   * Colour pinned to a named series, keyed by the group label as it is
+   * printed. A journal that asks for "treatment in red" is asking for THIS,
+   * not for a palette: palette order follows how the groups happen to sort,
+   * so adding a third arm silently recolours the first two.
+   */
+  seriesColors: Record<string, string>;
 }
 
 export const DEFAULT_THEME: PlotTheme = {
@@ -75,6 +84,8 @@ export const DEFAULT_THEME: PlotTheme = {
   markerSize: 6,
   markerOpacity: 0.7,
   plotBg: "#ffffff",
+  customPalette: ["#4c72b0", "#dd8452", "#55a868", "#c44e52", "#8172b3", "#937860", "#da8bc3", "#8c8c8c"],
+  seriesColors: {},
 };
 
 export const PALETTES: Record<PaletteName, string[]> = {
@@ -84,7 +95,19 @@ export const PALETTES: Record<PaletteName, string[]> = {
   grayscale: ["#111827","#374151","#6b7280","#9ca3af","#d1d5db","#4b5563","#1f2937","#374151"],
   warm:      ["#dc2626","#ea580c","#d97706","#ca8a04","#65a30d","#16a34a","#0891b2","#7c3aed"],
   jama:      ["#003087","#7f0000","#003b00","#5e0070","#663300","#004c4c","#004080","#380038"],
+  // Placeholder: the live values come from theme.customPalette, so that a
+  // palette the user edits is not frozen into a module constant.
+  custom:    ["#4c72b0","#dd8452","#55a868","#c44e52","#8172b3","#937860","#da8bc3","#8c8c8c"],
 };
+
+/** The colours actually in force, with the custom list resolved. */
+export function paletteOf(theme: PlotTheme): string[] {
+  if (theme.palette !== "custom") return PALETTES[theme.palette];
+  const colours = (theme.customPalette ?? []).filter(Boolean);
+  // An empty custom palette would hand Plotly nothing to cycle and every
+  // trace would come out the same default blue.
+  return colours.length ? colours : PALETTES.indigo;
+}
 
 export type CaseOperator = "eq" | "ne" | "gt" | "lt" | "gte" | "lte" | "contains" | "missing" | "not_missing";
 
@@ -183,9 +206,15 @@ interface AppState {
   // and clears it. Shape matches ForestRowInput.
   forestHandoff: Array<{ label: string; est: number | null; ci_low: number | null; ci_high: number | null; p: number | null; extra: string }> | null;
   forestHandoffLayout: { customTitle?: string; customSubtitle?: string; xLabel?: string; leftHeader?: string; rightHeader?: string; returnTab?: string; returnLabel?: string } | null;
+  // Append instead of replace. A published forest often combines rows from
+  // SEVERAL fits — a continuous exposure and its dichotomised form cannot sit
+  // in one model — so a sender that expects to be called repeatedly asks for
+  // its rows to be added to what is already there.
+  forestHandoffAppend: boolean;
   setForestHandoff: (
     rows: Array<{ label: string; est: number | null; ci_low: number | null; ci_high: number | null; p: number | null; extra: string }> | null,
     layout?: { customTitle?: string; customSubtitle?: string; xLabel?: string; leftHeader?: string; rightHeader?: string; returnTab?: string; returnLabel?: string } | null,
+    append?: boolean,
   ) => void;
   // Deep-link target for the Visual tab's inner sub-tab ("forest", etc.).
   // Consumed once by VisualChartsCombo then cleared.
@@ -633,7 +662,9 @@ export const useStore = create<AppState>((set, get) => ({
   })),
   forestHandoff: null,
   forestHandoffLayout: null,
-  setForestHandoff: (rows, layout = null) => set({ forestHandoff: rows, forestHandoffLayout: layout }),
+  forestHandoffAppend: false,
+  setForestHandoff: (rows, layout = null, append = false) =>
+    set({ forestHandoff: rows, forestHandoffLayout: layout, forestHandoffAppend: append }),
   visualSubTab: null,
   setVisualSubTab: (sub) => set({ visualSubTab: sub }),
   // Column decimal formatting
