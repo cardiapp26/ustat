@@ -1,0 +1,40 @@
+# Secret-scanning config for uSTAT.
+#
+# The default rule set is kept in full — this file only carves out one
+# false positive that the QA harness produces and cannot stop producing,
+# because gitleaks scans the whole history (`git log -p --all`) and the
+# offending commits are already in it.
+#
+# qa/dataset_200x20/run_tests.py compares each endpoint's answer against a
+# scipy/R reference and prints the pair as `api=<value> ref=<value>`. On a
+# p-value that comes out as 2.1003769890657852e-13, the `generic-api-key`
+# rule sees the token "api" next to a long high-entropy string and reports a
+# leaked key. There is no secret there: it is a p-value from a synthetic QA
+# dataset.
+#
+# The exemption is deliberately narrow. Both conditions must hold — the file
+# must be a QA result artefact AND the line must be one of those comparison
+# prints — so a genuine credential committed anywhere else, including
+# elsewhere in the same directory, is still caught.
+
+title = "uSTAT"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "QA harness reference comparisons: `api=<number> ref=<number>` is a computed statistic, not a key"
+# Match the whole line, not the captured secret: what identifies this as a
+# QA comparison is the `ref=` that follows, which is outside the capture.
+regexTarget = "line"
+# The allowlisted value must be a NUMBER — it starts with a digit or sign and
+# contains only digits, a decimal point and an exponent — and must be followed
+# by the reference it is being compared against. No credential can take that
+# shape, so this cannot mask a real key.
+#
+# Note there is deliberately no `paths` here. A `paths` entry in an allowlist
+# skips the matching files outright, whatever `condition` says, so pairing it
+# with this regex would have exempted every secret anywhere in the QA result
+# files rather than only these lines. Verified by planting a fake token in
+# those files: with `paths` it went unreported, without it, it is caught.
+regexes = ['''\bapi=[-+]?[0-9][0-9.eE+-]*\s+(ref|ref_g|levene_p)=''']
