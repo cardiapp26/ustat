@@ -5,7 +5,17 @@ import { usePlotLayout, usePalette, useTraceDefaults, applySeriesPins } from "..
 import { getHistogram, getScatter, getBoxplot, getBar, getPairedBox, getDumbbell, getCompareMeans, getErrorPlot, getEcdf, getPie, getBalloon, getSummaryStats, getFacet, getLinePlot, getSlopePlot, getSankey, getStackPlot, getRidgePlot, getSets } from "../api";
 import type { PlotData, PlotLayout, PlotCaptureHandle } from "../lib/plotTypes";
 import TitledPlot from "./TitledPlot";
+import ChartTypeIcon from "./charts/ChartTypeIcon";
 import { fmtP } from "../lib/format";
+
+/** Chart types offered in the picker, in the order they are listed. Exported
+ *  so the icon set can be checked for coverage rather than drifting quietly
+ *  when a chart is added. */
+export const CHART_TYPES = [
+  "histogram", "scatter", "boxplot", "violin", "raincloud", "bar", "paired",
+  "dumbbell", "errorplot", "ecdf", "pie", "balloon", "facet", "lineplot",
+  "slopeplot", "sankey", "stackplot", "ridgeplot", "sets",
+] as const;
 
 export default function ChartsPanel() {
   const session  = useStore((s) => s.session);
@@ -305,10 +315,15 @@ function ChartsPanelBody({ session }: { session: Session }) {
       <div className="w-60 flex-shrink-0 space-y-4 overflow-y-auto pr-1" style={{ maxHeight: "calc(100vh - 120px)" }}>
         <div className="panel space-y-3 bg-white border border-gray-200 shadow-sm rounded-2xl p-4">
           <h3 className="text-sm font-semibold text-gray-700">Chart Type</h3>
-          {["histogram", "scatter", "boxplot", "violin", "raincloud", "bar", "paired", "dumbbell", "errorplot", "ecdf", "pie", "balloon", "facet", "lineplot", "slopeplot", "sankey", "stackplot", "ridgeplot", "sets"].map((t) => (
+          {CHART_TYPES.map((t) => (
             <label key={t} className="flex items-center gap-2 cursor-pointer">
               <input type="radio" name="chartType" value={t} checked={chartType === t}
                 onChange={() => setChartType(t)} className="accent-indigo-500" />
+              {/* Thumbnail of the shape this chart makes. Muted until the row
+                  is picked, so the list reads as labels first and the choice
+                  still stands out. */}
+              <ChartTypeIcon type={t} className={`w-6 h-4 flex-shrink-0 transition-colors ${
+                chartType === t ? "text-indigo-600" : "text-gray-400"}`} />
               <span className="text-sm text-gray-700 capitalize">
                 {t === "paired" ? "Paired box" : t === "errorplot" ? "Error plot"
                   : t === "ecdf" ? "ECDF" : t === "pie" ? (donut ? "Donut" : "Pie")
