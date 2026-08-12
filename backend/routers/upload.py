@@ -283,12 +283,107 @@ def _kind_with_imported_metadata(series: pd.Series, metadata: dict) -> str:
     return _detect_kind(series)
 
 
+
+# ── Excel cell notes as value labels ───────────────────────────────────────────
+
+# "0:Benign", "3 = Hurthle", "2) Foliküler", "1 - Papiller". A bare hyphen only
+# counts when a space follows it, so a label like "1-2 kez" is not read as the
+# code 1 meaning "2 kez".
+_CODE_LINE = re.compile(r"^\s*(-?\d+(?:[.,]\d+)?)\s*(?::|=|\)|\||\t|(?<=\d)\s[-\u2013]\s)\s*(\S.*?)\s*$")
+# Legends live at the top of a sheet; scanning the whole thing would read every
+# stray note on a 50 000-row file for nothing.
+_NOTE_SCAN_ROWS = 30
+# A note only becomes value labels if the codes actually describe the column.
+# Otherwise a passing remark on a continuous variable would relabel it and, via
+# _kind_with_imported_metadata, turn it categorical.
+_COVERAGE = 0.8
+
+
+def _parse_code_lines(text: str) -> dict[str, str]:
+    """Pull `code: label` pairs out of a free-text note.
+
+    Lines that do not look like a coding line are ignored rather than fought
+    with — Excel puts the author's name on the first line, and people write a
+    sentence above the list.
+    """
+    out: dict[str, str] = {}
+    for line in str(text).replace("\r", "\n").split("\n"):
+        m = _CODE_LINE.match(line)
+        if m:
+            out[_metadata_key(float(m.group(1).replace(",", ".")))] = m.group(2).strip()
+    return out
+
+
+def _covers_column(series: pd.Series, codes: dict[str, str]) -> bool:
+    """Do these codes describe what is actually in the column?"""
+    values = series.dropna()
+    if values.empty:
+        return False
+    seen = {_metadata_key(v) for v in values.unique()}
+    return len(seen & set(codes)) / len(seen) >= _COVERAGE
+
+
+def _excel_note_metadata(content: bytes, df: pd.DataFrame) -> dict[str, dict]:
+    """Value labels written as Excel cell notes.
+
+    SPSS, Stata and SAS carry value labels in the file and uSTAT already reads
+    them. An .xlsx has nowhere to put them, so people type the coding scheme
+    into a note on the header cell — and pandas drops notes entirely, which is
+    how a column of 0s and 1s arrives with nothing to say what they mean.
+
+    Notes are matched to columns by position, which is how pandas reads them:
+    an empty spreadsheet column still becomes an `Unnamed: n` column, so the
+    two stay aligned.
+    """
+    try:
+        import openpyxl
+
+        wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
+        ws = wb.worksheets[0]
+    except Exception as exc:  # .xls, encrypted, or a format openpyxl declines
+        logger.debug(f"no Excel notes read: {exc}")
+        return {}
+
+    by_index: dict[int, list[tuple[int, str]]] = {}
+    try:
+        for row in ws.iter_rows(min_row=1, max_row=_NOTE_SCAN_ROWS):
+            for cell in row:
+                note = getattr(cell, "comment", None)
+                if note is not None and getattr(note, "text", None):
+                    by_index.setdefault(cell.column, []).append((cell.row, note.text))
+    except Exception as exc:
+        logger.debug(f"Excel note scan failed: {exc}")
+        return {}
+    finally:
+        wb.close()
+
+    out: dict[str, dict] = {}
+    for position, col in enumerate(df.columns, start=1):
+        notes = by_index.get(position)
+        if not notes:
+            continue
+        # The header's own note wins; a note further down is a fallback.
+        notes.sort(key=lambda rt: rt[0])
+        text = notes[0][1]
+        codes = _parse_code_lines(text)
+        if len(codes) >= 2 and _covers_column(df[col], codes):
+            out[col] = {"value_labels": codes, "measure": "nominal"}
+        else:
+            # Not a coding scheme — but the note still says something about the
+            # variable, and a description is better kept than dropped.
+            flat = " ".join(str(text).split())
+            if flat:
+                out[col] = {"label": flat[:300]}
+    return out
+
+
 def _read(filename: str, content: bytes) -> tuple[pd.DataFrame, dict[str, dict]]:
     ext = filename.rsplit(".", 1)[-1].lower()
     if ext == "csv":
         return pd.read_csv(io.BytesIO(content)), {}
     elif ext in ("xlsx", "xls"):
-        return pd.read_excel(io.BytesIO(content)), {}
+        df = pd.read_excel(io.BytesIO(content))
+        return df, _excel_note_metadata(content, df)
     elif ext in ("sas7bdat", "sav", "dta"):
         # pyreadstat requires a real file path, not BytesIO
         with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as tmp:

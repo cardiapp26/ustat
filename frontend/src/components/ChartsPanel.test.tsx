@@ -55,6 +55,57 @@ describe('ChartsPanel', () => {
     expect(screen.getByText('Custom Labels')).toBeInTheDocument()
   })
 
+  it('prints the count on every non-empty bar, not only on hover', async () => {
+    // A histogram is read for "how many are in this category", and a printed
+    // figure has no hover at all.
+    installSession()
+    server.use(
+      http.post('/api/charts/histogram', () =>
+        HttpResponse.json({
+          type: 'histogram', x: 'AGE',
+          bins: [
+            { x0: 0, x1: 1, count: 386 },
+            { x0: 1, x1: 2, count: 0 },
+            { x0: 2, x1: 3, count: 61 },
+          ],
+          kde: [{ x: 0.5, y: 0.4 }, { x: 2.5, y: 0.1 }],
+        }),
+      ),
+    )
+    const user = userEvent.setup()
+    render(<ChartsPanel />)
+    await user.click(screen.getByRole('button', { name: /generate chart/i }))
+
+    await waitFor(() => expect(screen.getByTestId('plotly-mock')).toBeInTheDocument())
+    const traces = JSON.parse(screen.getByTestId('plotly-mock').getAttribute('data-plotly') ?? '[]')
+    const bar = traces.find((t: { type?: string }) => t.type === 'bar')
+    // The empty bin prints nothing: a row of zeroes along the axis is noise.
+    expect(bar.text).toEqual(['386', '', '61'])
+    // Above the bar, and not clipped off the top by the tallest one.
+    expect(bar.textposition).toBe('outside')
+    expect(bar.cliponaxis).toBe(false)
+  })
+
+  it('drops the bar labels once the bins are too dense to read', async () => {
+    installSession()
+    server.use(
+      http.post('/api/charts/histogram', () =>
+        HttpResponse.json({
+          type: 'histogram', x: 'AGE',
+          bins: Array.from({ length: 40 }, (_, i) => ({ x0: i, x1: i + 1, count: i + 1 })),
+          kde: [{ x: 1, y: 0.1 }],
+        }),
+      ),
+    )
+    const user = userEvent.setup()
+    render(<ChartsPanel />)
+    await user.click(screen.getByRole('button', { name: /generate chart/i }))
+
+    await waitFor(() => expect(screen.getByTestId('plotly-mock')).toBeInTheDocument())
+    const traces = JSON.parse(screen.getByTestId('plotly-mock').getAttribute('data-plotly') ?? '[]')
+    expect(traces.find((t: { type?: string }) => t.type === 'bar').text).toBeUndefined()
+  })
+
   it('runs a scatter chart with x/y selection', async () => {
     installSession()
     server.use(

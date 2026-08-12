@@ -1217,6 +1217,16 @@ function buildTraces(
     const kde = d.kde as Array<Record<string, number>>;
     const totalCount = bins.reduce((a, b) => a + b.count, 0);
     const binWidth = bins[0].x1 - bins[0].x0;
+    // Counts printed on the bars rather than only on hover: a histogram is
+    // usually read for "how many are in this category", and a printed figure
+    // has no hover at all. Above the bar rather than inside it, because a bar
+    // one pixel tall has no inside — and `cliponaxis: false` so the label on
+    // the tallest bar is not cut off by the top of the plot.
+    //
+    // Suppressed past 30 bins: at that density the labels collide into an
+    // unreadable band, and a continuous variable cut that finely is being read
+    // for its shape, not its bin counts.
+    const showCounts = bins.length <= 30;
     return [
       {
         type: "bar",
@@ -1224,6 +1234,14 @@ function buildTraces(
         y: bins.map((b) => b.count),
         marker: { color: C[0], opacity: 0.8 },
         name: "Count",
+        ...(showCounts ? {
+          // Empty bins print nothing: a row of zeroes along the axis is noise.
+          text: bins.map((b) => (b.count ? String(b.count) : "")),
+          textposition: "outside",
+          cliponaxis: false,
+          textfont: { size: Math.max(8, (td.markerSize ?? 6) + 3) },
+          hovertemplate: "%{x}<br>%{y} observations<extra></extra>",
+        } : {}),
       },
       {
         type: "scatter",
