@@ -307,6 +307,19 @@ export const runConcordance  = (data: object) => api.post("/api/agreement/concor
 // Reliability
 export const runCronbach     = (data: object) => api.post("/api/reliability/cronbach", data);
 
+// Threshold (two-piecewise) regression
+export interface ThresholdRequest {
+  session_id: string;
+  outcome: string;
+  exposure: string;
+  outcome_kind?: "continuous" | "binary" | "survival";
+  time_col?: string;
+  covariates?: string[];
+  categorical?: string[];
+}
+export const runThreshold = (data: ThresholdRequest) =>
+  api.post("/api/threshold/analyze", data);
+
 // Normality
 export interface NormalityRequest {
   session_id: string;
