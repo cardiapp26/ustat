@@ -396,7 +396,7 @@ Pull requests welcome. Before opening one:
 If you publish results obtained with uSTAT, please cite the tool:
 
 > Hoşoğlu Y, Hoşoğlu A. *uSTAT — browser-based statistical analysis platform.*
-> Version 3.5.0. Zenodo; 2026. doi:10.5281/zenodo.21610852
+> Version 3.6.0. Zenodo; 2026. doi:10.5281/zenodo.21610852
 
 BibTeX:
 
@@ -404,7 +404,7 @@ BibTeX:
 @software{ustat,
   author    = {Hoşoğlu, Yusuf and Hoşoğlu, Ayşe},
   title     = {uSTAT — browser-based statistical analysis platform},
-  version   = {3.5.0},
+  version   = {3.6.0},
   doi       = {10.5281/zenodo.21610852},
   url       = {https://ustat.drtr.uk},
   publisher = {Zenodo},

@@ -76,8 +76,8 @@ keywords:
   - fastapi
   - react
 license: "MIT"
-version: "3.5.0"
-date-released: "2026-08-10"
+version: "3.6.0"
+date-released: "2026-08-12"
 preferred-citation:
   type: software
   title: "uSTAT — Browser-based Statistical Analysis Platform"
@@ -87,7 +87,7 @@ preferred-citation:
     - given-names: Ayşe
       family-names: Hoşoğlu
   year: 2026
-  version: "3.5.0"
+  version: "3.6.0"
   doi: 10.5281/zenodo.21610852
   url: "https://ustat.drtr.uk"
   repository-code: "https://github.com/afstudy20-gif/ustat"
