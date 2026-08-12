@@ -493,9 +493,18 @@ function DataTableBody({ session }: { session: Session }) {
   // ── Row virtualisation ──────────────────────────────────────────────────
   // A 1000 x 125 sheet is 126,000 <td>s and ~256k DOM nodes; rendering them
   // all took ~5.8s before the grid became usable (the upload itself is 0.4s).
-  // Rows are a uniform 33px, so a fixed-height window is exact. Small sheets
-  // render in full so short datasets — and the existing tests — are untouched.
+  // Rows are a uniform 33px, so a fixed-height window is exact — but only
+  // because the cells below are forced to one line. A wrapping cell (a free-text
+  // note column is the usual culprit) makes the real row taller than ROW_H, so
+  // padTop + rendered + padBottom stops matching the scroll height. The
+  // container then resizes under its own scrollbar as rows swap in and out, the
+  // browser clamps scrollTop, and the grid judders and snaps back to the same
+  // rows instead of scrolling. Hence `truncate` and a fixed row height, not a
+  // comment asking for one.
   const ROW_H = 33;
+  // Wide enough for a sentence, narrow enough that one long note cannot push
+  // every other column off screen.
+  const CELL_MAX_W = 260;
   const VIRTUALIZE_ABOVE = 150;
   const OVERSCAN = 12;
 
@@ -2091,9 +2100,10 @@ function DataTableBody({ session }: { session: Session }) {
                 <tr
                   key={origIdx}
                   className="group border-t border-gray-100 hover:bg-gray-50 transition-colors"
+                  style={{ height: ROW_H }}
                 >
                   <td
-                    className={`px-1 py-1.5 text-gray-300 text-[11px] border-r border-gray-200 select-none text-center cursor-pointer sticky left-0 z-10 ${rowChecked ? "bg-indigo-100/80" : "bg-white group-hover:bg-gray-50"}`}
+                    className={`px-1 py-1.5 text-gray-300 text-[11px] border-r border-gray-200 select-none text-center cursor-pointer sticky left-0 z-10 whitespace-nowrap ${rowChecked ? "bg-indigo-100/80" : "bg-white group-hover:bg-gray-50"}`}
                     style={{ width: HASH_COL_W, minWidth: HASH_COL_W, maxWidth: HASH_COL_W }}
                     onMouseDown={(e) => {
                       if ((e.ctrlKey || e.metaKey) && e.shiftKey) {
@@ -2169,7 +2179,8 @@ function DataTableBody({ session }: { session: Session }) {
                               ? "px-3 py-1.5 cursor-pointer bg-blue-100 outline outline-1 outline-blue-400"
                               : isNull
                                 ? `px-3 py-1.5 cursor-pointer ${ticked ? "bg-indigo-50" : "bg-amber-50/60 hover:bg-amber-100/60"}`
-                                : `px-3 py-1.5 cursor-pointer hover:bg-indigo-50/50 ${ticked ? "bg-indigo-50" : frozen ? "bg-white" : ""}`}`}
+                                : `px-3 py-1.5 cursor-pointer hover:bg-indigo-50/50 ${ticked ? "bg-indigo-50" : frozen ? "bg-white" : ""}`}
+                          ${isEditing ? "" : "whitespace-nowrap overflow-hidden"}`}
                         style={frozen ? { left: frozenLeft(colIdx), width: FROZEN_COL_W, minWidth: FROZEN_COL_W, maxWidth: FROZEN_COL_W } : undefined}
                       >
                         {isEditing ? (
@@ -2224,7 +2235,13 @@ function DataTableBody({ session }: { session: Session }) {
                         ) : isNull ? (
                           <span className="text-amber-400 italic text-[10px] font-medium">null</span>
                         ) : (
-                          <span className={col.kind === "numeric" ? "text-gray-700" : "text-gray-600"}>
+                          <span
+                            className={`block truncate ${col.kind === "numeric" ? "text-gray-700" : "text-gray-600"}`}
+                            style={{ maxWidth: frozen ? undefined : CELL_MAX_W }}
+                            // Clipped text is unreadable without this; the cell
+                            // editor still holds the whole value.
+                            title={String(cellVal)}
+                          >
                             {(() => {
                               // Always derive display from the raw stored value + the
                               // CURRENT decimals setting — never trust a stale display

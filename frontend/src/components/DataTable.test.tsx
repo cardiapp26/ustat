@@ -61,6 +61,45 @@ describe('DataTable row virtualisation', () => {
     expect(screen.getByTitle(/Original row #1\b/)).toBeInTheDocument()
   })
 
+  it('keeps every row exactly one line tall, whatever the cell holds', () => {
+    // Reported: scrolling a 560-row sheet juddered and snapped back to the
+    // same rows. The sheet had a free-text notes column; its cells wrapped, so
+    // rows were 45, 125, even 157px against the 33px the window arithmetic
+    // assumes. padTop + rendered + padBottom then stopped matching the real
+    // scroll height, the container resized under its own scrollbar as rows
+    // swapped in and out (34 distinct scrollHeights over 40 scroll steps), and
+    // the browser clamped scrollTop back.
+    //
+    // jsdom does no layout, so this pins the cause rather than the pixels: the
+    // row carries a fixed height and the cells cannot wrap.
+    const columns: ColMeta[] = [
+      { name: 'id', dtype: 'int64', kind: 'numeric' },
+      { name: 'Notlar', dtype: 'object', kind: 'text' },
+    ]
+    const long = 'Hasta postoperatif donemde sorunsuz izlendi, komplikasyon gelismedi, '
+      + 'poliklinik takibine alindi ve iki hafta sonraya randevu verildi'
+    const preview = Array.from({ length: 400 }, (_, i) => ({ id: i, Notlar: long }))
+    installSession(makeSession({ columns, preview, rows: 400 }))
+    render(<DataTable />)
+
+    const rows = [...document.querySelectorAll('tbody tr[class*="group"]')] as HTMLElement[]
+    expect(rows.length).toBeGreaterThan(0)
+    expect(rows.every((r) => r.style.height === '33px')).toBe(true)
+
+    const cells = [...rows[0].querySelectorAll('td')] as HTMLElement[]
+    expect(cells.every((td) => td.className.includes('whitespace-nowrap'))).toBe(true)
+  })
+
+  it('clips a long value but keeps it readable on hover', () => {
+    const columns: ColMeta[] = [{ name: 'Notlar', dtype: 'object', kind: 'text' }]
+    const long = 'Tiroidektomi sonrasi hipokalsemi gelisti, kalsiyum replasmani baslandi'
+    installSession(makeSession({ columns, preview: [{ Notlar: long }], rows: 1 }))
+    render(<DataTable />)
+
+    const span = screen.getByTitle(long)
+    expect(span.className).toContain('truncate')
+  })
+
   it('shows the empty state when every row is filtered out', () => {
     installSession(makeSession({ columns: [], preview: [], rows: 0 }))
     render(<DataTable />)
