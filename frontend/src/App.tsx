@@ -77,6 +77,7 @@ import Table1Panel from "./components/Table1Panel";
 import PowerPanel from "./components/PowerPanel";
 import { usePersistedPanelState } from "./hooks/usePersistedPanelState";
 import ComputePanel from "./components/ComputePanel";
+import MergePanel from "./components/MergePanel";
 import PSMPanel from "./components/PSMPanel";
 import IPTWPanel from "./components/IPTWPanel";
 import RepeatedMeasuresPanel from "./components/RepeatedMeasuresPanel";
@@ -397,12 +398,24 @@ function TestsCombo() {
 }
 
 function ComputeCombo() {
-  // Dictionary moved to the Data tab toolbar as a modal. Compute is now a
-  // single panel.
+  // Dictionary moved to the Data tab toolbar as a modal. Both entries here
+  // reshape the sheet: one derives columns from what is already there, the
+  // other brings columns in from another file.
+  const [sub, setSub] = usePersistedPanelState<"compute" | "merge">("combo_compute", "sub", "compute");
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex gap-1 px-4 pt-2 pb-1 bg-tint border-b border-line flex-shrink-0">
+        {([["compute", "New Columns"], ["merge", "Join a File"]] as const).map(([id, label]) => (
+          <button key={id} onClick={() => setSub(id)}
+            className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+              sub === id ? "bg-surface text-ink-600 shadow-card border border-line" : "text-slate-500 hover:text-slate-700 hover:bg-chip"
+            }`}>
+            {label}
+          </button>
+        ))}
+      </div>
       <div className="flex-1 p-4 overflow-y-auto">
-        <ComputePanel />
+        {sub === "merge" ? <MergePanel /> : <ComputePanel />}
       </div>
     </div>
   );

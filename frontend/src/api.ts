@@ -307,6 +307,19 @@ export const runConcordance  = (data: object) => api.post("/api/agreement/concor
 // Reliability
 export const runCronbach     = (data: object) => api.post("/api/reliability/cronbach", data);
 
+// Joining a second file onto the open dataset
+export interface MergeRequest {
+  session_id: string;
+  other_session_id: string;
+  left_on: string[];
+  right_on: string[];
+  how?: "left" | "inner" | "outer";
+  columns?: string[];
+  suffix?: string;
+}
+export const mergePreview = (data: MergeRequest) => api.post("/api/merge/preview", data);
+export const mergeApply = (data: MergeRequest) => api.post("/api/merge/apply", data);
+
 // Subgroup analysis with P for interaction
 export interface SubgroupRequest {
   session_id: string;

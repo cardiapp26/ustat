@@ -96,7 +96,10 @@ def test_select_cases_restricts_analysis_families(client):
 def test_analysis_routers_do_not_use_unfiltered_store_access():
     routers = Path(__file__).resolve().parents[1] / "routers"
     # These modules intentionally manage or mutate the complete dataset.
-    allowed_unfiltered = {"session.py", "compute.py", "pub_export.py"}
+    # merge.py joins onto the whole sheet on purpose: reading the filtered
+    # view and saving the result would delete every excluded row, turning a
+    # display filter into permanent data loss.
+    allowed_unfiltered = {"session.py", "compute.py", "pub_export.py", "merge.py"}
     violations = []
     for path in routers.rglob("*.py"):
         if path.name in allowed_unfiltered:
