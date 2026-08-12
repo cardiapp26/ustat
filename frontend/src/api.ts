@@ -307,6 +307,20 @@ export const runConcordance  = (data: object) => api.post("/api/agreement/concor
 // Reliability
 export const runCronbach     = (data: object) => api.post("/api/reliability/cronbach", data);
 
+// Subgroup analysis with P for interaction
+export interface SubgroupRequest {
+  session_id: string;
+  outcome: string;
+  exposure: string;
+  subgroups: string[];
+  outcome_kind?: "continuous" | "binary" | "survival";
+  time_col?: string;
+  covariates?: string[];
+  categorical?: string[];
+}
+export const runSubgroup = (data: SubgroupRequest) =>
+  api.post("/api/subgroup/analyze", data);
+
 // Progressive adjustment (crude / model 1 / model 2 …)
 export interface MultiModelRequest {
   session_id: string;

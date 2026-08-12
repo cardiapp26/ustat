@@ -138,7 +138,14 @@ def _fit(kind: str, y: pd.Series, X: pd.DataFrame, time: Optional[pd.Series]) ->
                         df_resid=float(res.df_resid))
         if kind == "binary":
             design = sm.add_constant(X, has_constant="add")
-            res = sm.GLM(y, design, family=sm.families.Binomial()).fit()
+            # statsmodels' default IRLS tolerance (1e-8) stops one iterate short,
+            # and the standard error is then computed from that iterate's
+            # weights — 1.1e-7 off the analytic sqrt(diag((X'WX)^-1)) at the
+            # fitted coefficients. At 1e-12 it is exact to 6e-14, for the cost
+            # of a couple of iterations. (R's glm has the same behaviour at its
+            # own default and keeps it even at epsilon = 1e-12, which is where
+            # the last residual disagreement with R comes from.)
+            res = sm.GLM(y, design, family=sm.families.Binomial()).fit(maxiter=200, tol=1e-12)
             return _Fit(float(res.llf), res.params, res.bse, res.pvalues,
                         np.asarray(res.cov_params()), list(design.columns), int(design.shape[1]))
         if kind == "survival":
