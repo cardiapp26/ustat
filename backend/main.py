@@ -15,7 +15,7 @@ except ImportError:
 import logging
 
 from routers import (
-    upload, stats, charts, models, session, compute, repeated, advanced_anova, threshold,
+    upload, stats, charts, models, session, compute, repeated, advanced_anova, threshold, multimodel,
     pub_tables, categorical, agreement, reliability, missing_data, decision_curve,
     model_compare, diagnostics, model_diagnostics, pub_export, nomogram,
     survival_advanced, article_parser, code_runner, ml, timeseries, meta,
@@ -107,6 +107,7 @@ app.include_router(model_diagnostics.router, prefix="/api/model_diagnostics", ta
 app.include_router(pub_export.router, prefix="/api/pub_export", tags=["pub_export"])
 app.include_router(nomogram.router, prefix="/api/nomogram", tags=["nomogram"])
 app.include_router(threshold.router, prefix="/api/threshold", tags=["threshold"])
+app.include_router(multimodel.router, prefix="/api/multimodel", tags=["multimodel"])
 app.include_router(survival_advanced.router, prefix="/api/survival_advanced", tags=["survival_advanced"])
 app.include_router(article_parser.router, prefix="/api/article_parser", tags=["article_parser"])
 app.include_router(code_runner.router, prefix="/api/code", tags=["code_runner"])

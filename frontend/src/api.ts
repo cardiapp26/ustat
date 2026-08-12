@@ -307,6 +307,20 @@ export const runConcordance  = (data: object) => api.post("/api/agreement/concor
 // Reliability
 export const runCronbach     = (data: object) => api.post("/api/reliability/cronbach", data);
 
+// Progressive adjustment (crude / model 1 / model 2 …)
+export interface MultiModelRequest {
+  session_id: string;
+  outcome: string;
+  exposure: string;
+  models: { label: string; covariates: string[] }[];
+  outcome_kind?: "continuous" | "binary" | "survival";
+  time_col?: string;
+  categorical?: string[];
+  exposure_categorical?: boolean;
+}
+export const runMultiModel = (data: MultiModelRequest) =>
+  api.post("/api/multimodel/analyze", data);
+
 // Threshold (two-piecewise) regression
 export interface ThresholdRequest {
   session_id: string;

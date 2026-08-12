@@ -63,6 +63,7 @@ import KMCompositePanel from "./components/KMCompositePanel";
 import ForestBuilderPanel from "./components/ForestBuilderPanel";
 import HypothesisPanel from "./components/HypothesisPanel";
 import ThresholdPanel from "./components/ThresholdPanel";
+import MultiModelPanel from "./components/MultiModelPanel";
 import NormalityPanel from "./components/NormalityPanel";
 import CorrelationPanel from "./components/CorrelationPanel";
 import ModelsPanel from "./components/ModelsPanel";
@@ -428,11 +429,11 @@ function SummaryCombo() {
 }
 
 function ModelsCombo() {
-  const [sub, setSub] = usePersistedPanelState<"regression" | "survival" | "rcs" | "threshold" | "ml" | "timeseries" | "validation">("combo_models", "sub", "regression");
+  const [sub, setSub] = usePersistedPanelState<"regression" | "survival" | "rcs" | "threshold" | "multimodel" | "ml" | "timeseries" | "validation">("combo_models", "sub", "regression");
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       <div className="flex gap-1 px-4 pt-2 pb-1 bg-tint border-b border-line flex-shrink-0">
-        {([["regression", "Regression"], ["survival", "Survival Advanced"], ["rcs", "Restricted Cubic Spline"], ["threshold", "Threshold"], ["ml", "Machine Learning", "dev"], ["timeseries", "Time Series"], ["validation", "Validation (internal / external)"]] as const).map(([id, label, badge]) => (
+        {([["regression", "Regression"], ["survival", "Survival Advanced"], ["rcs", "Restricted Cubic Spline"], ["threshold", "Threshold"], ["multimodel", "Progressive Adjustment"], ["ml", "Machine Learning", "dev"], ["timeseries", "Time Series"], ["validation", "Validation (internal / external)"]] as const).map(([id, label, badge]) => (
           <button key={id} onClick={() => setSub(id)}
             className={`px-3 py-1 rounded-md text-xs font-medium transition-colors inline-flex items-center gap-1.5 ${
               sub === id ? "bg-surface text-ink-600 shadow-card border border-line" : "text-slate-500 hover:text-slate-700 hover:bg-chip"
@@ -451,6 +452,7 @@ function ModelsCombo() {
         {sub === "regression" ? <div className="p-4"><ModelsPanel /></div>
           : sub === "rcs" ? <div className="p-4"><RCSPanel /></div>
           : sub === "threshold" ? <div className="p-4"><ThresholdPanel /></div>
+          : sub === "multimodel" ? <div className="p-4"><MultiModelPanel /></div>
           : sub === "ml" ? <div className="p-4"><MLPanel /></div>
           : sub === "timeseries" ? <TimeSeriesPanel />
           : sub === "validation" ? <div className="p-4"><InternalValidationPanel /></div>
