@@ -207,11 +207,19 @@ def test_chisquare_matches_the_tests_tab(client, wide):
         )
         assert rc.status_code == 200, rc.text
         chi = rc.json()
-        if not str(row["test"]).startswith("Chi"):
-            continue  # small-cell fallback; a different test by design
+        # The Tests tab used to report a plain chi-square on a sparse table
+        # while Table 1 ran the exact test, so one crosstab carried two
+        # different p-values. Both now follow the same rule, including which
+        # test they say they ran.
         assert _p(row) == pytest.approx(chi["p"], abs=5e-4), (
             f"{var}: Table 1 {row['p_value']} vs Tests {chi['p']}"
         )
+        if str(row["test"]).startswith("Chi"):
+            assert chi["exact_test"] is None
+        else:
+            assert chi["exact_test"] == row["test"], (
+                f"{var}: Table 1 ran {row['test']}, Tests ran {chi['exact_test']}"
+            )
 
 
 def test_printed_counts_add_up_to_the_rows_the_test_used(client, wide):

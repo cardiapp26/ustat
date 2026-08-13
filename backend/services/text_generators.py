@@ -46,13 +46,27 @@ def methods_ttest_one(col: str, mu: float) -> str:
     )
 
 
-def methods_chisquare(row_col: str, col_col: str) -> str:
+def methods_chisquare(row_col: str, col_col: str, exact: str | None = None) -> str:
+    """Methods sentence for a crosstab test.
+
+    ``exact`` names the test that actually produced the p when the expected
+    counts ruled out the chi-square. A methods section that describes a
+    chi-square while the results report an exact p is not reproducible, and a
+    reviewer checking the two against each other would find them inconsistent.
+    """
+    if exact:
+        return (
+            f"The association between {row_col} and {col_col} was assessed "
+            f"using {exact}, as one or more expected cell counts were below 5. "
+            f"Effect size was measured with Cramer's V, with a 95% confidence "
+            f"interval from the noncentral chi-square distribution."
+        )
     return (
         f"The association between {row_col} and {col_col} was assessed "
         f"using Pearson's chi-square test of independence. "
-        f"Effect size was measured with Cramer's V. "
-        f"Expected cell counts were inspected; Fisher's exact test is recommended "
-        f"when any expected count is below 5."
+        f"Effect size was measured with Cramer's V, with a 95% confidence "
+        f"interval from the noncentral chi-square distribution. "
+        f"All expected cell counts were 5 or greater."
     )
 
 
@@ -145,11 +159,24 @@ def results_chisquare(result: dict) -> str:
     dof = result.get("dof", 1)
     n = result.get("n", 0)
     sig = result.get("significant", False)
+    exact = result.get("exact_test")
     es_list = result.get("effect_sizes", [])
     es_text = f", {_es_str(es_list[0])}" if es_list else ""
 
+    lead = (
+        "A significant association was found" if sig
+        else "No significant association was found"
+    )
+    if exact:
+        # Attaching the exact p to the chi-square statistic reads as though
+        # that statistic produced it. The chi-square is still quoted, but as
+        # the descriptive quantity it is here, not as the test.
+        return (
+            f"{lead} ({exact}, p = {_p_str(p)}; N = {n}, "
+            f"\u03C7\u00B2({dof}) = {chi2:.2f}){es_text}."
+        )
     return (
-        f"{'A significant association was found' if sig else 'No significant association was found'}, "
+        f"{lead}, "
         f"\u03C7\u00B2({dof}, N = {n}) = {chi2:.2f}, p = {_p_str(p)}{es_text}."
     )
 
@@ -230,8 +257,23 @@ def r_ttest_ind(col: str, group_col: str, welch: bool = False) -> str:
 def r_ttest_one(col: str, mu: float) -> str:
     return f't.test(data${col}, mu = {mu})'
 
-def r_chisquare(row_col: str, col_col: str) -> str:
-    return f'chisq.test(table(data${row_col}, data${col_col}))'
+def r_chisquare(row_col: str, col_col: str, exact: str | None = None) -> str:
+    tbl = f'table(data${row_col}, data${col_col})'
+    if exact and exact.startswith("Fisher-Freeman-Halton"):
+        # R's exact r x c network algorithm, not simulate.p.value: setting a
+        # seed in R would not reproduce uSTAT's p anyway, since the two
+        # permutation streams are unrelated. The exact p is what uSTAT's
+        # resampling estimates, so it is the right thing to check against —
+        # and the comment says so rather than implying the numbers will match
+        # to the last digit.
+        return (
+            f'# uSTAT estimates this p by resampling (5000 permutations);\n'
+            f'# R computes it exactly. At 5000 permutations the Monte Carlo\n# standard error is about 0.007, so expect agreement to ~0.015.\n'
+            f'fisher.test({tbl})'
+        )
+    if exact:
+        return f'fisher.test({tbl})'
+    return f'chisq.test({tbl})'
 
 def r_mannwhitney(col: str, group_col: str) -> str:
     return f'wilcox.test({col} ~ {group_col}, data = data)'

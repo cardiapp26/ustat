@@ -12,6 +12,7 @@ Provides:
 import numpy as np
 import pandas as pd
 from scipy import stats as sp
+from scipy.optimize import brentq
 from typing import Optional
 from dataclasses import dataclass, field, asdict
 
@@ -517,15 +518,80 @@ def rank_biserial_r(u_stat: float, n1: int, n2: int) -> dict:
     }
 
 
-def cramers_v(chi2: float, n: int, min_dim: int) -> dict:
-    """Cramer's V with bias correction."""
+def _noncentrality_ci(
+    chi2: float, dof: int, conf_level: float = 0.95
+) -> tuple[float, float]:
+    """Confidence limits for the chi-square noncentrality parameter.
+
+    Inverts the noncentral chi-square distribution at the observed statistic:
+    the lower limit is the lambda whose CDF at chi2 equals 1 - alpha/2, the
+    upper limit the lambda whose CDF equals alpha/2. This is the Steiger-Fouladi
+    method that DescTools::CramerV uses, and it is what makes the lower limit
+    exactly zero for a statistic a central chi-square already explains — an
+    honest answer that a symmetric interval around V cannot give, because V is
+    bounded below by 0 and its sampling distribution is skewed near that bound.
+    """
+    alpha = 1.0 - conf_level
+    if not np.isfinite(chi2) or chi2 <= 0 or dof < 1:
+        return 0.0, 0.0
+
+    def cdf(lam: float) -> float:
+        return float(sp.ncx2.cdf(chi2, dof, lam)) if lam > 0 else float(sp.chi2.cdf(chi2, dof))
+
+    # Lower limit: zero whenever a central chi-square is already consistent
+    # with the observed statistic at the upper tail probability.
+    if cdf(0.0) <= 1 - alpha / 2:
+        lo = 0.0
+    else:
+        lo = _solve_ncp(cdf, 1 - alpha / 2, chi2)
+    hi = _solve_ncp(cdf, alpha / 2, chi2)
+    return lo, max(hi, lo)
+
+
+def _solve_ncp(cdf, target: float, chi2: float) -> float:
+    """Find the noncentrality whose CDF at the statistic equals ``target``.
+
+    ``cdf`` decreases monotonically in lambda, so the bracket is grown by
+    doubling until it straddles the target rather than assuming an upper bound.
+    """
+    hi = max(chi2, 1.0)
+    for _ in range(60):
+        if cdf(hi) < target:
+            break
+        hi *= 2
+    else:
+        return hi
+    try:
+        return float(brentq(lambda lam: cdf(lam) - target, 0.0, hi, xtol=1e-10, rtol=1e-12))
+    except Exception:
+        return 0.0
+
+
+def cramers_v(
+    chi2: float, n: int, min_dim: int, dof: Optional[int] = None
+) -> dict:
+    """Cramer's V, with a 95% CI when the table's degrees of freedom are known.
+
+    No bias correction: this is the plain V, matching DescTools::CramerV and
+    what medical journals report. (Bergsma's correction is a different
+    estimator and would not agree with the V quoted alongside a chi-square.)
+
+    The interval is omitted rather than guessed when ``dof`` is not supplied,
+    because it cannot be derived from V and n alone — a V of 0.2 on a 2x2 table
+    and the same V on a 5x4 table carry very different uncertainty.
+    """
     k = max(min_dim - 1, 1)
     v = np.sqrt(chi2 / (n * k)) if n > 0 else 0
+    ci_low = ci_high = None
+    if dof is not None and dof >= 1 and n > 0 and np.isfinite(chi2):
+        lo, hi = _noncentrality_ci(float(chi2), int(dof))
+        ci_low = round(float(np.sqrt(lo / (n * k))), 4)
+        ci_high = round(float(np.sqrt(hi / (n * k))), 4)
     return {
         "name": "cramers_v",
         "value": round(v, 4),
-        "ci_low": None,
-        "ci_high": None,
+        "ci_low": ci_low,
+        "ci_high": ci_high,
         "magnitude": _es_magnitude("cramers_v", v),
     }
 

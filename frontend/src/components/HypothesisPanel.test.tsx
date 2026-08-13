@@ -151,6 +151,47 @@ describe('HypothesisPanel', () => {
     expect(sent!.row_column).not.toBe('AGE')
   })
 
+  it("shows Cramer's V with its confidence interval and names the exact test", async () => {
+    // A bare effect size cannot be read as evidence of a small effect rather
+    // than of a small study, which is exactly what it is quoted for beside a
+    // non-significant p. The backend now returns the interval, and the panel
+    // has to put it on screen next to the test that actually produced the p.
+    installSession()
+    server.use(
+      http.post('/api/stats/chisquare', () =>
+        HttpResponse.json({
+          test: 'Fisher-Freeman-Halton (MC, 5000 resamples)',
+          exact_test: 'Fisher-Freeman-Halton (MC, 5000 resamples)',
+          interpretation: 'No significant association.',
+          significant: false,
+          p: 0.772,
+          p_chisquare: 0.681,
+          chi2: 1.86,
+          dof: 4,
+          effect_sizes: [
+            { name: 'cramers_v', value: 0.086, ci_low: 0.0, ci_high: 0.155, magnitude: 'small' },
+          ],
+          warnings: [
+            'Some expected cell counts are below 5, so the reported p comes from Fisher-Freeman-Halton (MC, 5000 resamples) rather than from the chi-square.',
+          ],
+        }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<HypothesisPanel />)
+    await user.click(screen.getByRole('radio', { name: /chi-square/i }))
+    await user.click(screen.getByRole('button', { name: /run test/i }))
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole('heading', { name: 'Fisher-Freeman-Halton (MC, 5000 resamples)' }),
+      ).toBeInTheDocument(),
+    )
+    expect(screen.getByText('95% CI: [0.000, 0.155]')).toBeInTheDocument()
+    expect(screen.getByText(/expected cell counts are below 5/)).toBeInTheDocument()
+  })
+
   it('two-way ANOVA lets you choose the first factor', async () => {
     // factor1 is sent as groupCol, but "two_way" was missing from the list
     // that renders the Group column selector, so the field was invisible.

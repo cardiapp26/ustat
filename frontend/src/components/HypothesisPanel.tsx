@@ -56,9 +56,9 @@ const TEST_GUIDANCE: Record<string, { when: string; assumptions: string; reading
     reading: "p < 0.05 means a monotone increasing or decreasing trend across the ordered groups. Sign of Z indicates direction.",
   },
   chisquare: {
-    when: "Test association between two categorical variables (e.g. treatment group vs. outcome category). Use when all expected cell counts are >= 5.",
-    assumptions: "Each observation is independent. Expected frequency in each cell >= 5. If any cell < 5, use Fisher's exact test instead.",
-    reading: "p < 0.05 means the variables are significantly associated. Report: \u03C7\u00B2(df) = X.XX, p = Y.YYY. Add Cramer's V for effect size.",
+    when: "Test association between two categorical variables (e.g. treatment group vs. outcome category).",
+    assumptions: "Each observation is independent. Expected frequency in each cell >= 5. If any expected count falls below 5, uSTAT reports the exact test instead \u2014 Fisher's for a 2\u00D72 table, Fisher-Freeman-Halton for a larger one \u2014 and says so above the result.",
+    reading: "p < 0.05 means the variables are significantly associated. Report: \u03C7\u00B2(df) = X.XX, p = Y.YYY, and Cramer's V with its 95% CI. A V whose interval reaches 0 is compatible with no association at all.",
   },
   fisher: {
     when: "Exact test for 2\u00D72 tables, especially when sample is small or any expected cell count < 5. Preferred over chi-square for small samples.",

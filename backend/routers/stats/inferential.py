@@ -26,6 +26,7 @@ except ImportError:
         return ret.get("interpretation", "")
 
 from services.stat_utils import (
+    _categorical_p_with_rule,
     cohen_d, cohen_d_one_sample, eta_squared, omega_squared,
     cramers_v, odds_ratio_effect,
     check_normality, check_equal_variances, group_summary,
@@ -200,30 +201,68 @@ def chisquare(req: ChiSqRequest):
                 "of each; there is nothing to test."
             ),
         )
-    chi2, p, dof, expected = scipy_stats.chi2_contingency(ct)
-    sig = bool(p < 0.05)
+    chi2, p_chisquare, dof, _expected = scipy_stats.chi2_contingency(ct)
     n = ct.values.sum()
     min_dim = min(ct.shape)
-    es = cramers_v(chi2, n, min_dim)
+    es = cramers_v(chi2, n, min_dim, dof)
 
     effect_sizes = [es]
     if ct.shape == (2, 2):
         effect_sizes.append(odds_ratio_effect(ct.values))
 
     warnings.extend(rare_level_warnings(work, [req.row_column, req.col_column]))
-    if (expected < 5).any():
-        warnings.append("Some expected cell counts < 5. Consider Fisher's exact test instead.")
+
+    # A sparse table used to be reported as a chi-square with a footnote
+    # suggesting Fisher — while Table 1 and the publication export silently
+    # ran the exact test on the same table and printed a different p. The
+    # reader had two numbers for one crosstab and no way to tell which was
+    # meant. The reported p now follows the same rule everywhere; the
+    # chi-square p stays in the payload so nothing is hidden.
+    p_rule, reason = _categorical_p_with_rule(ct.values)
+    if p_rule is None:
+        # The rule declines a table it considers untestable — a free-text or
+        # identifier column with one category per row. The chi-square on such
+        # a table is meaningless, so its reason is surfaced as a warning
+        # instead of being swallowed.
+        p, exact = float(p_chisquare), False
+        warnings.append(reason)
+    else:
+        p = float(p_rule)
+        exact = reason != "Chi-square"
+        if exact:
+            warnings.append(
+                f"Some expected cell counts are below 5, so the reported p "
+                f"comes from {reason} rather than from the chi-square."
+            )
+    sig = bool(p < 0.05)
     p_str = '<0.001' if p < 0.001 else f'{p:.4f}'
     ret = {
-        "test": "Chi-square test of independence",
-        "chi2": float(chi2), "p": float(p), "dof": int(dof), "n": int(n),
+        # Named for what actually produced the p. The warning below says why.
+        "test": reason if exact else "Chi-square test of independence",
+        "chi2": float(chi2), "p": p, "dof": int(dof), "n": int(n),
+        "p_chisquare": float(p_chisquare),
+        "exact_test": reason if exact else None,
         "significant": sig,
         "effect_sizes": effect_sizes,
         "warnings": warnings,
         "crosstab": ct.to_dict(),
-        "interpretation": f"{'Significant' if sig else 'No significant'} association (χ²({dof}) = {chi2:.2f}, p = {p_str}, Cramer's V = {es['value']:.3f} [{es['magnitude']}])",
-        "methods_text": methods_chisquare(req.row_column, req.col_column),
-        "r_code": r_chisquare(req.row_column, req.col_column),
+        "interpretation": (
+            f"{'Significant' if sig else 'No significant'} association "
+            + (
+                # Naming the chi-square alongside a p it did not produce is
+                # what made the sparse-table result unreadable.
+                f"({reason}, p = {p_str}, χ²({dof}) = {chi2:.2f}, "
+                if exact else
+                f"(χ²({dof}) = {chi2:.2f}, p = {p_str}, "
+            )
+            + f"Cramer's V = {es['value']:.3f} [{es['magnitude']}])"
+        ),
+        "methods_text": methods_chisquare(
+            req.row_column, req.col_column, reason if exact else None
+        ),
+        "r_code": r_chisquare(
+            req.row_column, req.col_column, reason if exact else None
+        ),
     }
     ret["result_text"] = results_chisquare(ret)
     return _sanitize(ret)
