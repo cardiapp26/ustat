@@ -267,6 +267,22 @@ export async function getRecentSession(id: string): Promise<RecentSessionRecord 
 }
 
 /** Get a trashed record including its payload (for restore). */
+/** The saved row for a server session id, if this browser has one.
+ *
+ *  Used to put a session back after the server has forgotten it: the browser
+ *  holds the only surviving copy, and the id in the URL of the request that
+ *  just 404'd is all there is to look it up by. */
+export async function getRecentSessionByServerId(
+  serverSessionId: string,
+): Promise<RecentSessionRecord | undefined> {
+  if (!serverSessionId) return undefined;
+  const db = getDb();
+  const hits = await db.sessions.where("serverSessionId").equals(serverSessionId).toArray();
+  // Newest wins: a duplicated row can briefly share the id of the row it was
+  // copied from until its own first autosave gives it a fresh one.
+  return hits.sort((a, b) => b.savedAt - a.savedAt)[0];
+}
+
 export async function getTrashedSession(id: string): Promise<RecentSessionRecord | undefined> {
   const rec = await getDb().sessions.get(id);
   return rec && rec.deletedAt ? rec : undefined;

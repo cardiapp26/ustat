@@ -27,6 +27,10 @@ import { cloudSync } from "../lib/cloudSync";
 
 const DEBOUNCE_MS = 5_000;
 const PERIODIC_MS = 60_000;
+// Ceiling on how long the debounce may keep deferring. Without it, someone
+// working steadily — switching tabs, editing cells, relabelling values — pushed
+// the 5 s timer back before it ever fired and was never saved at all.
+const MAX_WAIT_MS = 20_000;
 
 /** Cheap, full-payload fingerprint (djb2). Catches in-place edits that keep the
  *  JSON length constant, which a length+prefix hash missed. */
@@ -73,6 +77,12 @@ export function useAutoSession({ onStatus }: AutoSaveDeps = {}): void {
 
   const lastSavedHashRef = useRef<string | null>(null);
   const inFlightRef = useRef<boolean>(false);
+  // When a snapshot last completed, successfully or not — the debounce ceiling
+  // measures from here, so a run of failures cannot defer forever either.
+  const lastSaveAtRef = useRef<number>(Date.now());
+  // Latest snapshot closure, so the timers below can call it without listing
+  // every tracked value as a dependency and resetting themselves again.
+  const snapshotRef = useRef<((source?: "auto" | "manual") => Promise<void>) | null>(null);
 
   // Capture a stable status setter so the snapshot function can be
   // memoised without re-running on every render.
@@ -128,27 +138,41 @@ export function useAutoSession({ onStatus }: AutoSaveDeps = {}): void {
         onStatusRef.current?.("error");
       } finally {
         inFlightRef.current = false;
+        lastSaveAtRef.current = Date.now();
       }
     };
 
-    // 1) Debounced change snapshot.
-    const debounceTimer = setTimeout(snapshot, DEBOUNCE_MS);
+    snapshotRef.current = snapshot;
 
-    // 2) Periodic snapshot — independent of the debounce.
-    const interval = setInterval(snapshot, PERIODIC_MS);
-
-    // 3) Best-effort beforeunload flush.
-    const onBeforeUnload = () => {
-      // Don't await — the page may already be tearing down.
-      void snapshot();
-    };
-    window.addEventListener("beforeunload", onBeforeUnload);
+    // Debounced change snapshot, with a ceiling. The effect re-runs on every
+    // tracked change, so a plain debounce was cleared and restarted before it
+    // could fire: a user who touched something every few seconds — which is
+    // what using the app looks like — was never snapshotted. Once MAX_WAIT_MS
+    // has passed since the last save, the next change saves immediately
+    // instead of deferring again.
+    const since = Date.now() - lastSaveAtRef.current;
+    const wait = since >= MAX_WAIT_MS ? 0 : Math.min(DEBOUNCE_MS, MAX_WAIT_MS - since);
+    const debounceTimer = setTimeout(snapshot, wait);
 
     return () => {
       cancelled = true;
       clearTimeout(debounceTimer);
+    };
+  }, [sessionId, localId, filename, nRows, nCols, activeTab, caseFilter, valueLabelSig, dataVersion]);
+
+  // The periodic snapshot and the unload flush depend only on there being a
+  // session. They used to live in the effect above, so every tracked change
+  // tore down the interval and started a new 60 s one — meaning the fallback
+  // that was supposed to cover a user who never stops working was the thing
+  // that user reset most often.
+  useEffect(() => {
+    if (!sessionId) return;
+    const interval = setInterval(() => { void snapshotRef.current?.(); }, PERIODIC_MS);
+    const onBeforeUnload = () => { void snapshotRef.current?.(); };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
       clearInterval(interval);
       window.removeEventListener("beforeunload", onBeforeUnload);
     };
-  }, [sessionId, localId, filename, nRows, nCols, activeTab, caseFilter, valueLabelSig, dataVersion]);
+  }, [sessionId]);
 }

@@ -3,6 +3,12 @@ import { runColumnStructureMutation } from "./lib/columnStructureLock";
 
 const api = axios.create({ baseURL: "" });  // Vite proxy: /api → localhost:8000
 
+// Datasets live in the backend's memory and are never written to disk, so a
+// restart or a redeploy leaves the open session id pointing at nothing. The
+// browser still has the autosaved copy, so a 404 on the live session restores
+// it and retries rather than surfacing "Session not found".
+void import("./lib/sessionRecovery").then((m) => m.installSessionRecovery(api));
+
 export default api;
 
 export const uploadFile = (file: File) => {
