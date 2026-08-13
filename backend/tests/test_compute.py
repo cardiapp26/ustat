@@ -214,6 +214,91 @@ def test_quantile_transforms_preserve_missing_with_duplicate_edges(client):
         assert out.dropna().min() >= 1
 
 
+def test_quantile_transforms_report_their_cut_points(client):
+    """A tertile column of 1/2/3 is unreportable on its own.
+
+    A paper has to state where the boundaries fell, and a reader cannot place
+    a patient in a group without them. The transform used to return the codes
+    and nothing else, so the cut points had to be reconstructed by hand from
+    the descriptives.
+    """
+    values = [float(v) for v in range(1, 127)]  # 126 rows, 42 per tertile
+    sid = make_session(pd.DataFrame({"SII": values}), "tcomp_tf_cutpoints")
+    r = client.post(
+        f"{BASE}/{sid}/transform",
+        json={"source_col": "SII", "transform": "tertile", "new_col": "SII_t"},
+    )
+    assert r.status_code == 200, r.text
+    out = r.json()
+    # The 1/3 and 2/3 quantiles of 1..126, which are not integers.
+    assert out["cut_points"] == pytest.approx([42.666667, 84.333333], abs=1e-6)
+
+    text = out["result_text"]
+    assert "Tertile groups of SII" in text
+    assert "42.6667" in text and "84.3333" in text
+    # Every group's size is named, and they account for the whole column.
+    assert text.count("n = 42") == 3
+
+    groups = store.get(sid)["SII_t"]
+    assert groups.value_counts().sort_index().tolist() == [42, 42, 42]
+
+
+def test_the_reported_cut_points_are_the_boundaries_and_not_the_range(client):
+    """qcut hands back the observed minimum and maximum as outer edges. Quoted
+    as cut points those would say a quartile split has five boundaries."""
+    sid = make_session(pd.DataFrame({"X": [float(v) for v in range(100)]}), "tcomp_tf_edges")
+    r = client.post(
+        f"{BASE}/{sid}/transform",
+        json={"source_col": "X", "transform": "quartile", "new_col": "X_q"},
+    )
+    assert r.status_code == 200, r.text
+    cuts = r.json()["cut_points"]
+    assert len(cuts) == 3
+    assert min(cuts) > 0.0 and max(cuts) < 99.0
+
+
+def test_collapsed_quantile_groups_are_declared(client):
+    """Ties spanning a boundary make qcut drop the duplicate edge, so a
+    'tertile' can come back with two levels. Silently that reads as a bug in
+    the data rather than a property of it."""
+    sid = make_session(
+        pd.DataFrame({"X": [1.0] * 8 + [2.0, 3.0]}), "tcomp_tf_collapsed"
+    )
+    r = client.post(
+        f"{BASE}/{sid}/transform",
+        json={"source_col": "X", "transform": "tertile", "new_col": "X_t"},
+    )
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert len(out["cut_points"]) < 2
+    assert "instead of 3" in out["result_text"]
+
+
+def test_median_split_reports_where_it_split(client):
+    sid = make_session(
+        pd.DataFrame({"X": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]}), "tcomp_tf_med_text"
+    )
+    r = client.post(
+        f"{BASE}/{sid}/transform",
+        json={"source_col": "X", "transform": "median_split", "new_col": "X_med"},
+    )
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["cut_points"] == [3.5]
+    assert "3.5" in out["result_text"]
+    assert "n = 3" in out["result_text"]
+
+
+def test_plain_transforms_report_no_cut_points(client):
+    sid = make_session(pd.DataFrame({"X": [1.0, 2.0, 3.0, 4.0]}), "tcomp_tf_nocuts")
+    r = client.post(
+        f"{BASE}/{sid}/transform",
+        json={"source_col": "X", "transform": "zscore", "new_col": "X_z"},
+    )
+    assert r.status_code == 200, r.text
+    assert "cut_points" not in r.json()
+
+
 def test_median_split_preserves_missing(client):
     sid = make_session(pd.DataFrame({"X": [1, 2, np.nan, 4]}), "tcomp_tf_median_missing")
     r = client.post(f"{BASE}/{sid}/transform",

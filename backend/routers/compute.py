@@ -73,8 +73,14 @@ def _validate_col_name(new_col: str):
     return new_col.strip()
 
 
-def _quantile_groups(col: pd.Series, q: int) -> pd.Series:
-    """Return 1-based quantile groups while preserving missing source values."""
+def _quantile_groups(col: pd.Series, q: int) -> tuple[pd.Series, list[float]]:
+    """Return 1-based quantile groups, and the cut points that produced them.
+
+    The cut points are part of the result, not a debugging aid: a paper
+    reporting tertiles has to state where the boundaries fell, and a reader
+    cannot place a patient in a group without them. Until now the new column
+    said "2" and nothing else.
+    """
     result = pd.Series(np.nan, index=col.index, dtype="float64")
     valid = col.dropna()
     if valid.empty:
@@ -83,14 +89,50 @@ def _quantile_groups(col: pd.Series, q: int) -> pd.Series:
         raise HTTPException(status_code=422, detail="Need at least two distinct numeric values for quantile grouping")
 
     try:
-        grouped = pd.qcut(valid, q=q, labels=False, duplicates="drop")
+        grouped, bins = pd.qcut(valid, q=q, labels=False, duplicates="drop", retbins=True)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=f"Could not create quantile groups: {exc}")
 
     if grouped.notna().sum() == 0:
         raise HTTPException(status_code=422, detail="Could not create quantile groups from this column")
     result.loc[grouped.index] = grouped.astype(float) + 1
-    return result
+    # The outer edges are the observed minimum and maximum, which are not cut
+    # points — only the interior boundaries separate one group from the next.
+    return result, [float(b) for b in list(bins)[1:-1]]
+
+
+def _quantile_result_text(
+    source_col: str, series: pd.Series, cuts: list[float], q: int
+) -> str:
+    """One sentence naming each group's boundaries and size."""
+    label = {2: "Median split", 3: "Tertile", 4: "Quartile"}.get(q, f"{q}-quantile")
+    counts = series.value_counts().sort_index()
+
+    def fmt(x: float) -> str:
+        return f"{x:,.6g}"
+
+    parts: list[str] = []
+    for i in range(len(cuts) + 1):
+        n_i = int(counts.get(float(i + 1), 0))
+        if not cuts:
+            rng = "all values"
+        elif i == 0:
+            rng = f"\u2264 {fmt(cuts[0])}"
+        elif i == len(cuts):
+            rng = f"> {fmt(cuts[-1])}"
+        else:
+            rng = f"> {fmt(cuts[i - 1])} to \u2264 {fmt(cuts[i])}"
+        parts.append(f"{i + 1} = {rng} (n = {n_i})")
+    dropped = ""
+    if len(cuts) != q - 1:
+        # Ties spanning a boundary collapse groups; qcut drops the duplicate
+        # edge and the column then has fewer levels than the transform's name
+        # promises. Saying so beats leaving the reader to count them.
+        dropped = (
+            f" Repeated values at a boundary left {len(cuts) + 1} groups "
+            f"instead of {q}."
+        )
+    return f"{label} groups of {source_col}: " + "; ".join(parts) + "." + dropped
 
 
 # ── 1. Formula Builder ────────────────────────────────────────────────────────
@@ -351,6 +393,10 @@ def transform_compute(session_id: str, req: TransformRequest):
     sentinel_mask = flag_sentinels(df[req.source_col], max_plausible)
     col = mask_sentinels(df[req.source_col], max_plausible)
     df = df.copy()
+    # Set by the binning transforms only; the rest have no boundaries to report.
+    cut_points: Optional[list[float]] = None
+    median_note: Optional[str] = None
+    n_groups = 0
 
     if req.transform == "ln":
         df[new_col] = np.log(col.where(col > 0))       # ≤0 → NaN
@@ -370,17 +416,32 @@ def transform_compute(session_id: str, req: TransformRequest):
             raise HTTPException(status_code=422, detail="Standard deviation is 0 — cannot compute Z-score for a constant column")
         df[new_col] = (col - mu) / sd
     elif req.transform == "tertile":
-        df[new_col] = _quantile_groups(col, 3)
+        df[new_col], cut_points = _quantile_groups(col, 3)
+        n_groups = 3
     elif req.transform == "quartile":
-        df[new_col] = _quantile_groups(col, 4)
+        df[new_col], cut_points = _quantile_groups(col, 4)
+        n_groups = 4
     elif req.transform == "median_split":
         med = col.median()
         if pd.isna(med):
             raise HTTPException(status_code=422, detail="No numeric values available for median split")
         df[new_col] = (col > med).where(col.notna(), np.nan).astype(float)  # 0 = ≤ median, 1 = > median
+        median_note = (
+            f"Median split of {req.source_col} at {float(med):,.6g}: "
+            f"0 = \u2264 median (n = {int((df[new_col] == 0).sum())}); "
+            f"1 = > median (n = {int((df[new_col] == 1).sum())})."
+        )
 
     store.save(session_id, df)
     result = _build_result(df, new_col)
+    if cut_points is not None:
+        result["cut_points"] = [round(c, 6) for c in cut_points]
+        result["result_text"] = _quantile_result_text(
+            req.source_col, df[new_col], cut_points, n_groups
+        )
+    elif median_note is not None:
+        result["cut_points"] = [round(float(med), 6)]
+        result["result_text"] = median_note
     if sentinel_mask.any():
         result["warnings"] = [
             f"{int(sentinel_mask.sum())} implausible value(s) in '{req.source_col}' were treated as missing for this transform."
