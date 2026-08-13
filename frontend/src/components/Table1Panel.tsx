@@ -3,6 +3,7 @@ import { useStore, type Session } from "../store";
 import api from "../api";
 import ResultExporter from "./ResultExporter";
 import { fmtP, warningText } from "../lib/format";
+import { labelFor } from "../lib/valueLabels";
 
 // ── Stat definitions ──────────────────────────────────────────────────────────
 
@@ -424,15 +425,14 @@ function Table1PanelBody({ session }: { session: Session }) {
           const groupColMeta = session.columns.find((c) => c.name === rawResult.group_column);
           const groupLabels = groupColMeta?.value_labels ?? {};
           
-          rawResult.group_labels = rawResult.group_labels.map((g) => {
-            const mapped = groupLabels[String(g)];
-            return mapped !== undefined ? mapped : g;
-          });
+          rawResult.group_labels = rawResult.group_labels.map(
+            (g) => labelFor(groupLabels, g, String(g)),
+          );
           
           // Map group_ns keys
           const group_ns: Record<string, number> = {};
           Object.entries(rawResult.group_ns).forEach(([g, n]) => {
-            const mapped = groupLabels[String(g)] ?? g;
+            const mapped = labelFor(groupLabels, g, g);
             group_ns[mapped] = n;
           });
           rawResult.group_ns = group_ns;
@@ -450,7 +450,7 @@ function Table1PanelBody({ session }: { session: Session }) {
             
             const group_stats: Record<string, string> = {};
             Object.entries(row.group_stats).forEach(([g, val]) => {
-              const mapped = groupLabels[String(g)] ?? g;
+              const mapped = labelFor(groupLabels, g, g);
               group_stats[mapped] = val;
             });
             row.group_stats = group_stats;
@@ -459,7 +459,7 @@ function Table1PanelBody({ session }: { session: Session }) {
               row.stat_rows = row.stat_rows.map((sr) => {
                 const gs: Record<string, string> = {};
                 Object.entries(sr.group_stats).forEach(([g, val]) => {
-                  const mapped = groupLabels[String(g)] ?? g;
+                  const mapped = labelFor(groupLabels, g, g);
                   gs[mapped] = val;
                 });
                 return { ...sr, group_stats: gs };
@@ -469,7 +469,7 @@ function Table1PanelBody({ session }: { session: Session }) {
             if (row.missing_row) {
               const gs: Record<string, string> = {};
               Object.entries(row.missing_row.group_stats).forEach(([g, val]) => {
-                const mapped = groupLabels[String(g)] ?? g;
+                const mapped = labelFor(groupLabels, g, g);
                 gs[mapped] = val;
               });
               row.missing_row = { ...row.missing_row, group_stats: gs };
@@ -479,7 +479,7 @@ function Table1PanelBody({ session }: { session: Session }) {
           // Map sub-rows categories
           if (row.type === "categorical" && row.sub_rows) {
             row.sub_rows = row.sub_rows.map((sr) => {
-              const mappedCat = vLabels[String(sr.category)] ?? sr.category;
+              const mappedCat = labelFor(vLabels, sr.category, sr.category);
               
               const gs: Record<string, string> = {};
               if (rawResult.group_column) {
@@ -487,7 +487,7 @@ function Table1PanelBody({ session }: { session: Session }) {
                 const groupLabels = groupColMeta?.value_labels ?? {};
                 
                 Object.entries(sr.group_stats).forEach(([g, val]) => {
-                  const mapped = groupLabels[String(g)] ?? g;
+                  const mapped = labelFor(groupLabels, g, g);
                   gs[mapped] = val;
                 });
               }

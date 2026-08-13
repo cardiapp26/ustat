@@ -5,6 +5,7 @@ import { usePlotLayout, usePalette } from "../plotStyle";
 import type { Data, Layout } from "plotly.js";
 import { runSubgroupBar, getUniqueValues } from "../api";
 import type { PlotData, PlotLayout, PlotCaptureHandle } from "../lib/plotTypes";
+import { labelFor } from "../lib/valueLabels";
 import PlotExporter from "./PlotExporter";
 
 export default function SubgroupBarPanel() {
@@ -179,7 +180,7 @@ function SubgroupBarPanelBody({ session }: { session: Session }) {
       // Resolve target value label if available
       const yColMeta = session.columns.find((c) => c.name === yCol);
       const yColLabels = yColMeta?.value_labels ?? {};
-      const targetValueLabel = yColLabels[targetValue] ?? targetValue;
+      const targetValueLabel = labelFor(yColLabels, targetValue, targetValue);
 
       // Auto-generate a beautiful descriptive title
       const modeText = yMode === "percentage" ? `% Use / Event Rate of ${yCol} (${targetValueLabel})` : `Mean of ${yCol}`;
@@ -213,7 +214,7 @@ function SubgroupBarPanelBody({ session }: { session: Session }) {
   // Layout Configuration
   const yColMeta = session.columns.find((c) => c.name === yCol);
   const yColLabels = yColMeta?.value_labels ?? {};
-  const targetValueLabel = yColLabels[targetValue] ?? targetValue;
+  const targetValueLabel = labelFor(yColLabels, targetValue, targetValue);
   const yAxisTitle = yMode === "percentage" ? `% ${yCol} (${targetValueLabel})` : `Mean of ${yCol}`;
   
   // Build shapes and annotations for visual enhancements
@@ -483,7 +484,7 @@ function SubgroupBarPanelBody({ session }: { session: Session }) {
                     const rawVal = String(t.name);
                     const colorColMeta = session.columns.find((c) => c.name === colorCol);
                     const colorLabels = colorColMeta?.value_labels ?? {};
-                    const defaultLabel = String(colorLabels[rawVal] ?? rawVal);
+                    const defaultLabel = labelFor(colorLabels, rawVal, String(rawVal));
                     return (
                       <div key={rawVal} className="flex items-center gap-2">
                         <span className="text-[10px] text-gray-500 min-w-16 truncate" title={rawVal}>{rawVal}:</span>
@@ -876,9 +877,9 @@ function buildPlotlyTraces(
   const colorLabels = labelsFor(plotData.color_col);
 
   return tracesData.map((t, i) => {
-    const mappedSubgroup = t.x_subgroup.map((v) => subgroupLabels[String(v)] ?? String(v));
-    const mappedXaxis = t.x_xaxis.map((v) => xaxisLabels[String(v)] ?? String(v));
-    const mappedName = customLegendLabels[String(t.name)] || colorLabels[t.name] || String(t.name);
+    const mappedSubgroup = t.x_subgroup.map((v) => labelFor(subgroupLabels, v, String(v)));
+    const mappedXaxis = t.x_xaxis.map((v) => labelFor(xaxisLabels, v, String(v)));
+    const mappedName = customLegendLabels[String(t.name)] || labelFor(colorLabels, t.name, String(t.name));
 
     const xArray = [mappedSubgroup, mappedXaxis];
 

@@ -24,6 +24,7 @@ from services.stat_utils import (
     looks_continuous,
 )
 from services.impute import apply_imputation, missing_info
+from services.number_format import level_key
 
 router = APIRouter()
 
@@ -498,7 +499,11 @@ def column_summary(session_id: str, column: str, kind: Optional[str] = None):
         vc = s.value_counts(dropna=False)
         categories = [
             {
-                "value": str(k) if pd.notna(k) else "Missing",
+                # level_key so a float64 code reads "0", the same string the
+                # grid shows and the same key its value labels are stored
+                # under. str() gave "0.0", which matched no label and put raw
+                # codes in the distribution chart of a fully labelled column.
+                "value": level_key(k) if pd.notna(k) else "Missing",
                 "count": int(v),
                 "pct": round(v / total * 100, 1),
             }
@@ -1039,13 +1044,18 @@ def table1(req: Table1Request):
                 else {}
             )
             missing_row = _missing_stat_row(s, category_group_series)
+            # Two strings per level: `cat` matches the stringified column,
+            # `shown` is what the row is labelled with. They differ for a
+            # float64 code — "0.0" matches the data, "0" is what the grid
+            # displays and what the value labels are keyed by.
             cats = [str(v) for v in vc_all.index.tolist()]
+            shown_for = {str(v): level_key(v) for v in vc_all.index.tolist()}
             sub_rows = []
             for cat in cats:
                 n_all = int((s.astype(str) == cat).sum())
                 pct_all = round(n_all / total_all * 100, 1) if total_all else 0.0
                 sub: dict = {
-                    "category": cat,
+                    "category": shown_for[cat],
                     "overall": f"{n_all} ({pct_all}%)",
                     "group_stats": {},
                 }

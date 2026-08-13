@@ -21,6 +21,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from services import store
+from services.number_format import level_key
 from services.dirty_value_guard import coerce_numeric, flag_sentinels, mask_sentinels, plausibility_max_for_column, sentinel_values
 
 router = APIRouter()
@@ -2159,7 +2160,11 @@ def unique_values(session_id: str, col_name: str):
     if col_name not in df.columns:
         raise HTTPException(status_code=404, detail=f"Column '{col_name}' not found")
     vals = sorted(df[col_name].dropna().unique().tolist(), key=lambda x: (str(type(x).__name__), x))
-    return {"values": [str(v) for v in vals[:200]]}
+    # level_key, not str: the Data Dictionary keys its value-label inputs off
+    # these strings, and str() on a float64 code gives "0.0" where the grid's
+    # own dialog writes "0". Labels typed in the two places landed under
+    # different keys for the same value.
+    return {"values": [level_key(v) for v in vals[:200]]}
 
 
 # ── Advanced Data Cleaning & Imputation ───────────────────────────────────────

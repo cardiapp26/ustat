@@ -7,6 +7,7 @@ import type { PlotData, PlotLayout, PlotCaptureHandle } from "../lib/plotTypes";
 import TitledPlot from "./TitledPlot";
 import ChartTypeIcon from "./charts/ChartTypeIcon";
 import { fmtP } from "../lib/format";
+import { labelFor } from "../lib/valueLabels";
 
 /** Chart types offered in the picker, in the order they are listed. Exported
  *  so the icon set can be checked for coverage rather than drifting quietly
@@ -1367,7 +1368,7 @@ function buildTraces(
           return {
             type: "scatter",
             mode: markerMode,
-            name: colorLabels[String(g)] ?? String(g),
+            name: labelFor(colorLabels, g, String(g)),
             x: rows.map((p) => p[xKey]),
             y: rows.map((p) => p[yKey]),
             text: textFor(rows),
@@ -1720,7 +1721,7 @@ function buildTraces(
       return groups.map((g, i) => ({
         type: "violin",
         y: g.values,
-        name: colorLabels[String(g.group)] ?? g.group,
+        name: labelFor(colorLabels, g.group, String(g.group)),
         side: "positive",
         width: 1.0,
         points: "all",
@@ -1754,7 +1755,7 @@ function buildTraces(
       return groups.map((g, i) => ({
         type: "violin",
         y: g.values,
-        name: colorLabels[String(g.group)] ?? g.group,
+        name: labelFor(colorLabels, g.group, String(g.group)),
         box: { visible: true },
         meanline: { visible: true },
         line: { color: C[i % C.length] },
@@ -1775,7 +1776,7 @@ function buildTraces(
       ? [{
         type: "scatter",
         mode: "markers",
-        x: groups.map((g) => String(colorLabels[String(g.group)] ?? g.group)),
+        x: groups.map((g) => labelFor(colorLabels, g.group, String(g.group))),
         y: groups.map((g) => {
           const nums = (g.values as unknown[]).map(Number).filter((v) => Number.isFinite(v));
           return nums.length ? nums.reduce((a, b) => a + b, 0) / nums.length : null;
@@ -1789,7 +1790,7 @@ function buildTraces(
     return [...groups.map((g, i) => ({
       type: "box",
       y: g.values,
-      name: colorLabels[String(g.group)] ?? g.group,
+      name: labelFor(colorLabels, g.group, String(g.group)),
       marker: { color: C[i % C.length], size: showPoints ? 4 : undefined, opacity: showPoints ? 0.55 : undefined },
       // "Show every point" is the modern default for small clinical samples —
       // a box alone hides n and any clustering. Above ~500 the overplotting
@@ -1809,7 +1810,7 @@ function buildTraces(
     const data = d.data as Array<{ label: unknown; value: unknown }>;
     return [{
       type: "bar",
-      x: data.map((r) => xLabels[String(r.label)] ?? r.label),
+      x: data.map((r) => labelFor(xLabels, r.label, String(r.label))),
       y: data.map((r) => r.value),
       marker: { color: C[0] },
     }];
@@ -1824,7 +1825,7 @@ function buildTraces(
       type: "box",
       x: g.values.map(() => i),
       y: g.values,
-      name: colorLabels[String(g.group)] ?? String(g.group),
+      name: labelFor(colorLabels, g.group, String(g.group)),
       marker: { color: C[i % C.length] },
       fillcolor: C[i % C.length] + "40",
       boxpoints: false,
@@ -1883,7 +1884,7 @@ function pairedXAxisOverride(
   const groups = (plotData.groups as Array<{ group: unknown }>) ?? [];
   return {
     tickvals: groups.map((_, i) => i),
-    ticktext: groups.map((g) => labels[String(g.group)] ?? String(g.group)),
+    ticktext: groups.map((g) => labelFor(labels, g.group, String(g.group))),
     range: [-0.7, groups.length - 0.3],
   };
 }

@@ -14,7 +14,7 @@ from services.stat_utils import (
     check_equal_variances,
     looks_continuous,
 )
-from services.number_format import format_p
+from services.number_format import format_p, level_key
 
 try:
     from docx import Document
@@ -188,12 +188,17 @@ def _run_table1_analysis(req: TableDocxRequest) -> dict:
         else:
             vc = s.value_counts(dropna=True)
             total = s.count()
+            # `cat` matches the stringified column; `shown_for[cat]` is the
+            # label the row carries. A float64 code matches as "0.0" but has
+            # to be printed as "0", which is what the grid shows and what its
+            # value labels are keyed by.
             cats = [str(v) for v in vc.index.tolist()]
+            shown_for = {str(v): level_key(v) for v in vc.index.tolist()}
             sub_rows = []
             for cat in cats:
                 n_all = int((s.astype(str) == cat).sum())
                 pct = round(n_all / total * 100, 1) if total else 0
-                sub = {"category": cat, "overall": f"{n_all} ({pct}%)"}
+                sub = {"category": shown_for[cat], "overall": f"{n_all} ({pct}%)"}
                 sub["group_stats"] = {}
                 if groups is not None:
                     for g, gl in zip(groups, group_labels):

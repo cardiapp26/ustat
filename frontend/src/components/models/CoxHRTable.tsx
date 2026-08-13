@@ -3,6 +3,7 @@ import type { ColMeta } from "../../store";
 import { StyledTableExporter } from "../StyledTableExporter";
 import type { StyledTableData } from "../../lib/styledTable";
 import { fmtPubP } from "../../lib/format";
+import { labelFor } from "../../lib/valueLabels";
 
 /** One Cox term's HR statistics for a single model column. */
 export interface HRStat {
@@ -63,8 +64,8 @@ function rowLabel(row: HRRow, byName: Record<string, ColMeta>): string {
     return col?.units ? `${name} (per 1 ${col.units})` : name;
   }
   const vl = col?.value_labels ?? {};
-  const cat = row.category != null ? vl[row.category] ?? row.category : "";
-  const ref = row.reference != null ? vl[row.reference] ?? row.reference : "";
+  const cat = row.category != null ? labelFor(vl, row.category, row.category) : "";
+  const ref = row.reference != null ? labelFor(vl, row.reference, row.reference) : "";
   return `${name}: ${cat} vs ${ref}`;
 }
 

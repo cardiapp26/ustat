@@ -12,6 +12,7 @@ import api, { deleteColumn, renameColumn } from "../api";
 import ResultExporter from "./ResultExporter";
 import TitledPlot from "./TitledPlot";
 import { fmtP } from "../lib/format";
+import { labelFor } from "../lib/valueLabels";
 import type { PlotData, PlotCaptureHandle } from "../lib/plotTypes";
 
 // ── Result shapes returned by the descriptive / column-summary endpoints ─────
@@ -1232,7 +1233,10 @@ export default function DescriptivePanel() {
             ...rawSummary,
             categories: rawSummary.categories.map((c) => ({
               ...c,
-              value: vLabels[String(c.value)] ?? c.value,
+              // The endpoint stringifies a float64 code as "0.0" while the
+              // labels are keyed "0", so an exact lookup missed every whole
+              // number and the donut showed raw codes for a labelled column.
+              value: labelFor(vLabels, c.value, String(c.value)),
             })),
           };
           setSummary(relabeled);

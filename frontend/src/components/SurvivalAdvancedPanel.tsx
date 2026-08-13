@@ -12,6 +12,7 @@ import IntervalCensoredPanel from "./IntervalCensoredPanel";
 import { Tip } from "./Tip";
 import ThreeCol from "./ThreeCol";
 import { fmtP, fmtPubP, warningText } from "../lib/format";
+import { labelFor } from "../lib/valueLabels";
 import type { PlotData, PlotLayout, PlotCaptureHandle, PlotRef } from "../lib/plotTypes";
 
 // ── Loose result shapes for the survival API responses ────────────────────────
@@ -337,7 +338,7 @@ function CoxUniMultiForest({
   const vlab = (pname: string, code: string | null): string => {
     if (code == null) return "";
     const meta = columns.find((c) => c.name === pname);
-    return meta?.value_labels?.[String(code)] ?? String(code);
+    return labelFor(meta?.value_labels, code, String(code));
   };
   const autoLabel = (r: UMRow): string =>
     r.kind === "category"
@@ -1053,7 +1054,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
     setSpecLoading(true); setCoxError(null);
     try {
       const meta = columns.find((c) => c.name === specExposure);
-      const vlab = (code: string | null) => (code == null ? "" : (meta?.value_labels?.[String(code)] ?? String(code)));
+      const vlab = (code: string | null) => (code == null ? "" : labelFor(meta?.value_labels, code, String(code)));
       const res = await runCoxModelSpecs({
         session_id: sid, duration_col: coxDuration, event_col: coxEvent,
         exposure: specExposure,
@@ -2336,7 +2337,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
           const groupColMeta = columns.find((c) => c.name === kmGroup);
           const vLabels = groupColMeta?.value_labels ?? {};
           const resolveGroupName = (raw: string) =>
-            kmGroupLabels[raw] ?? vLabels[raw] ?? raw;
+            kmGroupLabels[raw] ?? labelFor(vLabels, raw, raw);
 
           // Build legend label per group
           const legendLabel = (g: KMGroup) => {
@@ -2889,7 +2890,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
               y: g.curve.map((p) => p.survival),
               type: "scatter" as const, mode: "lines" as const,
               name: kmGroup
-                ? `${kmCustomGroupTitle || kmGroup} = ${grpLabels[String(g.group)] ?? g.group}`
+                ? `${kmCustomGroupTitle || kmGroup} = ${labelFor(grpLabels, g.group, String(g.group))}`
                 : String(g.group),
               line: { width: traceDefaults.lineWidth, color: pal[i % pal.length], shape: "hv" as const },
             }));
@@ -2905,7 +2906,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
               </div>
               <div className="grid gap-4 grid-cols-1">
                 {strata.map((stratum) => {
-                  const stratLabel = stratLabels[String(stratum.label)] ?? stratum.label;
+                  const stratLabel = labelFor(stratLabels, stratum.label, String(stratum.label));
                   const pAnnot = stratum.logrank?.p != null ? [{
                     xref: "paper", yref: "paper", x: 0.02, y: 0.98,
                     xanchor: "left", yanchor: "top",
