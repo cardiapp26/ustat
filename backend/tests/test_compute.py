@@ -74,6 +74,89 @@ def test_formula_basic_arithmetic(client, synth):
     assert set(body) >= {"name", "dtype", "kind", "preview_values", "n_computed", "n_missing"}
 
 
+def test_formula_dedupes_a_colliding_name_instead_of_overwriting(client, synth):
+    """Reported: typing an existing column's name into "New column name" and
+    running a formula said a new column was created — while nothing new
+    appeared, because df[new_col] = result had just replaced the existing
+    column of that name in place, silently, with no error and no warning."""
+    sid = _fresh(synth, "formula_collide")
+    before = store.get(sid)["AGE"].tolist()
+
+    r = client.post(f"{BASE}/{sid}/formula",
+                    json={"formula": "AGE + 1", "new_col": "AGE"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["name"] == "AGE_new"
+    assert any("AGE" in str(w) and "AGE_new" in str(w) for w in body["warnings"])
+
+    df = store.get(sid)
+    assert "AGE_new" in df.columns
+    # The original is untouched — this is the whole point of the fix.
+    assert df["AGE"].tolist() == before
+    assert df["AGE_new"].tolist() == [v + 1 for v in before]
+
+
+def test_formula_dedupe_keeps_incrementing_past_the_first_collision(client, synth):
+    sid = _fresh(synth, "formula_collide2")
+    r1 = client.post(f"{BASE}/{sid}/formula",
+                     json={"formula": "AGE + 1", "new_col": "AGE"})
+    assert r1.json()["name"] == "AGE_new"
+    r2 = client.post(f"{BASE}/{sid}/formula",
+                     json={"formula": "AGE + 2", "new_col": "AGE"})
+    assert r2.json()["name"] == "AGE_new2"
+    df = store.get(sid)
+    assert {"AGE", "AGE_new", "AGE_new2"} <= set(df.columns)
+
+
+def test_formula_no_rename_note_when_the_name_is_free(client, synth):
+    sid = _fresh(synth, "formula_no_collide")
+    r = client.post(f"{BASE}/{sid}/formula",
+                    json={"formula": "AGE + 1", "new_col": "AGE_PLUS_ONE"})
+    body = r.json()
+    assert body["name"] == "AGE_PLUS_ONE"
+    assert not body.get("warnings")
+
+
+def test_transform_dedupes_a_colliding_name(client, synth):
+    sid = _fresh(synth, "transform_collide")
+    before = store.get(sid)["DM"].tolist()
+    r = client.post(f"{BASE}/{sid}/transform",
+                    json={"source_col": "AGE", "transform": "zscore", "new_col": "DM"})
+    assert r.status_code == 200, r.text
+    assert r.json()["name"] == "DM_new"
+    assert any("DM_new" in str(w) for w in r.json()["warnings"])
+    assert store.get(sid)["DM"].tolist() == before
+
+
+def test_transform_still_refuses_its_own_source_rather_than_deduping(client):
+    """Deduping is for collision with an UNRELATED column. Colliding with the
+    source column is the destructive case that has its own explicit error,
+    and must keep raising it rather than being quietly renamed away."""
+    sid = make_session(
+        pd.DataFrame({"X": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]}), "tcomp_tf_still_refuses"
+    )
+    r = client.post(
+        f"{BASE}/{sid}/transform",
+        json={"source_col": "X", "transform": "tertile", "new_col": "X"},
+    )
+    assert r.status_code == 422, r.text
+    assert "source column" in r.json()["detail"]
+
+
+def test_recode_dedupes_a_colliding_name(client, synth):
+    sid = _fresh(synth, "recode_collide")
+    before = store.get(sid)["DM"].tolist()
+    r = client.post(f"{BASE}/{sid}/recode", json={
+        "new_col": "DM",
+        "rules": [{"conditions": [{"col": "AGE", "op": ">", "val": "50"}], "result": "1"}],
+        "else_val": "0",
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["name"] == "DM_new"
+    assert any("DM_new" in str(w) for w in r.json()["warnings"])
+    assert store.get(sid)["DM"].tolist() == before
+
+
 def test_formula_custom_if_function(client, synth):
     sid = _fresh(synth, "formula_if")
     r = client.post(f"{BASE}/{sid}/formula",

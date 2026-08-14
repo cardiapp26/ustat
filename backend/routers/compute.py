@@ -74,6 +74,41 @@ def _validate_col_name(new_col: str):
     return new_col.strip()
 
 
+def _note_rename(result: dict, requested: str, actual: str) -> None:
+    """Tell the user their typed name was taken, and what got created instead."""
+    if requested == actual:
+        return
+    result.setdefault("warnings", []).insert(
+        0,
+        f"'{requested}' already exists, so the result was saved as '{actual}' instead.",
+    )
+
+
+def _dedupe_col_name(df: pd.DataFrame, name: str) -> str:
+    """A name that collides with an existing column gets "_new" appended
+    (then "_new2", "_new3", …) instead of silently overwriting it.
+
+    Reported: typing an existing column's name into "New column name" and
+    running a formula reported success — a new column, it said — while
+    nothing new appeared, because df[new_col] = result had just replaced the
+    original column of that name in place. The success message and the
+    actual effect disagreed, and whatever the old column held was gone.
+
+    Renaming instead of erroring matches how every other "type a name, get a
+    result" flow in this panel behaves: the user is mid-flow building a
+    formula or a recode, not filling out a form to be validated against.
+    """
+    if name not in df.columns:
+        return name
+    candidate = f"{name}_new"
+    if candidate not in df.columns:
+        return candidate
+    i = 2
+    while f"{name}_new{i}" in df.columns:
+        i += 1
+    return f"{name}_new{i}"
+
+
 def _quantile_groups(col: pd.Series, q: int) -> tuple[pd.Series, list[float]]:
     """Return 1-based quantile groups, and the cut points that produced them.
 
@@ -319,7 +354,8 @@ def formula_compute(session_id: str, req: FormulaRequest):
     Supports custom functions: IF(cond, true_val, false_val), ISNA(x), DAYS(date1, date2)
     """
     df = _get_df(session_id)
-    new_col = _validate_col_name(req.new_col)
+    requested_col = _validate_col_name(req.new_col)
+    new_col = _dedupe_col_name(df, requested_col)
 
     try:
         result = _eval_formula_with_custom_functions(df, req.formula)
@@ -341,7 +377,9 @@ def formula_compute(session_id: str, req: FormulaRequest):
         raise HTTPException(status_code=422, detail=f"Formula error: {msg}")
 
     store.save(session_id, df)
-    return _build_result(df, new_col)
+    result = _build_result(df, new_col)
+    _note_rename(result, requested_col, new_col)
+    return result
 
 
 # ── 2. Transformations ────────────────────────────────────────────────────────
@@ -369,7 +407,8 @@ class TransformRequest(BaseModel):
 @router.post("/{session_id}/transform")
 def transform_compute(session_id: str, req: TransformRequest):
     df = _get_df(session_id)
-    new_col = _validate_col_name(req.new_col)
+    requested_col = _validate_col_name(req.new_col)
+    new_col = requested_col
 
     if req.source_col not in df.columns:
         raise HTTPException(status_code=422, detail=f"Column '{req.source_col}' not found")
@@ -387,6 +426,11 @@ def transform_compute(session_id: str, req: TransformRequest):
                 "Give the result its own column name."
             ),
         )
+    # Collision with the source column is the explicit error above — the
+    # user typed the one name that would destroy their input, and that
+    # deserves to be caught, not silently redirected. Collision with any
+    # OTHER existing column is the ordinary case this dedupes.
+    new_col = _dedupe_col_name(df, new_col)
     if req.transform not in TRANSFORMS:
         raise HTTPException(status_code=422, detail=f"Unknown transform '{req.transform}'. Valid: {list(TRANSFORMS.keys())}")
 
@@ -448,6 +492,7 @@ def transform_compute(session_id: str, req: TransformRequest):
             f"{int(sentinel_mask.sum())} implausible value(s) in '{req.source_col}' were treated as missing for this transform."
         ]
         result["n_implausible"] = int(sentinel_mask.sum())
+    _note_rename(result, requested_col, new_col)
     return result
 
 
@@ -493,7 +538,8 @@ def _cast_val(col_series: pd.Series, val: Any) -> Any:
 @router.post("/{session_id}/recode")
 def recode_compute(session_id: str, req: RecodeRequest):
     df = _get_df(session_id)
-    new_col = _validate_col_name(req.new_col)
+    requested_col = _validate_col_name(req.new_col)
+    new_col = _dedupe_col_name(df, requested_col)
 
     if not req.rules:
         raise HTTPException(status_code=422, detail="At least one rule is required")
@@ -604,7 +650,9 @@ def recode_compute(session_id: str, req: RecodeRequest):
         df[new_col] = result
 
     store.save(session_id, df)
-    return _build_result(df, new_col)
+    result_payload = _build_result(df, new_col)
+    _note_rename(result_payload, requested_col, new_col)
+    return result_payload
 
 
 # ── 4. Clinical Calculators ───────────────────────────────────────────────────
