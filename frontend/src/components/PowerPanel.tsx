@@ -30,7 +30,11 @@ type TestId   = "t_two" | "t_one" | "anova" | "correlation" | "proportion" | "ch
 type SolveFor = "n" | "power" | "effect_size";
 
 interface CurvePoint { n: number; power: number }
-interface PowerResult { result: number | null; label: string; curve: CurvePoint[]; result_text?: string }
+interface PowerResult { result: number | null; label: string; curve: CurvePoint[]; result_text?: string;
+  // Recruitment target once expected dropout is allowed for. The computed n
+  // is the number that must COMPLETE the study, so enrolling exactly that
+  // many leaves the trial underpowered the first time anyone withdraws.
+  n_corrected?: number | null; attrition?: number | null }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -100,6 +104,7 @@ const TIPS = {
   n:      "Participants per group. Total N = n × (1 + ratio) for two-group designs. Equal groups (ratio = 1) give the best statistical efficiency.",
   tails:  "Two-tailed tests for effects in either direction (A > B or A < B) — use by default. One-tailed tests assume a direction in advance and need fewer participants, but require strong justification.",
   ratio:  "Size of group 2 relative to group 1. Ratio = 1 means equal groups (most efficient). Ratio = 2 means group 2 is twice as large.",
+  attrition: "Expected dropout, as a percentage. The computed n is the number that must COMPLETE the study — enrol exactly that many and the trial is underpowered the first time someone withdraws. The recruitment target is n / (1 - attrition): 19 per group with 10% expected dropout means enrolling 22.",
   groups: "Number of groups compared. More groups → more total participants needed to maintain 80% power.",
   cats:   "Number of categories in the chi-square table. A 2×2 table → 2 categories (df = 1). A 3-level variable → 3 categories.",
 };
@@ -176,6 +181,7 @@ export default function PowerPanel() {
   const [pEvent,     setPEvent]     = usePersistedPanelState<string>("power_sel", "pEvent", "0.30");
   const [eventRate,  setEventRate]  = usePersistedPanelState<string>("power_sel", "eventRate", "0.40");
   const [pExposed,   setPExposed]   = usePersistedPanelState<string>("power_sel", "pExposed", "0.50");
+  const [attrition,  setAttrition]  = usePersistedPanelState<string>("power_sel", "attrition", "0");
 
   const cachedPower = useStore((s) => s.panelCache.power);
   const setCachePower = useStore((s) => s.setPanelCache);
@@ -244,6 +250,9 @@ export default function PowerPanel() {
         p1: parseFloat(p1), p2: parseFloat(p2),
       };
       if (solveFor !== "n")            payload.n           = parseInt(n);
+      // Only meaningful when solving FOR n; sent unconditionally would be
+      // ignored anyway, but keeping it scoped documents that.
+      if (solveFor === "n") payload.attrition = (parseFloat(attrition) || 0) / 100;
       if (solveFor !== "power")        payload.power       = parseFloat(power);
       if (testInfo.isRegression === "logistic") {
         // effectSize holds the OR; backend logs it (OR>0 ⇒ log). Always sent so
@@ -568,7 +577,7 @@ export default function PowerPanel() {
         </div>
 
         {/* Secondary params row */}
-        {(testInfo.hasTails || testInfo.hasRatio || testInfo.hasGroups) && (
+        {(testInfo.hasTails || testInfo.hasRatio || testInfo.hasGroups || solveFor === "n") && (
           <div className="flex flex-wrap gap-4 pt-2 border-t border-gray-100">
             {testInfo.hasTails && (
               <div className="space-y-1 min-w-[160px]">
@@ -590,6 +599,16 @@ export default function PowerPanel() {
                 <input type="number" min="0.1" step="0.1"
                   className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-indigo-300"
                   value={ratio} onChange={(e) => setRatio(e.target.value)} />
+              </div>
+            )}
+            {solveFor === "n" && (
+              <div className="space-y-1 min-w-[140px]">
+                <label className="text-xs font-medium text-gray-500 flex items-center gap-1">
+                  Expected attrition % <Tip text={TIPS.attrition} wide />
+                </label>
+                <input type="number" min="0" max="99" step="1"
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-indigo-300"
+                  value={attrition} onChange={(e) => setAttrition(e.target.value)} />
               </div>
             )}
             {testInfo.hasGroups && (
@@ -682,6 +701,17 @@ export default function PowerPanel() {
                     : result.result?.toFixed(4)}
               </p>
               <p className="text-sm text-gray-600">{result.label}</p>
+
+              {/* The number to actually recruit. Shown as its own line rather
+                  than buried in the label, because it is the one a protocol
+                  quotes — the raw n above it is what must survive to analysis. */}
+              {result.n_corrected != null && (
+                <p className="mt-2 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5 inline-block">
+                  Enrol <strong>{result.n_corrected.toLocaleString()}</strong>
+                  {(test === "t_two" || test === "proportion") ? " per group" : ""} to allow for{" "}
+                  {((result.attrition ?? 0) * 100).toFixed(0)}% attrition
+                </p>
+              )}
 
               {/* Power bar (only when solving for power) */}
               {solveFor === "power" && result.result != null && (

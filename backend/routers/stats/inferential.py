@@ -764,6 +764,13 @@ class PowerRequest(BaseModel):
     hr: Optional[float] = None
     event_rate: Optional[float] = None
     p_exposed: Optional[float] = 0.5
+    # Expected dropout as a proportion (0.10 = 10%). The computed n is the
+    # number that must COMPLETE the study; enrolling exactly that many leaves
+    # the trial underpowered the moment anyone withdraws. Reported alongside
+    # the raw n rather than in place of it, because the two answer different
+    # questions — one is the statistical requirement, the other the
+    # recruitment target.
+    attrition: float = 0.0
 
 
 @router.post("/power")
@@ -777,6 +784,14 @@ def run_power(req: PowerRequest):
 
     alt = "two-sided" if req.tails == 2 else "larger"
     a   = req.alpha
+
+    if req.attrition is not None and not (0.0 <= req.attrition < 1.0):
+        # 1.0 would divide by zero, and a rate above it is not a rate. Caught
+        # here rather than left to produce an infinite recruitment target.
+        raise HTTPException(
+            status_code=422,
+            detail="Expected attrition must be at least 0 and below 1 (0.10 = 10%).",
+        )
 
     # ── Upfront field validation for the statsmodels-backed power classes ──
     # solve_power() raises a bare ValueError ("need exactly one keyword that
@@ -1125,13 +1140,50 @@ def run_power(req: PowerRequest):
     else:
         raise HTTPException(400, f"Unknown test: {req.test}")
 
-    result_text = _power_result_text(req, result)
-    return {"result": float(result) if result is not None else None, "label": label, "curve": curve, "result_text": result_text}
+    # Attrition correction: one place, after whichever branch produced the n,
+    # so a test cannot be added later that quietly skips it.
+    attrition = float(req.attrition or 0.0)
+    n_corrected = None
+    if req.solve_for == "n" and attrition > 0 and result is not None:
+        per_group = int(np.ceil(float(result) / (1.0 - attrition)))
+        n_corrected = per_group
+        if req.test in ("t_two", "proportion"):
+            ratio = req.ratio or 1.0
+            label += (
+                f"  ·  allowing {attrition*100:.0f}% attrition: enrol n₁ = {per_group}, "
+                f"n₂ = {_ceil(per_group*ratio)}, total N = {per_group + _ceil(per_group*ratio)}"
+            )
+        else:
+            label += f"  ·  allowing {attrition*100:.0f}% attrition: enrol {per_group}"
+
+    result_text = _power_result_text(req, result, n_corrected)
+    return {
+        "result": float(result) if result is not None else None,
+        "label": label,
+        "curve": curve,
+        "result_text": result_text,
+        # The raw n stays `result`; this is the recruitment target.
+        "n_corrected": n_corrected,
+        "attrition": attrition if attrition > 0 else None,
+    }
 
 
-def _power_result_text(req, result) -> str:
+def _power_result_text(req, result, n_corrected=None) -> str:
     if result is None:
         return ""
+
+    def _attrition_note() -> str:
+        if not n_corrected:
+            return ""
+        pct = float(req.attrition or 0.0) * 100
+        return (
+            f" Allowing for {pct:.0f}% attrition, enrol {n_corrected} per group "
+            f"({int(np.ceil(float(result)))} / {1 - float(req.attrition):.2f}) so that "
+            f"{int(np.ceil(float(result)))} complete the study."
+            if req.test in ("t_two", "proportion") else
+            f" Allowing for {pct:.0f}% attrition, enrol {n_corrected} "
+            f"({int(np.ceil(float(result)))} / {1 - float(req.attrition):.2f})."
+        )
 
     a_str = f"{req.alpha}" if req.alpha else "0.05"
     pw_pct = int((req.power or 0.8) * 100)
@@ -1176,6 +1228,7 @@ def _power_result_text(req, result) -> str:
             f"You need {n} participants per group{ratio_note} (total N = {total}) "
             f"for a {test_name} to detect an effect size of {req.effect_size} "
             f"with {int((req.power or 0.8) * 100)}% power at alpha = {a_str}."
+            + _attrition_note()
         )
     elif req.solve_for == "power":
         pwr = round(result * 100, 1)

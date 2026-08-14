@@ -59,6 +59,27 @@ const TRANSFORMS = [
   { id: "median_split", label: "Median split (2 groups)", note: "Below median=0, Above median=1" },
 ];
 
+/** Starter formulas for the Formula tab. The composite inflammatory indices
+ *  are here because they are laborious to type correctly and easy to get
+ *  wrong — SII in particular multiplies two counts before dividing, and
+ *  writing it as N / L * P silently computes something else. */
+const EXAMPLES: Array<{ label: string; formula?: string; note?: string }> = [
+  { label: "BMI", formula: "Weight / ((Height / 100) ** 2)" },
+  { label: "Pulse pressure", formula: "Systolic - Diastolic" },
+  { label: "Creatinine ratio", formula: "Creatinine / Urea" },
+  { label: "NLR", formula: "Neutrophils / Lymphocytes" },
+  { label: "PLR", formula: "Platelets / Lymphocytes" },
+  { label: "SII", formula: "Neutrophils * Platelets / Lymphocytes" },
+  { label: "SIRI", formula: "Neutrophils * Monocytes / Lymphocytes" },
+  // Onodera's PNI = 10 x albumin (g/dL) + 0.005 x lymphocytes (/uL). Written
+  // here for a lymphocyte column in 10^3/uL — the way a haemogram usually
+  // reports it, e.g. 2.25 — which turns 0.005 into 5. On a sheet holding the
+  // absolute count instead (2250), the coefficient is 0.005, not 5; getting
+  // that wrong scales the index by a thousand and it still looks plausible.
+  { label: "PNI (Onodera)", formula: "10 * Albumin + 5 * Lymphocytes" },
+  { label: "Log Troponin", note: "— use the Transform tab for log transforms" },
+];
+
 const OPS = ["<", "<=", ">", ">=", "==", "!=", "contains", "!contains"] as const;
 
 const TEMPLATES_KEY = "compute_templates";
@@ -373,18 +394,29 @@ function FormulaTab({
           {success && <SuccessBadge result={success} />}
         </div>
 
-        {/* Examples */}
+        {/* Examples — clickable, because the point of an example is to start
+            from it, and retyping one by hand is exactly the friction the
+            variable list beside the editor exists to remove. The ones with no
+            formula (log transforms live on another tab) stay inert. */}
         <div className="panel text-xs space-y-1 text-gray-500">
           <p className="font-semibold text-gray-700">Examples</p>
-          {[
-            ["BMI", "Weight / ((Height / 100) ** 2)"],
-            ["Pulse pressure", "Systolic - Diastolic"],
-            ["Log Troponin", "— use the Transform tab for log transforms"],
-            ["Creatinine ratio", "Creatinine / Urea"],
-          ].map(([label, ex]) => (
+          <p className="text-[10px] text-gray-400 -mt-0.5">
+            Click one to load it, then swap in your own column names.
+          </p>
+          {EXAMPLES.map(({ label, formula, note }) => (
             <div key={label} className="flex items-baseline gap-2">
               <span className="font-medium text-gray-600 w-28 flex-shrink-0">{label}:</span>
-              <span className="font-mono text-indigo-600">{ex}</span>
+              {formula ? (
+                <button
+                  onClick={() => setFormula(formula)}
+                  className="font-mono text-indigo-600 hover:text-indigo-800 hover:underline text-left"
+                  title="Load this formula into the editor"
+                >
+                  {formula}
+                </button>
+              ) : (
+                <span className="text-gray-400">{note}</span>
+              )}
             </div>
           ))}
         </div>

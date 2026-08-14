@@ -24,6 +24,27 @@ const computeSession = () =>
   })
 
 describe('ComputePanel', () => {
+  it('Formula tab: clicking an example loads it into the editor', async () => {
+    // The examples were static text, so using one meant retyping it — the
+    // same friction the clickable variable list beside the editor removes.
+    installSession(computeSession())
+    const user = userEvent.setup()
+    render(<ComputePanel />)
+
+    await user.click(screen.getByRole('button', { name: 'Neutrophils * Platelets / Lymphocytes' }))
+
+    const formulaInput = screen.getByPlaceholderText(/Weight \/ \(\(Height/) as HTMLTextAreaElement
+    expect(formulaInput.value).toBe('Neutrophils * Platelets / Lymphocytes')
+  })
+
+  it('Formula tab: SII multiplies before dividing', () => {
+    // N / L * P computes something else entirely, and the mistake is silent.
+    installSession(computeSession())
+    render(<ComputePanel />)
+    const sii = screen.getByRole('button', { name: /Neutrophils \* Platelets \/ Lymphocytes/ })
+    expect(sii).toBeInTheDocument()
+  })
+
   it('renders nothing without an active session', () => {
     clearSession()
     const { container } = render(<ComputePanel />)
