@@ -138,6 +138,48 @@ def test_the_charts_a_figure_is_built_from_respect_the_filter(client):
     assert sum(d["value"] for s in grouped.json()["series"] for d in s["data"]) == 6
 
 
+def test_deleting_rows_while_a_filter_is_active_hits_the_rows_the_grid_showed(client):
+    """The grid shows every row while a filter is active — excluded ones are
+    marked, not hidden — so a tick is a position in the UNFILTERED frame, and
+    that is what delete_rows takes. If it took a filtered position instead,
+    ticking the third visible row would delete some other patient.
+    """
+    df = pd.DataFrame({"id": list(range(1, 11)), "keep": [1, 0] * 5})
+    sid = make_session(df.copy(), "tcase_delete")
+    client.post(f"/api/sessions/{sid}/select_cases", json={
+        "conditions": [{"column": "keep", "operator": "eq", "value": "1", "join": "AND"}],
+        "apply": True,
+    })
+    assert store.get_filtered(sid)["id"].tolist() == [1, 3, 5, 7, 9]
+
+    # Tick the rows holding id 3 and id 4 — positions 2 and 3 as displayed.
+    r = client.post(f"/api/compute/{sid}/delete_rows", json={"row_indices": [2, 3]})
+    assert r.status_code == 200, r.text
+    assert store.get(sid)["id"].tolist() == [1, 2, 5, 6, 7, 8, 9, 10]
+    # The filter re-evaluates on values, so it simply no longer sees id 3.
+    assert store.get_filtered(sid)["id"].tolist() == [1, 5, 7, 9]
+
+
+def test_excluded_positions_are_restated_after_rows_move(client):
+    """Excluded rows are POSITIONS, so a deletion shifts every one below it.
+    The client re-asks rather than trying to adjust them itself; this pins that
+    the server's answer is correct for the new frame."""
+    df = pd.DataFrame({"id": list(range(1, 11)), "keep": [1, 0] * 5})
+    sid = make_session(df.copy(), "tcase_restate")
+    conditions = {"conditions": [
+        {"column": "keep", "operator": "eq", "value": "1", "join": "AND"}]}
+    first = client.post(f"/api/sessions/{sid}/select_cases",
+                        json={**conditions, "apply": True}).json()
+    assert first["excluded_rows"] == [1, 3, 5, 7, 9]
+
+    client.post(f"/api/compute/{sid}/delete_rows", json={"row_indices": [0, 1]})
+    again = client.post(f"/api/sessions/{sid}/select_cases",
+                        json={**conditions, "apply": True}).json()
+    # Two rows gone from the top: the excluded positions all shift down by two.
+    assert again["excluded_rows"] == [1, 3, 5, 7]
+    assert again["total"] == 8
+
+
 def test_analysis_routers_do_not_use_unfiltered_store_access():
     routers = Path(__file__).resolve().parents[1] / "routers"
     # These modules intentionally manage or mutate the complete dataset.

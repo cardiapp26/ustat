@@ -26,6 +26,50 @@ function bigSession(n: number, cols = 6): Session {
 const bodyRows = () => document.querySelectorAll('tbody tr[class*="group"]').length
 
 describe('DataTable row virtualisation', () => {
+  it('re-asks for the excluded rows when the data underneath changes', async () => {
+    // Excluded rows are POSITIONS, so a deletion shifts every one below it and
+    // stale marks would shade the wrong records. The filter itself stays
+    // correct — its conditions are evaluated on values — but the shading has
+    // to be restated.
+    installSession(bigSession(10))
+    let calls = 0
+    server.use(
+      http.post('/api/sessions/test-session/select_cases', () => {
+        calls += 1
+        return HttpResponse.json({
+          selected: 8, total: 10, applied: true,
+          excluded_rows: [1, 2], excluded_beyond_preview: 0,
+        })
+      }),
+    )
+    useStore.setState({
+      caseFilter: {
+        conditions: [{ column: 'c0', operator: 'eq', value: '0', join: 'AND' }],
+        selected: 7, total: 10, excludedRows: [3, 5, 9], excludedBeyondPreview: 0,
+      },
+    })
+    render(<DataTable />)
+
+    await waitFor(() => expect(calls).toBeGreaterThan(0))
+    await waitFor(() =>
+      expect(useStore.getState().caseFilter?.excludedRows).toEqual([1, 2]),
+    )
+  })
+
+  it('does not ask when no filter is active', async () => {
+    installSession(bigSession(10))
+    let calls = 0
+    server.use(
+      http.post('/api/sessions/test-session/select_cases', () => {
+        calls += 1
+        return HttpResponse.json({ selected: 10, total: 10, applied: true })
+      }),
+    )
+    render(<DataTable />)
+    await new Promise((r) => setTimeout(r, 50))
+    expect(calls).toBe(0)
+  })
+
   it('bands the row the cursor is in', async () => {
     // On a wide sheet the cell being edited scrolls out of sight long before
     // its row does; without a band nothing ties the values under the cursor
@@ -49,6 +93,18 @@ describe('DataTable row virtualisation', () => {
     // position in the UNFILTERED frame, so a grid that dropped rows would
     // send every edit below the first excluded row to the wrong record.
     installSession(bigSession(10))
+    // The grid restates the excluded positions whenever the data could have
+    // moved under them, so the handler has to exist even when the test is
+    // about the marking rather than the refresh. It answers with the same
+    // rows so nothing shifts.
+    server.use(
+      http.post('/api/sessions/test-session/select_cases', () =>
+        HttpResponse.json({
+          selected: 7, total: 10, applied: true,
+          excluded_rows: [3, 5, 9], excluded_beyond_preview: 0,
+        }),
+      ),
+    )
     useStore.setState({
       caseFilter: {
         conditions: [{ column: 'c0', operator: 'eq', value: '0', join: 'AND' }],

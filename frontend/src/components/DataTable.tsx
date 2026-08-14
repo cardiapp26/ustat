@@ -3,9 +3,9 @@ import type { CSSProperties, Dispatch, ReactNode, RefObject, SetStateAction } fr
 import { createPortal } from "react-dom";
 import { BookOpen, X } from "lucide-react";
 import { runColumnStructureMutation, useStore } from "../store";
-import type { ColMeta, Session } from "../store";
+import type { CaseCondition, ColMeta, Session } from "../store";
 import api from "../api";
-import { renameColumn, getColumnBadges } from "../api";
+import { renameColumn, getColumnBadges, selectCases } from "../api";
 import DataDictionaryPanel from "./DataDictionaryPanel";
 
 // ── Kind cycling ───────────────────────────────────────────────────────────────
@@ -454,6 +454,32 @@ function DataTableBody({ session }: { session: Session }) {
       .catch(() => { if (!cancelled) { setColumnBadges({}); setBadgeRows(0); } });
     return () => { cancelled = true; };
   }, [session?.session_id, dataVersion]);
+
+  // Excluded rows are POSITIONS, so deleting or adding a row shifts every one
+  // below it and the marks would point at the wrong records — the filter
+  // itself stays correct, since its conditions are evaluated on values, but
+  // the shading would quietly lie about which rows they picked. Re-ask the
+  // server whenever the data changes under it.
+  const filterConditionsKey = caseFilter ? JSON.stringify(caseFilter.conditions) : null;
+  useEffect(() => {
+    if (!session || !filterConditionsKey) return;
+    const conditions = JSON.parse(filterConditionsKey) as CaseCondition[];
+    let cancelled = false;
+    void selectCases(session.session_id, conditions, true)
+      .then((res) => {
+        if (cancelled) return;
+        setCaseFilter({
+          conditions,
+          selected: res.data.selected,
+          total: res.data.total,
+          excludedRows: res.data.excluded_rows ?? [],
+          excludedBeyondPreview: res.data.excluded_beyond_preview ?? 0,
+        });
+      })
+      .catch(() => { /* the banner keeps the last known counts */ });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.session_id, dataVersion, filterConditionsKey]);
 
   const missingCounts = useMemo(() => {
     const counts: Record<string, number> = {};
