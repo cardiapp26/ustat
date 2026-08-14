@@ -266,6 +266,154 @@ describe('ChartsPanel', () => {
     return { user, traces: JSON.parse(screen.getByTestId('plotly-mock').dataset.plotly!) }
   }
 
+  async function drawStrip(opts: { horizontal?: boolean; log?: boolean } = {}) {
+    installSession()
+    server.use(http.post('/api/charts/boxplot', () => HttpResponse.json(boxplotResponse)))
+    const user = userEvent.setup()
+    render(<ChartsPanel />)
+    await user.click(screen.getByRole('radio', { name: /^strip \(points/i }))
+    const colorSelect = screen.getAllByRole('combobox').find(
+      (s) => s.previousElementSibling?.textContent?.match(/color \/ group/i),
+    )
+    await user.selectOptions(colorSelect!, 'GROUP')
+    if (opts.horizontal) await user.click(screen.getByRole('checkbox', { name: /horizontal/i }))
+    if (opts.log) await user.click(screen.getByRole('checkbox', { name: /log scale/i }))
+    await user.click(screen.getByRole('button', { name: /generate chart/i }))
+    await waitFor(() => expect(screen.getByTestId('plotly-mock')).toBeInTheDocument())
+    const el = screen.getByTestId('plotly-mock')
+    return { user, traces: JSON.parse(el.dataset.plotly!), layout: JSON.parse(el.dataset.layout!) }
+  }
+
+  it('splits the bars when a Color / Group column is chosen', async () => {
+    // Reported: choosing Color / Group changed nothing. The request carried
+    // the column and the handler never read it, so the control was inert and
+    // silent — which reads as a setting that WAS applied.
+    installSession()
+    server.use(http.post('/api/charts/bar', () => HttpResponse.json({
+      type: 'bar', x: 'TERTILE', y: '% Malign', y_mode: 'percentage', color: 'GROUP',
+      series: [
+        { group: 'M', data: [{ label: '1', value: 40, n: 10, k: 4 }] },
+        { group: 'F', data: [{ label: '1', value: 60, n: 10, k: 6 }] },
+      ],
+    })))
+    const user = userEvent.setup()
+    render(<ChartsPanel />)
+    await user.click(screen.getByRole('radio', { name: /^bar$/i }))
+    await user.click(screen.getByRole('button', { name: /generate chart/i }))
+    await waitFor(() => expect(screen.getByTestId('plotly-mock')).toBeInTheDocument())
+
+    const traces = JSON.parse(screen.getByTestId('plotly-mock').dataset.plotly!)
+    expect(traces).toHaveLength(2)
+    expect(traces.map((t: { name: string }) => t.name)).toEqual(['M', 'F'])
+    expect(traces[0].y).toEqual([40])
+    expect(traces[1].y).toEqual([60])
+    // Each split keeps its own denominator.
+    expect(traces[1].customdata).toEqual([[6, 10]])
+  })
+
+  it('offers Color / Group only on charts that read it', async () => {
+    // A pie renders identically whatever is chosen here; showing the control
+    // implies it did something.
+    installSession()
+    const user = userEvent.setup()
+    render(<ChartsPanel />)
+    const colourSelect = () => screen.queryAllByRole('combobox').find(
+      (s) => s.previousElementSibling?.textContent?.match(/color \/ group/i),
+    )
+    await user.click(screen.getByRole('radio', { name: /boxplot/i }))
+    expect(colourSelect()).toBeTruthy()
+    for (const inert of [/^pie$/i, /balloon/i, /sankey/i, /stacked bar/i]) {
+      await user.click(screen.getByRole('radio', { name: inert }))
+      expect(colourSelect()).toBeUndefined()
+    }
+  })
+
+  it('draws a bar chart as the percentage of each group, labelled', async () => {
+    // "What fraction of this tertile was malignant" is the question a
+    // risk-factor figure asks. Reading it off a gridline is a guess.
+    installSession()
+    server.use(http.post('/api/charts/bar', () => HttpResponse.json({
+      type: 'bar', x: 'TERTILE', y: '% Malign', y_mode: 'percentage',
+      data: [
+        { label: '1', value: 35.7, n: 42, k: 15 },
+        { label: '2', value: 40.5, n: 42, k: 17 },
+      ],
+    })))
+    const user = userEvent.setup()
+    render(<ChartsPanel />)
+    await user.click(screen.getByRole('radio', { name: /^bar$/i }))
+    await user.click(screen.getByRole('button', { name: /generate chart/i }))
+    await waitFor(() => expect(screen.getByTestId('plotly-mock')).toBeInTheDocument())
+
+    const [trace] = JSON.parse(screen.getByTestId('plotly-mock').dataset.plotly!)
+    expect(trace.y).toEqual([35.7, 40.5])
+    expect(trace.text).toEqual(['36%', '41%'])
+    expect(trace.textposition).toBe('outside')
+    // n and k travel with the percentage: 36% of 8 is not 36% of 800.
+    expect(trace.customdata).toEqual([[15, 42], [17, 42]])
+  })
+
+  it('leaves a mean bar chart unlabelled by percent', async () => {
+    installSession()
+    server.use(http.post('/api/charts/bar', () => HttpResponse.json({
+      type: 'bar', x: 'GROUP', y: 'AGE', y_mode: 'mean',
+      data: [{ label: 'M', value: 55 }, { label: 'F', value: 62 }],
+    })))
+    const user = userEvent.setup()
+    render(<ChartsPanel />)
+    await user.click(screen.getByRole('radio', { name: /^bar$/i }))
+    await user.click(screen.getByRole('button', { name: /generate chart/i }))
+    await waitFor(() => expect(screen.getByTestId('plotly-mock')).toBeInTheDocument())
+
+    const [trace] = JSON.parse(screen.getByTestId('plotly-mock').dataset.plotly!)
+    expect(trace.text).toEqual(['55', '62'])
+    expect(trace.customdata).toBeUndefined()
+  })
+
+  it('draws a strip chart as points plus a median rule and no box', async () => {
+    const { traces } = await drawStrip()
+    // One transparent box per group carrying the points, then a median trace.
+    const pointTraces = traces.filter((t: { type: string }) => t.type === 'box')
+    expect(pointTraces).toHaveLength(2)
+    for (const t of pointTraces) {
+      expect(t.boxpoints).toBe('all')
+      // A visible box or median line would make this a box plot.
+      expect(t.fillcolor).toBe('rgba(0,0,0,0)')
+      expect(t.line.color).toBe('rgba(0,0,0,0)')
+    }
+    const median = traces.find((t: { name: string }) => t.name === 'Median')
+    expect(median.mode).toBe('markers')
+    // 12, 14 -> 13 and 22, 24 -> 23
+    expect(median.y).toEqual([13, 23])
+  })
+
+  it('puts the groups down the side when asked', async () => {
+    const { traces } = await drawStrip({ horizontal: true })
+    const pointTraces = traces.filter((t: { type: string }) => t.type === 'box')
+    // Values on x, groups implied by the trace name — the transpose of the
+    // default. A long histology name will not fit under a tick.
+    expect(pointTraces[0].x).toEqual([10, 12, 14, 16])
+    expect(pointTraces[0].y).toBeUndefined()
+    const median = traces.find((t: { name: string }) => t.name === 'Median')
+    expect(median.x).toEqual([13, 23])
+    expect(median.y).toEqual(['M', 'F'])
+  })
+
+  it('logs the value axis and leaves the category axis alone', async () => {
+    const { layout } = await drawStrip({ log: true })
+    expect(layout.yaxis.type).toBe('log')
+    // The category axis must never be logged — it carries names, not numbers.
+    expect(layout.xaxis.type).toBe('category')
+  })
+
+  it('moves the log scale with the orientation', async () => {
+    // Which axis carries the values is the orientation's business; logging the
+    // wrong one would either do nothing or corrupt the category order.
+    const { layout } = await drawStrip({ horizontal: true, log: true })
+    expect(layout.xaxis.type).toBe('log')
+    expect(layout.yaxis.type).toBe('category')
+  })
+
   it('draws a raincloud as a half violin, a box and every raw point', async () => {
     const { traces } = await drawRaincloud()
     expect(traces).toHaveLength(2)

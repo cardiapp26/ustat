@@ -13,8 +13,14 @@ import { categoryColors } from "../lib/categoryColors";
 /** Chart types offered in the picker, in the order they are listed. Exported
  *  so the icon set can be checked for coverage rather than drifting quietly
  *  when a chart is added. */
+/** Charts whose request actually carries the Color / Group column. */
+const COLOUR_AWARE_CHARTS = new Set([
+  "scatter", "boxplot", "violin", "raincloud", "strip", "bar", "paired",
+  "dumbbell", "errorplot", "ecdf", "facet", "lineplot", "slopeplot", "ridgeplot",
+]);
+
 export const CHART_TYPES = [
-  "histogram", "scatter", "boxplot", "violin", "raincloud", "bar", "paired",
+  "histogram", "scatter", "boxplot", "violin", "raincloud", "strip", "bar", "paired",
   "dumbbell", "errorplot", "ecdf", "pie", "balloon", "facet", "lineplot",
   "slopeplot", "sankey", "stackplot", "ridgeplot", "sets",
 ] as const;
@@ -60,6 +66,13 @@ function ChartsPanelBody({ session }: { session: Session }) {
   // and the gap between the two is what tells the reader the distribution is
   // skewed — which is the same thing the test choice rests on.
   const [showMean, setShowMean] = usePersistedPanelState<boolean>("charts", "showMean", false);
+  const [horizontal, setHorizontal] = usePersistedPanelState<boolean>("charts", "horizontal", false);
+  // Log scale on the VALUE axis of a grouped chart. Distinct from the
+  // scatter's log_x/log_y, which are axis-per-variable; here there is one
+  // value axis and its orientation moves with `horizontal`.
+  const [logValue, setLogValue] = usePersistedPanelState<boolean>("charts", "logValue", false);
+  const [barMode, setBarMode] = usePersistedPanelState<string>("charts", "barMode", "mean");
+  const [barTarget, setBarTarget] = usePersistedPanelState<string>("charts", "barTarget", "");
   // Error plot / ECDF
   const [errCentre, setErrCentre] = usePersistedPanelState<string>("charts", "errCentre", "mean");
   const [errSpread, setErrSpread] = usePersistedPanelState<string>("charts", "errSpread", "ci");
@@ -157,7 +170,7 @@ function ChartsPanelBody({ session }: { session: Session }) {
         label: labelCol || undefined, shape: shapeCol || undefined,
         ellipse, marginal,
       });
-      else if (chartType === "boxplot" || chartType === "violin" || chartType === "raincloud") res = await getBoxplot({ ...base, color: color || undefined });
+      else if (chartType === "boxplot" || chartType === "violin" || chartType === "raincloud" || chartType === "strip") res = await getBoxplot({ ...base, color: color || undefined });
       else if (chartType === "paired") res = await getPairedBox({ session_id: session.session_id, y: x, group: color, pair_id: pairId });
       else if (chartType === "dumbbell") res = await getDumbbell({
         session_id: session.session_id, category: x,
@@ -209,7 +222,11 @@ function ChartsPanelBody({ session }: { session: Session }) {
             y: facetKind === "scatter" ? y : undefined,
             facet: facetCol, color: color || undefined,
           });
-      else res = await getBar({ ...base, y: y || undefined, color: color || undefined });
+      else res = await getBar({
+        ...base, y: y || undefined, color: color || undefined,
+        y_mode: barMode,
+        ...(barMode === "percentage" && barTarget.trim() ? { target_value: barTarget.trim() } : {}),
+      });
       setPlotData(res.data);
 
       // The summary table is a separate result printed under the plot, so a
@@ -226,7 +243,7 @@ function ChartsPanelBody({ session }: { session: Session }) {
       // Brackets are a second call: the comparison is a statistical result in
       // its own right, and a failure there must not lose the plot the user
       // already has.
-      if (showBrackets && color && (chartType === "boxplot" || chartType === "violin" || chartType === "raincloud")) {
+      if (showBrackets && color && (chartType === "boxplot" || chartType === "violin" || chartType === "raincloud" || chartType === "strip")) {
         try {
           const cmp = await getCompareMeans({
             session_id: session.session_id, y: x, group: color,
@@ -261,14 +278,23 @@ function ChartsPanelBody({ session }: { session: Session }) {
         autoTitle = `${yLabelText} vs ${xLabelText}`;
         autoX = xLabelText;
         autoY = yLabelText;
-      } else if (chartType === "boxplot" || chartType === "violin" || chartType === "raincloud") {
+      } else if (chartType === "boxplot" || chartType === "violin" || chartType === "raincloud" || chartType === "strip") {
         autoTitle = colorLabelText ? `Distribution of ${xLabelText} by ${colorLabelText}` : `Distribution of ${xLabelText}`;
         autoX = colorLabelText || "Overall";
         autoY = xLabelText;
       } else if (chartType === "bar") {
-        autoTitle = y ? `${yLabelText} by ${xLabelText}` : `Count by ${xLabelText}`;
+        // A percentage axis captioned with the outcome's name reads as the
+        // outcome itself — "Malign" against a 0-100 axis is not what the bar
+        // shows. The share, and what of, is the caption.
+        const pct = barMode === "percentage" && y;
+        const pctText = barTarget.trim()
+          ? `% ${yLabelText} = ${barTarget.trim()}`
+          : `% ${yLabelText}`;
+        autoTitle = pct
+          ? `${pctText} by ${xLabelText}`
+          : (y ? `${yLabelText} by ${xLabelText}` : `Count by ${xLabelText}`);
         autoX = xLabelText;
-        autoY = yLabelText;
+        autoY = pct ? pctText : yLabelText;
       } else if (chartType === "paired") {
         autoTitle = `Matched-pair ${xLabelText} by ${colorLabelText}`;
         autoX = colorLabelText;
@@ -292,8 +318,14 @@ function ChartsPanelBody({ session }: { session: Session }) {
       }
 
       setCustomTitle(autoTitle);
-      setCustomXLabel(autoX);
-      setCustomYLabel(autoY);
+      // A transposed chart swaps which axis carries the values, so the titles
+      // have to swap with it — otherwise the value axis is captioned with the
+      // grouping variable's name, which is worse than no caption.
+      const transposed = horizontal
+        && (chartType === "boxplot" || chartType === "violin"
+            || chartType === "raincloud" || chartType === "strip");
+      setCustomXLabel(transposed ? autoY : autoX);
+      setCustomYLabel(transposed ? autoX : autoY);
     } catch (e: unknown) {
       const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
       setError(detail ?? "Error generating chart");
@@ -305,10 +337,13 @@ function ChartsPanelBody({ session }: { session: Session }) {
   const chartRef = useRef<PlotCaptureHandle | null>(null);
   const seriesColors = useStore((s) => s.plotTheme.seriesColors);
   const traces = applySeriesPins(
-    plotData ? buildTraces(plotData, chartType, pal, td, session, showPoints, donut ? 0.45 : 0, showMean) : null,
+    plotData ? buildTraces(plotData, chartType, pal, td, session, showPoints, donut ? 0.45 : 0, showMean, horizontal) : null,
     seriesColors,
   );
   const brackets = buildBrackets(plotData, comparisons);
+  const groupedChart = chartType === "boxplot" || chartType === "violin"
+    || chartType === "raincloud" || chartType === "strip";
+  const valueAxisIsLog = groupedChart && logValue;
   const marginalAxes = marginalLayout(plotData);
 
   return (
@@ -333,7 +368,7 @@ function ChartsPanelBody({ session }: { session: Session }) {
                   : t === "lineplot" ? "Line (over visits)" : t === "slopeplot" ? "Slope (before / after)"
                   : t === "sankey" ? "Sankey (flow)" : t === "stackplot" ? "Stacked bar"
                   : t === "ridgeplot" ? "Ridge" : t === "sets" ? "Set overlap"
-                  : t === "raincloud" ? "Raincloud" : t}
+                  : t === "raincloud" ? "Raincloud" : t === "strip" ? "Strip (points + median)" : t}
               </span>
             </label>
           ))}
@@ -401,11 +436,53 @@ function ChartsPanelBody({ session }: { session: Session }) {
               <label className="text-xs text-gray-400 block mb-1">Y axis</label>
               <select className="select w-full" value={y} onChange={(e) => setY(e.target.value)}>
                 <option value="">— count —</option>
-                {numCols.map((c) => <option key={c}>{c}</option>)}
+                {/* In percentage mode the outcome is a condition, not a
+                    quantity, so a coded categorical column belongs here too —
+                    "Histology = malignant" is the usual form of the question. */}
+                {(chartType === "bar" && barMode === "percentage"
+                  ? [...numCols, ...catCols.filter((c) => !numCols.includes(c))]
+                  : numCols
+                ).map((c) => <option key={c}>{c}</option>)}
               </select>
             </div>
           )}
-          {chartType !== "histogram" && catCols.length > 0 && (
+          {/* Not gated on a Y column being chosen: percentage mode is what
+              ADDS the categorical columns to the Y list, so gating it on Y
+              made the one outcome it exists for unreachable. */}
+          {chartType === "bar" && (
+            <div className="space-y-2">
+              <div>
+                <label
+                  className="text-xs text-gray-400 block mb-1"
+                  title="Mean plots the average of the Y column per group. Percentage plots the share of each group meeting a condition on Y — the form a risk-factor figure needs. A mean of a 0/1 column answers the same question but reports 0.37 where the figure wants 37%."
+                >Bar height</label>
+                <select className="select w-full" value={barMode} onChange={(e) => setBarMode(e.target.value)}>
+                  <option value="mean">Mean of Y</option>
+                  <option value="percentage">% of group where Y is…</option>
+                </select>
+              </div>
+              {barMode === "percentage" && y && (
+                <div>
+                  <label
+                    className="text-xs text-gray-400 block mb-1"
+                    title="The value of Y that counts towards the percentage, e.g. 1, or the code for malignant. Leave blank to treat Y as a 0/1 flag and count every non-zero."
+                  >Counts as a hit</label>
+                  <input
+                    className="select w-full text-sm"
+                    placeholder="blank = any non-zero"
+                    value={barTarget}
+                    onChange={(e) => setBarTarget(e.target.value)}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+          {/* Only where it does something. It used to appear on every chart
+              but the histogram, including five that never read it — a pie
+              with "Color / Group: Sex" chosen drew exactly the same pie, and
+              said nothing. A control that silently does nothing is worse
+              than an absent one: it reads as a setting that was applied. */}
+          {COLOUR_AWARE_CHARTS.has(chartType) && catCols.length > 0 && (
             <div>
               <label className="text-xs text-gray-400 block mb-1">{chartType === "paired" ? "Group (2 levels)" : "Color / Group"}</label>
               <select className="select w-full" value={color} onChange={(e) => setColor(e.target.value)}>
@@ -645,9 +722,18 @@ function ChartsPanelBody({ session }: { session: Session }) {
               </div>
             </>
           )}
-          {(chartType === "boxplot" || chartType === "violin" || chartType === "raincloud") && (
+          {(chartType === "boxplot" || chartType === "violin" || chartType === "raincloud" || chartType === "strip") && (
             <div className="pt-2 border-t border-gray-100 space-y-2">
-              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Comparisons</p>
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Axes</p>
+              <label className="flex items-center gap-2 cursor-pointer" title="Puts the groups down the side instead of along the bottom. Worth it as soon as the category names are words rather than codes — a rotated tick label is slower to read than a horizontal one.">
+                <input type="checkbox" checked={horizontal} onChange={(e) => setHorizontal(e.target.checked)} className="accent-indigo-500" />
+                <span className="text-xs text-gray-600">Horizontal (groups down the side)</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer" title="Log scale on the value axis. Ratios and composite indices (SII, PLR) span an order of magnitude or more; on a linear axis a handful of large values squash the rest against one end.">
+                <input type="checkbox" checked={logValue} onChange={(e) => setLogValue(e.target.checked)} className="accent-indigo-500" />
+                <span className="text-xs text-gray-600">Log scale on the value axis</span>
+              </label>
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider pt-1">Comparisons</p>
               {/* A raincloud IS the scattered points, so the toggle would be a
                   control that cannot change anything. */}
               {chartType !== "raincloud" && (
@@ -817,6 +903,7 @@ function ChartsPanelBody({ session }: { session: Session }) {
             chartType === "histogram" ? "Shows the frequency distribution of a single numeric variable. The KDE (kernel density) overlay estimates the smooth probability density. Skewed histograms suggest using median instead of mean." :
             chartType === "scatter" ? "Reveals relationships between two continuous variables. The regression line and R² show linear fit strength. Add a Color variable to see group-specific patterns." :
             chartType === "boxplot" ? "Compares distributions across groups. The box shows Q1–Q3 (IQR), the line is the median, whiskers extend to 1.5×IQR. Points beyond whiskers are outliers." :
+            chartType === "strip" ? "Every observation as a point, with a rule at the group median and nothing else. Use it where a box or violin would over-claim: small or very uneven groups, where a kernel drawn through seven cases asserts a shape the data does not support. With groups down the side and a log value axis it is the standard figure for a ratio or composite index (SII, PLR) across histology subtypes." :
             chartType === "violin" ? "Combines a box plot with a kernel density estimate. The wider the violin, the more data points at that value. Better than box plots for showing bimodal or skewed distributions." :
             chartType === "paired" ? "Matched-pair comparison: a box per group plus a line connecting each pair's two values (e.g. PSM-matched cohorts). Pair ID must link exactly one row per group — PSM's match_set_id or any per-case ID column works." :
             chartType === "lineplot" ? "Group means across an ordered axis — the repeated-measures figure: one line per arm across visits, with a band for the uncertainty. Each point's n is on hover, and a warning appears when a group loses half its subjects along the axis, because a thinning line looks identical to a stable one." :
@@ -996,13 +1083,21 @@ function ChartsPanelBody({ session }: { session: Session }) {
                 ...(layout.xaxis as PlotLayout),
                 ...pairedXAxisOverride(chartType, plotData, session),
                 ...(plotData?.log_x ? { type: "log" } : {}),
+                // The grouped charts have one value axis, and which of the two
+                // it is moves with the orientation. Categories must never be
+                // logged — that axis carries names, not numbers.
+                ...(valueAxisIsLog && horizontal ? { type: "log" } : {}),
+                ...(groupedChart && !horizontal ? { type: "category", automargin: true } : {}),
                 ...(marginalAxes.xDomain ? { domain: marginalAxes.xDomain } : {}),
               },
               yaxis: {
                 ...(layout.yaxis as PlotLayout),
                 ...(plotData?.log_y ? { type: "log" } : {}),
+                ...(valueAxisIsLog && !horizontal ? { type: "log" } : {}),
                 // Category order comes from the trace arrays, not alphabetical.
                 ...(plotData?.type === "dumbbell" ? { type: "category", automargin: true } : {}),
+                // automargin so a long histology name is not clipped.
+                ...(groupedChart && horizontal ? { type: "category", automargin: true } : {}),
                 ...(marginalAxes.yDomain ? { domain: marginalAxes.yDomain } : {}),
               },
               ...(brackets.shapes.length
@@ -1206,6 +1301,10 @@ function buildTraces(
   showPoints = false,
   donutHole = 0,
   showMean = false,
+  // Groups down the side rather than along the bottom. A published figure
+  // does this whenever the category names are words — "PTC follicular
+  // variant" does not fit under a tick and rotating it costs the reader.
+  horizontal = false,
 ): PlotData[] | null {
   if (!d) return null;
 
@@ -1730,7 +1829,7 @@ function buildTraces(
       const n = groups.reduce((acc, g) => acc + g.values.length, 0);
       return groups.map((g, i) => ({
         type: "violin",
-        y: g.values,
+        ...(horizontal ? { x: g.values } : { y: g.values }),
         name: labelFor(colorLabels, g.group, String(g.group)),
         side: "positive",
         width: 1.0,
@@ -1761,10 +1860,64 @@ function buildTraces(
       }));
     }
 
+    if (chartType === "strip") {
+      // Points and a median rule, nothing else. A box or a violin asserts a
+      // shape the reader is meant to compare; with the small, uneven groups a
+      // histology breakdown produces (seven Hurthle cases against two hundred
+      // benign), the raw points are the honest picture and a kernel drawn
+      // through seven of them is not.
+      const median = (vals: unknown[]): number | null => {
+        const nums = vals.map(Number).filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
+        if (!nums.length) return null;
+        const mid = Math.floor(nums.length / 2);
+        return nums.length % 2 ? nums[mid] : (nums[mid - 1] + nums[mid]) / 2;
+      };
+      const names = groups.map((g) => labelFor(colorLabels, g.group, String(g.group)));
+      // A transparent box is the jitter engine: Plotly scatter has no jitter,
+      // and hand-rolling it needs numeric category positions that break the
+      // moment a group is renamed.
+      const points: PlotData[] = groups.map((g, i) => ({
+        type: "box",
+        ...(horizontal ? { x: g.values } : { y: g.values }),
+        name: names[i],
+        boxpoints: "all",
+        pointpos: 0,
+        jitter: 0.65,
+        fillcolor: "rgba(0,0,0,0)",
+        line: { color: "rgba(0,0,0,0)" },
+        marker: { color: C[i % C.length], size: 5, opacity: 0.55 },
+        hoveron: "points",
+        text: g.row_indices?.map((idx) => `Row ${idx + 1}`),
+        hovertemplate: horizontal
+          ? "%{x}<br>%{text}<extra>%{fullData.name}</extra>"
+          : "%{y}<br>%{text}<extra>%{fullData.name}</extra>",
+        showlegend: false,
+      } as PlotData));
+      const medians = groups.map((g) => median(g.values as unknown[]));
+      return [...points, {
+        type: "scatter",
+        mode: "markers",
+        ...(horizontal ? { x: medians, y: names } : { x: names, y: medians }),
+        marker: {
+          symbol: horizontal ? "line-ns-open" : "line-ew-open",
+          size: 26,
+          // Both, deliberately: an open symbol takes its stroke from
+          // marker.color, and leaving that unset lets the layout colourway
+          // tint the median rule to match whichever series came next.
+          color: "#111827",
+          line: { color: "#111827", width: 2.5 },
+        },
+        name: "Median",
+        hovertemplate: horizontal
+          ? "median %{x}<extra>%{y}</extra>"
+          : "median %{y}<extra>%{x}</extra>",
+      } as PlotData];
+    }
+
     if (chartType === "violin") {
       return groups.map((g, i) => ({
         type: "violin",
-        y: g.values,
+        ...(horizontal ? { x: g.values } : { y: g.values }),
         name: labelFor(colorLabels, g.group, String(g.group)),
         box: { visible: true },
         meanline: { visible: true },
@@ -1786,20 +1939,23 @@ function buildTraces(
       ? [{
         type: "scatter",
         mode: "markers",
-        x: groups.map((g) => labelFor(colorLabels, g.group, String(g.group))),
-        y: groups.map((g) => {
-          const nums = (g.values as unknown[]).map(Number).filter((v) => Number.isFinite(v));
-          return nums.length ? nums.reduce((a, b) => a + b, 0) / nums.length : null;
-        }),
+        ...(() => {
+          const names = groups.map((g) => labelFor(colorLabels, g.group, String(g.group)));
+          const means = groups.map((g) => {
+            const nums = (g.values as unknown[]).map(Number).filter((v) => Number.isFinite(v));
+            return nums.length ? nums.reduce((a, b) => a + b, 0) / nums.length : null;
+          });
+          return horizontal ? { x: means, y: names } : { x: names, y: means };
+        })(),
         marker: { symbol: "diamond", size: 9, color: "#ffffff", line: { color: "#111827", width: 1.5 } },
         name: "Mean",
-        hovertemplate: "mean %{y}<extra></extra>",
+        hovertemplate: horizontal ? "mean %{x}<extra></extra>" : "mean %{y}<extra></extra>",
       } as PlotData]
       : [];
 
     return [...groups.map((g, i) => ({
       type: "box",
-      y: g.values,
+      ...(horizontal ? { x: g.values } : { y: g.values }),
       name: labelFor(colorLabels, g.group, String(g.group)),
       marker: { color: C[i % C.length], size: showPoints ? 4 : undefined, opacity: showPoints ? 0.55 : undefined },
       // "Show every point" is the modern default for small clinical samples —
@@ -1811,18 +1967,57 @@ function buildTraces(
       jitter: showPoints ? 0.35 : undefined,
       pointpos: showPoints ? 0 : undefined,
       text: g.row_indices?.map((idx) => `Row ${idx + 1}`),
-      hovertemplate: "%{y}<br>%{text}<extra>%{fullData.name}</extra>",
+      hovertemplate: horizontal
+        ? "%{x}<br>%{text}<extra>%{fullData.name}</extra>"
+        : "%{y}<br>%{text}<extra>%{fullData.name}</extra>",
     })), ...meanTraces];
+  }
+
+  if (d.type === "bar" && Array.isArray(d.series)) {
+    const xLabels = valueLabelsFor(d.x);
+    const groupLabels = valueLabelsFor(d.color);
+    const isPct = d.y_mode === "percentage";
+    const series = d.series as Array<{ group: unknown; data: Array<{ label: unknown; value: unknown; n?: number; k?: number }> }>;
+    return series.map((sr, i) => ({
+      type: "bar",
+      name: labelFor(groupLabels, sr.group, String(sr.group)),
+      x: sr.data.map((r) => labelFor(xLabels, r.label, String(r.label))),
+      y: sr.data.map((r) => r.value),
+      marker: { color: C[i % C.length] },
+      text: sr.data.map((r) => (isPct ? `${Number(r.value).toFixed(0)}%` : String(r.value))),
+      textposition: "outside",
+      cliponaxis: false,
+      hovertemplate: isPct
+        ? "%{x}<br>%{y}%" + (sr.data[0]?.n != null ? " (%{customdata[0]}/%{customdata[1]})" : "") + "<extra>%{fullData.name}</extra>"
+        : "%{x}<br>%{y}<extra>%{fullData.name}</extra>",
+      ...(isPct && sr.data[0]?.n != null
+        ? { customdata: sr.data.map((r) => [r.k ?? 0, r.n ?? 0]) }
+        : {}),
+    } as PlotData));
   }
 
   if (d.type === "bar") {
     const xLabels = valueLabelsFor(d.x);
-    const data = d.data as Array<{ label: unknown; value: unknown }>;
+    const data = d.data as Array<{ label: unknown; value: unknown; n?: number; k?: number }>;
+    const isPct = d.y_mode === "percentage";
     return [{
       type: "bar",
       x: data.map((r) => labelFor(xLabels, r.label, String(r.label))),
       y: data.map((r) => r.value),
       marker: { color: C[0] },
+      // The number over the bar. Reading a percentage off a gridline is a
+      // guess, and a figure that states 36% is not making the reader guess.
+      text: data.map((r) => (isPct ? `${Number(r.value).toFixed(0)}%` : String(r.value))),
+      textposition: "outside",
+      cliponaxis: false,
+      // n and k travel with a percentage because 37% of 8 and 37% of 800 are
+      // the same bar and not the same finding.
+      hovertemplate: isPct
+        ? "%{x}<br>%{y}%" + (data[0]?.n != null ? " (%{customdata[0]}/%{customdata[1]})" : "") + "<extra></extra>"
+        : "%{x}<br>%{y}<extra></extra>",
+      ...(isPct && data[0]?.n != null
+        ? { customdata: data.map((r) => [r.k ?? 0, r.n ?? 0]) }
+        : {}),
     }];
   }
 

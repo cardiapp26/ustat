@@ -56,6 +56,18 @@ const GLYPHS: Record<string, React.ReactNode> = {
     </>
   ),
   // Cloud over rain: the half-density above, the raw observations below.
+  // Points scattered in three columns with a rule through each — the median
+  // is the only summary the chart draws, so the glyph shows exactly that and
+  // nothing box-shaped, or it reads as a box plot.
+  strip: (
+    <>
+      {[[4, 5.5], [4, 8], [4, 11], [4, 13], [12, 4.5], [12, 7], [12, 9.5], [12, 12],
+        [20, 6], [20, 8.5], [20, 11.5]].map(([x, y], i) => dot(x, y, 1, i))}
+      <path d="M1.5 9.2 H6.5" strokeWidth="1.6" />
+      <path d="M9.5 8.2 H14.5" strokeWidth="1.6" />
+      <path d="M17.5 8.8 H22.5" strokeWidth="1.6" />
+    </>
+  ),
   raincloud: (
     <>
       <path d="M2.5 9 C5.5 2 18.5 2 21.5 9" />

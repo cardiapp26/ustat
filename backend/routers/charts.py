@@ -78,6 +78,11 @@ class ChartRequest(BaseModel):
     # y = x reference. Only meaningful when both axes carry the same quantity —
     # a reported value against a recomputed one, a method against a reference.
     identity_line: bool = False
+    # Bar-only. "percentage" reports the share of each group meeting a
+    # condition on y rather than y's mean — the form a risk-factor figure
+    # needs, and the one a 0/1 mean silently gives at the wrong scale.
+    y_mode: Optional[str] = "mean"
+    target_value: Optional[str] = None
     # Column whose value labels each point (e.g. the variable name per row).
     label: Optional[str] = None
 
@@ -1939,7 +1944,11 @@ def boxplot(req: ChartRequest):
         vals = df.loc[mask, req.x].tolist()
         indices = df.loc[mask].index.tolist()
         result = [{"group": "All", "values": vals, "row_indices": indices}]
-    return {"type": "boxplot", "x": req.x, "groups": result}
+    # The grouping column travels with the data: the client resolves each
+    # group's value labels from it, and without the name it was looking them
+    # up in an empty map — so a labelled histology column drew its raw codes
+    # on every box, violin, raincloud and strip chart.
+    return {"type": "boxplot", "x": req.x, "color": req.color, "groups": result}
 
 
 class PairedBoxRequest(BaseModel):
@@ -2072,28 +2081,148 @@ def splom(req: SplomRequest):
     }
 
 
+def _bar_series(sub: pd.DataFrame, req: ChartRequest, mode: str) -> list[dict]:
+    """One bar per level of req.x, under whichever of the three modes applies."""
+    if req.y and mode == "percentage":
+        target = req.target_value
+        if target is None or str(target).strip() == "":
+            hit = coerce_numeric(sub[req.y]).fillna(0) != 0
+        else:
+            hit = sub[req.y].map(level_key) == level_key(target)
+        grouped = sub.assign(_hit=hit).groupby(req.x)["_hit"]
+        return [
+            {"label": level_key(label), "value": round(int(g.sum()) / int(g.size) * 100, 1) if g.size else 0.0,
+             "n": int(g.size), "k": int(g.sum())}
+            for label, g in grouped
+        ]
+    if req.y:
+        grp = sub.groupby(req.x)[req.y].mean().reset_index()
+        return [{"label": level_key(row[req.x]), "value": float(row[req.y])}
+                for _, row in grp.iterrows()]
+    # sorted_groups, not value_counts' own order: that is frequency-descending,
+    # so tertile 3 came before tertile 1 on the axis, and two series of a
+    # grouped chart could order their bars differently from each other.
+    counts = sub[req.x].value_counts()
+    return [{"label": level_key(k), "value": int(counts[k])} for k in sorted_groups(sub[req.x])]
+
+
+def _grouped_bar(df: pd.DataFrame, req: ChartRequest, mode: str) -> dict:
+    """A bar chart split by a second categorical column.
+
+    The Color / Group selector was offered on this chart and silently ignored:
+    the request carried the column and the handler never read it, so choosing
+    one changed nothing and said nothing. Splitting is what the control claims
+    to do, so it now does it.
+    """
+    cols = [req.x, req.color] + ([req.y] if req.y else [])
+    sub = df[cols].dropna(subset=[req.x, req.color])
+    if sub.empty:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No rows with both '{req.x}' and '{req.color}' present.",
+        )
+    series = []
+    for level in sorted_groups(sub[req.color]):
+        part = sub[sub[req.color] == level]
+        if req.y:
+            part = part.dropna(subset=[req.y])
+        if part.empty:
+            continue
+        series.append({"group": level_key(level), "data": _bar_series(part, req, mode)})
+    return {
+        "type": "bar",
+        "x": req.x,
+        "y": (f"% {req.y}" + (f" = {req.target_value}" if req.target_value not in (None, "") else ""))
+             if (req.y and mode == "percentage") else (req.y or "count"),
+        "y_mode": mode if req.y else "count",
+        "color": req.color,
+        "series": series,
+    }
+
+
 @router.post("/bar")
 def bar(req: ChartRequest):
+    """Bar chart: count, group mean, or the percentage of each group meeting a
+    condition on the y column.
+
+    The percentage mode exists because "what fraction of this tertile was
+    malignant" is the question a risk-factor figure asks, and computing it as
+    a mean of a 0/1 column gives 0.37 where the figure needs 37% — a rescale
+    the caller then has to remember, and label, on their own.
+    """
     df = _get_df(req.session_id)
+    mode = (req.y_mode or "mean").lower()
+    if mode not in {"mean", "percentage"}:
+        raise HTTPException(
+            status_code=400, detail="y_mode must be mean or percentage"
+        )
+
+    if req.color:
+        if req.color not in df.columns:
+            raise HTTPException(status_code=400, detail=f"Column '{req.color}' not found")
+        return _grouped_bar(df, req, mode)
+
+    if req.y and mode == "percentage":
+        if req.y not in df.columns:
+            raise HTTPException(status_code=400, detail=f"Column '{req.y}' not found")
+        sub = df[[req.x, req.y]].dropna()
+        if sub.empty:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No rows with both '{req.x}' and '{req.y}' present.",
+            )
+        target = req.target_value
+        if target is None or str(target).strip() == "":
+            # No target named: treat the column as a 0/1 flag and report the
+            # positives. Anything that parses as a non-zero number counts.
+            hit = coerce_numeric(sub[req.y]).fillna(0) != 0
+        else:
+            # Compare on the canonical level string, so "1" matches a float64
+            # 1.0 the same way the value-label lookup does.
+            hit = sub[req.y].map(level_key) == level_key(target)
+        sub = sub.assign(_hit=hit)
+        grouped = sub.groupby(req.x)["_hit"]
+        data = []
+        for label, series in grouped:
+            n = int(series.size)
+            k = int(series.sum())
+            data.append({
+                "label": level_key(label),
+                "value": round(k / n * 100, 1) if n else 0.0,
+                # The counts travel with the percentage: 37% of 8 and 37% of
+                # 800 are the same bar and not the same finding.
+                "n": n,
+                "k": k,
+            })
+        return {
+            "type": "bar",
+            "x": req.x,
+            "y": f"% {req.y}" + (f" = {target}" if target not in (None, "") else ""),
+            "y_mode": "percentage",
+            "data": data,
+        }
+
     if req.y:
         grp = df.groupby(req.x)[req.y].mean().reset_index()
         return {
             "type": "bar",
             "x": req.x,
             "y": req.y,
+            "y_mode": "mean",
             "data": [
-                {"label": str(row[req.x]), "value": float(row[req.y])}
+                {"label": level_key(row[req.x]), "value": float(row[req.y])}
                 for _, row in grp.iterrows()
             ],
         }
-    else:
-        counts = df[req.x].value_counts()
-        return {
-            "type": "bar",
-            "x": req.x,
-            "y": "count",
-            "data": [{"label": str(k), "value": int(v)} for k, v in counts.items()],
-        }
+    counts = df[req.x].value_counts()
+    return {
+        "type": "bar",
+        "x": req.x,
+        "y": "count",
+        "y_mode": "count",
+        "data": [{"label": level_key(k), "value": int(counts[k])}
+                 for k in sorted_groups(df[req.x].dropna())],
+    }
 
 
 # ── Forest plot ─────────────────────────────────────────────────────────────────
