@@ -3,6 +3,7 @@ from pathlib import Path
 import pandas as pd
 
 from services import store
+from conftest import make_session
 from services.dirty_value_guard import coerce_numeric, flag_sentinels, mask_sentinels
 
 
@@ -24,6 +25,51 @@ def test_dirty_guard_coerces_comma_decimal_and_flags_bmi_999():
     mask = flag_sentinels(s, max_plausible=100)
     assert mask.tolist() == [False, False, True, False]
     assert pd.isna(mask_sentinels(s, max_plausible=100).iloc[2])
+
+
+def test_a_sparse_binary_column_is_not_flagged_sentinel():
+    """Reported: a 'Hematom' column of mostly 0 with two genuine 1s had both
+    1s counted as missing in the header badge. With fewer than 1% of rows
+    nonzero, the 99th percentile of the body is itself 0, so the old
+    robust_high = q99 * 1.5 evaluated to 0 and every real 1 cleared that
+    'threshold'."""
+    s = pd.Series([0.0] * 380 + [1.0, 1.0])
+    mask = flag_sentinels(s, max_plausible=None)
+    assert mask.sum() == 0
+    assert not mask.iloc[-1] and not mask.iloc[-2]
+
+
+def test_an_all_zero_column_is_not_flagged():
+    mask = flag_sentinels(pd.Series([0.0] * 50), max_plausible=None)
+    assert mask.sum() == 0
+
+
+def test_a_rare_positive_minority_of_any_size_survives():
+    """The same shape at a few different minority fractions — the fix should
+    not depend on exactly two positives."""
+    for n_pos in (1, 2, 5, 10):
+        s = pd.Series([0.0] * 500 + [1.0] * n_pos)
+        mask = flag_sentinels(s, max_plausible=None)
+        assert mask.sum() == 0, f"n_pos={n_pos}"
+
+
+def test_a_real_sentinel_is_still_caught_when_the_body_has_spread():
+    """The fix only withholds judgment when the body has no spread to compare
+    against. With real variation in the healthy values, a 999 among them is
+    still flagged."""
+    s = pd.Series([70.0, 72.0, 75.0, 71.0, 73.0, 68.0, 999.0])
+    mask = flag_sentinels(s, max_plausible=None)
+    assert mask.tolist() == [False, False, False, False, False, False, True]
+
+
+def test_the_column_badges_endpoint_does_not_count_a_real_value_as_missing(client):
+    df = pd.DataFrame({"Hematom": [0.0] * 380 + [1.0, 1.0]})
+    sid = make_session(df, "sentinel_badge_probe")
+    r = client.get(f"/api/stats/{sid}/column_badges")
+    assert r.status_code == 200, r.text
+    badge = r.json()["columns"]["Hematom"]
+    assert badge["n_missing"] == 0
+    assert badge["pct_missing"] == 0.0
 
 
 def test_missing_diagnostics_reports_implausible_bmi(client):

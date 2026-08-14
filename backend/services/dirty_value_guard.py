@@ -46,7 +46,22 @@ def coerce_numeric(series: pd.Series) -> pd.Series:
 
 
 def flag_sentinels(series: pd.Series, max_plausible: Optional[float]) -> pd.Series:
-    """Return a boolean mask for obvious high-side sentinel values."""
+    """Return a boolean mask for obvious high-side sentinel values.
+
+    A binary or sparsely-coded column (say two 1s in 382 rows of 0) has a
+    body whose 99th percentile is itself 0: fewer than 1% of rows are
+    nonzero, so even the top percentile lands on the majority value. The old
+    robust_high = q99 * 1.5 then evaluated to 0, and every genuine 1 in the
+    column cleared that "threshold" and was flagged as an implausible
+    sentinel — reported as missing data it never was. Nothing about the
+    IQR-based rule is wrong for a continuous column with real spread; it
+    breaks specifically when the body has none, because there is no scale
+    left to call anything "extreme relative to" the body.
+
+    q99 == 0 (with iqr == 0, since q99 >= q3) is exactly that no-spread case,
+    and it is the only one where the fallback multiplies by zero. There, no
+    caller-supplied ceiling means no basis to flag anything at all.
+    """
     mask = pd.Series(False, index=series.index)
     numeric = coerce_numeric(series)
     observed = numeric.dropna()
@@ -63,12 +78,20 @@ def flag_sentinels(series: pd.Series, max_plausible: Optional[float]) -> pd.Seri
     q3 = float(body.quantile(0.75))
     iqr = q3 - q1
     q99 = float(body.quantile(0.99))
-    robust_high = q99 + 5.0 * iqr if iqr > 0 else q99 * 1.5
+    if iqr > 0:
+        robust_high = q99 + 5.0 * iqr
+    elif q99 > 0:
+        robust_high = q99 * 1.5
+    else:
+        robust_high = None  # body has no spread to measure "extreme" against
 
     if max_plausible is not None:
-        threshold = max(max_plausible, robust_high)
+        threshold = max_plausible if robust_high is None else max(max_plausible, robust_high)
     else:
         threshold = robust_high
+
+    if threshold is None:
+        return mask
 
     return (numeric > threshold).fillna(False)
 
