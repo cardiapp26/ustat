@@ -57,18 +57,35 @@ def test_no_range_for_a_categorical_column(client, wide_session):
     assert entry["n_missing"] == 0
 
 
-def test_sentinels_are_excluded_from_the_range(client):
-    # 999 is the classic "unknown" placeholder. Counting it as the maximum
-    # heart rate would be worse than showing nothing.
+def test_the_range_reports_what_is_actually_in_the_column(client):
+    """Reported: an SII column holding 4211 showed a range ending at 1.9e3,
+    because the flagged value was dropped from the range too. A badge that
+    states a maximum the column does not have is wrong on its face — the
+    reader compares it against the cells and finds the disagreement.
+
+    The heuristic cannot tell a placeholder from a genuine extreme, which is
+    why the flagged count is reported separately. The range says what is
+    there; the warning badge beside it says some of it needs checking."""
     df = pd.DataFrame({"age": [30.0, 44.0, 51.0, 999.0]})
     sid = make_session(df, "badges_sentinel")
     entry = _badges(client, sid)["columns"]["age"]
-    assert entry["max"] == 51.0
+    assert entry["max"] == 999.0
+    assert entry["min"] == 30.0
+    # The trimmed reading is offered alongside, not asserted in its place.
+    assert entry["max_excl_flagged"] == 51.0
+    assert entry["min_excl_flagged"] == 30.0
     # Counted as out-of-range, NOT as missing: the cell is not blank, and a
-    # glucose of 348 flagged by the same rule is a real reading. The badge
-    # says "check this", not "this is absent".
+    # glucose of 348 flagged by the same rule is a real reading.
     assert entry["n_missing"] == 0
     assert entry["n_implausible"] == 1
+
+
+def test_a_column_with_nothing_flagged_gets_no_trimmed_range(client):
+    df = pd.DataFrame({"age": [30.0, 44.0, 51.0]})
+    sid = make_session(df, "badges_no_flag")
+    entry = _badges(client, sid)["columns"]["age"]
+    assert entry["max"] == 51.0
+    assert "max_excl_flagged" not in entry
     assert entry["n_valid"] == 3
 
 

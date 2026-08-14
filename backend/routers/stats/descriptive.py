@@ -274,10 +274,16 @@ def get_column_badges(session_id: str):
             "n_implausible": n_implausible,
             "pct_implausible": round(n_implausible / n_rows * 100, 1) if n_rows else 0.0,
         }
-        # The range still excludes both: a max of 999 for a heart rate is the
-        # placeholder, not the largest observation, and showing it as the
-        # column's maximum is what the range badge exists to prevent.
-        s = df[col][~(raw_missing | implausible)]
+        # Blanks only. Dropping the flagged values here too made the badge
+        # state a maximum the column does not have: an SII column holding
+        # 4211 showed a range ending at 1.9e3, and a reader comparing badge
+        # against cells found the badge wrong. The heuristic cannot tell a
+        # placeholder from a genuine extreme — that is exactly why the
+        # flagged count is reported separately rather than folded in — so
+        # the range reports what is actually there and the adjacent warning
+        # badge says some of it needs checking. The trimmed range is offered
+        # alongside for the case where the flag was right.
+        s = df[col][~raw_missing]
         if len(s) > 0:
             # Gate on whether the VALUES are numbers, not on the dtype pandas
             # happens to be holding them in. A column added after upload comes
@@ -298,6 +304,16 @@ def get_column_badges(session_id: str):
                     entry["min"] = float(numeric.min())
                     entry["max"] = float(numeric.max())
                     entry["n_valid"] = int(len(numeric))
+                    if n_implausible:
+                        # What the range would be if every flagged value is a
+                        # placeholder. Shown in the tooltip, so the reader can
+                        # see both readings without either being asserted.
+                        trimmed = pd.to_numeric(
+                            df[col][~(raw_missing | implausible)], errors="coerce"
+                        ).replace([np.inf, -np.inf], np.nan).dropna()
+                        if len(trimmed) > 0:
+                            entry["min_excl_flagged"] = float(trimmed.min())
+                            entry["max_excl_flagged"] = float(trimmed.max())
         out[col] = entry
 
     return {"n_rows": n_rows, "columns": out}

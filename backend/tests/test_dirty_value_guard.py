@@ -76,8 +76,11 @@ def test_badges_count_blanks_and_out_of_range_values_apart(client):
     assert badge["n_missing"] == 1
     # And the extreme value counted separately, not as missing.
     assert badge["n_implausible"] == 1
-    # It stays out of the range, which is what the range badge is for.
-    assert badge["max"] < 348.0
+    # The range reports what is actually in the column — a badge claiming a
+    # maximum below a value the reader can see in the cells is wrong on its
+    # face. The trimmed reading is offered alongside it.
+    assert badge["max"] == 348.0
+    assert badge["max_excl_flagged"] < 348.0
 
 
 def test_a_blank_is_never_double_counted_as_out_of_range(client):

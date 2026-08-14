@@ -22,6 +22,11 @@ interface ColumnBadge {
   min?: number;
   max?: number;
   n_valid?: number;
+  // What the range would be if every flagged value were a placeholder. Only
+  // present when something was flagged; shown in the tooltip so both
+  // readings are available without the badge asserting either.
+  min_excl_flagged?: number;
+  max_excl_flagged?: number;
 }
 
 /** Keep a range badge to a few characters — the header has no room for
@@ -51,6 +56,7 @@ const KIND_LABEL: Record<string, string> = {
 
 import { SelectCasesModal } from "./datatable/SelectCasesModal";
 import { ValueLabelsModal } from "./datatable/ValueLabelsModal";
+import { FormulaFillModal } from "./datatable/FormulaFillModal";
 import { FindReplaceModal } from "./datatable/FindReplaceModal";
 import { ParseDatesModal } from "./datatable/ParseDatesModal";
 type SortDir = "asc" | "desc";
@@ -325,11 +331,12 @@ function DataTableBody({ session }: { session: Session }) {
   const [openSub, setOpenSub] = useState<string | null>(null);  // expanded submenu group
   const [fillMode, setFillMode] = useState<string | null>(null);
   const [fillVal, setFillVal] = useState("");
-  // Separate from fillMode/fillVal: a formula is a different kind of input
-  // (an expression over other columns, not a literal), and sharing the box
-  // would make "0" ambiguous between a fill value and a formula.
-  const [formulaMode, setFormulaMode] = useState<string | null>(null);
-  const [formulaVal, setFormulaVal] = useState("");
+  // The formula gets its own dialog rather than a box in the menu: building
+  // an expression means clicking across a column list and a keypad, and a
+  // menu closes on the first stray pointer move.
+  const [formulaFor, setFormulaFor] = useState<string | null>(null);
+  const [formulaBusy, setFormulaBusy] = useState(false);
+  const [formulaErr, setFormulaErr] = useState<string | null>(null);
   const ctxRef = useRef<HTMLDivElement>(null);
   const fillRef = useRef<HTMLInputElement>(null);
 
@@ -1323,9 +1330,11 @@ function DataTableBody({ session }: { session: Session }) {
     } catch { /* ignore */ } finally { setSuggestBusy(false); setSuggestOpen(false); }
   };
 
-  const fillBlanks = async (colName: string, fillValue: string, formula?: string) => {
-    if (!session || !fillValue.trim()) return;
-    if (fillValue === "__formula__" && !formula?.trim()) return;
+  /** Returns true when the fill succeeded, so a caller with its own error
+   *  surface (the compute-blanks dialog) can stay open on failure. */
+  const fillBlanks = async (colName: string, fillValue: string, formula?: string): Promise<boolean> => {
+    if (!session || !fillValue.trim()) return false;
+    if (fillValue === "__formula__" && !formula?.trim()) return false;
 
     setCtxMenu(null);
     try {
@@ -1336,11 +1345,18 @@ function DataTableBody({ session }: { session: Session }) {
       // Refresh preview
       const res = await api.get(`/api/stats/${session.session_id}/refresh`);
       useStore.getState().setSession({ ...session, ...res.data }); bumpUndo();
+      return true;
     } catch (e: unknown) {
       // Surface the failure — previously swallowed, so MICE/fill errors looked
       // like nothing happened.
       const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      alert(detail ?? "Could not fill blanks for this column.");
+      const msg = detail ?? "Could not fill blanks for this column.";
+      // The dialog shows the message inline next to the expression that
+      // caused it; an alert on top of it would say the same thing twice and
+      // hide the box being corrected.
+      if (fillValue === "__formula__") setFormulaErr(msg);
+      else alert(msg);
+      return false;
     }
   };
 
@@ -1894,7 +1910,13 @@ function DataTableBody({ session }: { session: Session }) {
                 const nImplausible = serverBadge?.n_implausible ?? 0;
                 const range =
                   serverBadge && serverBadge.min != null && serverBadge.max != null
-                    ? { min: serverBadge.min, max: serverBadge.max, n_valid: serverBadge.n_valid ?? 0 }
+                    ? {
+                        min: serverBadge.min,
+                        max: serverBadge.max,
+                        n_valid: serverBadge.n_valid ?? 0,
+                        minExcl: serverBadge.min_excl_flagged,
+                        maxExcl: serverBadge.max_excl_flagged,
+                      }
                     : null;
                 const isDragOver = dropIdx === colIdx && dragIdx !== colIdx;
                 const frozen = isFrozenCol(colIdx);
@@ -2076,7 +2098,14 @@ function DataTableBody({ session }: { session: Session }) {
                           })()}
                           {range && (
                             <span
-                              title={`Range across all ${badgeRows} rows: minimum ${range.min}, maximum ${range.max} (${range.n_valid} values; blanks and out-of-range values excluded)`}
+                              title={
+                                `Range across all ${badgeRows} rows: minimum ${range.min}, `
+                                + `maximum ${range.max} (${range.n_valid} values; blanks excluded).`
+                                + (range.minExcl != null
+                                    ? ` Excluding the ${nImplausible} flagged value(s): `
+                                      + `${range.minExcl}–${range.maxExcl}.`
+                                    : "")
+                              }
                               className="flex-shrink-0 text-[8px] font-semibold px-1 py-0.5 rounded bg-sky-100 text-sky-700 border border-sky-300"
                             >
                               {fmtRange(range.min)}–{fmtRange(range.max)}
@@ -2527,30 +2556,10 @@ function DataTableBody({ session }: { session: Session }) {
                 className="w-full text-left px-3 py-1 text-xs text-gray-700 hover:bg-amber-50 flex items-center gap-2">
                 🔢 Case number (1…n)
               </button>
-              {formulaMode === ctxMenu.col ? (
-                <div className="px-3 py-1.5 space-y-1">
-                  <input autoFocus
-                    className="text-xs border border-gray-300 rounded px-1.5 py-0.5 w-full font-mono focus:outline-none focus:border-indigo-400"
-                    placeholder="Neutrophils / Lymphocytes"
-                    value={formulaVal}
-                    onChange={(e) => setFormulaVal(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") { fillBlanks(ctxMenu.col, "__formula__", formulaVal); setFormulaMode(null); setFormulaVal(""); }
-                      if (e.key === "Escape") { setFormulaMode(null); setFormulaVal(""); }
-                    }}
-                  />
-                  <div className="flex items-center gap-1">
-                    <span className="text-[9px] text-gray-400 flex-1">Only blanks are filled</span>
-                    <button onClick={() => { fillBlanks(ctxMenu.col, "__formula__", formulaVal); setFormulaMode(null); setFormulaVal(""); }}
-                      className="text-[10px] px-1.5 py-0.5 bg-indigo-600 text-white rounded hover:bg-indigo-700">Compute</button>
-                  </div>
-                </div>
-              ) : (
-                <button onClick={() => { setFormulaMode(ctxMenu.col); setFormulaVal(""); }}
-                  className="w-full text-left px-3 py-1 text-xs text-gray-700 hover:bg-amber-50 flex items-center gap-2">
-                  🧮 Compute from other columns...
-                </button>
-              )}
+              <button onClick={() => { setFormulaFor(ctxMenu.col); setFormulaErr(null); setCtxMenu(null); }}
+                className="w-full text-left px-3 py-1 text-xs text-gray-700 hover:bg-amber-50 flex items-center gap-2">
+                🧮 Compute from other columns...
+              </button>
               {fillMode === ctxMenu.col ? (
                 <div className="px-3 py-1 flex items-center gap-1">
                   <input ref={fillRef} autoFocus
@@ -2768,6 +2777,28 @@ function DataTableBody({ session }: { session: Session }) {
             🗑️ Delete row
           </button>
         </div>
+      )}
+
+      {/* ── Compute-blanks Modal ── */}
+      {formulaFor && (
+        <FormulaFillModal
+          colName={formulaFor}
+          columns={columns}
+          nBlanks={resolvedMissingCounts[formulaFor] ?? 0}
+          busy={formulaBusy}
+          error={formulaErr}
+          onCancel={() => { setFormulaFor(null); setFormulaErr(null); }}
+          onSubmit={async (formula) => {
+            setFormulaBusy(true);
+            setFormulaErr(null);
+            const ok = await fillBlanks(formulaFor, "__formula__", formula);
+            setFormulaBusy(false);
+            // Stay open on failure so the expression is still there to fix;
+            // retyping it from scratch after a typo is the whole complaint
+            // this dialog exists to answer.
+            if (ok) setFormulaFor(null);
+          }}
+        />
       )}
 
       {/* ── Value Labels Modal ── */}
