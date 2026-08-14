@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
 import { server } from '../test/server'
-import { clearSession, installSession } from '../test/testUtils'
+import { clearSession, installSession, makeSession } from '../test/testUtils'
 import ChartsPanel from './ChartsPanel'
 
 afterEach(() => clearSession())
@@ -524,6 +524,62 @@ describe('ChartsPanel', () => {
     await user.click(screen.getByRole('radio', { name: /pie|donut/i }))
     await user.click(screen.getByRole('button', { name: /generate chart/i }))
     await waitFor(() => expect(screen.getByTestId('plotly-mock')).toBeInTheDocument())
+  })
+
+  it('resolves a pie slice code to its value label', async () => {
+    // Reported: a histology column labelled 0 = Benign, 1 = Papiller ...
+    // still drew 0.0, 1.0, 7.0, 8.0 in the pie, because the backend
+    // stringifies a float64 code as "0.0" while the label dialog writes "0".
+    // Every other chart in the panel already resolved through this path;
+    // the pie was the one built straight from the raw slice label.
+    installSession(makeSession({
+      columns: [
+        { name: 'GROUP', dtype: 'object', kind: 'categorical', value_labels: { '0': 'Benign', '1': 'Malign' } },
+      ],
+    }))
+    server.use(
+      http.post('/api/charts/pie', () =>
+        HttpResponse.json({
+          type: 'pie', category: 'GROUP', value: null, measure: 'count', total: 8,
+          slices: [{ label: '0', value: 5, percent: 62.5 }, { label: '1', value: 3, percent: 37.5 }],
+          n_folded_into_other: 0,
+        }),
+      ),
+    )
+    const user = userEvent.setup()
+    render(<ChartsPanel />)
+    await user.click(screen.getByRole('radio', { name: /pie|donut/i }))
+    await user.click(screen.getByRole('button', { name: /generate chart/i }))
+
+    const mock = await screen.findByTestId('plotly-mock')
+    const data = JSON.parse(mock.getAttribute('data-plotly') ?? '[]')
+    expect(data[0].labels).toEqual(['Benign', 'Malign'])
+  })
+
+  it('gives every pie slice a distinct colour past the palette length', async () => {
+    // A donut with more categories than the six-colour palette used to repeat
+    // colours, so the largest slice and a small one looked identical.
+    installSession()
+    const labels = Array.from({ length: 9 }, (_, i) => `L${i}`)
+    server.use(
+      http.post('/api/charts/pie', () =>
+        HttpResponse.json({
+          type: 'pie', category: 'GROUP', value: null, measure: 'count', total: 90,
+          slices: labels.map((l) => ({ label: l, value: 10, percent: 100 / 9 })),
+          n_folded_into_other: 0,
+        }),
+      ),
+    )
+    const user = userEvent.setup()
+    render(<ChartsPanel />)
+    await user.click(screen.getByRole('radio', { name: /pie|donut/i }))
+    await user.click(screen.getByRole('button', { name: /generate chart/i }))
+
+    const mock = await screen.findByTestId('plotly-mock')
+    const data = JSON.parse(mock.getAttribute('data-plotly') ?? '[]')
+    const colors = data[0].marker.colors as string[]
+    expect(colors).toHaveLength(9)
+    expect(new Set(colors).size).toBe(9)
   })
 
   it('renders a balloon plot and reports the chi-square test', async () => {

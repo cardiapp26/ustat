@@ -8,6 +8,7 @@ import TitledPlot from "./TitledPlot";
 import ChartTypeIcon from "./charts/ChartTypeIcon";
 import { fmtP } from "../lib/format";
 import { labelFor } from "../lib/valueLabels";
+import { categoryColors } from "../lib/categoryColors";
 
 /** Chart types offered in the picker, in the order they are listed. Exported
  *  so the icon set can be checked for coverage rather than drifting quietly
@@ -1544,15 +1545,24 @@ function buildTraces(
 
   if (d.type === "pie") {
     const slices = (d.slices as Array<Record<string, unknown>>) ?? [];
+    // The pie was the one chart still drawing raw codes for a labelled
+    // column — 0.0, 1.0, 8.0 where the legend everywhere else said Benign.
+    const sliceLabels = valueLabelsFor(d.category);
     return [{
       type: "pie",
-      labels: slices.map((s) => String(s.label)),
+      labels: slices.map((s) => labelFor(sliceLabels, s.label, String(s.label))),
       values: slices.map((s) => Number(s.value)),
       // Percentages on the slices: a pie is hard to read past three wedges,
       // and the number is what the reader is trying to recover anyway.
       textinfo: "label+percent",
       hole: donutHole,
-      marker: { colors: slices.map((_, i) => C[i % C.length]) },
+      // Cycling the palette gives two slices of one pie the same colour, which
+      // makes them read as one category. Past the end of the palette the hues
+      // come back at a different lightness instead.
+      marker: { colors: categoryColors(C, slices.length) },
+      // Without this the leader lines of thin slices are drawn past the plot
+      // area and clipped, so the smallest categories lose their labels.
+      automargin: true,
       hovertemplate: `%{label}: %{value} (%{percent})<extra></extra>`,
     } as PlotData];
   }

@@ -13,6 +13,7 @@ import ResultExporter from "./ResultExporter";
 import TitledPlot from "./TitledPlot";
 import { fmtP } from "../lib/format";
 import { labelFor } from "../lib/valueLabels";
+import { categoryColors } from "../lib/categoryColors";
 import type { PlotData, PlotCaptureHandle } from "../lib/plotTypes";
 
 // ── Result shapes returned by the descriptive / column-summary endpoints ─────
@@ -527,7 +528,9 @@ function CategoricalView({ summary }: { summary: ColumnSummary }) {
   const donutRef = useRef<PlotCaptureHandle | null>(null);
   const barRef = useRef<PlotCaptureHandle | null>(null);
   const cats: CatRow[] = (summary.categories ?? []).slice(0, 20);
-  const colors = ["#7c3aed", "#f59e0b", "#10b981", "#ef4444", "#06b6d4", "#ec4899"];
+  // Six hard-coded colours could not cover eleven histology levels: the
+  // biggest slice and one of the smallest both came out purple.
+  const colors = categoryColors(paletteOf(useStore.getState().plotTheme), cats.length);
 
   const donutData = [{
     type: "pie" as const,
@@ -539,6 +542,11 @@ function CategoricalView({ summary }: { summary: ColumnSummary }) {
     // reported: "22.6%" of an unstated denominator is not a result, and the
     // convention this panel states in its own summary line is n (%).
     textinfo: "value+percent" as const,
+    // Plotly stacks the leader lines of adjacent thin slices downward. With a
+    // 10px bottom margin the last four labels of an eleven-level column were
+    // drawn 108px below the plot and clipped away entirely. automargin shrinks
+    // the pie until its outside labels fit instead of letting them fall off.
+    automargin: true,
     hovertemplate: "%{label}: %{value} (%{percent})<extra></extra>",
   }];
 
@@ -561,7 +569,10 @@ function CategoricalView({ summary }: { summary: ColumnSummary }) {
           ...themedBase,
           // A donut has no plotting area to tint; the pie sits on the card.
           plot_bgcolor: "transparent",
-          margin: { t: 10, r: 160, b: 10, l: 10 },
+          // automargin grows these as the labels need; the values are the
+          // floor, not the budget. The right side still reserves room for the
+          // legend, which automargin does not account for.
+          margin: { t: 24, r: 160, b: 24, l: 10 },
           autosize: true,
           height: SUMMARY_CHART_HEIGHT,
           legend: { font: { color: "#374151" }, bgcolor: "transparent" },

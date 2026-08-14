@@ -72,6 +72,49 @@ function mockCommonEndpoints() {
 }
 
 describe('DescriptivePanel', () => {
+  it("resolves a category donut's slice values through the column's labels", async () => {
+    // Reported: a Histopathology column labelled 0 = Benign, 1 = Papiller ...
+    // still drew 0.0, 1.0, 7.0, 8.0 in the donut. column_summary sends the raw
+    // level string; the label map is keyed differently for a whole number, so
+    // the panel has to resolve it rather than display the raw value.
+    mockCommonEndpoints()
+    server.use(
+      http.get('/api/stats/test-session/column_summary', () =>
+        HttpResponse.json({
+          ...categoricalSummary,
+          categories: [
+            { value: '0.0', count: 2, pct: 66.7 },
+            { value: '1.0', count: 1, pct: 33.3 },
+          ],
+        }),
+      ),
+    )
+    installSession(makeSession({
+      columns: [
+        { name: 'AGE', dtype: 'float64', kind: 'numeric' },
+        { name: 'LDL', dtype: 'float64', kind: 'numeric' },
+        { name: 'DM', dtype: 'int64', kind: 'numeric' },
+        {
+          name: 'GROUP', dtype: 'object', kind: 'categorical',
+          value_labels: { '0': 'Benign', '1': 'Malign' },
+        },
+      ],
+    }))
+
+    const user = userEvent.setup()
+    render(<DescriptivePanel />)
+    await user.click(await screen.findByTestId('summary-column-GROUP'))
+
+    const donut = await waitFor(() => {
+      const plots = screen.getAllByTestId('plotly-mock')
+      const found = plots.find((p) => (p.getAttribute('data-plotly') ?? '').includes('"type":"pie"'))
+      if (!found) throw new Error('donut not rendered yet')
+      return found
+    })
+    const data = JSON.parse(donut.getAttribute('data-plotly') ?? '[]')
+    expect(data[0].labels).toEqual(['Benign', 'Malign'])
+  })
+
   it('renders nothing without an active session', () => {
     clearSession()
     const { container } = render(<DescriptivePanel />)

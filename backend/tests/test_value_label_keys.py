@@ -117,6 +117,17 @@ def test_the_counts_still_belong_to_the_right_level(client, sid):
     assert counts == {"0": 10, "1": 5, "1.7": 2, "8": 3}
 
 
+def test_the_pie_endpoint_uses_the_same_key(client, sid):
+    """The pie chart was the one place still drawing raw codes for a labelled
+    column, because it never went through column_summary or Table 1."""
+    r = client.post(
+        "/api/charts/pie", json={"session_id": sid, "category": "Histopatoloji"}
+    )
+    assert r.status_code == 200, r.text
+    labels = {s["label"] for s in r.json()["slices"]}
+    assert labels == {"0", "1", "1.7", "8"}
+
+
 def test_a_text_column_is_untouched(client):
     sid = make_session(
         pd.DataFrame({"grade": ["I", "II", "II", "III"]}), "vlabel_text"

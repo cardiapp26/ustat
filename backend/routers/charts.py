@@ -11,6 +11,7 @@ from services.dirty_value_guard import (
     mask_sentinels,
     plausibility_max_for_column,
 )
+from services.number_format import level_key
 from services.stat_utils import (
     sorted_groups,
     _categorical_p_with_rule,
@@ -1479,7 +1480,10 @@ def pie(req: PieRequest):
     total = float(agg.sum())
     slices = [
         {
-            "label": str(k),
+            # level_key, so a float64 code arrives as "0" — the key its value
+            # labels are stored under. str() gave "0.0" and the pie drew raw
+            # codes for a fully labelled column.
+            "label": level_key(k),
             "value": float(v),
             "percent": float(v) / total * 100.0,
         }
