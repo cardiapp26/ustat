@@ -93,6 +93,51 @@ def test_select_cases_restricts_analysis_families(client):
     assert missingness.json()["columns"][0]["pct"] == 33.3
 
 
+def test_select_cases_reports_which_rows_it_drops(client):
+    """The grid marks excluded rows rather than hiding them: cell edits address
+    rows by POSITION in the unfiltered frame, so a grid that hid rows would
+    write edits to the wrong ones. It cannot work out which rows those are
+    without a second copy of the condition semantics, so the server says."""
+    sid, _ = _case_filter_session("excluded")
+    r = client.post(f"/api/sessions/{sid}/select_cases",
+                    json={**_selection(), "apply": True})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # KEEP is 1 for the first six rows and 0 for the last six.
+    assert body["excluded_rows"] == [6, 7, 8, 9, 10, 11]
+    assert body["excluded_beyond_preview"] == 0
+
+
+def test_a_preview_run_still_reports_the_rows_it_would_drop(client):
+    sid, _ = _case_filter_session("excluded_preview")
+    r = client.post(f"/api/sessions/{sid}/select_cases",
+                    json={**_selection(), "apply": False})
+    assert r.json()["excluded_rows"] == [6, 7, 8, 9, 10, 11]
+    # …without actually applying it.
+    assert store.get_filter(sid) == []
+
+
+def test_the_charts_a_figure_is_built_from_respect_the_filter(client):
+    """A figure drawn from all the rows while the tests beside it used six is
+    the kind of disagreement a reader cannot see."""
+    sid, _ = _case_filter_session("charts")
+    client.post(f"/api/sessions/{sid}/select_cases", json={**_selection(), "apply": True})
+
+    box = client.post("/api/charts/boxplot", json={
+        "session_id": sid, "x": "X", "color": "GROUP",
+    })
+    assert box.status_code == 200, box.text
+    assert sum(len(g["values"]) for g in box.json()["groups"]) == 6
+
+    bar = client.post("/api/charts/bar", json={"session_id": sid, "x": "GROUP"})
+    assert sum(d["value"] for d in bar.json()["data"]) == 6
+
+    grouped = client.post("/api/charts/bar", json={
+        "session_id": sid, "x": "GROUP", "color": "KEEP",
+    })
+    assert sum(d["value"] for s in grouped.json()["series"] for d in s["data"]) == 6
+
+
 def test_analysis_routers_do_not_use_unfiltered_store_access():
     routers = Path(__file__).resolve().parents[1] / "routers"
     # These modules intentionally manage or mutate the complete dataset.

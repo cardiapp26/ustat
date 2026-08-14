@@ -122,6 +122,13 @@ export interface CaseFilter {
   conditions: CaseCondition[];
   selected: number;
   total: number;
+  /** Positions in the UNFILTERED preview that the filter drops. The grid marks
+   *  them rather than hiding them: cell edits address rows by position in the
+   *  unfiltered frame, so a grid that hid rows would write edits to the wrong
+   *  ones. Marking also matches what SPSS does. */
+  excludedRows?: number[];
+  /** Excluded rows past the preview window, which cannot be marked. */
+  excludedBeyondPreview?: number;
 }
 
 interface ColumnDependentState {

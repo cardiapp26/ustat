@@ -25,7 +25,8 @@ export function SelectCasesModal({
   columns: ColMeta[];
   sessionId: string;
   existing: CaseCondition[];
-  onApply: (conditions: CaseCondition[], selected: number, total: number) => void;
+  onApply: (conditions: CaseCondition[], selected: number, total: number,
+            excludedRows: number[], excludedBeyondPreview: number) => void;
   onClear: () => void;
   onClose: () => void;
 }) {
@@ -105,7 +106,8 @@ export function SelectCasesModal({
     setBusy(true); setError(null);
     try {
       const res = await selectCases(sessionId, conditions, true);
-      onApply(conditions, res.data.selected, res.data.total);
+      onApply(conditions, res.data.selected, res.data.total,
+              res.data.excluded_rows ?? [], res.data.excluded_beyond_preview ?? 0);
     } catch { setError("Apply failed"); }
     finally { setBusy(false); }
   };

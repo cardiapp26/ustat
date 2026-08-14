@@ -6,6 +6,7 @@ import type { ColMeta, Session } from '../store'
 import { server } from '../test/server'
 import { clearSession, installSession, makeSession } from '../test/testUtils'
 import DataTable from './DataTable'
+import { useStore } from '../store'
 
 afterEach(() => clearSession())
 
@@ -25,6 +26,54 @@ function bigSession(n: number, cols = 6): Session {
 const bodyRows = () => document.querySelectorAll('tbody tr[class*="group"]').length
 
 describe('DataTable row virtualisation', () => {
+  it('bands the row the cursor is in', async () => {
+    // On a wide sheet the cell being edited scrolls out of sight long before
+    // its row does; without a band nothing ties the values under the cursor
+    // to the row they belong to.
+    installSession(bigSession(12, 8))
+    const user = userEvent.setup()
+    render(<DataTable />)
+    const rows = () => [...document.querySelectorAll('tbody tr[class*="group"]')]
+    expect(rows().filter((r) => r.className.includes('bg-indigo-50'))).toHaveLength(0)
+
+    const cells = rows()[4].querySelectorAll('td')
+    await user.click(cells[2])
+
+    const banded = rows().filter((r) => r.className.includes('bg-indigo-50'))
+    expect(banded).toHaveLength(1)
+    expect(rows().indexOf(banded[0])).toBe(4)
+  })
+
+  it('marks rows Select Cases excluded rather than hiding them', () => {
+    // Hiding them would be worse than useless: cell edits address rows by
+    // position in the UNFILTERED frame, so a grid that dropped rows would
+    // send every edit below the first excluded row to the wrong record.
+    installSession(bigSession(10))
+    useStore.setState({
+      caseFilter: {
+        conditions: [{ column: 'c0', operator: 'eq', value: '0', join: 'AND' }],
+        selected: 7, total: 10,
+        excludedRows: [3, 5, 9],
+        excludedBeyondPreview: 0,
+      },
+    })
+    render(<DataTable />)
+
+    const rows = [...document.querySelectorAll('tbody tr[class*="group"]')]
+    expect(rows).toHaveLength(10)
+    const faded = rows.filter((r) => r.className.includes('opacity-40'))
+    expect(faded).toHaveLength(3)
+    // The row number carries the strike, the way SPSS marks a filtered case.
+    expect(document.querySelectorAll('.line-through')).toHaveLength(3)
+  })
+
+  it('leaves every row alone when no filter is set', () => {
+    installSession(bigSession(10))
+    render(<DataTable />)
+    expect(document.querySelectorAll('.line-through')).toHaveLength(0)
+    expect(document.querySelectorAll('[class*="opacity-40"]')).toHaveLength(0)
+  })
+
   it('renders every row for a small sheet', () => {
     installSession(bigSession(40))
     render(<DataTable />)

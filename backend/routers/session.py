@@ -19,6 +19,10 @@ from services.dirty_value_guard import values_are_numeric
 
 router = APIRouter()
 
+# The grid's preview stops here, so excluded positions past it cannot be
+# marked and are reported as a count instead.
+PREVIEW_ROWS = 2000
+
 
 PLACEHOLDER_COLS = 5
 PLACEHOLDER_ROWS = 10
@@ -546,7 +550,19 @@ def select_cases(session_id: str, body: SelectCasesRequest):
             "selected": len(df_filtered),
             "total": len(df),
         })
-    return {"selected": len(df_filtered), "total": len(df), "applied": body.apply}
+    # Which rows the filter drops, as POSITIONS in the unfiltered frame — the
+    # same order the grid's preview arrives in. The grid cannot recompute this
+    # itself without a second implementation of the condition semantics, and
+    # two implementations of "eq on a numeric column that might be text" drift.
+    excluded = [int(i) for i, keep in
+                enumerate(df.index.isin(df_filtered.index)) if not keep]
+    return {
+        "selected": len(df_filtered),
+        "total": len(df),
+        "applied": body.apply,
+        "excluded_rows": excluded[:PREVIEW_ROWS],
+        "excluded_beyond_preview": max(0, len(excluded) - PREVIEW_ROWS),
+    }
 
 
 @router.delete("/{session_id}/select_cases")

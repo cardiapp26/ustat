@@ -278,6 +278,11 @@ function DataTableBody({ session }: { session: Session }) {
   const reorderColumns   = useStore((s) => s.reorderColumns);
   const removeSessionColumns = useStore((s) => s.removeSessionColumns);
   const caseFilter       = useStore((s) => s.caseFilter);
+  // Set, not array: this is consulted once per rendered row.
+  const excludedRows = useMemo(
+    () => new Set(caseFilter?.excludedRows ?? []),
+    [caseFilter],
+  );
   const setCaseFilter    = useStore((s) => s.setCaseFilter);
   const undo             = useStore((s) => s.undo);
   const redo             = useStore((s) => s.redo);
@@ -358,6 +363,9 @@ function DataTableBody({ session }: { session: Session }) {
   const [selectedCells, setSelectedCells] = useState<Set<string>>(new Set());
   const [selAnchor, setSelAnchor] = useState<{ row: number; col: string } | null>(null);
   const [selFocus, setSelFocus] = useState<{ row: number; col: string } | null>(null);
+  // Whichever row the user is working in: the cell being edited, else the
+  // selection's focus, else its anchor.
+  const activeRow = editCell?.rowIdx ?? selFocus?.row ?? selAnchor?.row ?? null;
   const gridRef = useRef<HTMLDivElement>(null);
   const dragSelectingRef = useRef(false);
   const dragAnchorRef = useRef<{ row: number; col: string } | null>(null);
@@ -1638,8 +1646,8 @@ function DataTableBody({ session }: { session: Session }) {
           columns={columns}
           sessionId={session.session_id}
           existing={caseFilter?.conditions ?? []}
-          onApply={(conditions, selected, total) => {
-            setCaseFilter({ conditions, selected, total });
+          onApply={(conditions, selected, total, excludedRows, excludedBeyondPreview) => {
+            setCaseFilter({ conditions, selected, total, excludedRows, excludedBeyondPreview });
             setShowSelectCases(false);
           }}
           onClear={() => {
@@ -1857,7 +1865,7 @@ function DataTableBody({ session }: { session: Session }) {
                 return (
                   <th
                     key={col.name}
-                    className={`group py-0 text-center text-gray-300 text-[9px] font-normal border-r border-gray-200 select-none cursor-pointer ${isChecked ? "bg-indigo-100/80" : ""} ${frozen ? "sticky z-20" : ""} ${frozen && !isChecked ? "bg-gray-50" : ""}`}
+                    className={`group py-0 text-center text-gray-400 text-[9px] font-normal border-r border-gray-200 select-none cursor-pointer ${isChecked ? "bg-indigo-100/80" : ""} ${frozen ? "sticky z-20" : ""} ${frozen && !isChecked ? "bg-gray-50" : ""}`}
                     style={frozen ? { left: frozenLeft(colIdx), width: FROZEN_COL_W, minWidth: FROZEN_COL_W, maxWidth: FROZEN_COL_W } : undefined}
                     onClick={(e) => tickCol(col.name, e.shiftKey)}
                     onMouseDown={(e) => { if (e.shiftKey) e.preventDefault(); }}
@@ -2158,14 +2166,25 @@ function DataTableBody({ session }: { session: Session }) {
               const visualIdx = startIdx + windowIdx;
               const origIdx = row._idx as number;
               const rowChecked = checkedRows.has(origIdx);
+              // Excluded by Select Cases. The row stays where it is — cell
+              // edits address rows by position in the unfiltered frame, so
+              // hiding rows would send edits to the wrong ones — but it reads
+              // as excluded, which is what SPSS does with a filtered case.
+              const rowExcluded = excludedRows.has(origIdx);
+              // The row the cursor is in. On a wide sheet the cell you are
+              // editing scrolls out of sight long before its row does, and
+              // without a band there is nothing left tying the values under
+              // the cursor to the row they belong to.
+              const rowActive = activeRow === origIdx;
               return (
                 <tr
                   key={origIdx}
-                  className="group border-t border-gray-100 hover:bg-gray-50 transition-colors"
+                  className={`group border-t border-gray-100 transition-colors ${rowExcluded ? "opacity-40" : ""} ${rowActive ? "bg-indigo-50/70" : "hover:bg-gray-50"}`}
                   style={{ height: ROW_H }}
+                  title={rowExcluded ? "Excluded by Select Cases — analyses skip this row" : undefined}
                 >
                   <td
-                    className={`px-1 py-1.5 text-gray-300 text-[11px] border-r border-gray-200 select-none text-center cursor-pointer sticky left-0 z-10 whitespace-nowrap ${rowChecked ? "bg-indigo-100/80" : "bg-white group-hover:bg-gray-50"}`}
+                    className={`px-1 py-1.5 text-gray-400 text-[11px] border-r border-gray-200 select-none text-center cursor-pointer sticky left-0 z-10 whitespace-nowrap ${rowChecked ? "bg-indigo-100/80" : rowActive ? "bg-indigo-100/70 text-indigo-700 font-medium" : "bg-white group-hover:bg-gray-50"}`}
                     style={{ width: HASH_COL_W, minWidth: HASH_COL_W, maxWidth: HASH_COL_W }}
                     onMouseDown={(e) => {
                       if ((e.ctrlKey || e.metaKey) && e.shiftKey) {
@@ -2181,7 +2200,7 @@ function DataTableBody({ session }: { session: Session }) {
                       tickRow(origIdx, e.shiftKey);
                     }}
                     onContextMenu={(e) => { e.preventDefault(); setRowRangeInput(""); setRowCtx({ x: e.clientX, y: e.clientY, idx: origIdx }); }}
-                    title={`Original row #${origIdx + 1} · Click to select the row · Shift+click extends the range · Right-click for range select`}
+                    title={`Original row #${origIdx + 1}${rowExcluded ? " · excluded by Select Cases" : ""} · Click to select the row · Shift+click extends the range · Right-click for range select`}
                   >
                     {/* Checkbox reveals on row hover or when checked; otherwise the
                         row number shows. Keeps the 30px gutter uncluttered. The
@@ -2194,7 +2213,11 @@ function DataTableBody({ session }: { session: Session }) {
                       checked={rowChecked}
                       readOnly
                     />
-                    <span className={rowChecked ? "hidden" : "group-hover:hidden"}>{visualIdx + 1}</span>
+                    {/* Struck through when excluded, the way SPSS marks a
+                        filtered case — the row is present but not in the
+                        analysis, and that distinction has to be visible
+                        without hovering. */}
+                    <span className={`${rowChecked ? "hidden" : "group-hover:hidden"} ${rowExcluded ? "line-through" : ""}`}>{visualIdx + 1}</span>
                   </td>
 
                   {columns.map((col, colIdx) => {
@@ -2241,7 +2264,7 @@ function DataTableBody({ session }: { session: Session }) {
                               ? "px-3 py-1.5 cursor-pointer bg-blue-100 outline outline-1 outline-blue-400"
                               : isNull
                                 ? `px-3 py-1.5 cursor-pointer ${ticked ? "bg-indigo-50" : "bg-amber-50/60 hover:bg-amber-100/60"}`
-                                : `px-3 py-1.5 cursor-pointer hover:bg-indigo-50/50 ${ticked ? "bg-indigo-50" : frozen ? "bg-white" : ""}`}
+                                : `px-3 py-1.5 cursor-pointer hover:bg-indigo-50/50 ${ticked ? "bg-indigo-50" : frozen ? (rowActive ? "bg-indigo-50/70" : "bg-white") : ""}`}
                           ${isEditing ? "" : "whitespace-nowrap overflow-hidden"}`}
                         style={frozen ? { left: frozenLeft(colIdx), width: FROZEN_COL_W, minWidth: FROZEN_COL_W, maxWidth: FROZEN_COL_W } : undefined}
                       >
