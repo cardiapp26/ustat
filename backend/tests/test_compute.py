@@ -157,6 +157,69 @@ def test_recode_dedupes_a_colliding_name(client, synth):
     assert store.get(sid)["DM"].tolist() == before
 
 
+# ── Fill blanks: compute from other columns ───────────────────────────────────
+
+def _nlr_frame() -> pd.DataFrame:
+    return pd.DataFrame({
+        "Notrofil": [6.0, 8.0, 4.0, 9.0, 5.0],
+        "Lenfosit": [2.0, 4.0, 2.0, 3.0, np.nan],
+        "NLR":      [99.0, np.nan, np.nan, np.nan, np.nan],
+    })
+
+
+def test_fill_blanks_can_compute_missing_values_from_a_formula(client):
+    """A derived column's blanks are not missing data — the inputs are right
+    there and the ratio simply was not computed for those rows. Imputing a
+    mean into them replaces an exactly knowable number with an estimate that
+    then reads as measured."""
+    sid = make_session(_nlr_frame(), "fill_formula_nlr")
+    r = client.post(f"{BASE}/{sid}/fill_blanks", json={
+        "column": "NLR", "value": "__formula__", "formula": "Notrofil / Lenfosit",
+    })
+    assert r.status_code == 200, r.text
+    out = store.get(sid)["NLR"].tolist()
+    assert out[1] == 2.0 and out[2] == 2.0 and out[3] == 3.0
+    assert r.json()["n_filled"] == 3
+
+
+def test_fill_blanks_formula_never_overwrites_a_recorded_value(client):
+    """Row 0 holds 99, which the formula would compute as 3. The stored number
+    is the measurement; recomputing it would silently replace it."""
+    sid = make_session(_nlr_frame(), "fill_formula_keeps")
+    client.post(f"{BASE}/{sid}/fill_blanks", json={
+        "column": "NLR", "value": "__formula__", "formula": "Notrofil / Lenfosit",
+    })
+    assert store.get(sid)["NLR"].iloc[0] == 99.0
+
+
+def test_fill_blanks_formula_leaves_a_row_blank_when_its_inputs_are_missing(client):
+    """Row 4 has no Lymphocyte count, so the ratio is undefined there. It has
+    to stay blank rather than become a NaN presented as a fill."""
+    sid = make_session(_nlr_frame(), "fill_formula_unresolved")
+    r = client.post(f"{BASE}/{sid}/fill_blanks", json={
+        "column": "NLR", "value": "__formula__", "formula": "Notrofil / Lenfosit",
+    })
+    assert pd.isna(store.get(sid)["NLR"].iloc[4])
+    assert "left blank" in r.json()["fill_value"]
+
+
+def test_fill_blanks_formula_requires_a_formula(client):
+    sid = make_session(_nlr_frame(), "fill_formula_empty")
+    r = client.post(f"{BASE}/{sid}/fill_blanks", json={
+        "column": "NLR", "value": "__formula__",
+    })
+    assert r.status_code == 422, r.text
+    assert "formula" in r.json()["detail"].lower()
+
+
+def test_fill_blanks_formula_reports_a_bad_expression(client):
+    sid = make_session(_nlr_frame(), "fill_formula_bad")
+    r = client.post(f"{BASE}/{sid}/fill_blanks", json={
+        "column": "NLR", "value": "__formula__", "formula": "Notrofil / NOSUCH",
+    })
+    assert r.status_code == 422, r.text
+
+
 def test_formula_custom_if_function(client, synth):
     sid = _fresh(synth, "formula_if")
     r = client.post(f"{BASE}/{sid}/formula",

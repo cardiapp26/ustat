@@ -1715,6 +1715,13 @@ class FillBlanksRequest(BaseModel):
     # When set, the original column is left untouched and the filled result is
     # written to this NEW column (the original is copied first, then imputed).
     new_column: Optional[str] = None
+    # Used when value == "__formula__": the same expression language the
+    # Compute panel's Formula tab evaluates. A derived column (NLR =
+    # Neutrophils / Lymphocytes) has blanks that are not missing data at all
+    # — the inputs are right there, the ratio just was not computed for those
+    # rows. Imputing a mean into them invents a measurement that could have
+    # been calculated exactly.
+    formula: Optional[str] = None
 
 
 @router.post("/{session_id}/fill_blanks")
@@ -1761,6 +1768,43 @@ def fill_blanks(session_id: str, req: FillBlanksRequest):
         if col.dtype == object:
             df.loc[df[target].astype(str).str.strip() == "", target] = fill_val
         method_label = f"most frequent ({fill_val})"
+    elif req.value == "__formula__":
+        # Recompute the blanks from other columns instead of imputing them.
+        # For a derived column the inputs are present and the value is simply
+        # absent, so a mean or a MICE draw would replace an exactly knowable
+        # number with an estimate — and one that reads as measured.
+        if not (req.formula or "").strip():
+            raise HTTPException(
+                status_code=422,
+                detail="Formula fill needs a formula, e.g. Neutrophils / Lymphocytes",
+            )
+        try:
+            computed = _eval_formula_with_custom_functions(df, req.formula)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=f"Formula error: {exc}")
+        if not isinstance(computed, pd.Series):
+            raise HTTPException(
+                status_code=422,
+                detail="Formula did not produce a column result. Reference existing column names.",
+            )
+        computed = pd.to_numeric(computed, errors="coerce") if pd.api.types.is_numeric_dtype(col) else computed
+        # Only the blanks. A formula fill must never rewrite a value that is
+        # already recorded — the stored number is the measurement, and
+        # recomputing it would silently overwrite it with a derived one.
+        fill_mask = (col.isna() | blank_mask) & computed.notna()
+        df.loc[fill_mask, target] = computed[fill_mask]
+        if not pd.api.types.is_numeric_dtype(df[target]):
+            coerced_all = pd.to_numeric(df[target], errors="coerce")
+            if coerced_all.notna().sum() == df[target].notna().sum():
+                df[target] = coerced_all
+        n_unresolved = int(((col.isna() | blank_mask) & computed.isna()).sum())
+        method_label = f"formula ({req.formula.strip()})"
+        if n_unresolved:
+            # The formula's own inputs were missing on those rows, so the
+            # blank stays a blank rather than becoming a NaN dressed as a fill.
+            method_label += f" — {n_unresolved} row(s) left blank, inputs missing"
     elif req.value == "__rownum__":
         # Sequential case number: each blank cell gets its 1-based row
         # position. On a fully-empty column this numbers every case 1..n,

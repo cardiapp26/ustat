@@ -325,6 +325,11 @@ function DataTableBody({ session }: { session: Session }) {
   const [openSub, setOpenSub] = useState<string | null>(null);  // expanded submenu group
   const [fillMode, setFillMode] = useState<string | null>(null);
   const [fillVal, setFillVal] = useState("");
+  // Separate from fillMode/fillVal: a formula is a different kind of input
+  // (an expression over other columns, not a literal), and sharing the box
+  // would make "0" ambiguous between a fill value and a formula.
+  const [formulaMode, setFormulaMode] = useState<string | null>(null);
+  const [formulaVal, setFormulaVal] = useState("");
   const ctxRef = useRef<HTMLDivElement>(null);
   const fillRef = useRef<HTMLInputElement>(null);
 
@@ -1318,13 +1323,15 @@ function DataTableBody({ session }: { session: Session }) {
     } catch { /* ignore */ } finally { setSuggestBusy(false); setSuggestOpen(false); }
   };
 
-  const fillBlanks = async (colName: string, fillValue: string) => {
+  const fillBlanks = async (colName: string, fillValue: string, formula?: string) => {
     if (!session || !fillValue.trim()) return;
+    if (fillValue === "__formula__" && !formula?.trim()) return;
 
     setCtxMenu(null);
     try {
       await api.post(`/api/compute/${session.session_id}/fill_blanks`, {
         column: colName, value: fillValue.trim(),
+        ...(formula?.trim() ? { formula: formula.trim() } : {}),
       });
       // Refresh preview
       const res = await api.get(`/api/stats/${session.session_id}/refresh`);
@@ -2520,6 +2527,30 @@ function DataTableBody({ session }: { session: Session }) {
                 className="w-full text-left px-3 py-1 text-xs text-gray-700 hover:bg-amber-50 flex items-center gap-2">
                 🔢 Case number (1…n)
               </button>
+              {formulaMode === ctxMenu.col ? (
+                <div className="px-3 py-1.5 space-y-1">
+                  <input autoFocus
+                    className="text-xs border border-gray-300 rounded px-1.5 py-0.5 w-full font-mono focus:outline-none focus:border-indigo-400"
+                    placeholder="Neutrophils / Lymphocytes"
+                    value={formulaVal}
+                    onChange={(e) => setFormulaVal(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") { fillBlanks(ctxMenu.col, "__formula__", formulaVal); setFormulaMode(null); setFormulaVal(""); }
+                      if (e.key === "Escape") { setFormulaMode(null); setFormulaVal(""); }
+                    }}
+                  />
+                  <div className="flex items-center gap-1">
+                    <span className="text-[9px] text-gray-400 flex-1">Only blanks are filled</span>
+                    <button onClick={() => { fillBlanks(ctxMenu.col, "__formula__", formulaVal); setFormulaMode(null); setFormulaVal(""); }}
+                      className="text-[10px] px-1.5 py-0.5 bg-indigo-600 text-white rounded hover:bg-indigo-700">Compute</button>
+                  </div>
+                </div>
+              ) : (
+                <button onClick={() => { setFormulaMode(ctxMenu.col); setFormulaVal(""); }}
+                  className="w-full text-left px-3 py-1 text-xs text-gray-700 hover:bg-amber-50 flex items-center gap-2">
+                  🧮 Compute from other columns...
+                </button>
+              )}
               {fillMode === ctxMenu.col ? (
                 <div className="px-3 py-1 flex items-center gap-1">
                   <input ref={fillRef} autoFocus
