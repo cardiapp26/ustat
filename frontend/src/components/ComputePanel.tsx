@@ -71,6 +71,7 @@ const EXAMPLES: Array<{ label: string; formula?: string; note?: string }> = [
   { label: "PLR", formula: "Platelets / Lymphocytes" },
   { label: "SII", formula: "Neutrophils * Platelets / Lymphocytes" },
   { label: "SIRI", formula: "Neutrophils * Monocytes / Lymphocytes" },
+  { label: "PIV", formula: "Neutrophils * Monocytes * Platelets / Lymphocytes" },
   // Onodera's PNI = 10 x albumin (g/dL) + 0.005 x lymphocytes (/uL). Written
   // here for a lymphocyte column in 10^3/uL — the way a haemogram usually
   // reports it, e.g. 2.25 — which turns 0.005 into 5. On a sheet holding the
