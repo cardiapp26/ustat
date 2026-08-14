@@ -13,6 +13,12 @@ import DataDictionaryPanel from "./DataDictionaryPanel";
 interface ColumnBadge {
   n_missing: number;
   pct_missing: number;
+  // Counted apart from n_missing: a value the sentinel heuristic finds
+  // extreme is present data that may be a placeholder (999 for a heart rate)
+  // or a real reading (348 for a glucose). Merging the two overstated
+  // missingness and hid the observation.
+  n_implausible?: number;
+  pct_implausible?: number;
   min?: number;
   max?: number;
   n_valid?: number;
@@ -1878,6 +1884,7 @@ function DataTableBody({ session }: { session: Session }) {
                 // Server counts cover the whole frame; the preview-derived
                 // count is the fallback until that request lands.
                 const nMissing = resolvedMissingCounts[col.name] ?? 0;
+                const nImplausible = serverBadge?.n_implausible ?? 0;
                 const range =
                   serverBadge && serverBadge.min != null && serverBadge.max != null
                     ? { min: serverBadge.min, max: serverBadge.max, n_valid: serverBadge.n_valid ?? 0 }
@@ -2018,7 +2025,7 @@ function DataTableBody({ session }: { session: Session }) {
                           {isSorted ? (sortDir === "asc" ? "▲" : "▼") : "⇅"}
                         </button>
                       </div>
-                      {(nMissing > 0 || range) && (
+                      {(nMissing > 0 || nImplausible > 0 || range) && (
                         <div className="flex justify-start items-center gap-1 flex-wrap">
                           {nMissing > 0 && (() => {
                             // Denominator: the server counts over the whole
@@ -2041,9 +2048,28 @@ function DataTableBody({ session }: { session: Session }) {
                               </button>
                             );
                           })()}
+                          {nImplausible > 0 && (() => {
+                            const denom = badgeRows || preview.length;
+                            const pct = denom ? (nImplausible / denom) * 100 : 0;
+                            const pctLabel = pct >= 10 ? pct.toFixed(0) : pct.toFixed(1);
+                            return (
+                              <span
+                                title={
+                                  `${nImplausible} value(s) far outside the rest of the column `
+                                  + `(${pctLabel}% of ${denom} rows). These are PRESENT, not missing — `
+                                  + `they may be placeholder codes (999) or genuine extremes `
+                                  + `(a glucose of 348). Check them before treating them either way. `
+                                  + `They are excluded from the range shown beside this.`
+                                }
+                                className="flex-shrink-0 text-[8px] font-semibold px-1 py-0.5 rounded bg-orange-100 text-orange-700 border border-orange-300"
+                              >
+                                {nImplausible}⚠ · {pctLabel}%
+                              </span>
+                            );
+                          })()}
                           {range && (
                             <span
-                              title={`Range across all ${badgeRows} rows: minimum ${range.min}, maximum ${range.max} (${range.n_valid} values; blanks and implausible placeholders excluded)`}
+                              title={`Range across all ${badgeRows} rows: minimum ${range.min}, maximum ${range.max} (${range.n_valid} values; blanks and out-of-range values excluded)`}
                               className="flex-shrink-0 text-[8px] font-semibold px-1 py-0.5 rounded bg-sky-100 text-sky-700 border border-sky-300"
                             >
                               {fmtRange(range.min)}–{fmtRange(range.max)}

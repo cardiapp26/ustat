@@ -62,6 +62,32 @@ def test_a_real_sentinel_is_still_caught_when_the_body_has_spread():
     assert mask.tolist() == [False, False, False, False, False, False, True]
 
 
+def test_badges_count_blanks_and_out_of_range_values_apart(client):
+    """Reported: a Glukoz column with no blank cells showed "1x missing".
+    The one flagged value was 348 — a real reading in a diabetic cohort, not
+    a placeholder. Folding the sentinel heuristic's guess into the missing
+    count asserted it as absent data and hid the observation."""
+    df = pd.DataFrame({"Glukoz": [90.0, 95.0, 88.0, 102.0, 97.0, 91.0] * 20 + [348.0, None]})
+    sid = make_session(df, "sentinel_split_probe")
+    r = client.get(f"/api/stats/{sid}/column_badges")
+    assert r.status_code == 200, r.text
+    badge = r.json()["columns"]["Glukoz"]
+    # Exactly one genuinely blank cell.
+    assert badge["n_missing"] == 1
+    # And the extreme value counted separately, not as missing.
+    assert badge["n_implausible"] == 1
+    # It stays out of the range, which is what the range badge is for.
+    assert badge["max"] < 348.0
+
+
+def test_a_blank_is_never_double_counted_as_out_of_range(client):
+    df = pd.DataFrame({"x": [1.0, 2.0, 3.0, None, None]})
+    sid = make_session(df, "sentinel_no_double_count")
+    badge = client.get(f"/api/stats/{sid}/column_badges").json()["columns"]["x"]
+    assert badge["n_missing"] == 2
+    assert badge["n_implausible"] == 0
+
+
 def test_the_column_badges_endpoint_does_not_count_a_real_value_as_missing(client):
     df = pd.DataFrame({"Hematom": [0.0] * 380 + [1.0, 1.0]})
     sid = make_session(df, "sentinel_badge_probe")

@@ -233,7 +233,14 @@ def frequency(session_id: str, column: Optional[str] = None):
 
 @router.get("/{session_id}/column_badges")
 def get_column_badges(session_id: str):
-    """Per-column facts for the grid header: missing count and value range.
+    """Per-column facts for the grid header: missing count, out-of-range
+    count, and value range.
+
+    Missing and implausible are two separate counts, deliberately. A blank
+    cell is absent data. A value the sentinel heuristic finds extreme is
+    present data that might be a placeholder (999 for a heart rate) or might
+    be a real reading (348 for a glucose) — the heuristic cannot tell, and
+    folding it into the missing count asserts the first reading as fact.
 
     Computed over the whole dataframe. The grid's own `preview` is capped at
     2000 rows by the upload endpoint, so anything counted there describes the
@@ -253,14 +260,23 @@ def get_column_badges(session_id: str):
         max_plausible = plausibility_max_for_column(col)
         raw_missing = df[col].isna()
         implausible = flag_sentinels(df[col], max_plausible)
-        n_missing = int((raw_missing | implausible).sum())
+        # Counted apart, not summed. A blank cell is absent data; a value the
+        # sentinel heuristic finds extreme is present data that may or may not
+        # be a placeholder — a glucose of 348 is a real reading in a diabetic
+        # cohort, and calling it "missing" both overstates missingness and
+        # hides the actual observation from the reader. Only the first is a
+        # fact about the data; the second is a suggestion to look.
+        n_missing = int(raw_missing.sum())
+        n_implausible = int((implausible & ~raw_missing).sum())
         entry: dict = {
             "n_missing": n_missing,
             "pct_missing": round(n_missing / n_rows * 100, 1) if n_rows else 0.0,
+            "n_implausible": n_implausible,
+            "pct_implausible": round(n_implausible / n_rows * 100, 1) if n_rows else 0.0,
         }
-        # Sentinels (999, -99 …) are excluded from the range for the same
-        # reason they count as missing: a max of 999 for a heart rate is the
-        # placeholder, not the largest observation.
+        # The range still excludes both: a max of 999 for a heart rate is the
+        # placeholder, not the largest observation, and showing it as the
+        # column's maximum is what the range badge exists to prevent.
         s = df[col][~(raw_missing | implausible)]
         if len(s) > 0:
             # Gate on whether the VALUES are numbers, not on the dtype pandas

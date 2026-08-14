@@ -64,7 +64,11 @@ def test_sentinels_are_excluded_from_the_range(client):
     sid = make_session(df, "badges_sentinel")
     entry = _badges(client, sid)["columns"]["age"]
     assert entry["max"] == 51.0
-    assert entry["n_missing"] == 1
+    # Counted as out-of-range, NOT as missing: the cell is not blank, and a
+    # glucose of 348 flagged by the same rule is a real reading. The badge
+    # says "check this", not "this is absent".
+    assert entry["n_missing"] == 0
+    assert entry["n_implausible"] == 1
     assert entry["n_valid"] == 3
 
 
