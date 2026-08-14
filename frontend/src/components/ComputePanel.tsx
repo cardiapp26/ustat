@@ -71,7 +71,11 @@ const EXAMPLES: Array<{ label: string; formula?: string; note?: string }> = [
   { label: "PLR", formula: "Platelets / Lymphocytes" },
   { label: "SII", formula: "Neutrophils * Platelets / Lymphocytes" },
   { label: "SIRI", formula: "Neutrophils * Monocytes / Lymphocytes" },
+  // PIV and AISI are the same arithmetic under two names, both current in the
+  // literature. Listed twice on purpose: someone looking for one should not
+  // have to know it is the other.
   { label: "PIV", formula: "Neutrophils * Monocytes * Platelets / Lymphocytes" },
+  { label: "AISI (= PIV)", formula: "Neutrophils * Platelets * Monocytes / Lymphocytes" },
   // Onodera's PNI = 10 x albumin (g/dL) + 0.005 x lymphocytes (/uL). Written
   // here for a lymphocyte column in 10^3/uL — the way a haemogram usually
   // reports it, e.g. 2.25 — which turns 0.005 into 5. On a sheet holding the
