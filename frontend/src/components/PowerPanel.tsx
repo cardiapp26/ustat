@@ -1,6 +1,7 @@
 import { useState, useRef } from "react";
 import TitledPlot from "./TitledPlot";
 import { runPower, parseArticle } from "../api";
+import type { PowerResult } from "../api";
 import { useStore, paletteOf } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
 import { Tip } from "./Tip";
@@ -29,12 +30,7 @@ const _pal = () => paletteOf(useStore.getState().plotTheme);
 type TestId   = "t_two" | "t_one" | "anova" | "correlation" | "proportion" | "chi2" | "logistic" | "survival_cox";
 type SolveFor = "n" | "power" | "effect_size";
 
-interface CurvePoint { n: number; power: number }
-interface PowerResult { result: number | null; label: string; curve: CurvePoint[]; result_text?: string;
-  // Recruitment target once expected dropout is allowed for. The computed n
-  // is the number that must COMPLETE the study, so enrolling exactly that
-  // many leaves the trial underpowered the first time anyone withdraws.
-  n_corrected?: number | null; attrition?: number | null }
+// Response shapes live in api.ts, next to the call that returns them.
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 

@@ -261,7 +261,33 @@ export interface FleissKappaRequest {
 export const runICC = (data: ICCRequest) => api.post("/api/stats/icc", data);
 export const runCohensKappa = (data: KappaRequest) => api.post("/api/stats/cohens_kappa", data);
 export const runFleissKappa = (data: FleissKappaRequest) => api.post("/api/stats/fleiss_kappa", data);
-export const runPower       = (data: object) => api.post("/api/stats/power", data);
+export interface PowerCurvePoint { n: number; power: number }
+
+export interface PowerResult {
+  result: number | null;
+  label: string;
+  curve: PowerCurvePoint[];
+  result_text?: string;
+  // Recruitment target once expected dropout is allowed for. The computed n
+  // is the number that must COMPLETE the study, so enrolling exactly that
+  // many leaves the trial underpowered the first time anyone withdraws.
+  n_corrected?: number | null;
+  attrition?: number | null;
+}
+
+// Power analysis reads no dataset -- every number comes from the form -- so it
+// is the first endpoint routed through the browser engine when the user has
+// enabled local compute. `localFirst` falls back to this same POST otherwise,
+// and the returned object keeps the `.data` shape the panel already expects.
+export const runPower       = async (data: object) => {
+  // Imported here rather than at the top of the file so the engine's module
+  // graph -- which pulls in the Pyodide worker -- is only loaded by a session
+  // that actually runs a power analysis. Most never do.
+  const { localFirst } = await import("./lib/engine/localFirst");
+  return localFirst<PowerResult>("stats.power", data, () =>
+    api.post("/api/stats/power", data),
+  );
+};
 export const runHosmerLemeshow = (data: object) => api.post("/api/decision_curve/hosmer_lemeshow", data);
 export interface TOSTRequest {
   session_id: string;

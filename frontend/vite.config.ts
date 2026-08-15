@@ -121,7 +121,13 @@ export default defineConfig({
         globPatterns: ['**/*.{js,css,html,png,svg,ico,woff2}'],
         // version.json carries the build stamp; it must NEVER be precached,
         // otherwise the fallback poll always sees the old version.
-        globIgnores: ['**/version.json'],
+        //
+        // The vendored Pyodide runtime is excluded for a different reason. Its
+        // loader and asm.js glue match the .js pattern above, which put ~1.3 MB
+        // of WebAssembly plumbing into the install-time download for every
+        // user -- including the majority who never turn on in-browser compute.
+        // It is cached on first use instead, by the runtimeCaching rule below.
+        globIgnores: ['**/version.json', 'pyodide/**'],
         // Don't claim navigation requests for /api/* (FastAPI backend).
         navigateFallbackDenylist: [/^\/api\//],
         // No skipWaiting: it activates the new worker the moment it installs,
@@ -139,6 +145,19 @@ export default defineConfig({
             // Always fetch the version manifest fresh; never serve from cache.
             urlPattern: /\/version\.json$/,
             handler: 'NetworkOnly',
+          },
+          {
+            // The Pyodide runtime and the engine wheel: tens of megabytes,
+            // immutable for a given build, and only wanted by sessions that
+            // actually compute locally. CacheFirst so the download happens
+            // once, on the first local analysis rather than at install.
+            urlPattern: /\/pyodide\//,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'pyodide-runtime',
+              expiration: { maxEntries: 64, maxAgeSeconds: 60 * 60 * 24 * 90 },
+              cacheableResponse: { statuses: [0, 200] },
+            },
           },
         ],
       },

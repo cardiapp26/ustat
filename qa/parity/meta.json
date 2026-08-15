@@ -1,0 +1,339 @@
+[
+  {
+    "id": "meta_analyze_homogeneous_k_equals_study_count",
+    "source": "test_meta_analysis.py::test_analyze_homogeneous_pooled_estimate_close_to_truth",
+    "params": {
+      "studies": [
+        {"label": "S1", "effect": 0.5019, "se": 0.05},
+        {"label": "S2", "effect": 0.4976, "se": 0.06},
+        {"label": "S3", "effect": 0.5134, "se": 0.07},
+        {"label": "S4", "effect": 0.5016, "se": 0.05},
+        {"label": "S5", "effect": 0.4904, "se": 0.06},
+        {"label": "S6", "effect": 0.5076, "se": 0.07},
+        {"label": "S7", "effect": 0.5196, "se": 0.05},
+        {"label": "S8", "effect": 0.517, "se": 0.06},
+        {"label": "S9", "effect": 0.4852, "se": 0.07}
+      ],
+      "measure": "generic",
+      "tau2_method": "DL"
+    },
+    "expected": {"k": 9},
+    "tolerance": "exact (d['k'] == len(studies))"
+  },
+  {
+    "id": "meta_analyze_homogeneous_pooled_effects_near_true_effect",
+    "source": "test_meta_analysis.py::test_analyze_homogeneous_pooled_estimate_close_to_truth",
+    "params": {
+      "studies": [
+        {"label": "S1", "effect": 0.5019, "se": 0.05},
+        {"label": "S2", "effect": 0.4976, "se": 0.06},
+        {"label": "S3", "effect": 0.5134, "se": 0.07},
+        {"label": "S4", "effect": 0.5016, "se": 0.05},
+        {"label": "S5", "effect": 0.4904, "se": 0.06},
+        {"label": "S6", "effect": 0.5076, "se": 0.07},
+        {"label": "S7", "effect": 0.5196, "se": 0.05},
+        {"label": "S8", "effect": 0.517, "se": 0.06},
+        {"label": "S9", "effect": 0.4852, "se": 0.07}
+      ],
+      "measure": "generic",
+      "tau2_method": "DL"
+    },
+    "expected": {"random.effect": 0.5, "fixed.effect": 0.5},
+    "tolerance": "abs<=0.1 (dot path into the nested random/fixed response objects; true_effect = 0.5)"
+  },
+  {
+    "id": "meta_analyze_homogeneous_pm_tau2_method_label",
+    "source": "test_meta_analysis.py::test_analyze_homogeneous_fixed_and_random_agree_closely",
+    "params": {
+      "studies": [
+        {"label": "S1", "effect": 0.5019, "se": 0.05},
+        {"label": "S2", "effect": 0.4976, "se": 0.06},
+        {"label": "S3", "effect": 0.5134, "se": 0.07},
+        {"label": "S4", "effect": 0.5016, "se": 0.05},
+        {"label": "S5", "effect": 0.4904, "se": 0.06},
+        {"label": "S6", "effect": 0.5076, "se": 0.07},
+        {"label": "S7", "effect": 0.5196, "se": 0.05},
+        {"label": "S8", "effect": 0.517, "se": 0.06},
+        {"label": "S9", "effect": 0.4852, "se": 0.07}
+      ],
+      "measure": "generic",
+      "tau2_method": "PM"
+    },
+    "expected": {"tau2_method": "PM"},
+    "tolerance": "exact"
+  },
+  {
+    "id": "meta_analyze_or_measure_log_scale_and_null_line",
+    "source": "test_meta_analysis.py::test_analyze_or_measure_pools_near_true_odds_ratio",
+    "params": {
+      "studies": [
+        {"label": "OR1", "effect": 2.0076, "se": 0.1},
+        {"label": "OR2", "effect": 1.9792, "se": 0.1},
+        {"label": "OR3", "effect": 1.9835, "se": 0.1},
+        {"label": "OR4", "effect": 1.9047, "se": 0.1},
+        {"label": "OR5", "effect": 2.0733, "se": 0.1},
+        {"label": "OR6", "effect": 2.0463, "se": 0.1},
+        {"label": "OR7", "effect": 1.987, "se": 0.1},
+        {"label": "OR8", "effect": 2.0312, "se": 0.1}
+      ],
+      "measure": "OR"
+    },
+    "expected": {"log_scale": true, "null_line": 1.0},
+    "tolerance": "exact"
+  },
+  {
+    "id": "meta_analyze_or_measure_pooled_or_near_true_or",
+    "source": "test_meta_analysis.py::test_analyze_or_measure_pools_near_true_odds_ratio",
+    "params": {
+      "studies": [
+        {"label": "OR1", "effect": 2.0076, "se": 0.1},
+        {"label": "OR2", "effect": 1.9792, "se": 0.1},
+        {"label": "OR3", "effect": 1.9835, "se": 0.1},
+        {"label": "OR4", "effect": 1.9047, "se": 0.1},
+        {"label": "OR5", "effect": 2.0733, "se": 0.1},
+        {"label": "OR6", "effect": 2.0463, "se": 0.1},
+        {"label": "OR7", "effect": 1.987, "se": 0.1},
+        {"label": "OR8", "effect": 2.0312, "se": 0.1}
+      ],
+      "measure": "OR"
+    },
+    "expected": {"random.effect": 2.0},
+    "tolerance": "abs<=0.3 (true OR = 2.0)"
+  },
+  {
+    "id": "meta_subgroup_two_subgroups_detected",
+    "source": "test_meta_analysis.py::test_subgroup_pooled_estimates_differ_in_expected_direction",
+    "params": {
+      "studies": [
+        {"label": "LOW1", "effect": 0.2408, "se": 0.05, "subgroup": "low"},
+        {"label": "LOW2", "effect": 0.1489, "se": 0.05, "subgroup": "low"},
+        {"label": "LOW3", "effect": 0.2084, "se": 0.05, "subgroup": "low"},
+        {"label": "LOW4", "effect": 0.1886, "se": 0.05, "subgroup": "low"},
+        {"label": "LOW5", "effect": 0.1909, "se": 0.05, "subgroup": "low"},
+        {"label": "HIGH1", "effect": 1.4957, "se": 0.05, "subgroup": "high"},
+        {"label": "HIGH2", "effect": 1.4596, "se": 0.05, "subgroup": "high"},
+        {"label": "HIGH3", "effect": 1.4954, "se": 0.05, "subgroup": "high"},
+        {"label": "HIGH4", "effect": 1.4827, "se": 0.05, "subgroup": "high"},
+        {"label": "HIGH5", "effect": 1.5665, "se": 0.05, "subgroup": "high"}
+      ],
+      "measure": "generic"
+    },
+    "expected": {"subgroups_count": 2},
+    "tolerance": "exact (len(d['subgroups']))"
+  },
+  {
+    "id": "meta_subgroup_pooled_effects_near_group_truths",
+    "source": "test_meta_analysis.py::test_subgroup_pooled_estimates_differ_in_expected_direction",
+    "params": {
+      "studies": [
+        {"label": "LOW1", "effect": 0.2408, "se": 0.05, "subgroup": "low"},
+        {"label": "LOW2", "effect": 0.1489, "se": 0.05, "subgroup": "low"},
+        {"label": "LOW3", "effect": 0.2084, "se": 0.05, "subgroup": "low"},
+        {"label": "LOW4", "effect": 0.1886, "se": 0.05, "subgroup": "low"},
+        {"label": "LOW5", "effect": 0.1909, "se": 0.05, "subgroup": "low"},
+        {"label": "HIGH1", "effect": 1.4957, "se": 0.05, "subgroup": "high"},
+        {"label": "HIGH2", "effect": 1.4596, "se": 0.05, "subgroup": "high"},
+        {"label": "HIGH3", "effect": 1.4954, "se": 0.05, "subgroup": "high"},
+        {"label": "HIGH4", "effect": 1.4827, "se": 0.05, "subgroup": "high"},
+        {"label": "HIGH5", "effect": 1.5665, "se": 0.05, "subgroup": "high"}
+      ],
+      "measure": "generic"
+    },
+    "expected": {"subgroups.0.effect": 0.2, "subgroups.1.effect": 1.5},
+    "tolerance": "abs<=0.1 (subgroups[0] = 'low' true effect 0.2, subgroups[1] = 'high' true effect 1.5; order follows dict insertion order of first appearance in the studies list)"
+  },
+  {
+    "id": "meta_subgroup_requires_subgroup_field",
+    "source": "test_meta_analysis.py::test_subgroup_requires_subgroup_field",
+    "params": {
+      "studies": [
+        {"label": "S1", "effect": 0.5019, "se": 0.05},
+        {"label": "S2", "effect": 0.4976, "se": 0.06},
+        {"label": "S3", "effect": 0.5134, "se": 0.07},
+        {"label": "S4", "effect": 0.5016, "se": 0.05},
+        {"label": "S5", "effect": 0.4904, "se": 0.06},
+        {"label": "S6", "effect": 0.5076, "se": 0.07},
+        {"label": "S7", "effect": 0.5196, "se": 0.05},
+        {"label": "S8", "effect": 0.517, "se": 0.06},
+        {"label": "S9", "effect": 0.4852, "se": 0.07}
+      ],
+      "measure": "generic"
+    },
+    "expected": {"status_code": 422},
+    "tolerance": "exact status code (engine equivalent: subgroup must raise EngineError with status_hint=422)"
+  },
+  {
+    "id": "meta_regression_recovers_positive_slope",
+    "source": "test_meta_analysis.py::test_regression_recovers_positive_slope_with_low_p",
+    "params": {
+      "studies": [
+        {"label": "R1", "effect": 0.087, "se": 0.05, "moderator": 0.0},
+        {"label": "R2", "effect": 0.3965, "se": 0.05, "moderator": 1.0},
+        {"label": "R3", "effect": 0.7333, "se": 0.05, "moderator": 2.0},
+        {"label": "R4", "effect": 1.0132, "se": 0.05, "moderator": 3.0},
+        {"label": "R5", "effect": 1.2672, "se": 0.05, "moderator": 4.0},
+        {"label": "R6", "effect": 1.5999, "se": 0.05, "moderator": 5.0},
+        {"label": "R7", "effect": 1.8875, "se": 0.05, "moderator": 6.0},
+        {"label": "R8", "effect": 2.203, "se": 0.05, "moderator": 7.0},
+        {"label": "R9", "effect": 2.4678, "se": 0.05, "moderator": 8.0},
+        {"label": "R10", "effect": 2.8048, "se": 0.05, "moderator": 9.0}
+      ],
+      "measure": "generic"
+    },
+    "expected": {"slope": 0.3},
+    "tolerance": "abs<=0.05 (true_slope = 0.3)"
+  },
+  {
+    "id": "meta_regression_requires_moderator_on_every_study",
+    "source": "test_meta_analysis.py::test_regression_requires_moderator_on_every_study",
+    "params": {
+      "studies": [
+        {"label": "S1", "effect": 0.5019, "se": 0.05},
+        {"label": "S2", "effect": 0.4976, "se": 0.06},
+        {"label": "S3", "effect": 0.5134, "se": 0.07},
+        {"label": "S4", "effect": 0.5016, "se": 0.05},
+        {"label": "S5", "effect": 0.4904, "se": 0.06}
+      ],
+      "measure": "generic"
+    },
+    "expected": {"status_code": 422},
+    "tolerance": "exact status code (engine equivalent: meta_regression must raise EngineError with status_hint=422)"
+  },
+  {
+    "id": "meta_regression_requires_at_least_three_studies",
+    "source": "test_meta_analysis.py::test_regression_requires_at_least_three_studies",
+    "params": {
+      "studies": [
+        {"label": "A", "effect": 0.5, "se": 0.1, "moderator": 1.0},
+        {"label": "B", "effect": 0.6, "se": 0.1, "moderator": 2.0}
+      ],
+      "measure": "generic"
+    },
+    "expected": {"status_code": 422},
+    "tolerance": "exact status code (engine equivalent: meta_regression must raise EngineError with status_hint=422)"
+  },
+  {
+    "id": "meta_bias_funnel_length_matches_study_count",
+    "source": "test_meta_analysis.py::test_bias_funnel_and_pooled_effect_present",
+    "params": {
+      "studies": [
+        {"label": "ASYM1", "effect": 0.575, "se": 0.05},
+        {"label": "ASYM2", "effect": 0.6325, "se": 0.0833},
+        {"label": "ASYM3", "effect": 0.6654, "se": 0.1167},
+        {"label": "ASYM4", "effect": 0.6849, "se": 0.15},
+        {"label": "ASYM5", "effect": 0.75, "se": 0.1833},
+        {"label": "ASYM6", "effect": 0.7605, "se": 0.2167},
+        {"label": "ASYM7", "effect": 0.8795, "se": 0.25},
+        {"label": "ASYM8", "effect": 1.0389, "se": 0.2833},
+        {"label": "ASYM9", "effect": 0.9282, "se": 0.3167},
+        {"label": "ASYM10", "effect": 0.9599, "se": 0.35},
+        {"label": "ASYM11", "effect": 1.1313, "se": 0.3833},
+        {"label": "ASYM12", "effect": 1.1696, "se": 0.4167}
+      ],
+      "measure": "generic"
+    },
+    "expected": {"funnel_count": 12},
+    "tolerance": "exact (len(d['funnel']) == len(studies))"
+  },
+  {
+    "id": "meta_bias_requires_at_least_three_studies",
+    "source": "test_meta_analysis.py::test_bias_requires_at_least_three_studies",
+    "params": {
+      "studies": [
+        {"label": "A", "effect": 0.5, "se": 0.1},
+        {"label": "B", "effect": 0.6, "se": 0.1}
+      ],
+      "measure": "generic"
+    },
+    "expected": {"status_code": 422},
+    "tolerance": "exact status code (engine equivalent: bias must raise EngineError with status_hint=422)"
+  },
+  {
+    "id": "meta_analyze_rejects_single_study",
+    "source": "test_meta_analysis.py::test_analyze_rejects_single_study",
+    "params": {
+      "studies": [
+        {"label": "Solo", "effect": 0.5, "se": 0.1}
+      ],
+      "measure": "generic"
+    },
+    "expected": {"status_code": 422},
+    "tolerance": "exact status code (engine equivalent: analyze must raise EngineError with status_hint=422)"
+  },
+  {
+    "id": "meta_analyze_rejects_empty_studies",
+    "source": "test_meta_analysis.py::test_analyze_rejects_empty_studies",
+    "params": {
+      "studies": [],
+      "measure": "generic"
+    },
+    "expected": {"status_code": 422},
+    "tolerance": "exact status code (engine equivalent: analyze must raise EngineError with status_hint=422)"
+  },
+  {
+    "id": "meta_analyze_rejects_study_with_no_usable_inputs",
+    "source": "test_meta_analysis.py::test_analyze_rejects_study_with_no_usable_inputs",
+    "params": {
+      "studies": [
+        {"label": "A", "effect": 0.5, "se": 0.1},
+        {"label": "Bad"}
+      ],
+      "measure": "generic"
+    },
+    "expected": {"status_code": 422, "detail_contains": ["Bad"]},
+    "tolerance": "exact status code; detail_contains is substring match on the EngineError message (engine equivalent: analyze must raise EngineError with status_hint=422 and message containing 'Bad')"
+  },
+  {
+    "id": "meta_analyze_rejects_nonpositive_effect_on_log_scale",
+    "source": "test_meta_analysis.py::test_analyze_rejects_nonpositive_effect_on_log_scale",
+    "params": {
+      "studies": [
+        {"label": "A", "effect": 1.2, "se": 0.1},
+        {"label": "B", "effect": -0.5, "se": 0.1}
+      ],
+      "measure": "OR"
+    },
+    "expected": {"status_code": 422},
+    "tolerance": "exact status code (engine equivalent: analyze must raise EngineError with status_hint=422)"
+  },
+  {
+    "id": "meta_analyze_rejects_nonpositive_se",
+    "source": "test_meta_analysis.py::test_analyze_rejects_nonpositive_se",
+    "params": {
+      "studies": [
+        {"label": "A", "effect": 0.5, "se": 0.1},
+        {"label": "B", "effect": 0.6, "se": 0.0}
+      ],
+      "measure": "generic"
+    },
+    "expected": {"status_code": 422},
+    "tolerance": "exact status code (engine equivalent: analyze must raise EngineError with status_hint=422)"
+  },
+  {
+    "id": "meta_analyze_accepts_2x2_table_k_equals_3",
+    "source": "test_meta_analysis.py::test_analyze_accepts_2x2_table_input",
+    "params": {
+      "studies": [
+        {"label": "A", "e1": 10, "n1": 100, "e2": 30, "n2": 100},
+        {"label": "B", "e1": 12, "n1": 100, "e2": 28, "n2": 100},
+        {"label": "C", "e1": 8, "n1": 100, "e2": 32, "n2": 100}
+      ],
+      "measure": "OR"
+    },
+    "expected": {"k": 3},
+    "tolerance": "exact (d['k'] == len(studies))"
+  },
+  {
+    "id": "meta_analyze_rejects_unsupported_measure_for_2x2",
+    "source": "test_meta_analysis.py::test_analyze_rejects_unsupported_measure_for_2x2",
+    "params": {
+      "studies": [
+        {"label": "A", "e1": 10, "n1": 100, "e2": 30, "n2": 100},
+        {"label": "B", "e1": 12, "n1": 100, "e2": 28, "n2": 100}
+      ],
+      "measure": "SMD"
+    },
+    "expected": {"status_code": 422},
+    "tolerance": "exact status code (engine equivalent: analyze must raise EngineError with status_hint=422)"
+  }
+]

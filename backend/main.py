@@ -162,6 +162,25 @@ def terms_page_redirect() -> RedirectResponse:
     return RedirectResponse(url="/terms.html", status_code=308)
 
 
+@app.get("/api/engine/identity")
+def engine_identity():
+    """What engine code this server is running, so a client can check it matches.
+
+    A browser that computes locally must be running the same engine as the
+    server it would otherwise have asked. It proves that by comparing what it
+    computes from its installed wheel against this. Disagreement is not a
+    version-skew warning to be dismissed -- it means the two would answer the
+    same analysis differently -- so the client refuses to compute locally and
+    falls back here.
+    """
+    from ustat_engine import identity
+    from ustat_engine.registry import ANALYSES
+
+    info = identity()
+    info["analyses"] = sorted(ANALYSES)
+    return info
+
+
 @app.get("/api/health")
 def health():
     """Lightweight health check — no expensive deep memory scan."""

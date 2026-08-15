@@ -1,0 +1,233 @@
+[
+  {
+    "id": "anova_power_reads_n_as_per_group_k4_f0.25_n52",
+    "source": "test_power_vs_r.py::test_anova_power_reads_n_as_per_group",
+    "params": {"test": "anova", "solve_for": "power", "effect_size": 0.25, "n": 52, "alpha": 0.05, "k_groups": 4},
+    "expected": {"result": 0.8637148576836544},
+    "tolerance": "rel<=1e-9 (rel = abs(a-b)/max(abs(a),abs(b),1e-300); R: pwr.anova.test(k=4, n=52, f=0.25))"
+  },
+  {
+    "id": "anova_n_per_group_k4_f0.25_power0.8",
+    "source": "test_power_vs_r.py::test_anova_sample_size_is_per_group",
+    "params": {"test": "anova", "solve_for": "n", "effect_size": 0.25, "power": 0.8, "alpha": 0.05, "k_groups": 4},
+    "expected": {"result": 45, "label_contains": ["n/group = 45", "total N = 180"]},
+    "tolerance": "exact (R: pwr.anova.test(k=4, f=0.25, power=0.8) -> 44.6/group, ceil'd to 45)"
+  },
+  {
+    "id": "anova_power_k3_f0.4_n20",
+    "source": "test_power_vs_r.py::test_anova_three_groups",
+    "params": {"test": "anova", "solve_for": "power", "effect_size": 0.4, "n": 20, "alpha": 0.05, "k_groups": 3},
+    "expected": {"result": 0.7757304353075136},
+    "tolerance": "rel<=1e-9 (R: pwr.anova.test(k=3, n=20, f=0.4))"
+  },
+  {
+    "id": "correlation_power_n85_r0.3_tails2",
+    "source": "test_power_vs_r.py::test_correlation_power_matches_pwr_r_test",
+    "params": {"test": "correlation", "solve_for": "power", "effect_size": 0.3, "n": 85, "alpha": 0.05, "tails": 2},
+    "expected": {"result": 0.8043956918386735},
+    "tolerance": "rel<=1e-8 (R: pwr.r.test(n=85, r=0.3, sig.level=0.05, alternative='two.sided'))"
+  },
+  {
+    "id": "correlation_power_n85_r0.3_tails1",
+    "source": "test_power_vs_r.py::test_correlation_power_matches_pwr_r_test",
+    "params": {"test": "correlation", "solve_for": "power", "effect_size": 0.3, "n": 85, "alpha": 0.05, "tails": 1},
+    "expected": {"result": 0.8799369356905099},
+    "tolerance": "rel<=1e-8 (R: pwr.r.test(n=85, r=0.3, sig.level=0.05, alternative='greater'))"
+  },
+  {
+    "id": "correlation_power_n12_r0.5_tails2",
+    "source": "test_power_vs_r.py::test_correlation_power_matches_pwr_r_test",
+    "params": {"test": "correlation", "solve_for": "power", "effect_size": 0.5, "n": 12, "alpha": 0.05, "tails": 2},
+    "expected": {"result": 0.4001744512820906},
+    "tolerance": "rel<=1e-8 (R: pwr.r.test(n=12, r=0.5, sig.level=0.05, alternative='two.sided'))"
+  },
+  {
+    "id": "correlation_n_r0.3_power0.8",
+    "source": "test_power_vs_r.py::test_correlation_sample_size",
+    "params": {"test": "correlation", "solve_for": "n", "effect_size": 0.3, "power": 0.8, "alpha": 0.05, "tails": 2},
+    "expected": {"result": 85},
+    "tolerance": "exact (R: pwr.r.test(r=0.3, power=0.8) -> 84.07, ceil'd to 85)"
+  },
+  {
+    "id": "ttest_ind_power_d0.5_n64",
+    "source": "test_power_vs_r.py::test_two_sample_t_matches_pwr",
+    "params": {"test": "t_two", "solve_for": "power", "effect_size": 0.5, "n": 64, "alpha": 0.05, "tails": 2},
+    "expected": {"result": 0.8014595579222848},
+    "tolerance": "rel<=1e-9 (R: pwr.t.test(n=64, d=0.5, type='two.sample'))"
+  },
+  {
+    "id": "proportion_power_p0.5_0.3_n100",
+    "source": "test_power_vs_r.py::test_two_proportions_matches_pwr_2p",
+    "params": {"test": "proportion", "solve_for": "power", "p1": 0.5, "p2": 0.3, "n": 100, "alpha": 0.05, "tails": 2},
+    "expected": {"result": 0.8289189081102789},
+    "tolerance": "rel<=1e-9 (R: pwr.2p.test(h=ES.h(0.5, 0.3), n=100))"
+  },
+  {
+    "id": "chi2_power_w0.3_n150_k4",
+    "source": "test_power_vs_r.py::test_chi_square_matches_pwr_chisq",
+    "params": {"test": "chi2", "solve_for": "power", "effect_size": 0.3, "n": 150, "alpha": 0.05, "k_groups": 4},
+    "expected": {"result": 0.884032726811765},
+    "tolerance": "rel<=1e-9 (R: pwr.chisq.test(w=0.3, N=150, df=3))"
+  },
+  {
+    "id": "cox_n_hr1.8_er0.4_power0.8",
+    "source": "test_power_vs_r.py::test_cox_matches_schoenfeld",
+    "params": {"test": "survival_cox", "solve_for": "n", "hr": 1.8, "event_rate": 0.4, "power": 0.8, "alpha": 0.05, "tails": 2, "p_exposed": 0.5},
+    "expected": {"result": 228},
+    "tolerance": "exact (Schoenfeld formula, hand-derived reference)"
+  },
+  {
+    "id": "logistic_n_logor1.5_pevent0.3",
+    "source": "test_power_vs_r.py::test_logistic_treats_its_effect_field_as_an_odds_ratio",
+    "params": {"test": "logistic", "solve_for": "n", "log_or": 1.5, "p_event": 0.3, "power": 0.8, "alpha": 0.05, "tails": 2},
+    "expected": {"result": 228},
+    "tolerance": "exact (Hsieh formula, hand-derived reference)"
+  },
+  {
+    "id": "gpower_t_two_n_fig1a_hepatic_triglyceride",
+    "source": "test_power_vs_gpower_paper.py::test_two_sample_t_matches_gpower",
+    "params": {"test": "t_two", "solve_for": "n", "effect_size": 0.9575908, "alpha": 0.05, "power": 0.80, "tails": 2, "ratio": 1.0},
+    "expected": {"result_int": 19},
+    "tolerance": "exact int(result) (Zhang & Hartmann 2023, Fig 1A)"
+  },
+  {
+    "id": "gpower_t_two_power_back_fig1a_hepatic_triglyceride",
+    "source": "test_power_vs_gpower_paper.py::test_two_sample_t_matches_gpower",
+    "params": {"test": "t_two", "solve_for": "power", "effect_size": 0.9575908, "alpha": 0.05, "n": 19, "tails": 2, "ratio": 1.0},
+    "expected": {"result": 0.8191075},
+    "tolerance": "abs<=1e-6 (Zhang & Hartmann 2023, Fig 1A 'actual power')"
+  },
+  {
+    "id": "gpower_t_two_n_fig1b_tnf_expression",
+    "source": "test_power_vs_gpower_paper.py::test_two_sample_t_matches_gpower",
+    "params": {"test": "t_two", "solve_for": "n", "effect_size": 1.349154, "alpha": 0.05, "power": 0.80, "tails": 2, "ratio": 1.0},
+    "expected": {"result_int": 10},
+    "tolerance": "exact int(result) (Zhang & Hartmann 2023, Fig 1B)"
+  },
+  {
+    "id": "gpower_t_two_power_back_fig1b_tnf_expression",
+    "source": "test_power_vs_gpower_paper.py::test_two_sample_t_matches_gpower",
+    "params": {"test": "t_two", "solve_for": "power", "effect_size": 1.349154, "alpha": 0.05, "n": 10, "tails": 2, "ratio": 1.0},
+    "expected": {"result": 0.8139794},
+    "tolerance": "abs<=1e-6 (Zhang & Hartmann 2023, Fig 1B 'actual power')"
+  },
+  {
+    "id": "gpower_t_two_n_fig1c_alpha0.01",
+    "source": "test_power_vs_gpower_paper.py::test_two_sample_t_matches_gpower",
+    "params": {"test": "t_two", "solve_for": "n", "effect_size": 1.349154, "alpha": 0.01, "power": 0.80, "tails": 2, "ratio": 1.0},
+    "expected": {"result_int": 15},
+    "tolerance": "exact int(result) (Zhang & Hartmann 2023, Fig 1C)"
+  },
+  {
+    "id": "gpower_t_two_power_back_fig1c_alpha0.01",
+    "source": "test_power_vs_gpower_paper.py::test_two_sample_t_matches_gpower",
+    "params": {"test": "t_two", "solve_for": "power", "effect_size": 1.349154, "alpha": 0.01, "n": 15, "tails": 2, "ratio": 1.0},
+    "expected": {"result": 0.8152953},
+    "tolerance": "abs<=1e-6 (Zhang & Hartmann 2023, Fig 1C 'actual power')"
+  },
+  {
+    "id": "gpower_t_two_n_fig1d_power0.95",
+    "source": "test_power_vs_gpower_paper.py::test_two_sample_t_matches_gpower",
+    "params": {"test": "t_two", "solve_for": "n", "effect_size": 1.349154, "alpha": 0.05, "power": 0.95, "tails": 2, "ratio": 1.0},
+    "expected": {"result_int": 16},
+    "tolerance": "exact int(result) (Zhang & Hartmann 2023, Fig 1D)"
+  },
+  {
+    "id": "gpower_t_two_power_back_fig1d_power0.95",
+    "source": "test_power_vs_gpower_paper.py::test_two_sample_t_matches_gpower",
+    "params": {"test": "t_two", "solve_for": "power", "effect_size": 1.349154, "alpha": 0.05, "n": 16, "tails": 2, "ratio": 1.0},
+    "expected": {"result": 0.9582959},
+    "tolerance": "abs<=1e-6 (Zhang & Hartmann 2023, Fig 1D 'actual power')"
+  },
+  {
+    "id": "gpower_proportion_n_fig2a_rifaximin",
+    "source": "test_power_vs_gpower_paper.py::test_two_proportions_match_gpower",
+    "params": {"test": "proportion", "solve_for": "n", "p1": 0.55, "p2": 0.40, "alpha": 0.05, "power": 0.95, "tails": 2, "ratio": 1.0},
+    "expected": {"result_int": 286},
+    "tolerance": "exact int(result) (Zhang & Hartmann 2023, Fig 2A)"
+  },
+  {
+    "id": "gpower_proportion_n_fig2b_dexmedetomidine",
+    "source": "test_power_vs_gpower_paper.py::test_two_proportions_match_gpower",
+    "params": {"test": "proportion", "solve_for": "n", "p1": 0.54, "p2": 0.27, "alpha": 0.05, "power": 0.80, "tails": 2, "ratio": 1.0},
+    "expected": {"result_int": 51},
+    "tolerance": "exact int(result) (Zhang & Hartmann 2023, Fig 2B)"
+  },
+  {
+    "id": "gpower_t_two_n_human_pilot_faecal_calprotectin",
+    "source": "test_power_vs_gpower_paper.py::test_human_pilot_example",
+    "params": {"test": "t_two", "solve_for": "n", "effect_size": 0.63, "alpha": 0.05, "power": 0.95, "tails": 2, "ratio": 1.0},
+    "expected": {"result_int": 67},
+    "tolerance": "exact int(result) (Zhang & Hartmann 2023, prose worked example)"
+  },
+  {
+    "id": "gpower_t_two_n_one_tailed_vs_two_tailed_two_sided",
+    "source": "test_power_vs_gpower_paper.py::test_one_tailed_needs_fewer_than_two_tailed",
+    "params": {"test": "t_two", "solve_for": "n", "effect_size": 1.07, "alpha": 0.05, "power": 0.80, "tails": 2, "ratio": 1.0},
+    "expected": {"result_int": 15},
+    "tolerance": "exact int(result) (Zhang & Hartmann 2023, pilot tumour experiment, two-tailed)"
+  },
+  {
+    "id": "gpower_t_two_n_one_tailed_vs_two_tailed_one_sided",
+    "source": "test_power_vs_gpower_paper.py::test_one_tailed_needs_fewer_than_two_tailed",
+    "params": {"test": "t_two", "solve_for": "n", "effect_size": 1.07, "alpha": 0.05, "power": 0.80, "tails": 1, "ratio": 1.0},
+    "expected": {"result_int": 12},
+    "tolerance": "exact int(result) (Zhang & Hartmann 2023, pilot tumour experiment, one-tailed)"
+  },
+  {
+    "id": "gpower_attrition_t_two_n_recruitment_target_fig1a",
+    "source": "test_power_vs_gpower_paper.py::test_attrition_reports_the_recruitment_target",
+    "params": {"test": "t_two", "solve_for": "n", "effect_size": 0.9575908, "alpha": 0.05, "power": 0.80, "tails": 2, "ratio": 1.0, "attrition": 0.10},
+    "expected": {"result_int": 19, "n_corrected": 22, "label_contains": ["22"]},
+    "tolerance": "exact (19 per group required; 19/0.9 = 21.1, ceil'd to 22 to recruit)"
+  },
+  {
+    "id": "gpower_attrition_proportion_n_corrected_5pct",
+    "source": "test_power_vs_gpower_paper.py::test_attrition_on_the_proportions_example",
+    "params": {"test": "proportion", "solve_for": "n", "p1": 0.55, "p2": 0.40, "alpha": 0.05, "power": 0.95, "tails": 2, "ratio": 1.0, "attrition": 0.05},
+    "expected": {"result_int": 286, "n_corrected": 302},
+    "tolerance": "exact (286/0.95 = 301.05, ceil'd to 302)"
+  },
+  {
+    "id": "gpower_attrition_proportion_n_corrected_10pct",
+    "source": "test_power_vs_gpower_paper.py::test_attrition_on_the_proportions_example",
+    "params": {"test": "proportion", "solve_for": "n", "p1": 0.55, "p2": 0.40, "alpha": 0.05, "power": 0.95, "tails": 2, "ratio": 1.0, "attrition": 0.10},
+    "expected": {"result_int": 286, "n_corrected": 318},
+    "tolerance": "exact (286/0.9 = 317.78, ceil'd to 318)"
+  },
+  {
+    "id": "gpower_no_attrition_leaves_answer_alone",
+    "source": "test_power_vs_gpower_paper.py::test_no_attrition_leaves_the_answer_alone",
+    "params": {"test": "t_two", "solve_for": "n", "effect_size": 0.5, "alpha": 0.05, "power": 0.80, "tails": 2, "ratio": 1.0},
+    "expected": {"n_corrected": null, "attrition": null},
+    "tolerance": "exact (identity/null check)"
+  },
+  {
+    "id": "gpower_attrition_ignored_when_not_solving_for_n",
+    "source": "test_power_vs_gpower_paper.py::test_attrition_is_ignored_when_not_solving_for_n",
+    "params": {"test": "t_two", "solve_for": "power", "effect_size": 0.5, "alpha": 0.05, "n": 64, "tails": 2, "ratio": 1.0, "attrition": 0.2},
+    "expected": {"n_corrected": null},
+    "tolerance": "exact (identity/null check)"
+  },
+  {
+    "id": "gpower_attrition_impossible_rate_1.0",
+    "source": "test_power_vs_gpower_paper.py::test_an_impossible_attrition_rate_is_refused",
+    "params": {"test": "t_two", "solve_for": "n", "effect_size": 0.5, "alpha": 0.05, "power": 0.8, "tails": 2, "ratio": 1.0, "attrition": 1.0},
+    "expected": {"status_code": 422},
+    "tolerance": "exact status code (engine equivalent: run_power must raise EngineError with status_hint=422)"
+  },
+  {
+    "id": "gpower_attrition_impossible_rate_1.5",
+    "source": "test_power_vs_gpower_paper.py::test_an_impossible_attrition_rate_is_refused",
+    "params": {"test": "t_two", "solve_for": "n", "effect_size": 0.5, "alpha": 0.05, "power": 0.8, "tails": 2, "ratio": 1.0, "attrition": 1.5},
+    "expected": {"status_code": 422},
+    "tolerance": "exact status code (engine equivalent: run_power must raise EngineError with status_hint=422)"
+  },
+  {
+    "id": "gpower_attrition_impossible_rate_neg0.1",
+    "source": "test_power_vs_gpower_paper.py::test_an_impossible_attrition_rate_is_refused",
+    "params": {"test": "t_two", "solve_for": "n", "effect_size": 0.5, "alpha": 0.05, "power": 0.8, "tails": 2, "ratio": 1.0, "attrition": -0.1},
+    "expected": {"status_code": 422},
+    "tolerance": "exact status code (engine equivalent: run_power must raise EngineError with status_hint=422)"
+  }
+]

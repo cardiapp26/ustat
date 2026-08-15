@@ -4,8 +4,10 @@
   "version": "3.6.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
+    "dev": "npm run engine:wheel && vite",
+    "build": "npm run engine:wheel && vite build",
+    "engine:wheel": "python3 ../scripts/build_engine_wheel.py",
+    "pyodide:vendor": "python3 ../scripts/vendor_pyodide.py",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",

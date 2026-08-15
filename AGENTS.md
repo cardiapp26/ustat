@@ -77,10 +77,19 @@ tsc/build/lint on every push — don't skip these locally.
   written to it — code that branches on dtype instead of declared kind will
   silently mishandle blank columns. See `backend/routers/session.py`
   `update_cell` for the pattern.
-- **No client-side statistics.** If you're about to compute a p-value,
-  effect size, or any inferential statistic in the frontend, stop — it
-  belongs in a backend service, cross-checked against the peer-reviewed
-  library it wraps.
+- **No second implementation of a statistic.** If you're about to compute a
+  p-value, effect size, or any inferential statistic in TypeScript, stop. The
+  rule is not "statistics run on the server" — it is that a statistic has
+  exactly one implementation, in Python, cross-checked against the
+  peer-reviewed library it wraps. That one implementation lives in
+  `backend/ustat_engine/` and runs in two places: this server, and the
+  browser, where the same package is installed as a wheel under Pyodide so
+  patient data need never leave the machine. Both runtimes compute a sha256
+  over the engine's own sources and refuse to run locally unless they match,
+  so the two can never silently answer the same question differently.
+  `backend/tests/test_engine_isolation.py` enforces what the engine may
+  import; `backend/requirements.txt` explains why numpy/scipy/pandas are
+  pinned to Pyodide's versions and must not be bumped on one side alone.
 - **Turkish bug reports are common** (primary user base). Repro and fix in
   English-named code/commits as usual; just expect issue text in Turkish.
 - **Git hygiene**: several files in this repo tend to carry large unrelated

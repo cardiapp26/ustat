@@ -64,3 +64,24 @@ src-tauri/binaries/
 # QA agent logs and caches — fixtures below are tracked, these are not
 qa/logs/
 qa/__pycache__/
+
+# Built from backend/ustat_engine by scripts/build_engine_wheel.py on every
+# dev start and build. Not committed: a checked-in wheel is a wheel that can go
+# stale against the engine it claims to be, which is precisely the mismatch the
+# fingerprint check exists to catch. Absent wheel means local compute is simply
+# unavailable and everything falls back to the server, which is safe.
+frontend/public/pyodide/wheels/
+
+# Fetched from cdn.jsdelivr.net by scripts/vendor_pyodide.py (`npm run
+# pyodide:vendor`), not written by hand. It's a large (tens to low hundreds
+# of MB) vendored third-party artifact, not source, so it does not belong in
+# git history; vendored.json inside this directory records the exact
+# version, source URL, and sha256 of every file it fetched so the contents
+# can be reproduced or verified without depending on git for it.
+frontend/public/pyodide/runtime/
+
+# Throwaway Pyodide parity harness. Not committed: it is a developer page that
+# would otherwise be copied into dist/ and served from the production site, and
+# it loads Pyodide from a CDN, which the app deliberately does not do. Its
+# fixtures live in qa/parity/ and are read by the backend parity tests.
+frontend/public/spike/
