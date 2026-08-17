@@ -1,8 +1,19 @@
 import '@testing-library/jest-dom/vitest'
-import { cleanup } from '@testing-library/react'
+import { cleanup, configure } from '@testing-library/react'
 import React from 'react'
 import { afterAll, afterEach, beforeAll, vi } from 'vitest'
 import { server } from './server'
+
+// Testing Library keeps its own budget for waitFor and findBy*, and vitest's
+// testTimeout does not cover it: the default is one second, so on a loaded
+// machine a test can fail while the test itself still has nineteen seconds
+// left. That is what CI hit -- ROCPanel's findByRole('status') gave up at
+// 1055 ms on a two-core runner, green on every local run and green in
+// isolation there too. Five seconds is the same kind of number as the
+// testTimeout above: the machine's budget, not the product's, and still short
+// enough that a query which will never match reports where it was waiting
+// instead of running out the whole test.
+configure({ asyncUtilTimeout: 5000 })
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
 afterEach(() => {
