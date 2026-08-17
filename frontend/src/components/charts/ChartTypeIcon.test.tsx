@@ -1,7 +1,8 @@
 import { render } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
-import ChartTypeIcon, { ICON_TYPES } from './ChartTypeIcon'
-import { CHART_TYPES } from '../ChartsPanel'
+import ChartTypeIcon from './ChartTypeIcon'
+import { ICON_TYPES } from './chartGlyphs'
+import { CHART_TYPES } from '../../lib/chartTypes'
 
 describe('ChartTypeIcon', () => {
   it('has a glyph for every chart type the picker offers', () => {

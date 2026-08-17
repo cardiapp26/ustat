@@ -9,21 +9,13 @@ import ChartTypeIcon from "./charts/ChartTypeIcon";
 import { fmtP } from "../lib/format";
 import { labelFor } from "../lib/valueLabels";
 import { categoryColors } from "../lib/categoryColors";
+import { CHART_TYPES } from "../lib/chartTypes";
 
-/** Chart types offered in the picker, in the order they are listed. Exported
- *  so the icon set can be checked for coverage rather than drifting quietly
- *  when a chart is added. */
 /** Charts whose request actually carries the Color / Group column. */
 const COLOUR_AWARE_CHARTS = new Set([
   "scatter", "boxplot", "violin", "raincloud", "strip", "bar", "paired",
   "dumbbell", "errorplot", "ecdf", "facet", "lineplot", "slopeplot", "ridgeplot",
 ]);
-
-export const CHART_TYPES = [
-  "histogram", "scatter", "boxplot", "violin", "raincloud", "strip", "bar", "paired",
-  "dumbbell", "errorplot", "ecdf", "pie", "balloon", "facet", "lineplot",
-  "slopeplot", "sankey", "stackplot", "ridgeplot", "sets",
-] as const;
 
 export default function ChartsPanel() {
   const session  = useStore((s) => s.session);
