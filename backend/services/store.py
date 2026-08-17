@@ -18,6 +18,9 @@ import time
 from threading import Lock
 from fastapi import HTTPException
 
+from ustat_engine import EngineError
+from ustat_engine.frame import select as _select
+
 # Per-dataset size ceiling (rows × columns). Guards the in-memory store against
 # a single oversized frame — from upload or from a runaway compute/merge.
 # ~20M cells ≈ 200k rows × 100 cols. Override via env.
@@ -34,7 +37,10 @@ _undo: Dict[str, list] = {}   # {session_id: [data + dependent-state snapshots]}
 _redo: Dict[str, list] = {}
 _lock = Lock()
 MAX_UNDO = 30
-VALID_FILTER_OPERATORS = {"eq", "ne", "gt", "lt", "gte", "lte", "missing", "not_missing", "contains"}
+# Re-exported: the operator set now lives beside the code that implements it,
+# inside the engine, so the browser and the server cannot disagree about what
+# an operator means.
+VALID_FILTER_OPERATORS = _select.VALID_FILTER_OPERATORS
 
 # Every per-session map, so cleanup/delete can drop a session completely
 # (a partial pop leaks the user's kinds/decimals/filename/filters after TTL).
@@ -370,72 +376,25 @@ def clear_filter(session_id: str) -> None:
         _dirty.add(session_id)
 
 
+def _adapt(fn, *args, **kwargs):
+    """Report an EngineError as the HTTP status it asked for.
+
+    Same translation `routers/engine_adapter.py` does for engine calls made
+    from a router; the filter is reached through here instead, so callers of
+    the store keep seeing HTTPException exactly as they always have.
+    """
+    try:
+        return fn(*args, **kwargs)
+    except EngineError as exc:
+        raise HTTPException(status_code=exc.status_hint, detail=exc.message) from exc
+
+
 def validate_conditions(df: pd.DataFrame, conditions: List[dict]) -> None:
-    for i, cond in enumerate(conditions or [], start=1):
-        col = cond.get("column", "")
-        if col not in df.columns:
-            raise HTTPException(status_code=404, detail=f"Condition {i}: column '{col}' not found")
-        op = cond.get("operator", "eq")
-        if op not in VALID_FILTER_OPERATORS:
-            allowed = ", ".join(sorted(VALID_FILTER_OPERATORS))
-            raise HTTPException(
-                status_code=422,
-                detail=f"Condition {i}: unsupported operator '{op}'. Use one of: {allowed}.",
-            )
+    return _adapt(_select.validate_conditions, df, conditions)
 
 
 def _apply_conditions(df: pd.DataFrame, conditions: List[dict]) -> pd.DataFrame:
-    if not conditions:
-        return df
-    mask = pd.Series([True] * len(df), index=df.index)
-    for i, cond in enumerate(conditions):
-        col = cond.get("column", "")
-        if col not in df.columns:
-            continue
-        op = cond.get("operator", "eq")
-        val = cond.get("value", "")
-        join = cond.get("join", "AND")
-
-        if op == "missing":
-            cond_mask = df[col].isna() | (df[col].astype(str).str.strip() == "")
-        elif op == "not_missing":
-            cond_mask = df[col].notna() & (df[col].astype(str).str.strip() != "")
-        elif op == "contains":
-            cond_mask = df[col].astype(str).str.contains(str(val), case=False, na=False)
-        else:
-            # Try numeric comparison first, fall back to string
-            try:
-                num_val = float(val)
-                s = pd.to_numeric(df[col], errors="coerce")
-                if op == "eq":
-                    cond_mask = s == num_val
-                elif op == "ne":
-                    cond_mask = s != num_val
-                elif op == "gt":
-                    cond_mask = s > num_val
-                elif op == "lt":
-                    cond_mask = s < num_val
-                elif op == "gte":
-                    cond_mask = s >= num_val
-                elif op == "lte":
-                    cond_mask = s <= num_val
-                else:
-                    cond_mask = pd.Series([True] * len(df), index=df.index)
-            except (ValueError, TypeError):
-                s = df[col].astype(str)
-                if op == "eq":
-                    cond_mask = s == str(val)
-                elif op == "ne":
-                    cond_mask = s != str(val)
-                else:
-                    cond_mask = pd.Series([True] * len(df), index=df.index)
-
-        if i == 0 or join == "AND":
-            mask = mask & cond_mask
-        else:
-            mask = mask | cond_mask
-
-    return df[mask]
+    return _select.apply_conditions(df, conditions)
 
 
 def get_filtered(session_id: str) -> Optional[pd.DataFrame]:

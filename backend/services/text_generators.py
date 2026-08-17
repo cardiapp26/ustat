@@ -1,50 +1,30 @@
-"""Journal-style methods and results text generators for uSTAT analyses."""
+"""Journal-style methods and results text generators for uSTAT analyses.
 
+The t-test generators moved into `ustat_engine.text.ttest` and the fragments
+they share with the rest of this file into `ustat_engine.text.common`; both are
+re-imported below, so every existing caller keeps its import. They had to move
+because a result the engine returns carries its own prose -- `result_text`
+quotes the same t, df and p as the numeric fields do, and a browser-side copy
+of the sentence that disagreed with them would be a contradiction inside one
+payload.
 
-def _p_str(p: float) -> str:
-    from services.number_format import format_p
-    return format_p(p)
+The rest of the generators stay here until their analyses follow.
+"""
 
-
-def _es_str(es: dict) -> str:
-    """Format effect size dict as inline text."""
-    name = es.get("name", "").replace("_", " ")
-    val = es.get("value", 0)
-    mag = es.get("magnitude", "")
-    ci_lo = es.get("ci_low")
-    ci_hi = es.get("ci_high")
-    s = f"{name} = {val:.3f}"
-    if ci_lo is not None and ci_hi is not None:
-        s += f" (95% CI: {ci_lo:.3f}\u2013{ci_hi:.3f})"
-    if mag:
-        s += f" [{mag}]"
-    return s
+from ustat_engine.text.common import _df_str, _es_str, _p_str  # noqa: F401
+from ustat_engine.text.ttest import (  # noqa: F401
+    methods_ttest_ind,
+    methods_ttest_one,
+    r_ttest_ind,
+    r_ttest_one,
+    results_ttest_ind,
+    results_ttest_one,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # METHODS TEXT — describes what was done (for Methods section)
 # ═══════════════════════════════════════════════════════════════════════════════
-
-def methods_ttest_ind(col: str, group_col: str, welch: bool = False) -> str:
-    variant = "Welch's" if welch else "Student's"
-    return (
-        f"Group differences in {col} were compared between levels of {group_col} "
-        f"using an independent-samples {variant} t-test. "
-        f"Effect size was quantified with Hedges' g and its 95% confidence interval. "
-        f"Normality of each group was assessed with the Shapiro-Wilk test (n < 50), "
-        f"the Lilliefors-corrected Kolmogorov-Smirnov test (50 \u2264 n \u2264 2000), "
-        f"or a skewness/CLT criterion (n > 2000). "
-        f"Homogeneity of variances was checked with Levene's test."
-    )
-
-
-def methods_ttest_one(col: str, mu: float) -> str:
-    return (
-        f"A one-sample t-test was used to compare the mean of {col} "
-        f"against the hypothesized value of {mu}. "
-        f"Effect size was quantified with Cohen's d."
-    )
-
 
 def methods_chisquare(row_col: str, col_col: str, exact: str | None = None) -> str:
     """Methods sentence for a crosstab test.
@@ -110,48 +90,6 @@ def methods_anova(col: str, group_col: str) -> str:
 # ═══════════════════════════════════════════════════════════════════════════════
 # RESULTS TEXT — reports what was found (for Results section)
 # ═══════════════════════════════════════════════════════════════════════════════
-
-def _df_str(df) -> str:
-    """Whole df prints bare; a Welch–Satterthwaite df keeps 2 decimals."""
-    if not isinstance(df, (int, float)):
-        return str(df)
-    f = float(df)
-    if f != f:  # NaN
-        return ""
-    return str(int(f)) if float(f).is_integer() else f"{f:.2f}"
-
-
-def results_ttest_ind(result: dict) -> str:
-    g1, g2 = result.get("group1", "Group 1"), result.get("group2", "Group 2")
-    t = result.get("t", 0)
-    p = result.get("p", 1)
-    df = _df_str(result.get("df", ""))
-    m1, m2 = result.get("mean1", 0), result.get("mean2", 0)
-    sig = result.get("significant", False)
-    es_list = result.get("effect_sizes", [])
-    es_text = f", {_es_str(es_list[0])}" if es_list else ""
-
-    return (
-        f"The {g1} group (M = {m1:.2f}) {'significantly differed from' if sig else 'did not significantly differ from'} "
-        f"the {g2} group (M = {m2:.2f}), t({df}) = {t:.3f}, p = {_p_str(p)}{es_text}."
-    )
-
-
-def results_ttest_one(result: dict) -> str:
-    mu = result.get("mu", 0)
-    mean = result.get("mean", 0)
-    t = result.get("t", 0)
-    p = result.get("p", 1)
-    df = result.get("df", "")
-    sig = result.get("significant", False)
-    es_list = result.get("effect_sizes", [])
-    es_text = f", {_es_str(es_list[0])}" if es_list else ""
-
-    return (
-        f"The sample mean (M = {mean:.2f}) {'was significantly different from' if sig else 'did not significantly differ from'} "
-        f"the test value of {mu}, t({df}) = {t:.3f}, p = {_p_str(p)}{es_text}."
-    )
-
 
 def results_chisquare(result: dict) -> str:
     chi2 = result.get("chi2", 0)
@@ -244,18 +182,6 @@ def results_anova(result: dict) -> str:
 # ═══════════════════════════════════════════════════════════════════════════════
 # R CODE GENERATORS
 # ═══════════════════════════════════════════════════════════════════════════════
-
-def r_ttest_ind(col: str, group_col: str, welch: bool = False) -> str:
-    """R equivalent of the test that was actually run.
-
-    var.equal = TRUE is Student's pooled-variance test; Welch needs FALSE.
-    Emitting TRUE for a Welch result made the snippet irreproducible.
-    """
-    var_equal = "FALSE" if welch else "TRUE"
-    return f't.test({col} ~ {group_col}, data = data, var.equal = {var_equal})'
-
-def r_ttest_one(col: str, mu: float) -> str:
-    return f't.test(data${col}, mu = {mu})'
 
 def r_chisquare(row_col: str, col_col: str, exact: str | None = None) -> str:
     tbl = f'table(data${row_col}, data${col_col})'

@@ -80,6 +80,17 @@ frontend/public/pyodide/wheels/
 # can be reproduced or verified without depending on git for it.
 frontend/public/pyodide/runtime/
 
+# Fetched from github.com/r-wasm/webr and repo.r-wasm.org by
+# scripts/vendor_webr.py (`npm run webr:vendor`), not written by hand. Same
+# reasoning as the Pyodide runtime above: ~48 MB of vendored third-party
+# artifact, not source, so it does not belong in git history. This covers both
+# the runtime (R.wasm and friends) and the self-hosted R package mirror under
+# repo/, which exists so `webr::install()` never has to reach repo.r-wasm.org
+# and tell a third party which statistical method a clinician just asked for.
+# runtime/vendored.json records the version, source URL, and sha256 of every
+# file so the contents can be reproduced or verified without git.
+frontend/public/webr/
+
 # Throwaway Pyodide parity harness. Not committed: it is a developer page that
 # would otherwise be copied into dist/ and served from the production site, and
 # it loads Pyodide from a CDN, which the app deliberately does not do. Its

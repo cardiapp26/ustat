@@ -8,6 +8,7 @@
     "build": "npm run engine:wheel && vite build",
     "engine:wheel": "python3 ../scripts/build_engine_wheel.py",
     "pyodide:vendor": "python3 ../scripts/vendor_pyodide.py",
+    "webr:vendor": "python3 ../scripts/vendor_webr.py",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",

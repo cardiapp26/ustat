@@ -32,6 +32,25 @@ def get(analysis_id: str) -> AnalysisSpec:
         raise EngineError(f"Unknown analysis: {analysis_id}", status_hint=404) from None
 
 
+def _check_filter(frame, params: dict) -> None:
+    """Refuse a frame that was cut under a different Select Cases.
+
+    A worker keeps a frame resident between runs; the user's filter does not
+    have to stay still while it does. When the caller states which filter the
+    analysis assumes, the frame has to agree, because the failure mode
+    otherwise is invisible: a perfectly ordinary-looking result computed over
+    the wrong patients.
+    """
+    expected = params.get("__filter_fingerprint")
+    if expected is None:
+        return
+    actual = getattr(frame, "attrs", {}).get("filter_fingerprint")
+    if actual != expected:
+        raise EngineError(
+            "frame does not match the active Select Cases", status_hint=409
+        )
+
+
 def run(analysis_id: str, frame=None, params: dict | None = None) -> dict:
     """Run one analysis by id. The single entry point the browser calls."""
     spec = get(analysis_id)
@@ -41,5 +60,6 @@ def run(analysis_id: str, frame=None, params: dict | None = None) -> dict:
             raise EngineError(
                 f"{analysis_id} needs a dataset and none was supplied", status_hint=400
             )
+        _check_filter(frame, params)
         return spec.fn(frame, params)
     return spec.fn(params)

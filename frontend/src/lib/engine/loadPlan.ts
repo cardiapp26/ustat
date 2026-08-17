@@ -16,6 +16,13 @@ const BASE = ["numpy"] as const;
 
 const PLANS: Record<string, readonly string[]> = {
   "stats.power": ["numpy", "scipy", "statsmodels"],
+  // pandas because a frame arrives as one. statsmodels is not optional here
+  // despite only one branch reaching it: `check_normality` switches to the
+  // Lilliefors test at n >= 50 and imports statsmodels to do it, and a Pyodide
+  // package that was not in the boot plan cannot be fetched from inside the
+  // synchronous `runPython` that import happens in. Mirrors
+  // `AnalysisSpec.deps` on `stats.ttest`, which is the authority.
+  "stats.ttest": ["numpy", "scipy", "pandas", "statsmodels"],
   "meta.analyze": ["numpy", "scipy", "statsmodels"],
   "meta.subgroup": ["numpy", "scipy", "statsmodels"],
   "meta.regression": ["numpy", "scipy", "statsmodels"],
@@ -31,7 +38,7 @@ const PLANS: Record<string, readonly string[]> = {
  * has fixtures harvested but not yet executed under Pyodide, so it keeps its
  * load plan and stays off this list until they run green.
  */
-export const LOCAL_ALLOW_LIST = new Set(["stats.power"]);
+export const LOCAL_ALLOW_LIST = new Set(["stats.power", "stats.ttest"]);
 
 export function packagesFor(analysisId: string): string[] {
   return [...(PLANS[analysisId] ?? BASE)];

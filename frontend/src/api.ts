@@ -103,7 +103,20 @@ export interface ROCCombinedRequest {
   model_name?: string;
 }
 
-export const runTTest = (data: TTestRequest) => api.post("/api/stats/ttest", data);
+// The first analysis that reads a dataset to be routed through the browser
+// engine. Unlike power, it needs one: `frameColumns` names the two columns the
+// engine declared it reads, and `localFirst` fetches exactly those -- a
+// three-column transfer rather than a copy of the sheet -- pushes them to the
+// worker, and states the active Select Cases fingerprint so a stale frame is
+// refused instead of quietly answering about the wrong patients.
+export const runTTest = async (data: TTestRequest) => {
+  // Lazily imported for the same reason `runPower` does it: this module graph
+  // pulls in the Pyodide worker, and most sessions never run a t-test.
+  const { localFirst } = await import("./lib/engine/localFirst");
+  return localFirst("stats.ttest", data, () => api.post("/api/stats/ttest", data), {
+    frameColumns: [data.column, data.group_column].filter(Boolean) as string[],
+  });
+};
 export const runChiSquare = (data: ChiSquareRequest) => api.post("/api/stats/chisquare", data);
 export const runAnova = (data: AnovaRequest) => api.post("/api/stats/anova", data);
 export const runMannWhitney = (data: MannWhitneyRequest) => api.post("/api/stats/mannwhitney", data);

@@ -14,8 +14,10 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File
 from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
+from routers.engine_adapter import adapt
 from services import store
 from services.dirty_value_guard import values_are_numeric
+from ustat_engine.frame.envelope import build_envelope
 
 router = APIRouter()
 
@@ -563,6 +565,45 @@ def select_cases(session_id: str, body: SelectCasesRequest):
         "excluded_rows": excluded[:PREVIEW_ROWS],
         "excluded_beyond_preview": max(0, len(excluded) - PREVIEW_ROWS),
     }
+
+
+@router.get("/{session_id}/frame")
+def session_frame(session_id: str, columns: Optional[str] = Query(None)):
+    """The filtered dataset, typed by declared kind, for an off-server run.
+
+    Reads the UNFILTERED frame on purpose and then applies the filter inside
+    the engine, so the envelope can carry `row_index` -- where each surviving
+    row sits in the full sheet -- alongside the fingerprint of the filter that
+    produced it. Handing over `get_filtered` instead would lose both.
+
+    `?columns=` restricts the transfer to what an analysis declared it reads.
+    That is the difference between shipping three columns and shipping the
+    whole sheet, and the whole point of the exercise is to move as little of
+    the patient's data as the question needs.
+    """
+    df = store.get(session_id)
+    if df is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Same merge save_session does: a user's declared kind beats detection, or
+    # a numeric-coded categorical would arrive in the browser as numeric.
+    from routers.upload import _detect_kind
+    kind_overrides = store.get_kind_overrides(session_id)
+    kinds = {col: (kind_overrides.get(col) or _detect_kind(df[col])) for col in df.columns}
+
+    requested = None
+    if columns is not None:
+        requested = [c.strip() for c in columns.split(",") if c.strip()]
+
+    return adapt(
+        build_envelope,
+        df,
+        kinds=kinds,
+        metadata=store.get_metadata(session_id),
+        decimals=store.get_decimals(session_id),
+        conditions=store.get_filter(session_id),
+        columns=requested,
+    )
 
 
 @router.delete("/{session_id}/select_cases")

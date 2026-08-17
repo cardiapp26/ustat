@@ -17,20 +17,28 @@ from typing import Optional
 from dataclasses import dataclass, field, asdict
 
 
-def sorted_groups(series: "pd.Series") -> list:
-    """Stable, value-code order for grouped output (Table 1 columns, ANOVA /
-    t-test / Kruskal group rows, crosstab levels, KM curves, etc.).
+# Re-exported from the engine. `sorted_groups` decides which group comes first
+# in every table the app prints, so it has to be inside the sha256 the browser
+# and the server compare -- a second copy here could order a Table 1 one way on
+# the server and another way in a tab, with no error anywhere.
+from ustat_engine.frame.levels import sorted_groups  # noqa: F401,E402
 
-    Sort by the underlying value code numerically when every distinct value is
-    numeric-coercible, else lexicographically by string. Without this, groups
-    follow their order of appearance in the data, so results come out scrambled
-    relative to the value labels (e.g. 3, 1, 2 instead of 1, 2, 3).
-    """
-    vals = list(pd.Series(series).dropna().unique())
-    try:
-        return sorted(vals, key=lambda v: float(v))
-    except (TypeError, ValueError):
-        return sorted(vals, key=str)
+# Same reasoning, for the t-test's helpers. `check_equal_variances` decides
+# Student vs Welch when the caller said "auto", so a browser copy of it would
+# not print a different sentence -- it would run a different test. The effect
+# sizes and the magnitude labels have to agree digit for digit with what the
+# server would have said about the same numbers.
+from ustat_engine.stats.assumptions import (  # noqa: F401,E402
+    check_equal_variances,
+    check_normality,
+)
+from ustat_engine.stats.effect_sizes import (  # noqa: F401,E402
+    _es_magnitude,
+    cohen_d,
+    cohen_d_one_sample,
+    group_summary,
+    welch_satterthwaite_df,
+)
 
 
 def sanitize_nonfinite(obj):
@@ -333,130 +341,6 @@ class AnalysisResult:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _es_magnitude(name: str, val: float) -> str:
-    """Cohen's magnitude label for common effect sizes."""
-    v = abs(val)
-    if name in ("cohen_d", "hedges_g"):
-        if v < 0.2:
-            return "negligible"
-        if v < 0.5:
-            return "small"
-        if v < 0.8:
-            return "medium"
-        return "large"
-    if name == "cohen_f":
-        if v < 0.10:
-            return "negligible"
-        if v < 0.25:
-            return "small"
-        if v < 0.40:
-            return "medium"
-        return "large"
-    if name in ("r", "pearson_r", "point_biserial_r"):
-        if v < 0.10:
-            return "negligible"
-        if v < 0.30:
-            return "small"
-        if v < 0.50:
-            return "medium"
-        return "large"
-    if name in ("eta_squared", "eta2"):
-        if v < 0.01:
-            return "negligible"
-        if v < 0.06:
-            return "small"
-        if v < 0.14:
-            return "medium"
-        return "large"
-    if name in ("cramers_v", "cramer_v"):
-        if v < 0.10:
-            return "negligible"
-        if v < 0.30:
-            return "small"
-        if v < 0.50:
-            return "medium"
-        return "large"
-    if name == "odds_ratio":
-        if v < 1.5:
-            return "negligible"
-        if v < 2.5:
-            return "small"
-        if v < 4.0:
-            return "medium"
-        return "large"
-    if name == "rank_biserial_r":
-        if v < 0.10:
-            return "negligible"
-        if v < 0.30:
-            return "small"
-        if v < 0.50:
-            return "medium"
-        return "large"
-    return ""
-
-
-def welch_satterthwaite_df(g1: np.ndarray, g2: np.ndarray) -> float:
-    """Welch–Satterthwaite degrees of freedom for two independent samples.
-
-    Fractional by construction, and always ≤ the pooled n1 + n2 − 2. A Welch
-    test reported against the pooled df understates the tail and overstates
-    significance, so the two must never be mixed.
-    """
-    n1, n2 = len(g1), len(g2)
-    if n1 < 2 or n2 < 2:
-        return float("nan")
-    v1 = float(np.var(g1, ddof=1))
-    v2 = float(np.var(g2, ddof=1))
-    a, b = v1 / n1, v2 / n2
-    denom = (a ** 2) / (n1 - 1) + (b ** 2) / (n2 - 1)
-    if denom <= 0:
-        return float(n1 + n2 - 2)
-    return float((a + b) ** 2 / denom)
-
-
-def cohen_d(g1: np.ndarray, g2: np.ndarray) -> dict:
-    """Cohen's d with 95% CI (Hedges-corrected = Hedges' g for small samples)."""
-    n1, n2 = len(g1), len(g2)
-    m1, m2 = g1.mean(), g2.mean()
-    s1, s2 = g1.std(ddof=1), g2.std(ddof=1)
-    # Not `sp` — that name is scipy.stats at module level, and shadowing it
-    # here broke the t quantile below.
-    s_pooled = np.sqrt(((n1 - 1) * s1**2 + (n2 - 1) * s2**2) / (n1 + n2 - 2))
-    if s_pooled == 0:
-        return {
-            "name": "cohen_d",
-            "value": 0.0,
-            "ci_low": 0.0,
-            "ci_high": 0.0,
-            "magnitude": "negligible",
-        }
-    d = (m1 - m2) / s_pooled
-    # Hedges' correction for small samples
-    j = 1 - 3 / (4 * (n1 + n2 - 2) - 1)
-    g = d * j
-    # Large-sample standard error of a two-sample d (Hedges & Olkin):
-    #     sqrt((n1 + n2) / (n1 * n2) + g^2 / (2 * (n1 + n2)))
-    #
-    # The expression here used to be
-    #     sqrt((n1+n2)/(n1*n2)) * sqrt(1 + g^2 * n1 * n2 / (2 * (n1+n2)))
-    # which multiplies out to sqrt((n1+n2)/(n1*n2) + g^2 / 2) — the second
-    # term missing its (n1 + n2) divisor. At n = 100 per arm that is 5.5x too
-    # wide, so a g of 1.17 carried a 95% CI of [-0.48, 2.81] next to a p of
-    # 1.6e-14: an interval spanning zero beside overwhelming significance.
-    se = np.sqrt((n1 + n2) / (n1 * n2) + g**2 / (2 * (n1 + n2)))
-    # t rather than 1.96 — with small groups the normal quantile is too short.
-    crit = float(sp.t.ppf(0.975, max(n1 + n2 - 2, 1)))
-    ci_lo = g - crit * se
-    ci_hi = g + crit * se
-    return {
-        "name": "hedges_g",
-        "value": round(g, 4),
-        "ci_low": round(ci_lo, 4),
-        "ci_high": round(ci_hi, 4),
-        "magnitude": _es_magnitude("hedges_g", g),
-    }
-
-
 def eta_squared(f_stat: float, df_between: int, df_within: int) -> dict:
     """Eta-squared from ANOVA F-statistic."""
     ss_between = f_stat * df_between
@@ -614,23 +498,6 @@ def odds_ratio_effect(table: np.ndarray) -> dict:
         "ci_low": round(ci_lo, 4),
         "ci_high": round(ci_hi, 4),
         "magnitude": _es_magnitude("odds_ratio", or_val),
-    }
-
-
-def cohen_d_one_sample(x: np.ndarray, mu: float) -> dict:
-    """Cohen's d for one-sample: (mean - mu) / sd."""
-    n = len(x)
-    d = (x.mean() - mu) / x.std(ddof=1) if x.std(ddof=1) > 0 else 0
-    se = np.sqrt(1 / n + d**2 / (2 * n))
-    crit = float(sp.t.ppf(0.975, max(n - 1, 1)))
-    ci_lo = d - crit * se
-    ci_hi = d + crit * se
-    return {
-        "name": "cohen_d",
-        "value": round(d, 4),
-        "ci_low": round(ci_lo, 4),
-        "ci_high": round(ci_hi, 4),
-        "magnitude": _es_magnitude("cohen_d", d),
     }
 
 
@@ -913,114 +780,13 @@ def dunn_test(groups: dict[str, np.ndarray], correction: str = "holm") -> list[d
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 5. ASSUMPTION CHECKS
+# 5. ASSUMPTION CHECKS  → ustat_engine.stats.assumptions
+# 6. GROUP SUMMARY BUILDER  → ustat_engine.stats.effect_sizes
+#
+# Both sections moved into the engine and are re-imported at the top of this
+# file. The banners stay so a reader looking for `check_normality` here finds
+# out where it went instead of concluding it was deleted.
 # ═══════════════════════════════════════════════════════════════════════════════
-
-
-def check_normality(x: np.ndarray, label: str = "Sample") -> dict:
-    """Test normality using the appropriate test for sample size.
-
-    Tier 1: n < 50  → Shapiro-Wilk (most powerful for small samples)
-    Tier 2: 50 ≤ n ≤ 2000 → Kolmogorov-Smirnov with Lilliefors correction
-    Tier 3: n > 2000 → CLT skewness bypass (|skew| ≤ 1.5) → Lilliefors
-    """
-    n = len(x)
-    if n < 3:
-        return {
-            "name": f"Normality ({label})",
-            "met": True,
-            "detail": "Too few obs to test",
-        }
-    if np.std(x) == 0:
-        return {
-            "name": f"Normality ({label})",
-            "met": True,
-            "detail": "Constant values (no variation)",
-        }
-
-    if n < 50:
-        # Small sample — Shapiro-Wilk is most powerful
-        stat, p = sp.shapiro(x)
-        if np.isnan(p):
-            return {
-                "name": f"Normality ({label})",
-                "met": True,
-                "detail": "Test inconclusive",
-            }
-        test_name = "Shapiro-Wilk"
-    elif n <= 2000:
-        # Medium sample — Kolmogorov-Smirnov with Lilliefors correction
-        from statsmodels.stats.diagnostic import lilliefors as _lf
-
-        stat, p = _lf(x, dist="norm")
-        test_name = "Kolmogorov-Smirnov (Lilliefors)"
-    else:
-        # Large sample — CLT bypass if skewness is acceptable
-        skew = float(sp.skew(x))
-        if abs(skew) <= 1.5:
-            return {
-                "name": f"Normality ({label})",
-                "met": True,
-                "detail": f"CLT bypass (n={n}, |skewness|={abs(skew):.2f} ≤ 1.5)",
-            }
-        from statsmodels.stats.diagnostic import lilliefors as _lf
-
-        stat, p = _lf(x, dist="norm")
-        test_name = "Kolmogorov-Smirnov (Lilliefors)"
-
-    return {
-        "name": f"Normality ({label})",
-        "met": bool(p >= 0.05),
-        "detail": f"{test_name}: p = {p:.4f}",
-    }
-
-
-def check_equal_variances(
-    groups: list[np.ndarray],
-    names: list[str],
-    on_violation: str = "",
-) -> dict:
-    """Levene's test for homogeneity of variances.
-
-    `on_violation` states what the CALLER actually does when the assumption
-    fails. It used to be hardcoded to "using Welch correction", which was true
-    for the t-test but false for one-way ANOVA — that omnibus F stays the
-    classic equal-variance statistic and only the post-hoc switches. Reporting
-    a correction that was never applied is a false methods claim, so each
-    caller now supplies its own wording.
-    """
-    if len(groups) < 2:
-        return {"name": "Equal variances", "met": True, "detail": "Single group"}
-    stat, p = sp.levene(*groups)
-    violated = p < 0.05
-    suffix = f" — violated, {on_violation}" if (violated and on_violation) else (
-        " — violated" if violated else ""
-    )
-    return {
-        "name": "Equal variances (Levene)",
-        "met": bool(not violated),
-        "detail": f"F = {stat:.3f}, p = {p:.4f}{suffix}",
-    }
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 6. GROUP SUMMARY BUILDER
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-def group_summary(x: np.ndarray, label: str = "Sample") -> dict:
-    """Standard descriptive statistics for a numeric array."""
-    return {
-        "label": label,
-        "n": int(len(x)),
-        "mean": round(float(x.mean()), 4),
-        "sd": round(float(x.std(ddof=1)), 4),
-        "median": round(float(np.median(x)), 4),
-        "q1": round(float(np.percentile(x, 25)), 4),
-        "q3": round(float(np.percentile(x, 75)), 4),
-        "min": round(float(x.min()), 4),
-        "max": round(float(x.max()), 4),
-    }
 
 
 def cohen_d_paired(d: np.ndarray) -> dict:

@@ -9,15 +9,16 @@ from pydantic import AliasChoices, BaseModel, Field
 from loguru import logger
 
 from ustat_engine.stats import power as engine_power
+from ustat_engine.stats import ttest as engine_ttest
 from routers.engine_adapter import adapt
 from services import store
 from services.category_health import clean_two_level, rare_level_warnings
 from services.impute import apply_imputation
 from services.text_generators import (
-    methods_ttest_ind, methods_ttest_one, methods_chisquare, methods_fisher, methods_anova,
-    results_ttest_ind, results_ttest_one, results_chisquare,
+    methods_chisquare, methods_fisher, methods_anova,
+    results_chisquare,
     results_fisher, results_anova,
-    r_ttest_ind, r_ttest_one, r_chisquare, r_fisher, r_anova,
+    r_chisquare, r_fisher, r_anova,
 )
 
 # Fix possible import issue by falling back
@@ -29,11 +30,10 @@ except ImportError:
 
 from services.stat_utils import (
     _categorical_p_with_rule,
-    cohen_d, cohen_d_one_sample, eta_squared, omega_squared,
+    eta_squared, omega_squared,
     cramers_v, odds_ratio_effect,
-    check_normality, check_equal_variances, group_summary,
+    check_normality, check_equal_variances,
     tukey_hsd, games_howell, sorted_groups,
-    welch_satterthwaite_df,
 )
 
 router = APIRouter()
@@ -95,81 +95,15 @@ class TTestRequest(BaseModel):
 
 @router.post("/ttest")
 def ttest(req: TTestRequest):
-    df = _get_df(req.session_id)
-    col = df[req.column].dropna()
+    """Thin now: the arithmetic lives in `ustat_engine.stats.ttest`.
 
-    if req.group_column:
-        work, warnings = _two_level_work(df, req.column, req.group_column)
-        groups = sorted_groups(work[req.group_column])
-        if len(groups) != 2:
-            raise HTTPException(status_code=400, detail="Group column must have exactly 2 groups")
-        g1 = work[work[req.group_column] == groups[0]][req.column].values.astype(float)
-        g2 = work[work[req.group_column] == groups[1]][req.column].values.astype(float)
-
-        # Assumption checks
-        assumptions = [check_normality(g1, str(groups[0])), check_normality(g2, str(groups[1])),
-                       check_equal_variances([g1, g2], [str(groups[0]), str(groups[1])],
-                                             on_violation="Welch correction applied")]
-        # Precedence: explicit method > legacy equal_var > Levene.
-        if req.method == "welch":
-            use_welch, chosen_by = True, "request (method)"
-        elif req.method == "student":
-            use_welch, chosen_by = False, "request (method)"
-        elif req.equal_var is not None:
-            use_welch, chosen_by = (not req.equal_var), "request (equal_var)"
-        else:
-            use_welch, chosen_by = (not assumptions[2]["met"]), "auto (Levene)"
-        stat, p = scipy_stats.ttest_ind(g1, g2, equal_var=not use_welch)
-        sig = bool(p < 0.05)
-        es = cohen_d(g1, g2)
-        p_str = '<0.001' if p < 0.001 else f'{p:.4f}'
-
-        ret = {
-            "test": f"Independent samples t-test{' (Welch)' if use_welch else ''}",
-            "group1": str(groups[0]), "n1": len(g1), "mean1": float(g1.mean()),
-            "group2": str(groups[1]), "n2": len(g2), "mean2": float(g2.mean()),
-            # df must match the test that produced t and p. Welch uses the
-            # fractional Satterthwaite df; only the pooled test uses n1+n2-2.
-            "t": float(stat), "p": float(p),
-            "df": welch_satterthwaite_df(g1, g2) if use_welch else float(len(g1) + len(g2) - 2),
-            "df_method": "welch_satterthwaite" if use_welch else "pooled",
-            "variance_assumption": "welch" if use_welch else "student",
-            "variance_assumption_selected_by": chosen_by,
-            "significant": sig,
-            "effect_sizes": [es],
-            "assumptions": assumptions,
-            "summary": {str(groups[0]): group_summary(g1, str(groups[0])),
-                        str(groups[1]): group_summary(g2, str(groups[1]))},
-            "interpretation": f"{'Significant' if sig else 'No significant'} difference between groups (t = {stat:.3f}, p = {p_str}, Hedges' g = {es['value']:.3f} [{es['magnitude']}])",
-            "methods_text": methods_ttest_ind(req.column, req.group_column, use_welch),
-            "r_code": r_ttest_ind(req.column, req.group_column, use_welch),
-        }
-        if warnings:
-            ret["warnings"] = warnings
-        ret["result_text"] = results_ttest_ind(ret)
-        return _sanitize(ret)
-    else:
-        x = col.astype(float).values
-        stat, p = scipy_stats.ttest_1samp(x, req.mu)
-        sig = bool(p < 0.05)
-        es = cohen_d_one_sample(x, req.mu)
-        p_str = '<0.001' if p < 0.001 else f'{p:.4f}'
-
-        ret = {
-            "test": "One-sample t-test",
-            "mu": req.mu, "n": len(x),
-            "mean": float(x.mean()), "std": float(x.std(ddof=1)),
-            "t": float(stat), "p": float(p), "df": int(len(x) - 1),
-            "significant": sig,
-            "effect_sizes": [es],
-            "assumptions": [check_normality(x, req.column)],
-            "summary": {"sample": group_summary(x, "Sample")},
-            "interpretation": f"Mean {'differs from' if sig else 'does not differ from'} {req.mu} (t = {stat:.3f}, p = {p_str}, Cohen's d = {es['value']:.3f} [{es['magnitude']}])",
-            "methods_text": methods_ttest_one(req.column, req.mu),
-            "r_code": r_ttest_one(req.column, req.mu),
-        }
-        ret["result_text"] = results_ttest_one(ret)
-        return _sanitize(ret)
+    What is left here is the part the browser does not have — finding the
+    session's filtered frame — and the translation of the engine's EngineError
+    into an HTTPException. Everything a reader of the result would call "the
+    t-test" is on the other side of `adapt`, which is what makes the local run
+    and this one the same computation rather than two that agree so far.
+    """
+    return adapt(engine_ttest.run_ttest, _get_df(req.session_id), req.model_dump())
 
 
 # ── 2. Chi-Square ──────────────────────────────────────────────────────────────

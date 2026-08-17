@@ -92,6 +92,57 @@ json.dumps(ustat_engine.identity())
   return identity;
 }
 
+/**
+ * Load Pyodide packages the boot plan did not ask for.
+ *
+ * Frames need pandas, and the load plan is per analysis: `stats.power` asks for
+ * numpy/scipy/statsmodels and nothing else, so pandas is not there until a
+ * frame arrives. Paying for it at boot would charge every local run for a
+ * dependency most of them never touch.
+ */
+async function ensurePackages(names: string[]): Promise<void> {
+  if (!pyodide) throw new Error("engine was not initialised");
+  const missing = names.filter((p) => !loadedPackages.has(p));
+  if (!missing.length) return;
+  await pyodide.loadPackage(missing);
+  missing.forEach((p) => loadedPackages.add(p));
+}
+
+/**
+ * Datasets the worker is holding, by key. Capped at two.
+ *
+ * Two rather than one so switching between an unfiltered and a filtered view
+ * (or between two column-sets of the same dataset) does not re-transfer on
+ * every toggle; two rather than many because these are whole patient datasets
+ * sitting in a wasm heap that has a hard ceiling, and a cache that grows until
+ * it dies takes the tab with it. Eviction is least-recently-USED, not
+ * least-recently-pushed: a frame pushed first and read on every analysis is
+ * the one worth keeping.
+ */
+const FRAME_CACHE_SETUP = `
+import ustat_engine.frame.envelope as _ustat_envelope
+
+try:
+    _ustat_frames
+except NameError:
+    _ustat_frames = {}
+
+
+def _ustat_put_frame(key, envelope, cap=2):
+    _ustat_frames.pop(key, None)
+    _ustat_frames[key] = _ustat_envelope.frame_from_envelope(envelope)
+    while len(_ustat_frames) > cap:
+        _ustat_frames.pop(next(iter(_ustat_frames)))
+
+
+def _ustat_take_frame(key):
+    if key not in _ustat_frames:
+        return None
+    # Re-insert so dict order is use order, which is what the eviction reads.
+    _ustat_frames[key] = _ustat_frames.pop(key)
+    return _ustat_frames[key]
+`;
+
 self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
   const msg = event.data;
   try {
@@ -101,15 +152,48 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
       return;
     }
 
+    if (msg.cmd === "frame") {
+      if (!pyodide) throw new Error("engine was not initialised");
+      await ensurePackages(["pandas"]);
+      pyodide.globals.set("_ustat_frame_key", msg.frameKey);
+      pyodide.globals.set("_ustat_frame_env", pyodide.toPy(msg.envelope));
+      pyodide.runPython(`${FRAME_CACHE_SETUP}
+_ustat_put_frame(_ustat_frame_key, _ustat_frame_env)
+`);
+      post({ id: msg.id, ok: true, result: { frameKey: msg.frameKey } });
+      return;
+    }
+
     if (msg.cmd === "run") {
       if (!pyodide) throw new Error("engine was not initialised");
+      if (msg.frameKey) {
+        pyodide.globals.set("_ustat_frame_key", msg.frameKey);
+        const held = pyodide.runPython(`${FRAME_CACHE_SETUP}
+"yes" if _ustat_take_frame(_ustat_frame_key) is not None else "no"
+`);
+        if (held !== "yes") {
+          // The caller has to push the frame again. Saying so is better than
+          // running without it: an analysis handed no dataset would either
+          // error obscurely or, worse, answer from a stale one.
+          post({
+            id: msg.id,
+            ok: false,
+            reason: "frame-missing",
+            detail: `no frame is held under ${msg.frameKey}`,
+          });
+          return;
+        }
+      } else {
+        pyodide.globals.set("_ustat_frame_key", null);
+      }
       pyodide.globals.set("_ustat_analysis", msg.analysisId);
       pyodide.globals.set("_ustat_params", pyodide.toPy(msg.params));
       const raw = pyodide.runPython(`
 import json
 import ustat_engine
+_frame = _ustat_take_frame(_ustat_frame_key) if _ustat_frame_key else None
 try:
-    _r = ustat_engine.run(_ustat_analysis, params=_ustat_params)
+    _r = ustat_engine.run(_ustat_analysis, frame=_frame, params=_ustat_params)
     _out = json.dumps({"ok": True, "result": ustat_engine.sanitize(_r)}, allow_nan=False)
 except ustat_engine.EngineError as exc:
     _out = json.dumps({"ok": False, "error": str(exc),

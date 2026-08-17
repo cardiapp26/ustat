@@ -139,30 +139,76 @@ async function boot(analysisId: string): Promise<EngineIdentity> {
 }
 
 /**
- * Run `analysisId` in the browser, or throw LocalComputeUnavailable with the
- * reason. Callers are expected to fall back to the server on that error.
+ * Hand the worker a dataset to keep under `frameKey`.
+ *
+ * `frameKey` names a (dataset, filter, columns) combination. It is the caller's
+ * job to mint a new one when any of those change; the envelope carries the
+ * filter's fingerprint so the engine can refuse a stale frame even if the
+ * caller gets that wrong.
+ *
+ * The worker has to be up first. It rebuilds the envelope into a DataFrame the
+ * moment it arrives, so a push to an unbooted worker fails with "engine was not
+ * initialised" -- which surfaced as `runtime-load-failed` and a silent fall back
+ * to the server on the very first frame-based analysis of a session, every time.
+ * Callers that reach `pushFrame` before `runLocal` must therefore call
+ * `ensureEngineBooted` first; there is no analysis id here to boot with.
  */
-export async function runLocal<T>(analysisId: string, params: unknown): Promise<T> {
+export async function pushFrame(frameKey: string, envelope: unknown): Promise<void> {
   if (disabledFor) throw new LocalComputeUnavailable(disabledFor);
-
-  if (!isLocalComputeEnabled()) {
+  if (!bootPromise) {
     throw new LocalComputeUnavailable({
-      reason: "disabled-by-user",
-      detail: "local compute is off",
+      reason: "runtime-load-failed",
+      detail: "pushFrame was called before the engine was booted",
     });
+  }
+  const response = await send({ cmd: "frame", frameKey, envelope });
+  if (!response.ok) {
+    throw new LocalComputeUnavailable({ reason: response.reason, detail: response.detail });
+  }
+}
+
+export interface RunLocalOptions {
+  /** A frame previously handed over with `pushFrame`. */
+  frameKey?: string;
+}
+
+/**
+ * Why a local run of `analysisId` cannot even be attempted, or null.
+ *
+ * Split out of `runLocal` so a caller can ask BEFORE doing the expensive
+ * preparation a run needs. Fetching a patient dataset to hand to a worker that
+ * was never going to run is worse than an extra round trip — it moves data for
+ * a user who has the feature switched off.
+ */
+export function localRunBlockedBecause(analysisId: string): LocalRunFailure | null {
+  if (disabledFor) return disabledFor;
+  if (!isLocalComputeEnabled()) {
+    return { reason: "disabled-by-user", detail: "local compute is off" };
   }
   if (!LOCAL_ALLOW_LIST.has(analysisId)) {
-    throw new LocalComputeUnavailable({
+    return {
       reason: "not-allow-listed",
       detail: `${analysisId} has no verified parity fixtures yet`,
-    });
+    };
   }
   if (typeof Worker === "undefined") {
-    throw new LocalComputeUnavailable({
-      reason: "no-worker-support",
-      detail: "this browser has no module workers",
-    });
+    return { reason: "no-worker-support", detail: "this browser has no module workers" };
   }
+  return null;
+}
+
+/**
+ * Boot the worker for `analysisId` (or reuse the running one), or throw.
+ *
+ * Separate from `runLocal` because a frame-based analysis has to hand over its
+ * dataset before it can run, and there is nothing to hand it to until this has
+ * resolved. `boot` is per page, not per analysis: the load plans are merged and
+ * Pyodide keeps what it has, so the second analysis pays only for packages the
+ * first did not need.
+ */
+export async function ensureEngineBooted(analysisId: string): Promise<void> {
+  const blocked = localRunBlockedBecause(analysisId);
+  if (blocked) throw new LocalComputeUnavailable(blocked);
 
   if (!bootPromise) bootPromise = boot(analysisId);
   try {
@@ -179,16 +225,43 @@ export async function runLocal<T>(analysisId: string, params: unknown): Promise<
     teardown();
     throw new LocalComputeUnavailable(failure);
   }
+}
 
-  const response = await send({ cmd: "run", analysisId, params });
+export async function runLocal<T>(
+  analysisId: string,
+  params: unknown,
+  options: RunLocalOptions = {},
+): Promise<T> {
+  const blocked = localRunBlockedBecause(analysisId);
+  if (blocked) throw new LocalComputeUnavailable(blocked);
+
+  await ensureEngineBooted(analysisId);
+
+  const response = await send({ cmd: "run", analysisId, params, frameKey: options.frameKey });
   if (!response.ok) {
     throw new LocalComputeUnavailable({ reason: response.reason, detail: response.detail });
   }
   return (response as { result: T }).result;
 }
 
+/**
+ * Things to forget when the worker goes away.
+ *
+ * A registry rather than a direct call into `frame.ts`, which is the module
+ * that actually has state to drop: importing it from here would be a cycle
+ * (it calls `pushFrame`), and worse, it would drag the axios instance and the
+ * zustand store into every consumer of this module — including the worker
+ * protocol tests, which have no business booting either.
+ */
+const resetHooks: Array<() => void> = [];
+
+export function onLocalEngineReset(hook: () => void): void {
+  resetHooks.push(hook);
+}
+
 /** Test seam: forget any recorded failure and drop the worker. */
 export function resetLocalEngine(): void {
   disabledFor = null;
   teardown();
+  resetHooks.forEach((hook) => hook());
 }

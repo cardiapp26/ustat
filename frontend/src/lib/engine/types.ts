@@ -23,6 +23,8 @@ export type LocalUnavailableReason =
   | "fingerprint-mismatch"
   | "server-unreachable"
   | "engine-error"
+  /** A run named a frame the worker is not holding — it was never pushed, or an LRU eviction took it. */
+  | "frame-missing"
   | "crashed";
 
 export interface LocalRunFailure {
@@ -32,7 +34,17 @@ export interface LocalRunFailure {
 
 export type WorkerRequest =
   | { id: number; cmd: "init"; packages: string[]; runtimeBase: string; wheelBase: string }
-  | { id: number; cmd: "run"; analysisId: string; params: unknown };
+  /**
+   * Hand the worker a `ustat.frame/1` envelope to keep resident under `frameKey`.
+   *
+   * Separate from `run` because the same dataset serves many analyses: sending
+   * it with each one would re-pay the transfer and the rebuild every time a
+   * user changes a variable in a panel. The key is the caller's name for one
+   * (dataset, filter, column-set) combination — change any of those and it is
+   * a different key, never a mutation of an existing one.
+   */
+  | { id: number; cmd: "frame"; frameKey: string; envelope: unknown }
+  | { id: number; cmd: "run"; analysisId: string; params: unknown; frameKey?: string };
 
 export type WorkerResponse =
   | { id: number; ok: true; result: unknown }

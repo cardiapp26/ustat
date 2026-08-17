@@ -31,6 +31,7 @@ from .spec import AnalysisSpec
 # the browser, where nothing had.
 from . import meta as _meta  # noqa: E402,F401  (imported for its registrations)
 from .stats import power as _power  # noqa: E402,F401
+from .stats import ttest as _ttest  # noqa: E402,F401
 
 __all__ = [
     "__version__",
