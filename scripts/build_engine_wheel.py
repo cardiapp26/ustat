@@ -23,9 +23,9 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import importlib.util
 import json
 import pathlib
-import sys
 import zipfile
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -68,17 +68,27 @@ def _package_files() -> list[pathlib.Path]:
 
 
 def _read_version_and_fingerprint() -> tuple[str, str]:
-    """Ask the package itself, so the manifest cannot disagree with the code."""
-    sys.path.insert(0, str(REPO_ROOT / "backend"))
-    try:
-        from ustat_engine.fingerprint import __version__, source_fingerprint
-    finally:
-        sys.path.pop(0)
+    """Ask the package itself, so the manifest cannot disagree with the code.
 
-    fingerprint = source_fingerprint()
+    fingerprint.py is loaded by file path, NOT by importing ustat_engine:
+    the package __init__ deliberately imports jsonsafe (numpy) and registers
+    every analysis, and this script runs in CI's frontend job under a bare
+    Python that has none of the backend's dependencies. The wheel only needs
+    the version and the hash, and fingerprint.py is stdlib-only by design --
+    the same self-containment the browser's boot check relies on. Loading it
+    in place changes nothing about the answer: source_fingerprint() hashes
+    files relative to __file__, which a file-path import preserves.
+    """
+    module_path = PACKAGE_DIR / "fingerprint.py"
+    spec = importlib.util.spec_from_file_location("ustat_engine_fingerprint", module_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    fingerprint = module.source_fingerprint()
     if not fingerprint:
         raise SystemExit("engine sources are unreadable; refusing to build a wheel")
-    return __version__, fingerprint
+    return module.__version__, fingerprint
 
 
 def build(out_dir: pathlib.Path) -> dict:
