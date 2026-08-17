@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import { Upload, Info, Zap, BarChart2, ShieldAlert, ListChecks, Sparkles, NotebookPen, FileText, HeartPulse, Workflow, Layers, HelpCircle, Newspaper, Cloud, CloudDownload, LogOut, RefreshCw } from "lucide-react";
+import { Upload, Info, Zap, BarChart2, ShieldAlert, ListChecks, Sparkles, NotebookPen, FileText, HeartPulse, Workflow, Layers, HelpCircle, Newspaper, Cloud, CloudDownload, LogOut, RefreshCw, Check } from "lucide-react";
 import { createBlankSession, uploadFile } from "../api";
 import api from "../api";
 import { useStore } from "../store";
+import type { EngineKind } from "../lib/engine/types";
 import AboutModal from "./AboutModal";
 import HelpModal from "./HelpModal";
 import RecentSessionsPanel from "./RecentSessionsPanel";
@@ -12,6 +13,8 @@ import { cloudSync, type CloudStatusInfo } from "../lib/cloudSync";
 
 export default function UploadZone() {
   const setSession = useStore((s) => s.setSession);
+  const engine = useStore((s) => s.engine);
+  const setEngine = useStore((s) => s.setEngine);
   const [dragging, setDragging] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -137,6 +140,26 @@ export default function UploadZone() {
     }
   }, [setSession]);
 
+  /**
+   * Pick the engine this session will use.
+   *
+   * Choosing R starts the runtime download immediately and deliberately: the
+   * user is about to spend a few seconds finding a file, and ~22 MB is a much
+   * better thing to spend those seconds on than a spinner after they hit Run.
+   * Only the fetch is started -- webR is not booted, no wasm heap is allocated
+   * and the arbiter is not claimed -- so a user who picks R and never runs an
+   * analysis pays for bandwidth and nothing else.
+   */
+  const chooseEngine = useCallback((choice: EngineKind) => {
+    setEngine(choice);
+    if (choice !== "r") return;
+    void import("../lib/engine/r/client")
+      .then(({ prefetchRRuntime }) => prefetchRRuntime())
+      .catch(() => {
+        /* a warm-up that fails is not an error; the first analysis fetches it */
+      });
+  }, [setEngine]);
+
   const onDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setDragging(false);
@@ -218,6 +241,72 @@ export default function UploadZone() {
           <p className="border-l border-ink-200 pl-3 text-xs font-medium text-ink-500">
             If something isn&apos;t working, update your app.
           </p>
+        </div>
+      </div>
+
+      {/* Engine choice — made once, here, because it decides what gets
+          downloaded and it cannot be changed under a running session without
+          tearing a wasm runtime down mid-analysis (see lib/engine/arbiter.ts). */}
+      <div className="w-full max-w-2xl">
+        <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider text-center mb-2">
+          Statistics engine for this session
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3" role="radiogroup" aria-label="Statistics engine">
+          <button
+            type="button"
+            role="radio"
+            aria-checked={engine === "python"}
+            onClick={() => chooseEngine("python")}
+            className={`text-left px-4 py-3 rounded-card border-[1.5px] transition-all ${
+              engine === "python"
+                ? "border-ink-500 bg-ink-50"
+                : "border-line bg-surface hover:border-ink-200"
+            }`}
+          >
+            <span className="flex items-center gap-2">
+              {engine === "python" && <Check size={14} className="text-ink-600 flex-shrink-0" />}
+              <span className="text-sm font-semibold text-slate-800">Python-based statistics</span>
+              <span className="text-[10px] font-semibold text-ink-500 border border-ink-200 bg-white rounded-full px-2 py-0.5">
+                Default
+              </span>
+            </span>
+            <span className="block text-[11px] text-slate-500 leading-snug mt-1">
+              scipy / statsmodels, the way uSTAT has always computed. Nothing extra
+              to download.
+            </span>
+          </button>
+
+          <button
+            type="button"
+            role="radio"
+            aria-checked={engine === "r"}
+            onClick={() => chooseEngine("r")}
+            className={`text-left px-4 py-3 rounded-card border-[1.5px] transition-all ${
+              engine === "r"
+                ? "border-sky-500 bg-sky-50"
+                : "border-line bg-surface hover:border-sky-200"
+            }`}
+          >
+            <span className="flex items-center gap-2">
+              {engine === "r" && <Check size={14} className="text-sky-600 flex-shrink-0" />}
+              <span className="text-sm font-semibold text-slate-800">R-based statistics</span>
+            </span>
+            {/* The measured cost, stated before it is incurred, and measured
+                rather than estimated. Counted off the resource timeline of a
+                cold first analysis in Chrome 151: R.wasm 18,062,458 B, R.js
+                785,875 B, libRlapack.so 1,769,888 B, libRblas.so 198,205 B,
+                webr-worker.js 134,029 B, webr.mjs 66,731 B, the jsonlite /
+                moments / nortest tarballs and the repo index 1,120,756 B, and
+                the engine bundle plus its manifest 52,668 B -- 22,190,910 B in
+                all. Rounded DOWN to the nearest MB would read 22; "about 22 MB"
+                is the honest sentence, not "about 20". */}
+            <span className="block text-[11px] text-slate-500 leading-snug mt-1">
+              R&apos;s own <code className="font-mono text-[10px]">t.test</code> and friends. The first
+              analysis downloads about 22&nbsp;MB of R runtime, then runs entirely in
+              this browser — your data never leaves it. Analyses without an R
+              implementation yet are computed with Python and say so.
+            </span>
+          </button>
         </div>
       </div>
 

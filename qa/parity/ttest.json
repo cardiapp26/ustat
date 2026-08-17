@@ -3,61 +3,125 @@
     "id": "ttest_ind_welch_sbp_by_arm",
     "source": "qa/tests_audit/reference.json::welch (R 4.5.2, t.test(sbp ~ arm, data = d, var.equal = FALSE), %.17g); n1/n2 from its meta.n_by_arm",
     "authoritative_engine": "R",
-    "dataset": {"csv": "qa/models_audit/dataset.csv", "columns": ["sbp", "arm"], "conditions": []},
-    "params": {"column": "sbp", "group_column": "arm", "method": "welch"},
+    "dataset": {
+      "csv": "qa/models_audit/dataset.csv",
+      "columns": [
+        "sbp",
+        "arm"
+      ],
+      "conditions": []
+    },
+    "params": {
+      "column": "sbp",
+      "group_column": "arm",
+      "method": "welch"
+    },
     "expected": {
       "n1": 151,
       "n2": 149,
       "group1": "control",
       "group2": "treat",
-      "t": -6.2834830102034402,
+      "t": -6.28348301020344,
       "df": 297.22755111010633,
       "p": 1.1755531123507424e-09,
       "mean1": 141.23629139072847,
-      "mean2": 148.68530201342281,
+      "mean2": 148.6853020134228,
       "df_method": "welch_satterthwaite",
       "variance_assumption": "welch",
       "variance_assumption_selected_by": "request (method)"
     },
-    "tolerance": "rel<=1e-14 (measured against R: t 1.4e-16, df 0, p 3.9e-15, means 0)"
+    "tolerance": "rel<=1e-14 (measured against R: t 1.4e-16, df 0, p 3.9e-15, means 0; and against ustat_engine_r under R 4.5.2: t 1.4e-16, df 0, p 3.9e-15, means 0)",
+    "divergence": "assumptions[].detail on the Normality lines: R reports the Lilliefors p from nortest::lillie.test (Dallal-Wilkinson 1986 with Stephens' 1974 modification, p = 0.5265 / 0.7417 here) where Python reports statsmodels' interpolation of a table of simulated critical values (p = 0.6002 / 0.7997). The STATISTIC agrees to 1e-15 -- these are two approximations of the same null distribution and neither is wrong. Both engines return met = true, and normality does not choose the test (Levene does), so nothing downstream of this line moves. The Levene line itself is byte-identical."
+  },
+  {
+    "id": "ttest_ind_welch_sbp_by_arm_prose",
+    "source": "Recorded from ustat_engine.stats.ttest and reproduced byte-for-byte by ustat_engine_r under R 4.5.2. The two sentences are not decoration: `interpretation` carries t and Hedges' g to 3 dp, and `result_text` carries both means to 2 dp, the Welch df to 2 dp and g's confidence interval to 3 dp -- so pinning these strings pins the effect size and its interval across both engines, which a fixture cannot otherwise reach (effect_sizes and summary are nested).",
+    "authoritative_engine": "both (byte-identical; python recorded first)",
+    "dataset": {
+      "csv": "qa/models_audit/dataset.csv",
+      "columns": [
+        "sbp",
+        "arm"
+      ],
+      "conditions": []
+    },
+    "params": {
+      "column": "sbp",
+      "group_column": "arm",
+      "method": "welch"
+    },
+    "expected": {
+      "test": "Independent samples t-test (Welch)",
+      "variance_assumption": "welch",
+      "df_method": "welch_satterthwaite",
+      "significant": true,
+      "interpretation": "Significant difference between groups (t = -6.283, p = <0.001, Hedges' g = -0.724 [medium])",
+      "methods_text": "Group differences in sbp were compared between levels of arm using an independent-samples Welch's t-test. Effect size was quantified with Hedges' g and its 95% confidence interval. Normality of each group was assessed with the Shapiro-Wilk test (n < 50), the Lilliefors-corrected Kolmogorov-Smirnov test (50 ≤ n ≤ 2000), or a skewness/CLT criterion (n > 2000). Homogeneity of variances was checked with Levene's test.",
+      "r_code": "t.test(sbp ~ arm, data = data, var.equal = FALSE)",
+      "result_text": "The control group (M = 141.24) significantly differed from the treat group (M = 148.69), t(297.23) = -6.283, p = <0.001, hedges g = -0.724 (95% CI: -0.959–-0.489) [medium]."
+    },
+    "tolerance": "exact (strings and enums; no tolerance applies to a sentence)"
   },
   {
     "id": "ttest_ind_student_sbp_by_arm",
     "source": "qa/tests_audit/reference.json::student (R 4.5.2, t.test(sbp ~ arm, data = d, var.equal = TRUE), %.17g); n1/n2 from its meta.n_by_arm",
     "authoritative_engine": "R",
-    "dataset": {"csv": "qa/models_audit/dataset.csv", "columns": ["sbp", "arm"], "conditions": []},
-    "params": {"column": "sbp", "group_column": "arm", "method": "student"},
+    "dataset": {
+      "csv": "qa/models_audit/dataset.csv",
+      "columns": [
+        "sbp",
+        "arm"
+      ],
+      "conditions": []
+    },
+    "params": {
+      "column": "sbp",
+      "group_column": "arm",
+      "method": "student"
+    },
     "expected": {
       "n1": 151,
       "n2": 149,
       "group1": "control",
       "group2": "treat",
-      "t": -6.2850640079217888,
+      "t": -6.285064007921789,
       "df": 298,
       "p": 1.1615193040235534e-09,
       "mean1": 141.23629139072847,
-      "mean2": 148.68530201342281,
+      "mean2": 148.6853020134228,
       "df_method": "pooled",
       "variance_assumption": "student",
       "variance_assumption_selected_by": "request (method)"
     },
-    "tolerance": "rel<=1e-14 (measured against R: t 0, df 0, p 3.0e-15, means 0)"
+    "tolerance": "rel<=1e-14 (measured against R: t 0, df 0, p 3.0e-15, means 0; and against ustat_engine_r under R 4.5.2: t 0, df 0, p 3.0e-15, means 0)",
+    "divergence": "assumptions[].detail on the Normality lines: R reports the Lilliefors p from nortest::lillie.test (Dallal-Wilkinson 1986 with Stephens' 1974 modification, p = 0.5265 / 0.7417 here) where Python reports statsmodels' interpolation of a table of simulated critical values (p = 0.6002 / 0.7997). The STATISTIC agrees to 1e-15 -- these are two approximations of the same null distribution and neither is wrong. Both engines return met = true, and normality does not choose the test (Levene does), so nothing downstream of this line moves. The Levene line itself is byte-identical."
   },
   {
     "id": "ttest_ind_auto_levene_picks_student_sbp_by_arm",
     "source": "test_welch_df_reporting.py::test_pooled_path_reports_pooled_df (equal variances => df_method 'pooled') applied to sbp ~ arm, whose Levene p is 0.62; the numbers are then qa/tests_audit/reference.json::student, since 'auto' must land on exactly the Student test R ran",
     "authoritative_engine": "R",
-    "dataset": {"csv": "qa/models_audit/dataset.csv", "columns": ["sbp", "arm"], "conditions": []},
-    "params": {"column": "sbp", "group_column": "arm"},
+    "dataset": {
+      "csv": "qa/models_audit/dataset.csv",
+      "columns": [
+        "sbp",
+        "arm"
+      ],
+      "conditions": []
+    },
+    "params": {
+      "column": "sbp",
+      "group_column": "arm"
+    },
     "expected": {
-      "t": -6.2850640079217888,
+      "t": -6.285064007921789,
       "df": 298,
       "p": 1.1615193040235534e-09,
       "df_method": "pooled",
       "variance_assumption": "student",
       "variance_assumption_selected_by": "auto (Levene)"
     },
-    "tolerance": "rel<=1e-14 (same R literals as ttest_ind_student_sbp_by_arm)"
+    "tolerance": "rel<=1e-14 (same R literals as ttest_ind_student_sbp_by_arm)",
+    "divergence": "assumptions[].detail on the Normality lines: R reports the Lilliefors p from nortest::lillie.test (Dallal-Wilkinson 1986 with Stephens' 1974 modification, p = 0.5265 / 0.7417 here) where Python reports statsmodels' interpolation of a table of simulated critical values (p = 0.6002 / 0.7997). The STATISTIC agrees to 1e-15 -- these are two approximations of the same null distribution and neither is wrong. Both engines return met = true, and normality does not choose the test (Levene does), so nothing downstream of this line moves. The Levene line itself is byte-identical."
   },
   {
     "id": "ttest_ind_sbp_by_arm_filtered_age_gt_50",
@@ -65,10 +129,22 @@
     "authoritative_engine": "python (ustat_engine, scipy 1.14.1)",
     "dataset": {
       "csv": "qa/models_audit/dataset.csv",
-      "columns": ["sbp", "arm"],
-      "conditions": [{"column": "age", "operator": "gt", "value": 50}]
+      "columns": [
+        "sbp",
+        "arm"
+      ],
+      "conditions": [
+        {
+          "column": "age",
+          "operator": "gt",
+          "value": 50
+        }
+      ]
     },
-    "params": {"column": "sbp", "group_column": "arm"},
+    "params": {
+      "column": "sbp",
+      "group_column": "arm"
+    },
     "expected": {
       "n1": 125,
       "n2": 129,
@@ -79,7 +155,8 @@
       "mean2": 149.89643410852713,
       "variance_assumption": "student"
     },
-    "tolerance": "rel<=1e-12 (self-recorded; loose enough to survive a scipy patch release, tight enough to catch a different row set)"
+    "tolerance": "rel<=1e-12 (self-recorded; loose enough to survive a scipy patch release, tight enough to catch a different row set)",
+    "divergence": "assumptions[].detail on the Normality lines: R reports the Lilliefors p from nortest::lillie.test (Dallal-Wilkinson 1986 with Stephens' 1974 modification, p = 0.5265 / 0.7417 here) where Python reports statsmodels' interpolation of a table of simulated critical values (p = 0.6002 / 0.7997). The STATISTIC agrees to 1e-15 -- these are two approximations of the same null distribution and neither is wrong. Both engines return met = true, and normality does not choose the test (Levene does), so nothing downstream of this line moves. The Levene line itself is byte-identical."
   },
   {
     "id": "ttest_ind_filtered_frame_rejects_a_stale_fingerprint",
@@ -87,8 +164,17 @@
     "authoritative_engine": "n/a",
     "dataset": {
       "csv": "qa/models_audit/dataset.csv",
-      "columns": ["sbp", "arm"],
-      "conditions": [{"column": "age", "operator": "gt", "value": 50}]
+      "columns": [
+        "sbp",
+        "arm"
+      ],
+      "conditions": [
+        {
+          "column": "age",
+          "operator": "gt",
+          "value": 50
+        }
+      ]
     },
     "params": {
       "column": "sbp",
@@ -96,15 +182,26 @@
       "__filter_fingerprint": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
     },
     "through_registry": true,
-    "expected": {"status_code": 409},
+    "expected": {
+      "status_code": 409
+    },
     "tolerance": "exact status code"
   },
   {
     "id": "ttest_one_sample_sbp_mu140",
     "source": "test_stats_coverage.py::test_ttest_one_sample (asserts test name, mu echoed, 0<=p<=1 and df == n-1); mean/std/n are the column's own descriptives and t is (mean-mu)/(std/sqrt(n)) = (144.93596666666667-140)/(10.904668543903425/sqrt(300))",
     "authoritative_engine": "python (ustat_engine, scipy 1.14.1)",
-    "dataset": {"csv": "qa/models_audit/dataset.csv", "columns": ["sbp"], "conditions": []},
-    "params": {"column": "sbp", "mu": 140.0},
+    "dataset": {
+      "csv": "qa/models_audit/dataset.csv",
+      "columns": [
+        "sbp"
+      ],
+      "conditions": []
+    },
+    "params": {
+      "column": "sbp",
+      "mu": 140.0
+    },
     "expected": {
       "test": "One-sample t-test",
       "n": 300,
@@ -114,33 +211,101 @@
       "t": 7.840077868219875,
       "p": 7.990561489781444e-14
     },
-    "tolerance": "rel<=1e-12 (self-recorded; t is independently reproducible from mean, std, n and mu)"
+    "tolerance": "rel<=1e-12 (self-recorded; t is independently reproducible from mean, std, n and mu)",
+    "divergence": "assumptions[].detail on the Normality lines: R reports the Lilliefors p from nortest::lillie.test (Dallal-Wilkinson 1986 with Stephens' 1974 modification, p = 0.5265 / 0.7417 here) where Python reports statsmodels' interpolation of a table of simulated critical values (p = 0.6002 / 0.7997). The STATISTIC agrees to 1e-15 -- these are two approximations of the same null distribution and neither is wrong. Both engines return met = true, and normality does not choose the test (Levene does), so nothing downstream of this line moves. The Levene line itself is byte-identical. interpretation / methods_text / r_code / result_text when `mu` is written as a JSON float: Python's json module hands run_ttest the float 140.0 and prints \"140.0\"; R has one numeric type, cannot see the int/float split, and prints \"140\". A browser sends JSON.stringify(140) === \"140\", which both engines print as \"140\" -- see the ttest_one_sample_sbp_mu140_integer fixture. Prose only; every number agrees."
+  },
+  {
+    "id": "ttest_one_sample_sbp_mu140_integer",
+    "source": "The same one-sample test as ttest_one_sample_sbp_mu140 with mu written the way a browser writes it -- JSON.stringify(140) === \"140\" -- rather than as 140.0. That is the point of the fixture: with an integer mu the two engines' prose is byte-identical, and with a float mu it is not (see that fixture's divergence). Numbers recorded from ustat_engine and reproduced by ustat_engine_r under R 4.5.2 at t 5.7e-16, p 3.3e-14, std 3.3e-16.",
+    "authoritative_engine": "both (byte-identical prose; python recorded the numbers)",
+    "dataset": {
+      "csv": "qa/models_audit/dataset.csv",
+      "columns": [
+        "sbp"
+      ],
+      "conditions": []
+    },
+    "params": {
+      "column": "sbp",
+      "mu": 140
+    },
+    "expected": {
+      "test": "One-sample t-test",
+      "n": 300,
+      "df": 299,
+      "t": 7.840077868219875,
+      "p": 7.990561489781444e-14,
+      "mean": 144.93596666666667,
+      "std": 10.904668543903425,
+      "significant": true,
+      "interpretation": "Mean differs from 140 (t = 7.840, p = <0.001, Cohen's d = 0.453 [small])",
+      "methods_text": "A one-sample t-test was used to compare the mean of sbp against the hypothesized value of 140. Effect size was quantified with Cohen's d.",
+      "r_code": "t.test(data$sbp, mu = 140)",
+      "result_text": "The sample mean (M = 144.94) was significantly different from the test value of 140, t(299) = 7.840, p = <0.001, cohen d = 0.453 (95% CI: 0.333–0.572) [small]."
+    },
+    "tolerance": "rel<=1e-12 (strings compare exactly; the numbers carry the tolerance)",
+    "divergence": "assumptions[].detail on the Normality lines: R reports the Lilliefors p from nortest::lillie.test (Dallal-Wilkinson 1986 with Stephens' 1974 modification, p = 0.5265 / 0.7417 here) where Python reports statsmodels' interpolation of a table of simulated critical values (p = 0.6002 / 0.7997). The STATISTIC agrees to 1e-15 -- these are two approximations of the same null distribution and neither is wrong. Both engines return met = true, and normality does not choose the test (Levene does), so nothing downstream of this line moves. The Levene line itself is byte-identical."
   },
   {
     "id": "ttest_three_level_group_column_is_400",
     "source": "test_stats_coverage.py::test_ttest_bad_group_count (a 3-level grouping column must be refused, not silently reduced)",
     "authoritative_engine": "n/a",
-    "dataset": {"csv": "qa/models_audit/dataset.csv", "columns": ["sbp", "stage"], "conditions": []},
-    "params": {"column": "sbp", "group_column": "stage"},
-    "expected": {"status_code": 400, "message": "Group column must have exactly 2 groups"},
+    "dataset": {
+      "csv": "qa/models_audit/dataset.csv",
+      "columns": [
+        "sbp",
+        "stage"
+      ],
+      "conditions": []
+    },
+    "params": {
+      "column": "sbp",
+      "group_column": "stage"
+    },
+    "expected": {
+      "status_code": 400,
+      "message": "Group column must have exactly 2 groups"
+    },
     "tolerance": "exact status code"
   },
   {
     "id": "ttest_missing_column_is_422",
     "source": "routers/stats/inferential.py::TTestRequest — `column` is a required pydantic field, so FastAPI answered a request without it with 422; the engine's _P shim has to reject it the same way rather than raising KeyError",
     "authoritative_engine": "n/a",
-    "dataset": {"csv": "qa/models_audit/dataset.csv", "columns": ["sbp"], "conditions": []},
-    "params": {"mu": 0.0},
-    "expected": {"status_code": 422, "message": "Field 'column' is required."},
+    "dataset": {
+      "csv": "qa/models_audit/dataset.csv",
+      "columns": [
+        "sbp"
+      ],
+      "conditions": []
+    },
+    "params": {
+      "mu": 0.0
+    },
+    "expected": {
+      "status_code": 422,
+      "message": "Field 'column' is required."
+    },
     "tolerance": "exact status code"
   },
   {
     "id": "ttest_unknown_method_is_422",
     "source": "routers/stats/inferential.py::TTestRequest — `method: Literal[\"auto\", \"student\", \"welch\"]`, which FastAPI answered with 422 for anything else",
     "authoritative_engine": "n/a",
-    "dataset": {"csv": "qa/models_audit/dataset.csv", "columns": ["sbp"], "conditions": []},
-    "params": {"column": "sbp", "method": "bogus"},
-    "expected": {"status_code": 422},
+    "dataset": {
+      "csv": "qa/models_audit/dataset.csv",
+      "columns": [
+        "sbp"
+      ],
+      "conditions": []
+    },
+    "params": {
+      "column": "sbp",
+      "method": "bogus"
+    },
+    "expected": {
+      "status_code": 422
+    },
     "tolerance": "exact status code"
   }
 ]

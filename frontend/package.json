@@ -4,9 +4,10 @@
   "version": "3.6.0",
   "type": "module",
   "scripts": {
-    "dev": "npm run engine:wheel && vite",
-    "build": "npm run engine:wheel && vite build",
+    "dev": "npm run engine:wheel && npm run r:bundle && vite",
+    "build": "npm run engine:wheel && npm run r:bundle && vite build",
     "engine:wheel": "python3 ../scripts/build_engine_wheel.py",
+    "r:bundle": "python3 ../scripts/build_r_bundle.py && node scripts/gen_r_manifest.mjs",
     "pyodide:vendor": "python3 ../scripts/vendor_pyodide.py",
     "webr:vendor": "python3 ../scripts/vendor_webr.py",
     "lint": "eslint .",

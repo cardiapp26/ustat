@@ -119,9 +119,23 @@ EXCLUDE_EXACT = {"index.html"}
 EXCLUDE_PREFIXES = ("repl.", "assets/")
 EXCLUDE_SUFFIXES = (".map",)
 
-# Packages the spike installs at runtime. Base R already carries t.test;
-# jsonlite is only here to get numbers back out at full precision.
-REQUIRED_PACKAGES = ["jsonlite"]
+# Packages the R engine installs at runtime, and why each one is here. Base R
+# already carries t.test, shapiro.test and the one-way F the engine's Levene
+# goes through, so this list stays as short as the analyses allow.
+#
+#   jsonlite  the wire format in both directions -- the frame envelope in, the
+#             result out -- and the only serialiser measured to round-trip a
+#             double exactly (see runtime/jsonsafe.R).
+#   nortest   lillie.test, for the Lilliefors branch of check_normality at
+#             n >= 50. The alternative was hand-rolling the Dallal-Wilkinson
+#             p-value approximation, which is precisely the kind of second
+#             implementation of an inferential statistic this codebase forbids.
+#   moments   skewness, for the CLT-bypass branch at n > 2000. Same reasoning,
+#             smaller stake.
+#
+# nortest and moments are leaf packages -- nortest imports only stats, moments
+# nothing at all -- so neither drags a closure behind it.
+REQUIRED_PACKAGES = ["jsonlite", "moments", "nortest"]
 
 USER_AGENT = "ustat-vendor-webr/1.0 (+scripts/vendor_webr.py)"
 

@@ -23,10 +23,23 @@
  */
 import api from "../../api";
 import { useStore } from "../../store";
+import type { EngineKind } from "./types";
 import { onLocalEngineReset, pushFrame } from "./client";
+import { onREngineReset, pushFrameR } from "./r/client";
 
-/** Keys the live worker has been handed. Cleared whenever the worker is. */
+/**
+ * Keys the live workers have been handed, qualified by which engine holds them.
+ *
+ * Qualified because "the Pyodide worker is holding this frame" says nothing
+ * about webR, and an unqualified set would make `ensureFrame` skip the transfer
+ * for an engine that never received it -- surfacing as `frame-missing` from a
+ * code path the user never asked about. Cleared whenever the worker it names is.
+ */
 const pushed = new Set<string>();
+
+function pushedKey(engine: EngineKind, frameKey: string): string {
+  return `${engine}:${frameKey}`;
+}
 
 /**
  * The envelope's `filter.fingerprint` for the frame last pushed under a key.
@@ -112,19 +125,24 @@ interface FrameEnvelope {
 export async function ensureFrame(
   sessionId: string,
   columns: readonly string[],
+  engine: EngineKind = "python",
 ): Promise<string> {
   const { dataVersion, caseFilter } = useStore.getState();
   const conditions = caseFilter?.conditions ?? [];
   const key = frameKeyFor(sessionId, dataVersion, conditions, columns);
-  if (pushed.has(key)) return key;
+  if (pushed.has(pushedKey(engine, key))) return key;
 
   const response = await api.get(`/api/sessions/${sessionId}/frame`, {
     params: { columns: [...columns].join(",") },
   });
   const envelope = response.data as FrameEnvelope;
 
-  await pushFrame(key, envelope);
-  pushed.add(key);
+  // The envelope is engine-agnostic on purpose: `ustat.frame/1` is one wire
+  // format with two readers, `frame_from_envelope` in Python and
+  // `ustat_frame_from_envelope` in R, so the same bytes serve either.
+  if (engine === "r") await pushFrameR(key, envelope);
+  else await pushFrame(key, envelope);
+  pushed.add(pushedKey(engine, key));
   const fingerprint = envelope?.filter?.fingerprint;
   if (typeof fingerprint === "string") fingerprints.set(key, fingerprint);
   return key;
@@ -147,3 +165,4 @@ export function resetPushedFrames(): void {
 }
 
 onLocalEngineReset(resetPushedFrames);
+onREngineReset(resetPushedFrames);

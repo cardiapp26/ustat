@@ -54,6 +54,7 @@ class ErrorBoundary extends Component<
 }
 import { useStore } from "./store";
 import UploadZone from "./components/UploadZone";
+import EngineBadgeBar from "./components/EngineBadgeBar";
 import DataTable from "./components/DataTable";
 import DescriptivePanel from "./components/DescriptivePanel";
 import ChartsPanel from "./components/ChartsPanel";
@@ -1003,6 +1004,10 @@ export default function App() {
           ))}
         </nav>
       </header>
+
+      {/* Which engine is answering. One component, session-wide — see
+          EngineBadgeBar for why this is not a per-panel badge. */}
+      <EngineBadgeBar />
 
       {/* Content */}
       <main className="flex-1 overflow-hidden flex flex-col">

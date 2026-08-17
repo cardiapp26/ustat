@@ -57,6 +57,13 @@ function walk(dir: string): string[] {
       // The vendored Pyodide runtime is a build artifact of known provenance
       // fetched by scripts/vendor_pyodide.py, not somewhere data gets dropped.
       if (entry === "pyodide") continue;
+      // Same for the vendored webR runtime, its CRAN mirror and the generated
+      // R engine bundle (scripts/vendor_webr.py, scripts/build_r_bundle.py).
+      // Worth naming explicitly: the mirror holds .tgz archives of R packages,
+      // and R's own datasets package ships .rda files inside the runtime's
+      // virtual filesystem image — provenance is the vendoring script's
+      // manifest, not this walk.
+      if (entry === "webr") continue;
       found.push(...walk(full));
     } else {
       found.push(full);

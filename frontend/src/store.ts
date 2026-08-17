@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { runColumnStructureMutation } from "./lib/columnStructureLock";
+import type { EngineKind } from "./lib/engine/types";
 
 export { runColumnStructureMutation } from "./lib/columnStructureLock";
 
@@ -131,6 +132,56 @@ export interface CaseFilter {
   excludedBeyondPreview?: number;
 }
 
+/**
+ * Where the analysis in `analysisId` actually ran, and why not where it was
+ * asked to.
+ *
+ * One record per analysis id rather than a list, because the question a reader
+ * has is "what produced the number I am looking at", and only the most recent
+ * run of that analysis can answer it. Written by `localFirst` on every routed
+ * call and read by exactly one component (`EngineBadgeBar`) -- the alternative,
+ * a `runtime`/`engine` prop threaded through fifty panels, is fifty chances to
+ * forget one and show the wrong provenance.
+ */
+export interface EngineNotice {
+  engine: EngineKind;
+  /** e.g. "R 4.6.0 · webR 0.6.0". Absent when the engine did not report one. */
+  engineDetail?: string;
+  /** The named reason a local run did not happen, when one was expected. */
+  fellBackBecause?: string;
+  at: number;
+}
+
+/**
+ * The engine chosen at the welcome gate, in sessionStorage.
+ *
+ * sessionStorage and not localStorage, deliberately. The choice is made once,
+ * per piece of work, in front of a screen that explains what R costs; it has to
+ * survive a mid-session reload (an in-memory server session is restored, the
+ * engine must not silently flip under it), and it must NOT survive into a new
+ * visit, where the user would otherwise be paying 22 MB for a decision they
+ * made last week and have forgotten.
+ */
+const ENGINE_KEY = "ustat.engine";
+
+export function loadSessionEngine(): EngineKind {
+  try {
+    return sessionStorage.getItem(ENGINE_KEY) === "r" ? "r" : "python";
+  } catch {
+    // Private browsing modes can throw on sessionStorage access. Absent a
+    // readable choice the answer is the default.
+    return "python";
+  }
+}
+
+function persistSessionEngine(engine: EngineKind): void {
+  try {
+    sessionStorage.setItem(ENGINE_KEY, engine);
+  } catch {
+    /* nothing to do: the choice simply will not survive a reload */
+  }
+}
+
 interface ColumnDependentState {
   columnDecimals: Record<string, number>;
   caseFilter: CaseFilter | null;
@@ -251,6 +302,14 @@ interface AppState {
   descriptiveTab: "histogram" | "boxplot" | "violin" | "qq";
   setDescriptiveTab: (tab: "histogram" | "boxplot" | "violin" | "qq") => void;
 
+  /** Which statistics engine this session runs in the browser. Chosen at the
+   *  welcome gate; see `loadSessionEngine` for why it lives in sessionStorage. */
+  engine: EngineKind;
+  setEngine: (engine: EngineKind) => void;
+  /** Where each analysis last ran, keyed by analysis id. Written by `localFirst`. */
+  engineNotices: Record<string, EngineNotice>;
+  noteEngineRun: (analysisId: string, notice: EngineNotice) => void;
+
   // Session History for Unified R Replication Code
   sessionHistory: { action: string; params: Record<string, unknown> }[];
   logAction: (action: string, params: Record<string, unknown>) => void;
@@ -368,6 +427,17 @@ export const useStore = create<AppState>((set, get) => ({
   table1Result: null,
   caseFilter: null,
   dataVersion: 0,
+  engine: loadSessionEngine(),
+  setEngine: (engine) => {
+    persistSessionEngine(engine);
+    // The notices describe runs by the engine that is being left behind; a
+    // stale "computed with Python" line under a fresh R session would be a
+    // claim about a number that is no longer on screen.
+    set({ engine, engineNotices: {} });
+  },
+  engineNotices: {},
+  noteEngineRun: (analysisId, notice) =>
+    set((state) => ({ engineNotices: { ...state.engineNotices, [analysisId]: notice } })),
   sessionHistory: [],
   logAction: (action, params) => set((state) => ({ sessionHistory: [...state.sessionHistory, { action, params }] })),
   clearHistory: () => set({ sessionHistory: [] }),
@@ -397,6 +467,13 @@ export const useStore = create<AppState>((set, get) => ({
       dataVersion: 0,
       columnDecimals: {},
       sessionHistory: [],
+      // A new dataset gets the engine the gate was left on -- which is what the
+      // user just chose, since the gate is the only screen that can set it.
+      // Re-hydrating the SAME session_id (rename, dtype flip, refresh after
+      // compute) returns early above and never reaches here, so a mid-session
+      // refresh cannot flip the engine under a running analysis.
+      engine: loadSessionEngine(),
+      engineNotices: {},
     };
   }),
   setActiveTab: (t) => set({ activeTab: t }),
@@ -426,6 +503,9 @@ export const useStore = create<AppState>((set, get) => ({
     redoDepth: 0,
     columnMutationUndo: [],
     columnMutationRedo: [],
+    // The notices belong to a session that no longer exists. `engine` stays:
+    // the user is going back to the gate, where it is the current selection.
+    engineNotices: {},
   }),
   updateColumnKind: (name, kind) => {
     set((state) => {

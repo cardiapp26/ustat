@@ -77,19 +77,26 @@ tsc/build/lint on every push — don't skip these locally.
   written to it — code that branches on dtype instead of declared kind will
   silently mishandle blank columns. See `backend/routers/session.py`
   `update_cell` for the pattern.
-- **No second implementation of a statistic.** If you're about to compute a
-  p-value, effect size, or any inferential statistic in TypeScript, stop. The
-  rule is not "statistics run on the server" — it is that a statistic has
-  exactly one implementation, in Python, cross-checked against the
-  peer-reviewed library it wraps. That one implementation lives in
-  `backend/ustat_engine/` and runs in two places: this server, and the
-  browser, where the same package is installed as a wheel under Pyodide so
-  patient data need never leave the machine. Both runtimes compute a sha256
-  over the engine's own sources and refuse to run locally unless they match,
-  so the two can never silently answer the same question differently.
-  `backend/tests/test_engine_isolation.py` enforces what the engine may
-  import; `backend/requirements.txt` explains why numpy/scipy/pandas are
-  pinned to Pyodide's versions and must not be bumped on one side alone.
+- **No hand-rolled statistic.** If you're about to write out a p-value formula,
+  an effect-size correction, or any inferential arithmetic yourself, stop. The
+  rule is not "statistics run on the server" and not "statistics run in
+  Python" — it is that every statistic is a thin mapping onto a peer-reviewed
+  implementation, never our own. There are two such mapping layers, on purpose:
+  `backend/ustat_engine/` over scipy/statsmodels (running here and, as a wheel
+  under Pyodide, in the browser) and `backend/ustat_engine_r/` over R's own
+  functions (running as a bundle under webR), so patient data need never leave
+  the machine either way. Neither layer may contain arithmetic its host library
+  could do itself — `oneway.test`, not a hand-written Levene — and a third
+  implementation in TypeScript is still forbidden outright. Where two engines
+  legitimately disagree (a Lilliefors p from a different approximation, say),
+  the fixture in `qa/parity/` records `authoritative_engine` and a `divergence`
+  saying why; a fudge factor to make them agree is not an option. Both engines
+  fingerprint their own sources with the same sha256 and refuse to run locally
+  unless the browser's copy matches this server's.
+  `backend/tests/test_engine_isolation.py` and `test_r_engine_isolation.py`
+  enforce what each may use; `backend/requirements.txt` explains why
+  numpy/scipy/pandas are pinned to Pyodide's versions and must not be bumped on
+  one side alone.
 - **Turkish bug reports are common** (primary user base). Repro and fix in
   English-named code/commits as usual; just expect issue text in Turkish.
 - **Git hygiene**: several files in this repo tend to carry large unrelated

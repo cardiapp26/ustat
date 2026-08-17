@@ -21,6 +21,7 @@ import type {
   WorkerResponse,
 } from "./types";
 import { LOCAL_ALLOW_LIST, mergePackages } from "./loadPlan";
+import { acquire, registerRuntime, release } from "./arbiter";
 
 const RUNTIME_BASE = "/pyodide/runtime/";
 const WHEEL_BASE = "/pyodide/wheels/";
@@ -68,6 +69,11 @@ const pending = new Map<
 
 function ensureWorker(): Worker {
   if (worker) return worker;
+  // Claim the tab before the worker exists, not after: the arbiter has to
+  // tear down a resident R runtime BEFORE Pyodide's wasm heap is allocated,
+  // or the two are briefly co-resident, which is the exact failure this
+  // exists to prevent.
+  acquire("python");
   worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
   worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
     const entry = pending.get(event.data.id);
@@ -92,7 +98,13 @@ function teardown(): void {
   worker = null;
   bootPromise = null;
   loaded = [];
+  release("python");
 }
+
+// Registered once, at module scope: the arbiter must be able to tear this
+// client down without importing it, which is why this is a registration
+// call rather than the arbiter reaching in directly.
+registerRuntime("python", { teardown });
 
 function send(message: WorkerRequestBody): Promise<WorkerResponse> {
   const id = nextId++;

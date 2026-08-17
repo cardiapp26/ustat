@@ -79,6 +79,7 @@ export default function RecentSessionsPanel() {
   const setSession = useStore((s) => s.setSession);
   const setLocalSessionId = useStore((s) => s.setLocalSessionId);
   const setActiveTab = useStore((s) => s.setActiveTab);
+  const setEngine = useStore((s) => s.setEngine);
   const activeSessionId = useStore((s) => s.session?.session_id ?? null);
   const [items, setItems] = useState<RecentSessionMeta[]>([]);
   const [trashedItems, setTrashedItems] = useState<RecentSessionMeta[]>([]);
@@ -155,6 +156,11 @@ export default function RecentSessionsPanel() {
       setLocalSessionId(rec.id);
       // Restore the user's last tab, falling back to Data.
       if (rec.activeTab) setActiveTab(rec.activeTab);
+      // ...and the engine the work was done in. A resume never passes through
+      // the welcome gate, so without this the session would silently continue
+      // in whatever engine this visit happened to start on. Rows saved before
+      // this field existed carry no engine and are left alone.
+      if (rec.engine) setEngine(rec.engine);
       // Re-hydrate column-decimal overrides the same way UploadZone
       // does on a fresh load — keeps the data table formatting stable.
       try {

@@ -57,6 +57,10 @@ export function useAutoSession({ onStatus }: AutoSaveDeps = {}): void {
   const nRows     = useStore((s) => s.session?.rows ?? null);
   const nCols     = useStore((s) => s.session?.columns.length ?? null);
   const activeTab = useStore((s) => s.activeTab);
+  // Saved with the snapshot so a resume restores the engine the work was done
+  // in — a resume never passes through the welcome gate, which is the only
+  // place the choice is otherwise made.
+  const engine    = useStore((s) => s.engine);
   const caseFilter = useStore((s) => s.caseFilter);
   // Bumped on EVERY data mutation (incl. in-place edits that leave row/column
   // counts unchanged: cell edits, recode-in-place, find-replace, date parse).
@@ -123,6 +127,7 @@ export function useAutoSession({ onStatus }: AutoSaveDeps = {}): void {
           nRows: nRows ?? undefined,
           nCols: nCols ?? undefined,
           activeTab: activeTab ?? undefined,
+          engine,
           source,
         });
         notifySessionsChanged();
@@ -158,7 +163,7 @@ export function useAutoSession({ onStatus }: AutoSaveDeps = {}): void {
       cancelled = true;
       clearTimeout(debounceTimer);
     };
-  }, [sessionId, localId, filename, nRows, nCols, activeTab, caseFilter, valueLabelSig, dataVersion]);
+  }, [sessionId, localId, filename, nRows, nCols, activeTab, engine, caseFilter, valueLabelSig, dataVersion]);
 
   // The periodic snapshot and the unload flush depend only on there being a
   // session. They used to live in the effect above, so every tracked change

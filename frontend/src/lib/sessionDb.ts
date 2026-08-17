@@ -19,6 +19,7 @@
  */
 
 import Dexie, { type EntityTable } from "dexie";
+import type { EngineKind } from "./engine/types";
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -34,6 +35,11 @@ export interface RecentSessionMeta {
   nRows?: number;
   nCols?: number;
   activeTab?: string;       // header tab the user was on
+  // Which statistics engine the session was being worked in. Restored with the
+  // session so resuming does not silently move the work to the other engine —
+  // the choice is normally made once, at the welcome gate, and a resume never
+  // passes through that gate.
+  engine?: EngineKind;
   source: "auto" | "manual";
   // Soft-delete (trash) timestamp. null/undefined = active record; a value =
   // moved to the Trash bin at that epoch ms. After TRASH_TTL_MS it is purged
@@ -479,6 +485,7 @@ export async function upsertRecentSession(input: {
   nRows?: number;
   nCols?: number;
   activeTab?: string;
+  engine?: EngineKind;
   source: "auto" | "manual";
 }): Promise<RecentSessionMeta> {
   const db = getDb();
@@ -502,6 +509,7 @@ export async function upsertRecentSession(input: {
     nRows: input.nRows,
     nCols: input.nCols,
     activeTab: input.activeTab,
+    engine: input.engine,
     savedAt: nextSavedAt(),
     source: input.source,
     // A copy stays exempt from the name dedupe for its whole life, not just
@@ -533,6 +541,7 @@ export async function upsertRecentSessionRaw(input: {
   nRows?: number;
   nCols?: number;
   activeTab?: string;
+  engine?: EngineKind;
   source: "auto" | "manual";
 }): Promise<RecentSessionMeta> {
   const db = getDb();
@@ -553,6 +562,7 @@ export async function upsertRecentSessionRaw(input: {
     nRows: input.nRows,
     nCols: input.nCols,
     activeTab: input.activeTab,
+    engine: input.engine,
     savedAt: input.savedAt,
     source: input.source,
     userCopy: existing?.userCopy,

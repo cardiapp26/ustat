@@ -27,7 +27,11 @@ for dirpath, dirnames, filenames in os.walk(BACKEND):
         if d not in ("__pycache__", ".pytest_cache", ".hypothesis", "tests", "node_modules")
     ]
     for fn in filenames:
-        if fn.endswith((".py", ".json", ".yml", ".yaml", ".html", ".css", ".js")):
+        # .R for backend/ustat_engine_r: those sources are not imported, they
+        # are hashed. Leaving them out would make source_fingerprint() return
+        # None in a desktop build, which a browser must read as "cannot prove
+        # equality" and refuse to compute locally — safe, but needlessly.
+        if fn.endswith((".py", ".R", ".json", ".yml", ".yaml", ".html", ".css", ".js")):
             src = os.path.join(dirpath, fn)
             dst = os.path.relpath(dirpath, ROOT)
             backend_datas.append((src, dst))

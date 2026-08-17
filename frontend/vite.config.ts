@@ -127,7 +127,13 @@ export default defineConfig({
         // of WebAssembly plumbing into the install-time download for every
         // user -- including the majority who never turn on in-browser compute.
         // It is cached on first use instead, by the runtimeCaching rule below.
-        globIgnores: ['**/version.json', 'pyodide/**'],
+        //
+        // The vendored webR runtime is excluded for the same reason and one
+        // more: R.js is 767 KB of loader that matches the .js pattern, and
+        // R.wasm is 17 MB — over maximumFileSizeToCacheInBytes, so Workbox
+        // would warn and skip it, leaving a precache that holds the loader for
+        // a runtime it cannot serve. Cached on first use by the rule below.
+        globIgnores: ['**/version.json', 'pyodide/**', 'webr/**'],
         // Don't claim navigation requests for /api/* (FastAPI backend).
         navigateFallbackDenylist: [/^\/api\//],
         // No skipWaiting: it activates the new worker the moment it installs,
@@ -155,6 +161,20 @@ export default defineConfig({
             handler: 'CacheFirst',
             options: {
               cacheName: 'pyodide-runtime',
+              expiration: { maxEntries: 64, maxAgeSeconds: 60 * 60 * 24 * 90 },
+              cacheableResponse: { statuses: [0, 200] },
+            },
+          },
+          {
+            // The vendored webR runtime, the CRAN mirror and the R engine
+            // bundle: about 20 MB for a first analysis, immutable for a given
+            // build, and only wanted by a session that chose the R engine at
+            // the welcome gate. CacheFirst so the download happens once —
+            // without it every reload of an R session re-fetches R.wasm.
+            urlPattern: /\/webr\//,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'webr-runtime',
               expiration: { maxEntries: 64, maxAgeSeconds: 60 * 60 * 24 * 90 },
               cacheableResponse: { statuses: [0, 200] },
             },

@@ -72,6 +72,15 @@ qa/__pycache__/
 # unavailable and everything falls back to the server, which is safe.
 frontend/public/pyodide/wheels/
 
+# Built from backend/ustat_engine_r by scripts/build_r_bundle.py on every dev
+# start and build, for the same reason as the wheel above: a checked-in bundle
+# is a bundle that can go stale against the R sources it claims to be, which is
+# precisely the mismatch the fingerprint check exists to catch. (The vendored
+# webR entry below also covers this path; it is spelled out here because the
+# reasoning is different — that one is third-party bytes we fetched, this one is
+# our own generated artifact.)
+frontend/public/webr/bundle/
+
 # Fetched from cdn.jsdelivr.net by scripts/vendor_pyodide.py (`npm run
 # pyodide:vendor`), not written by hand. It's a large (tens to low hundreds
 # of MB) vendored third-party artifact, not source, so it does not belong in

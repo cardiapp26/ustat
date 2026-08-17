@@ -162,6 +162,15 @@ def terms_page_redirect() -> RedirectResponse:
     return RedirectResponse(url="/terms.html", status_code=308)
 
 
+def _python_engine_identity() -> dict:
+    from ustat_engine import identity
+    from ustat_engine.registry import ANALYSES
+
+    info = identity()
+    info["analyses"] = sorted(ANALYSES)
+    return info
+
+
 @app.get("/api/engine/identity")
 def engine_identity():
     """What engine code this server is running, so a client can check it matches.
@@ -172,13 +181,42 @@ def engine_identity():
     version-skew warning to be dismissed -- it means the two would answer the
     same analysis differently -- so the client refuses to compute locally and
     falls back here.
-    """
-    from ustat_engine import identity
-    from ustat_engine.registry import ANALYSES
 
-    info = identity()
-    info["analyses"] = sorted(ANALYSES)
+    There are two engines now. The top-level keys are the PYTHON engine's and
+    predate the R one; they stay exactly where they were, because the client
+    reads them by name and a rename here is a silent local-compute outage. The
+    same values are also nested under "python" alongside "r", which is the shape
+    a caller should read from now on.
+    """
+    from ustat_engine_r.fingerprint import identity as r_identity
+
+    info = _python_engine_identity()
+    info["python"] = dict(info)
+    info["r"] = r_identity()
     return info
+
+
+@app.get("/api/engine/r/identity")
+def r_engine_identity():
+    """What R engine code this server holds, for a browser about to run webR.
+
+    Same contract as the Python engine's identity and one extra link in the
+    chain. The Python browser installs a wheel and can recompute the fingerprint
+    from the package it got; the R browser evaluates a CONCATENATION, from which
+    a per-file fingerprint cannot be recovered. So it checks the bundle it
+    fetched against `bundle_sha256` in the manifest built beside it, and checks
+    that manifest's `source_fingerprint` against this endpoint. Both links have
+    to hold before a single number is computed locally.
+
+    `webr_version` and `r_version` come from the vendored runtime's own
+    manifest, and are null when nothing has been vendored yet -- the R version
+    decides which package ABI the browser may install, and repo.r-wasm.org
+    serves a plausible index for the wrong one without complaint, so a guess
+    here would fail only inside the tab.
+    """
+    from ustat_engine_r.fingerprint import identity
+
+    return identity()
 
 
 @app.get("/api/health")
