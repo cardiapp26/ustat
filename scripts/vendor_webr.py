@@ -172,7 +172,10 @@ def _md5_hex(data: bytes) -> str:
     # MD5sum and nothing stronger, so this is only a transport-integrity
     # check against a truncated or corrupted download. The sha256 we record
     # in vendored.json is what a later run actually verifies against.
-    return hashlib.md5(data).hexdigest()
+    # usedforsecurity=False states that to the runtime and to scanners;
+    # MD5 itself cannot be replaced here without losing the comparison
+    # against the digest upstream actually publishes.
+    return hashlib.md5(data, usedforsecurity=False).hexdigest()
 
 
 def is_excluded(rel_path: str) -> bool:
