@@ -33,6 +33,11 @@ backend/sessions/
 *.sav
 *.dta
 *.zip
+# The one CSV that is not user data: a fixed-seed synthetic fixture generated
+# by qa/models_audit/generate_dataset.py (see its README -- "no patient
+# data"). qa/parity/ttest.json points the parity tests at it, so it has to be
+# in the checkout or CI fails with FileNotFoundError on every push.
+!qa/models_audit/dataset.csv
 
 # OS
 .DS_Store
