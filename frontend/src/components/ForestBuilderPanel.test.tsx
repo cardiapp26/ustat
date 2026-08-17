@@ -79,11 +79,12 @@ describe('ForestBuilderPanel', () => {
     expect(screen.getByText('5 of 5 valid')).toBeInTheDocument()
   })
 
-  // Timeout raised from the 5s default: this test types two CSV lines through
-  // userEvent one keystroke at a time (~85 keystrokes), which takes ~1.7s
-  // standalone but exceeds 5s when the whole suite's parallel environments are
-  // spinning up on the same machine. The assertions are unchanged — this is
-  // the machine's budget, not the product's latency.
+  // Types two CSV lines through userEvent one keystroke at a time (~85 of
+  // them): ~1.7s alone, far longer while the suite's parallel environments
+  // are starting. It inherits the raised testTimeout in vitest.config.ts
+  // rather than carrying its own — a per-test number here was stricter than
+  // the global one and became the first thing to fail under load, which reads
+  // as a deliberate tightening when it was meant as the opposite.
   it('bulk paste (CSV) parses rows and skips a non-numeric header line', async () => {
     clearSession()
     const user = userEvent.setup()
@@ -99,7 +100,7 @@ describe('ForestBuilderPanel', () => {
 
     expect(screen.getByText('2 of 2 valid')).toBeInTheDocument()
     expect(screen.getByTestId('plotly-mock')).toBeInTheDocument()
-  }, 15000)
+  })
 
   it('Load from Active Dataset: with a session, auto-maps columns and loads preview rows on click', async () => {
     installSession(
