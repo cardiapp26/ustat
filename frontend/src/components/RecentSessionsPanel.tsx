@@ -160,7 +160,7 @@ export default function RecentSessionsPanel() {
       // the welcome gate, so without this the session would silently continue
       // in whatever engine this visit happened to start on. Rows saved before
       // this field existed carry no engine and are left alone.
-      if (rec.engine) setEngine(rec.engine);
+      if (rec.engine) setEngine(rec.engine, "resume");
       // Re-hydrate column-decimal overrides the same way UploadZone
       // does on a fresh load — keeps the data table formatting stable.
       try {

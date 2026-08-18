@@ -54,7 +54,7 @@ class ErrorBoundary extends Component<
 }
 import { useStore } from "./store";
 import UploadZone from "./components/UploadZone";
-import EngineBadgeBar from "./components/EngineBadgeBar";
+import { EngineChip, EngineFallbackNotice } from "./components/EngineProvenance";
 import DataTable from "./components/DataTable";
 import DescriptivePanel from "./components/DescriptivePanel";
 import ChartsPanel from "./components/ChartsPanel";
@@ -766,6 +766,11 @@ export default function App() {
 
           <SessionNamePill />
 
+          {/* Which engine is answering, on the same row as what it is
+              answering about. Session-wide, never per panel — see
+              EngineProvenance. */}
+          <EngineChip />
+
 
           {caseFilter && caseFilter.conditions && caseFilter.conditions.length > 0 && (
             <div className="flex items-center gap-1 bg-amber-50 border border-amber-300 text-amber-700 font-semibold rounded-lg px-2 py-1 text-[10px] animate-pulse flex-shrink-0" title="All active analyses are automatically filtered by this subset.">
@@ -1005,9 +1010,9 @@ export default function App() {
         </nav>
       </header>
 
-      {/* Which engine is answering. One component, session-wide — see
-          EngineBadgeBar for why this is not a per-panel badge. */}
-      <EngineBadgeBar />
+      {/* Shown only when an R session's current tab was answered by Python —
+          see EngineProvenance for why this half is a band and the chip is not. */}
+      <EngineFallbackNotice />
 
       {/* Content */}
       <main className="flex-1 overflow-hidden flex flex-col">

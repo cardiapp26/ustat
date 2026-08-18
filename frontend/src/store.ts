@@ -139,7 +139,7 @@ export interface CaseFilter {
  * One record per analysis id rather than a list, because the question a reader
  * has is "what produced the number I am looking at", and only the most recent
  * run of that analysis can answer it. Written by `localFirst` on every routed
- * call and read by exactly one component (`EngineBadgeBar`) -- the alternative,
+ * call and read by exactly one module (`EngineProvenance`) -- the alternative,
  * a `runtime`/`engine` prop threaded through fifty panels, is fifty chances to
  * forget one and show the wrong provenance.
  */
@@ -163,6 +163,7 @@ export interface EngineNotice {
  * made last week and have forgotten.
  */
 const ENGINE_KEY = "ustat.engine";
+const ENGINE_SOURCE_KEY = "ustat.engine.source";
 
 export function loadSessionEngine(): EngineKind {
   try {
@@ -174,9 +175,30 @@ export function loadSessionEngine(): EngineKind {
   }
 }
 
-function persistSessionEngine(engine: EngineKind): void {
+/**
+ * Where the current engine came from.
+ *
+ * "gate" is the choice made on the welcome screen. "resume" is a recent
+ * session being reopened in the engine it was worked in, which happens without
+ * passing the gate at all -- so a reader can see R named in the header having
+ * last seen Python selected on the welcome screen, and nothing on screen
+ * explains the difference. Recording which one it was is what lets the badge
+ * say so.
+ */
+export type EngineSource = "gate" | "resume";
+
+export function loadSessionEngineSource(): EngineSource {
+  try {
+    return sessionStorage.getItem(ENGINE_SOURCE_KEY) === "resume" ? "resume" : "gate";
+  } catch {
+    return "gate";
+  }
+}
+
+function persistSessionEngine(engine: EngineKind, source: EngineSource): void {
   try {
     sessionStorage.setItem(ENGINE_KEY, engine);
+    sessionStorage.setItem(ENGINE_SOURCE_KEY, source);
   } catch {
     /* nothing to do: the choice simply will not survive a reload */
   }
@@ -305,7 +327,9 @@ interface AppState {
   /** Which statistics engine this session runs in the browser. Chosen at the
    *  welcome gate; see `loadSessionEngine` for why it lives in sessionStorage. */
   engine: EngineKind;
-  setEngine: (engine: EngineKind) => void;
+  /** Whether `engine` was chosen at the welcome gate or restored with a resumed session. */
+  engineSource: EngineSource;
+  setEngine: (engine: EngineKind, source?: EngineSource) => void;
   /** Where each analysis last ran, keyed by analysis id. Written by `localFirst`. */
   engineNotices: Record<string, EngineNotice>;
   noteEngineRun: (analysisId: string, notice: EngineNotice) => void;
@@ -428,12 +452,13 @@ export const useStore = create<AppState>((set, get) => ({
   caseFilter: null,
   dataVersion: 0,
   engine: loadSessionEngine(),
-  setEngine: (engine) => {
-    persistSessionEngine(engine);
+  engineSource: loadSessionEngineSource(),
+  setEngine: (engine, source = "gate") => {
+    persistSessionEngine(engine, source);
     // The notices describe runs by the engine that is being left behind; a
     // stale "computed with Python" line under a fresh R session would be a
     // claim about a number that is no longer on screen.
-    set({ engine, engineNotices: {} });
+    set({ engine, engineSource: source, engineNotices: {} });
   },
   engineNotices: {},
   noteEngineRun: (analysisId, notice) =>
@@ -473,6 +498,7 @@ export const useStore = create<AppState>((set, get) => ({
       // compute) returns early above and never reaches here, so a mid-session
       // refresh cannot flip the engine under a running analysis.
       engine: loadSessionEngine(),
+      engineSource: loadSessionEngineSource(),
       engineNotices: {},
     };
   }),
