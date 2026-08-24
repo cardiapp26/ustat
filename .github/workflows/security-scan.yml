@@ -78,3 +78,9 @@ jobs:
         uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pin the scanner. Left to itself the action asks the old
+          # zricethezav/gitleaks repo for the latest release, which has stopped
+          # moving at 8.24.3 — so "latest" silently means a binary from early
+          # 2025. Pinning states which binary the exemptions in .gitleaks.toml
+          # were verified against, and stops the version drifting under us.
+          GITLEAKS_VERSION: 8.30.1

@@ -22,7 +22,15 @@ title = "uSTAT"
 [extend]
 useDefault = true
 
-[[allowlists]]
+# This is the singular, legacy `[allowlist]` table rather than the newer
+# `[[allowlists]]` array. The array form is only understood from gitleaks
+# 8.28 onwards: older binaries parse the file, log nothing, and silently drop
+# the exemption — which is exactly what the scheduled scan did on 8.24.3,
+# reporting these two findings again with the config loaded. The singular
+# table is honoured by both, so the scan no longer depends on which binary
+# the action happens to install. See also GITLEAKS_VERSION in
+# .github/workflows/security-scan.yml, which pins that binary.
+[allowlist]
 description = "QA harness reference comparisons: `api=<number> ref=<number>` is a computed statistic, not a key"
 # Match the whole line, not the captured secret: what identifies this as a
 # QA comparison is the `ref=` that follows, which is outside the capture.
