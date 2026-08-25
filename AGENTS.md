@@ -39,8 +39,13 @@ Health check: `curl http://localhost:8000/api/health`.
 cd backend && python -m pytest -q
 
 # frontend
-cd frontend && npx tsc --noEmit && npm run lint && npm run test
+cd frontend && npx tsc -b && npm run lint && npm run test
 ```
+
+`tsc -b`, not `tsc --noEmit`: `frontend/tsconfig.json` is a solution file with
+`"files": []`, so `--noEmit` type-checks NOTHING and exits 0 on a tree full of
+errors. CI runs `tsc -b`. A green `--noEmit` locally followed by a red CI
+typecheck is this trap, not a flake.
 
 CI (`.github/workflows/ci.yml`) runs backend pytest+coverage and frontend
 tsc/build/lint on every push — don't skip these locally.

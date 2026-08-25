@@ -279,6 +279,10 @@ function DataTableBody({ session }: { session: Session }) {
   const removeSessionColumns = useStore((s) => s.removeSessionColumns);
   const caseFilter       = useStore((s) => s.caseFilter);
   // Set, not array: this is consulted once per rendered row.
+  // Optional on the wire: a session restored from a saved file carries the
+  // conditions without the counts the server computes when the filter runs.
+  const unloadedExcluded = caseFilter?.excludedBeyondPreview ?? 0;
+
   const excludedRows = useMemo(
     () => new Set(caseFilter?.excludedRows ?? []),
     [caseFilter],
@@ -1887,12 +1891,12 @@ function DataTableBody({ session }: { session: Session }) {
                   : "text-violet-600 border-violet-300 bg-violet-50 hover:bg-violet-100"}`}
             >
               {hideUnselected ? "◉" : "◎"} Only selected
-              {hideUnselected && caseFilter.excludedBeyondPreview > 0 && (
+              {hideUnselected && unloadedExcluded > 0 && (
                 <span
                   className="text-[9px] font-bold rounded-full px-1.5 py-0.5 bg-white/25"
-                  title={`${caseFilter.excludedBeyondPreview.toLocaleString()} excluded rows sit past the loaded preview and were never in the grid to hide.`}
+                  title={`${unloadedExcluded.toLocaleString()} excluded rows sit past the loaded preview and were never in the grid to hide.`}
                 >
-                  +{caseFilter.excludedBeyondPreview.toLocaleString()} unloaded
+                  +{unloadedExcluded.toLocaleString()} unloaded
                 </span>
               )}
             </button>

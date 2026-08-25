@@ -124,9 +124,10 @@ export interface CaseFilter {
   selected: number;
   total: number;
   /** Positions in the UNFILTERED preview that the filter drops. The grid marks
-   *  them rather than hiding them: cell edits address rows by position in the
-   *  unfiltered frame, so a grid that hid rows would write edits to the wrong
-   *  ones. Marking also matches what SPSS does. */
+   *  them by default rather than hiding them, the way SPSS marks a filtered
+   *  case; its "Only selected" toggle hides them on request. Either way an
+   *  edit addresses the row's position in the unfiltered frame, so the marks
+   *  are a view concern and never an addressing one. */
   excludedRows?: number[];
   /** Excluded rows past the preview window, which cannot be marked. */
   excludedBeyondPreview?: number;
