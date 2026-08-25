@@ -88,10 +88,10 @@ describe('DataTable row virtualisation', () => {
     expect(rows().indexOf(banded[0])).toBe(4)
   })
 
-  it('marks rows Select Cases excluded rather than hiding them', () => {
-    // Hiding them would be worse than useless: cell edits address rows by
-    // position in the UNFILTERED frame, so a grid that dropped rows would
-    // send every edit below the first excluded row to the wrong record.
+  it('marks rows Select Cases excluded rather than hiding them by default', () => {
+    // Hiding is opt-in ("Only selected"), not the default: a sheet that
+    // silently drops rows disagrees with the file the user loaded, for a
+    // filter they may have set an hour ago.
     installSession(bigSession(10))
     // The grid restates the excluded positions whenever the data could have
     // moved under them, so the handler has to exist even when the test is
@@ -121,6 +121,115 @@ describe('DataTable row virtualisation', () => {
     expect(faded).toHaveLength(3)
     // The row number carries the strike, the way SPSS marks a filtered case.
     expect(document.querySelectorAll('.line-through')).toHaveLength(3)
+  })
+
+  it('sinks Select Cases excluded rows to the bottom of a sort', async () => {
+    // A sort that treats excluded rows as ordinary ones scatters the cases the
+    // filter just set aside back through the sheet, and the selection stops
+    // reading as a selection. They sink instead, in their original order.
+    installSession(bigSession(6))
+    server.use(
+      http.post('/api/sessions/test-session/select_cases', () =>
+        HttpResponse.json({
+          selected: 4, total: 6, applied: true,
+          excluded_rows: [1, 2], excluded_beyond_preview: 0,
+        }),
+      ),
+    )
+    useStore.setState({
+      caseFilter: {
+        conditions: [{ column: 'c0', operator: 'eq', value: '0', join: 'AND' }],
+        selected: 4, total: 6,
+        excludedRows: [1, 2],
+        excludedBeyondPreview: 0,
+      },
+    })
+    const user = userEvent.setup()
+    render(<DataTable />)
+
+    // c0 already ascends, so the sink is the only thing the sort can change.
+    const firstCol = () =>
+      [...document.querySelectorAll('tbody tr[class*="group"]')].map(
+        (r) => r.querySelectorAll('td')[1].textContent,
+      )
+    expect(firstCol()).toEqual(['0', '100', '200', '300', '400', '500'])
+
+    await user.click(screen.getAllByTitle('Sort')[0])
+
+    await waitFor(() =>
+      expect(firstCol()).toEqual(['0', '300', '400', '500', '100', '200']),
+    )
+  })
+
+  /** A 6-row sheet with rows 1 and 2 excluded by an active Select Cases. */
+  function excludedSession() {
+    installSession(bigSession(6))
+    server.use(
+      http.post('/api/sessions/test-session/select_cases', () =>
+        HttpResponse.json({
+          selected: 4, total: 6, applied: true,
+          excluded_rows: [1, 2], excluded_beyond_preview: 0,
+        }),
+      ),
+    )
+    useStore.setState({
+      caseFilter: {
+        conditions: [{ column: 'c0', operator: 'eq', value: '0', join: 'AND' }],
+        selected: 4, total: 6,
+        excludedRows: [1, 2],
+        excludedBeyondPreview: 0,
+      },
+    })
+  }
+
+  const firstColValues = () =>
+    [...document.querySelectorAll('tbody tr[class*="group"]')].map(
+      (r) => r.querySelectorAll('td')[1].textContent,
+    )
+
+  it('hides the excluded rows once Only selected is on', async () => {
+    excludedSession()
+    const user = userEvent.setup()
+    render(<DataTable />)
+    expect(firstColValues()).toHaveLength(6)
+
+    await user.click(screen.getByRole('button', { name: /only selected/i }))
+
+    await waitFor(() =>
+      expect(firstColValues()).toEqual(['0', '300', '400', '500']),
+    )
+    // Nothing left to strike through: the excluded rows are gone, not faded.
+    expect(document.querySelectorAll('.line-through')).toHaveLength(0)
+
+    await user.click(screen.getByRole('button', { name: /only selected/i }))
+    await waitFor(() => expect(firstColValues()).toHaveLength(6))
+  })
+
+  it('still addresses hidden-away rows by their unfiltered position', async () => {
+    // The reason the grid did not hide rows before: cell edits carry a row
+    // index into the UNFILTERED frame. If hiding renumbered them, every edit
+    // below the first hidden row would land on the wrong record.
+    excludedSession()
+    let patched: { row_index: number; column: string; value: unknown } | null = null
+    server.use(
+      http.patch('/api/sessions/test-session/cell', async ({ request }) => {
+        patched = (await request.json()) as typeof patched
+        return HttpResponse.json({ value: 999 })
+      }),
+    )
+    const user = userEvent.setup()
+    render(<DataTable />)
+    await user.click(screen.getByRole('button', { name: /only selected/i }))
+    await waitFor(() => expect(firstColValues()).toHaveLength(4))
+
+    // Second visible row is original row 3 — rows 1 and 2 are hidden.
+    const rows = [...document.querySelectorAll('tbody tr[class*="group"]')]
+    await user.dblClick(rows[1].querySelectorAll('td')[1])
+    await user.keyboard('999{Enter}')
+
+    await waitFor(() => expect(patched).not.toBeNull())
+    expect(patched!.row_index).toBe(3)
+    expect(patched!.column).toBe('c0')
   })
 
   it('leaves every row alone when no filter is set', () => {

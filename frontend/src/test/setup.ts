@@ -37,3 +37,11 @@ vi.mock('react-plotly.js', () => ({
     })
   },
 }))
+
+// jsdom implements no layout, so Element.scrollIntoView does not exist. The
+// grid calls it after every keyboard move to keep the focused cell in view;
+// without a stub the call lands in a requestAnimationFrame callback and
+// surfaces as an unhandled TypeError that no test can catch.
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = function scrollIntoView() {}
+}

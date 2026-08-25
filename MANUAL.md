@@ -193,9 +193,12 @@ the Data tab by clicking a column's type badge or via the Dictionary modal.)*
    (count + percent missing). To see only the rows with gaps, click **⚠ Missing**
    in the toolbar.
 5. **Clean if needed.** Use **Select Cases** (build a rule like `age ≥ 18 &
-   sex = M`) or per-column **Filter** to subset. **+ Row / + Column** to add
-   data; double-click any cell to edit it in place. **Undo/Redo** and **Freeze**
-   columns are in the toolbar.
+   sex = M`) or per-column **Filter** to subset. Excluded cases stay in the
+   sheet, struck through, and sink to the bottom of any sort; **◎ Only
+   selected** beside the button hides them from the grid entirely (a view
+   switch — nothing is deleted, and analyses skip excluded cases either way).
+   **+ Row / + Column** to add data; double-click any cell to edit it in
+   place. **Undo/Redo** and **Freeze** columns are in the toolbar.
 6. **Recompute after edits.** Any change shows an **Apply** / **Save** affordance;
    confirm it so the typed/cleaned state persists for the other tabs.
 

@@ -296,6 +296,11 @@ function DataTableBody({ session }: { session: Session }) {
   const [sortDir,     setSortDir]     = useState<SortDir>("asc");
   const [filters,     setFilters]     = useState<Record<string, string>>({});
   const [showFilters, setShowFilters] = useState(false);
+  // SPSS offers "filter out" (the case stays, struck through) and "delete
+  // unselected". This is the third, non-destructive reading of the same wish:
+  // the excluded rows drop out of the view only, so a sort, a column filter or
+  // a copy covers the selection alone, and the data underneath is untouched.
+  const [hideUnselected, setHideUnselected] = useState(false);
   const [editCell,       setEditCell]      = useState<{ rowIdx: number; col: string } | null>(null);
   const [editValue,      setEditValue]     = useState("");
   const [saving,         setSaving]        = useState(false);
@@ -421,6 +426,7 @@ function DataTableBody({ session }: { session: Session }) {
 
   useEffect(() => {
     setSortCol(null); setFilters({}); setShowMissingOnly(false); setSelectedCells(new Set());
+    setHideUnselected(false);
     setSelAnchor(null); setSelFocus(null);
   }, [session?.session_id]);
 
@@ -481,6 +487,12 @@ function DataTableBody({ session }: { session: Session }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.session_id, dataVersion, filterConditionsKey]);
 
+  // Clearing Select Cases leaves the toggle stranded: it would sit on, hiding
+  // nothing, until the next filter made rows vanish without the user asking.
+  useEffect(() => {
+    if (!caseFilter && hideUnselected) setHideUnselected(false);
+  }, [caseFilter, hideUnselected]);
+
   const missingCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const col of columns) {
@@ -516,6 +528,10 @@ function DataTableBody({ session }: { session: Session }) {
       );
     }
 
+    if (hideUnselected && excludedRows.size > 0) {
+      rows = rows.filter((row) => !excludedRows.has(row._idx));
+    }
+
     if (!hasFilters) return rows;
     return rows.filter((row) =>
       columns.every((col) => {
@@ -526,11 +542,20 @@ function DataTableBody({ session }: { session: Session }) {
         return String(cell).toLowerCase().includes(f.toLowerCase());
       })
     );
-  }, [indexedRows, filters, columns, showMissingOnly]);
+  }, [indexedRows, filters, columns, showMissingOnly, hideUnselected, excludedRows]);
 
   const displayRows = useMemo(() => {
     if (!sortCol) return filtered;
     return [...filtered].sort((a, b) => {
+      // Select Cases rows are not part of the sort. Ordering them in among the
+      // selected ones scatters the cases the filter just set aside back
+      // through the sheet, and the selection stops reading as a selection —
+      // the user asked for "the selected cases, by name" and got every case by
+      // name with some of them faded. They sink to the bottom instead, in
+      // their original order, so the sorted block above them IS the selection.
+      const aOut = excludedRows.has(a._idx), bOut = excludedRows.has(b._idx);
+      if (aOut !== bOut) return aOut ? 1 : -1;
+      if (aOut && bOut) return a._idx - b._idx;
       const av = a[sortCol], bv = b[sortCol];
       if (av == null) return 1;
       if (bv == null) return -1;
@@ -540,7 +565,7 @@ function DataTableBody({ session }: { session: Session }) {
           : String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: "base" });
       return sortDir === "asc" ? cmp : -cmp;
     });
-  }, [filtered, sortCol, sortDir]);
+  }, [filtered, sortCol, sortDir, excludedRows]);
 
   // ── Row virtualisation ──────────────────────────────────────────────────
   // A 1000 x 125 sheet is 126,000 <td>s and ~256k DOM nodes; rendering them
@@ -1794,6 +1819,10 @@ function DataTableBody({ session }: { session: Session }) {
               className="text-xs text-orange-600 hover:text-orange-700 border border-orange-300 rounded-lg px-2.5 py-1 transition-colors bg-orange-50"
             >
               ✕ Sort: {sortCol} {sortDir === "asc" ? "▲" : "▼"}
+              {/* The rows sorted are the SELECTED ones; saying so beats
+                  leaving the user to work out why the struck-through rows all
+                  sit at the end. */}
+              {caseFilter && <span className="text-orange-500/80"> · selected cases only</span>}
             </button>
           )}
           {activeFilters > 0 && (
@@ -1842,6 +1871,32 @@ function DataTableBody({ session }: { session: Session }) {
               </span>
             )}
           </button>
+
+          {/* Only offered while a selection exists — with no filter there is
+              nothing to hide, and a dead toggle invites the user to hunt for
+              the rows it did not remove. */}
+          {caseFilter && (
+            <button
+              onClick={() => setHideUnselected((v) => !v)}
+              title={hideUnselected
+                ? "Showing only the selected cases. The excluded rows are still in the data — this hides them from the grid."
+                : "Hide the excluded cases from the grid. Nothing is deleted; the rows come back when you switch this off."}
+              className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border transition-colors
+                ${hideUnselected
+                  ? "bg-violet-600 text-white border-violet-600"
+                  : "text-violet-600 border-violet-300 bg-violet-50 hover:bg-violet-100"}`}
+            >
+              {hideUnselected ? "◉" : "◎"} Only selected
+              {hideUnselected && caseFilter.excludedBeyondPreview > 0 && (
+                <span
+                  className="text-[9px] font-bold rounded-full px-1.5 py-0.5 bg-white/25"
+                  title={`${caseFilter.excludedBeyondPreview.toLocaleString()} excluded rows sit past the loaded preview and were never in the grid to hide.`}
+                >
+                  +{caseFilter.excludedBeyondPreview.toLocaleString()} unloaded
+                </span>
+              )}
+            </button>
+          )}
 
           <button
             onClick={() => setShowFilters((v) => !v)}
@@ -2192,10 +2247,13 @@ function DataTableBody({ session }: { session: Session }) {
               const visualIdx = startIdx + windowIdx;
               const origIdx = row._idx as number;
               const rowChecked = checkedRows.has(origIdx);
-              // Excluded by Select Cases. The row stays where it is — cell
-              // edits address rows by position in the unfiltered frame, so
-              // hiding rows would send edits to the wrong ones — but it reads
-              // as excluded, which is what SPSS does with a filtered case.
+              // Excluded by Select Cases. By default the row stays and reads
+              // as excluded, which is what SPSS does with a filtered case —
+              // hiding by default would make the sheet's row count disagree
+              // with the file for a filter the user may have forgotten. The
+              // "Only selected" toggle drops them on request; edits survive
+              // either way because every one of them addresses `_idx`, the
+              // position in the unfiltered frame.
               const rowExcluded = excludedRows.has(origIdx);
               // The row the cursor is in. On a wide sheet the cell you are
               // editing scrolls out of sight long before its row does, and
