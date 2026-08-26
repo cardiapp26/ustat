@@ -153,8 +153,11 @@
   </head>
   <body>
     <div id="root">
-      <!-- Static content for SEO + non-JS users (replaced by React when JS loads) -->
-      <div style="max-width:800px;margin:60px auto;padding:24px;font-family:system-ui,-apple-system,sans-serif;color:#374151">
+      <!-- Static content for SEO + non-JS users (replaced by React when JS loads).
+           The id is load-bearing: createRoot() clears this subtree on its first
+           render, so `#boot-shell` still being in the document is how the
+           recovery script below knows React never mounted. -->
+      <div id="boot-shell" style="max-width:800px;margin:60px auto;padding:24px;font-family:system-ui,-apple-system,sans-serif;color:#374151">
         <h1 style="font-size:32px;color:#1f2937;margin-bottom:8px">uSTAT — Statistical Analysis Platform</h1>
         <p style="color:#6b7280;font-size:16px;margin-bottom:24px">Free, browser-based SPSS alternative for clinicians and researchers.</p>
 
@@ -187,5 +190,81 @@
       </div>
     </noscript>
     <script type="module" src="/src/main.tsx"></script>
+
+    <!-- Boot recovery. Classic script on purpose: it has to run even when the
+         module above never executes.
+
+         The failure it clears: the service worker registers as 'prompt', so an
+         old worker keeps serving its precached index.html after a deploy. That
+         index names hashed bundles the server has since deleted. While the
+         precache holds them the old app runs fine offline, which is the point
+         -- but when the browser evicts part of that cache (Safari's 7-day cap,
+         storage pressure) the index survives and the bundle does not. The
+         request 404s, React never mounts, and the visitor is left on the SEO
+         shell above with no way out but DevTools. Reported from the field on
+         2026-08-26.
+
+         Recovery is deliberately narrow: unregister the workers, drop the
+         Cache Storage entries, reload once. localStorage is untouched -- the
+         session id and saved preferences live there and this bug is not their
+         fault. -->
+    <script>
+      (function () {
+        var HEALED = 'ustat:boot-healed'
+        // Long enough that a slow connection finishes first: healing costs the
+        // visitor a second full download of a multi-megabyte bundle, so a
+        // premature one is worse than waiting.
+        var GIVE_UP_MS = 20000
+
+        function stillOnShell() {
+          return !!document.getElementById('boot-shell')
+        }
+
+        function heal(reason) {
+          if (!stillOnShell()) return
+          // Offline, the precache is the only copy of the app there is.
+          // Deleting it strands the visitor instead of rescuing them.
+          if (navigator.onLine === false) return
+          try {
+            // One attempt per tab. A reload loop on a genuinely broken deploy
+            // would be a worse bug than the one being fixed.
+            if (sessionStorage.getItem(HEALED)) return
+            sessionStorage.setItem(HEALED, reason)
+          } catch (e) {
+            // Private mode with storage denied: no way to bound the loop, so
+            // do not start one.
+            return
+          }
+          var jobs = []
+          try {
+            if (navigator.serviceWorker) {
+              jobs.push(navigator.serviceWorker.getRegistrations().then(function (regs) {
+                return Promise.all(regs.map(function (r) { return r.unregister() }))
+              }))
+            }
+          } catch (e) { /* nothing to unregister */ }
+          try {
+            if (window.caches) {
+              jobs.push(caches.keys().then(function (keys) {
+                return Promise.all(keys.map(function (k) { return caches.delete(k) }))
+              }))
+            }
+          } catch (e) { /* nothing to clear */ }
+          Promise.all(jobs)
+            .catch(function () { /* reload regardless: a partial clear still helps */ })
+            .then(function () { location.reload() })
+        }
+
+        // Fast path: the bundle itself failed to load. Error events from
+        // resources do not bubble, hence the capture phase.
+        window.addEventListener('error', function (e) {
+          var t = e.target
+          if (t && t.tagName === 'SCRIPT' && t.src) heal('script-error')
+        }, true)
+
+        // Slow path: the request never finished, or it loaded and threw.
+        setTimeout(function () { heal('timeout') }, GIVE_UP_MS)
+      })()
+    </script>
   </body>
 </html>
