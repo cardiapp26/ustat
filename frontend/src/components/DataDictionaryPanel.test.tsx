@@ -1,10 +1,21 @@
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { server } from '../test/server'
 import { clearSession, installSession, makeSession } from '../test/testUtils'
 import DataDictionaryPanel from './DataDictionaryPanel'
+
+vi.mock('xlsx', () => ({
+  read: () => ({ SheetNames: ['Dictionary'], Sheets: { Dictionary: {} } }),
+  utils: {
+    sheet_to_json: () => [
+      ['Group', 'Diabetes Mellitus'],
+      ['Control:0', 'No:0'],
+      ['Patient:1', 'Yes:1'],
+    ],
+  },
+}))
 
 afterEach(() => clearSession())
 
@@ -98,5 +109,45 @@ describe('DataDictionaryPanel', () => {
     await waitFor(() => expect(screen.getByText(/Value labels for/)).toBeInTheDocument())
     expect(screen.getByText('A')).toBeInTheDocument()
     expect(screen.getByText('B')).toBeInTheDocument()
+  })
+
+  it('imports a wide value-label dictionary with automatic and label-based matching', async () => {
+    installSession(makeSession({
+      columns: [
+        { name: 'GROUP', dtype: 'int64', kind: 'categorical', value_labels: { '0': 'Old', '9': 'Unknown' } },
+        { name: 'DM', dtype: 'int64', kind: 'categorical', label: 'Diabetes Mellitus' },
+      ],
+      preview: [{ GROUP: 0, DM: 0 }, { GROUP: 1, DM: 1 }],
+    }))
+    let savedBody: unknown = null
+    server.use(
+      http.post('/api/sessions/test-session/metadata', async ({ request }) => {
+        savedBody = await request.json()
+        return HttpResponse.json({ status: 'ok' })
+      }),
+    )
+
+    const user = userEvent.setup()
+    render(<DataDictionaryPanel />)
+    await user.click(screen.getByRole('button', { name: /import value labels/i }))
+    await user.upload(
+      screen.getByLabelText('Dictionary file'),
+      new File(['mock workbook'], 'labels.xlsx', {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      }),
+    )
+
+    await waitFor(() => expect(screen.getByLabelText('Map Group')).toHaveValue('GROUP'))
+    expect(screen.getByLabelText('Map Diabetes Mellitus')).toHaveValue('DM')
+    await user.click(screen.getByRole('button', { name: /import 2 variables/i }))
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(savedBody).toMatchObject({
+      columns: {
+        GROUP: { value_labels: { '0': 'Control', '1': 'Patient', '9': 'Unknown' } },
+        DM: { value_labels: { '0': 'No', '1': 'Yes' } },
+      },
+    })
+    expect(screen.getByRole('button', { name: /saved/i })).toBeInTheDocument()
   })
 })

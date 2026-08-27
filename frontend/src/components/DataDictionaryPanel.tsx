@@ -1,6 +1,7 @@
 import { useState, useEffect, Fragment } from "react";
 import { useStore, type ColMeta, type Session } from "../store";
 import { saveMetadata, getUniqueValues } from "../api";
+import DictionaryValueLabelImport, { type ValueLabelImportResult } from "./DictionaryValueLabelImport";
 
 const ROLES = ["", "outcome", "predictor", "covariate", "id", "time", "event"] as const;
 const ROLE_COLORS: Record<string, string> = {
@@ -143,6 +144,27 @@ function DataDictionaryPanelBody({ session }: { session: Session }) {
     setSaved(false);
   };
 
+  const handleValueLabelImport = async ({ labelsByTarget }: ValueLabelImportResult) => {
+    const nextMeta = { ...meta };
+    for (const [target, importedLabels] of Object.entries(labelsByTarget)) {
+      const existingLabels = (nextMeta[target]?.value_labels ?? {}) as Record<string, string>;
+      nextMeta[target] = {
+        ...nextMeta[target],
+        value_labels: { ...existingLabels, ...importedLabels },
+      };
+    }
+    await saveMetadata(session.session_id, nextMeta);
+    setMeta(nextMeta);
+    setSession({
+      ...session,
+      columns: session.columns.map((column) => ({
+        ...column,
+        ...(nextMeta[column.name] ?? {}),
+      })),
+    });
+    setSaved(true);
+  };
+
   const exportCSV = () => {
     const rows = [["Name", "Label", "Type", "SPSS Measure", "Units", "Role", "Missing", "Description"]];
     for (const col of session.columns) {
@@ -170,6 +192,7 @@ function DataDictionaryPanelBody({ session }: { session: Session }) {
           <button onClick={handleAutoDetect} className="text-xs px-3 py-1.5 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50">
             Auto-detect roles
           </button>
+          <DictionaryValueLabelImport columns={session.columns} onApply={handleValueLabelImport} />
           <button onClick={exportCSV} className="text-xs px-3 py-1.5 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50">
             Export CSV
           </button>

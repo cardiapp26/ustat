@@ -188,7 +188,12 @@ the Data tab by clicking a column's type badge or via the Dictionary modal.)*
    columns whose type matches (e.g. a t-test only offers `num` outcomes).
 3. **Add labels (optional but recommended).** Click a column name → **Dictionary**
    to set a human-readable label and value labels (e.g. `0 → No`, `1 → Yes`).
-   These labels appear on every chart and table downstream.
+   These labels appear on every chart and table downstream. For bulk import,
+   open **Data Dictionary → Import value labels** and select an XLSX, XLS, or
+   CSV codebook. Put variable names in the first row and definitions below each
+   variable as `label:code` or `code=label`. Review automatic matches, correct
+   unmatched variables with the dropdowns, then apply. Imported labels replace
+   matching codes while other existing labels remain.
 4. **Check missingness.** Each header shows a red badge like `103✕ · 13%`
    (count + percent missing). To see only the rows with gaps, click **⚠ Missing**
    in the toolbar.
