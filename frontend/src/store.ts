@@ -119,6 +119,16 @@ export interface CaseCondition {
   join: "AND" | "OR";
 }
 
+/** A session the server had forgotten, put back from its autosaved copy. */
+export interface SessionRecoveryNotice {
+  /** When the restore happened. */
+  restoredAt: number;
+  /** When the restored snapshot was taken — everything after it is lost. */
+  snapshotAt: number;
+  /** The dataset's name, so the notice names the file it is talking about. */
+  name: string;
+}
+
 export interface CaseFilter {
   conditions: CaseCondition[];
   selected: number;
@@ -231,6 +241,12 @@ interface AppState {
    *  the copy frozen at the moment it was duplicated. */
   localSessionId: string | null;
   setLocalSessionId: (id: string | null) => void;
+  /** Set when the backend had forgotten the session and it was restored from
+   *  the autosaved snapshot. The restore rolls the app back to that snapshot's
+   *  moment, so it is never a silent event: whoever renders this owes the user
+   *  an explanation of what the rollback cost. Cleared when they dismiss it. */
+  sessionRecovery: SessionRecoveryNotice | null;
+  setSessionRecovery: (n: SessionRecoveryNotice | null) => void;
   activeTab: string;
   showGrid: boolean;
   plotTheme: PlotTheme;
@@ -429,6 +445,8 @@ export const useStore = create<AppState>((set, get) => ({
   originalSession: null,
   localSessionId: null,
   setLocalSessionId: (id) => set({ localSessionId: id }),
+  sessionRecovery: null,
+  setSessionRecovery: (n) => set({ sessionRecovery: n }),
   setOriginalSession: (s) => set({ originalSession: s }),
   renameSession: (rawName: string) => {
     const name = (rawName || "").trim();
@@ -474,6 +492,24 @@ export const useStore = create<AppState>((set, get) => ({
     // resets the per-column formatting to defaults.
     const sameSession = !!(s && state.session && s.session_id === state.session.session_id);
     if (sameSession) {
+      // A changed row or column count is a structural edit — a dropped column,
+      // a new one, deleted rows. Those are precisely what a session recovery
+      // cannot reconstruct: the backend holds the data in memory only, so a
+      // restart inside the autosave debounce restores a snapshot from before
+      // the edit and the work appears to undo itself. Snapshot now instead of
+      // waiting out the debounce. Cell edits keep the shape and stay debounced,
+      // which is what the debounce is for.
+      //
+      // Dynamic import: the autosave hook reads this store, so a static one
+      // would close the cycle.
+      const shapeChanged =
+        state.session!.rows !== s.rows ||
+        state.session!.columns.length !== s.columns.length;
+      if (shapeChanged) {
+        void import("./hooks/useAutoSession")
+          .then((m) => m.flushAutoSession())
+          .catch(() => { /* the debounced save still covers it */ });
+      }
       return { session: s };
     }
     return {

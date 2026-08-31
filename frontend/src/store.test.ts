@@ -1,4 +1,12 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
+
+/** The store flushes the autosave through a dynamic import; the mock records
+ *  the calls without pulling the real hook (and its timers) into these tests. */
+const flushed: number[] = [];
+vi.mock("./hooks/useAutoSession", () => ({
+  flushAutoSession: vi.fn(async () => { flushed.push(Date.now()); }),
+}));
+
 import { http, HttpResponse } from "msw";
 import { runColumnStructureMutation, useStore } from "./store";
 import { server } from "./test/server";
@@ -372,5 +380,55 @@ describe("shared column structure mutations", () => {
     await compute;
 
     expect(undoCalls).toBe(0);
+  });
+});
+
+describe("setSession autosave flush", () => {
+  // The failure this guards: the backend keeps datasets in memory, so a
+  // restart between a structural edit and the debounced autosave restores a
+  // snapshot from BEFORE the edit — the deleted column comes back, the new one
+  // disappears, and nothing says why.
+  /** The flush goes through a dynamic import, so "it did not happen" needs a
+   *  moment to become true rather than merely unobserved yet. */
+  const settle = () => new Promise((r) => setTimeout(r, 20));
+
+  beforeEach(() => {
+    flushed.length = 0;
+    useStore.setState({ session: makeSession() });
+  });
+
+  it("snapshots at once when a column count changes", async () => {
+    const base = useStore.getState().session!;
+    useStore.getState().setSession({
+      ...base,
+      columns: base.columns.slice(1),
+    });
+    await vi.waitFor(() => expect(flushed.length).toBe(1));
+  });
+
+  it("snapshots at once when the row count changes", async () => {
+    const base = useStore.getState().session!;
+    useStore.getState().setSession({ ...base, rows: base.rows - 2 });
+    await vi.waitFor(() => expect(flushed.length).toBe(1));
+  });
+
+  it("leaves a cell edit to the debounce", async () => {
+    // Flushing on every keystroke would put the whole dataset through
+    // IndexedDB for a one-character change.
+    const base = useStore.getState().session!;
+    useStore.getState().setSession({
+      ...base,
+      preview: [{ ...base.preview[0], AGE: 99 }, ...base.preview.slice(1)],
+    });
+    await settle();
+    expect(flushed.length).toBe(0);
+  });
+
+  it("leaves a different dataset alone", async () => {
+    // A new session_id is an open, not an edit: the snapshot for it does not
+    // exist yet and the debounce is the right path.
+    useStore.getState().setSession(makeSession({ session_id: "other", rows: 999 }));
+    await settle();
+    expect(flushed.length).toBe(0);
   });
 });

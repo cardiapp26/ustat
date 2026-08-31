@@ -22,6 +22,17 @@ import { useStore } from "../store";
 let inFlight: Promise<string | null> | null = null;
 /** Ids already tried and failed — never attempt them twice. */
 const hopeless = new Set<string>();
+/**
+ * Dead id → the id it was restored as.
+ *
+ * A recovery moves the store to the new id, but requests already built (or
+ * already in flight) still name the old one: a mutation is recovered and
+ * retried, and the refresh that follows it carries the id captured before the
+ * swap. Without this map that refresh is a plain 404 — the mutation lands on
+ * the server while the grid keeps showing the state from before it, which
+ * reads as "it errored and my column vanished".
+ */
+const redirected = new Map<string, string>();
 
 /** Re-upload the saved snapshot for `deadId`; returns the new server id. */
 export async function recoverSession(deadId: string, api: AxiosInstance): Promise<string | null> {
@@ -52,6 +63,17 @@ export async function recoverSession(deadId: string, api: AxiosInstance): Promis
         current.setSession(restored as never);
         useStore.getState().setLocalSessionId(rec.id);
       }
+      // The restore is a rollback to the snapshot's moment: work done between
+      // that snapshot and the crash is gone, and the request that triggered
+      // all this may now fail against a dataset that no longer has the column
+      // it names. Saying so is the difference between a recovery and the app
+      // appearing to undo the user's work by itself.
+      useStore.getState().setSessionRecovery({
+        restoredAt: Date.now(),
+        snapshotAt: rec.savedAt,
+        name: rec.name || "session",
+      });
+      redirected.set(deadId, restored.session_id);
       return restored.session_id;
     } catch {
       hopeless.add(deadId);
@@ -80,9 +102,26 @@ export function installSessionRecovery(api: AxiosInstance): void {
       const url: string = cfg?.url ?? "";
       const openId = useStore.getState().session?.session_id;
 
-      if (status !== 404 || !cfg || cfg._sessionRecovered || !openId || !url.includes(openId)) {
+      if (status !== 404 || !cfg || cfg._sessionRecovered) {
         return Promise.reject(error);
       }
+
+      // A request left over from before a recovery: the session it names is
+      // already back under a new id, so point it there rather than uploading
+      // the snapshot a second time and forking the session in two.
+      for (const [deadId, newId] of redirected) {
+        if (url.includes(deadId)) {
+          cfg._sessionRecovered = true;
+          cfg.url = url.split(deadId).join(newId);
+          return api.request(cfg);
+        }
+      }
+
+      // Only the session that is actually open gets restored. A 404 for some
+      // other id — a stale panel, a deleted matched-cohort session — is a
+      // genuine 404.
+      if (!openId || !url.includes(openId)) return Promise.reject(error);
+
       const newId = await recoverSession(openId, api);
       if (!newId) return Promise.reject(error);
 
@@ -97,4 +136,5 @@ export function installSessionRecovery(api: AxiosInstance): void {
 export function resetSessionRecovery(): void {
   inFlight = null;
   hopeless.clear();
+  redirected.clear();
 }

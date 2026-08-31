@@ -4,7 +4,7 @@ import { http, HttpResponse } from 'msw'
 import { server } from '../test/server'
 import { useStore } from '../store'
 import { makeSession } from '../test/testUtils'
-import { useAutoSession } from './useAutoSession'
+import { flushAutoSession, useAutoSession } from './useAutoSession'
 
 const saved: { name: string; payload: string }[] = []
 
@@ -91,6 +91,33 @@ describe('useAutoSession', () => {
     renderHook(() => useAutoSession())
     await tick(5_100)
     expect(saved.at(-1)?.name).toBe('tiroid.xlsx')
+  })
+
+  it('snapshots on demand instead of waiting out the debounce', async () => {
+    // Structural edits — a dropped column, deleted rows — are what a recovery
+    // cannot reconstruct. If the backend dies inside the debounce window, the
+    // restored snapshot silently predates them.
+    renderHook(() => useAutoSession())
+    act(() => { useStore.setState({ dataVersion: 1 }) })
+    await act(async () => { await flushAutoSession() })
+    expect(saved.length).toBe(1)
+  })
+
+  it('takes a fresh snapshot even while one is already in flight', async () => {
+    // The in-flight save was started BEFORE the mutation, so returning early
+    // would leave exactly the state this is meant to protect unsaved.
+    renderHook(() => useAutoSession())
+    const first = tick(5_100)
+    await act(async () => { await flushAutoSession() })
+    await first
+    expect(saved.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('is inert once the session is gone', async () => {
+    useStore.setState({ session: null })
+    renderHook(() => useAutoSession())
+    await act(async () => { await flushAutoSession() })
+    expect(saved.length).toBe(0)
   })
 
   it('does nothing without a session', async () => {

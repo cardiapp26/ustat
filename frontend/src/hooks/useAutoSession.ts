@@ -40,6 +40,28 @@ function djb2(s: string): string {
   return `${s.length}:${h >>> 0}`;
 }
 
+/** The live session's snapshot function, or null when no session is open.
+ *  Module-level so callers can force a save without threading a callback
+ *  through every component that mutates the dataset. */
+let liveSnapshot: ((source?: "auto" | "manual", force?: boolean) => Promise<void>) | null = null;
+
+/**
+ * Snapshot NOW rather than at the end of the debounce.
+ *
+ * The debounce exists so a stream of small edits does not write to IndexedDB
+ * on every keystroke, and for cell edits that is the right trade. Structural
+ * changes are different: a dropped column or a deleted block of rows is
+ * exactly what a recovery cannot reconstruct, and if the backend restarts
+ * inside the debounce window — a redeploy is the common way — the snapshot the
+ * session is restored from silently predates them. The user sees their work
+ * undone with no explanation.
+ *
+ * Safe to call with no session open; it resolves without doing anything.
+ */
+export async function flushAutoSession(): Promise<void> {
+  await liveSnapshot?.("auto", true);
+}
+
 interface AutoSaveDeps {
   /** Optional setter for a status indicator in the header. */
   onStatus?: (status: "idle" | "saving" | "saved" | "error", at?: number) => void;
@@ -81,6 +103,9 @@ export function useAutoSession({ onStatus }: AutoSaveDeps = {}): void {
 
   const lastSavedHashRef = useRef<string | null>(null);
   const inFlightRef = useRef<boolean>(false);
+  // The in-flight snapshot itself, so a forced one can wait it out rather than
+  // give up (see `flushAutoSession`).
+  const inFlightPromiseRef = useRef<Promise<void> | null>(null);
   // When a snapshot last completed, successfully or not — the debounce ceiling
   // measures from here, so a run of failures cannot defer forever either.
   const lastSaveAtRef = useRef<number>(Date.now());
@@ -98,8 +123,7 @@ export function useAutoSession({ onStatus }: AutoSaveDeps = {}): void {
 
     let cancelled = false;
 
-    const snapshot = async (source: "auto" | "manual" = "auto"): Promise<void> => {
-      if (inFlightRef.current) return;
+    const run = async (source: "auto" | "manual"): Promise<void> => {
       inFlightRef.current = true;
       try {
         onStatusRef.current?.("saving");
@@ -147,7 +171,21 @@ export function useAutoSession({ onStatus }: AutoSaveDeps = {}): void {
       }
     };
 
+    const snapshot = async (source: "auto" | "manual" = "auto", force = false): Promise<void> => {
+      if (inFlightRef.current) {
+        // A forced snapshot cannot ride on the one already running: that one
+        // read the session BEFORE the mutation being protected, so waiting it
+        // out and taking a fresh one is the whole point.
+        if (!force) return;
+        await inFlightPromiseRef.current?.catch(() => { /* its failure is its own */ });
+      }
+      const p = run(source);
+      inFlightPromiseRef.current = p;
+      await p;
+    };
+
     snapshotRef.current = snapshot;
+    liveSnapshot = snapshot;
 
     // Debounced change snapshot, with a ceiling. The effect re-runs on every
     // tracked change, so a plain debounce was cleared and restarted before it
@@ -162,6 +200,7 @@ export function useAutoSession({ onStatus }: AutoSaveDeps = {}): void {
     return () => {
       cancelled = true;
       clearTimeout(debounceTimer);
+      if (liveSnapshot === snapshot) liveSnapshot = null;
     };
   }, [sessionId, localId, filename, nRows, nCols, activeTab, engine, caseFilter, valueLabelSig, dataVersion]);
 
