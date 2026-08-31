@@ -55,6 +55,7 @@ const KIND_LABEL: Record<string, string> = {
 };
 
 import { SelectCasesModal } from "./datatable/SelectCasesModal";
+import { DeduplicateModal } from "./datatable/DeduplicateModal";
 import { ValueLabelsModal } from "./datatable/ValueLabelsModal";
 import { FormulaFillModal } from "./datatable/FormulaFillModal";
 import { FindReplaceModal } from "./datatable/FindReplaceModal";
@@ -310,6 +311,7 @@ function DataTableBody({ session }: { session: Session }) {
   const [saving,         setSaving]        = useState(false);
   const [showMissingOnly, setShowMissingOnly] = useState(false);
   const [showSelectCases, setShowSelectCases] = useState(false);
+  const [showDedupe,      setShowDedupe]      = useState(false);
   const [showDictionary,  setShowDictionary]  = useState(false);
 
   // Drag & drop column reordering
@@ -833,6 +835,21 @@ function DataTableBody({ session }: { session: Session }) {
       const res = await api.get(`/api/stats/${session.session_id}/refresh`);
       useStore.getState().setSession({ ...session, ...res.data }); bumpUndo();
     } catch { /* ignore */ }
+  };
+
+  // Row positions move when rows are dropped, and ticks, cell selections and
+  // Select Cases marks are all stored as positions. Keeping them would point
+  // at whichever records slid into those slots, so they go.
+  const afterRowsDropped = async (deleted: number) => {
+    if (!session || deleted <= 0) return;
+    setCheckedRows(new Set());
+    setSelectedCells(new Set());
+    setSelAnchor(null); setSelFocus(null);
+    try {
+      const res = await api.get(`/api/stats/${session.session_id}/refresh`);
+      useStore.getState().setSession({ ...session, ...res.data });
+      bumpUndo();
+    } catch { /* the grid keeps the rows it has; the next refresh corrects it */ }
   };
 
   // ── Bulk tick-and-delete (row gutter + column header checkboxes) ────────────
@@ -1710,6 +1727,18 @@ function DataTableBody({ session }: { session: Session }) {
             setShowSelectCases(false);
           }}
           onClose={() => setShowSelectCases(false)}
+        />
+      )}
+
+      {showDedupe && session && (
+        <DeduplicateModal
+          columns={columns}
+          sessionId={session.session_id}
+          onDone={(deleted) => {
+            setShowDedupe(false);
+            void afterRowsDropped(deleted);
+          }}
+          onClose={() => setShowDedupe(false)}
         />
       )}
 
@@ -2883,6 +2912,10 @@ function DataTableBody({ session }: { session: Session }) {
             </button>
           )}
           <div className="border-t border-gray-100 mt-0.5" />
+          <button onClick={() => { setRowCtx(null); setShowDedupe(true); }}
+            className="w-full text-left px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50 flex items-center gap-2">
+            🧹 Delete duplicates…
+          </button>
           <button onClick={() => deleteRow(rowCtx.idx)}
             className="w-full text-left px-3 py-1.5 text-xs text-red-500 hover:bg-red-50 flex items-center gap-2">
             🗑️ Delete row

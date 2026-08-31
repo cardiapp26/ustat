@@ -585,6 +585,25 @@ export const selectCases = (sessionId: string, conditions: object[], apply = tru
 export const clearCases  = (sessionId: string) =>
   api.delete(`/api/sessions/${sessionId}/select_cases`);
 
+/** Duplicate rows by a chosen key. `dryRun` counts them without deleting. */
+export interface DeduplicateResult {
+  deleted: number;
+  duplicate_rows: number;
+  remaining_rows: number;
+  blank_key_rows: number;
+  key_columns: string[];
+  keep: "first" | "last";
+}
+export const deduplicateRows = (
+  sessionId: string,
+  keyColumns: string[],
+  keep: "first" | "last",
+  dryRun: boolean,
+) =>
+  api.post<DeduplicateResult>(`/api/compute/${sessionId}/deduplicate`, {
+    key_columns: keyColumns, keep, dry_run: dryRun,
+  });
+
 // Factor Analysis / PCA
 export const runFactorPCA = (data: object) => api.post("/api/factor/factor_pca", data);
 

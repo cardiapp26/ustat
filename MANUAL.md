@@ -203,7 +203,12 @@ the Data tab by clicking a column's type badge or via the Dictionary modal.)*
    selected** beside the button hides them from the grid entirely (a view
    switch — nothing is deleted, and analyses skip excluded cases either way).
    **+ Row / + Column** to add data; double-click any cell to edit it in
-   place. **Undo/Redo** and **Freeze** columns are in the toolbar.
+   place. Right-click a row number → **Delete duplicates…** to drop repeated
+   records: tick the columns that define a duplicate (nothing ticked = rows
+   identical in every column), keep the first or last of each group, and the
+   dialog counts what would go before you commit. Rows with no value in any
+   key column are left alone. **Undo/Redo** and **Freeze** columns are in the
+   toolbar.
 6. **Recompute after edits.** Any change shows an **Apply** / **Save** affordance;
    confirm it so the typed/cleaned state persists for the other tabs.
 

@@ -2005,6 +2005,69 @@ def delete_rows(session_id: str, req: DeleteRowsRequest):
     return {"deleted": len(req.row_indices), "remaining_rows": len(df)}
 
 
+# ── 7b. Delete duplicate rows ───────────────────────────────────────────────
+
+class DeduplicateRequest(BaseModel):
+    # Empty = every column, i.e. only rows identical everywhere are duplicates.
+    key_columns: List[str] = []
+    keep: str = "first"
+    dry_run: bool = False
+
+
+@router.post("/{session_id}/deduplicate")
+def deduplicate(session_id: str, req: DeduplicateRequest):
+    """Drop rows that repeat an earlier row's key.
+
+    What counts as a duplicate is the caller's decision, not this endpoint's.
+    Two visits by one patient share an identity number and are two records;
+    a row pasted twice is one. So the key is passed in, and `dry_run` answers
+    "how many would go" before anything does.
+    """
+    df = _get_df(session_id)
+    if req.keep not in ("first", "last"):
+        raise HTTPException(status_code=422, detail="keep must be 'first' or 'last'")
+    unknown = [c for c in req.key_columns if c not in df.columns]
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"Unknown key columns: {unknown}")
+
+    keys = req.key_columns or list(df.columns)
+
+    # pandas treats NaN == NaN as equal here, so rows carrying no key at all
+    # would collapse into one and patients would be deleted for having an empty
+    # field. A row that says nothing about its identity cannot duplicate
+    # another; one filled key field is a claim, and two rows making the same
+    # claim are duplicates.
+    blank_key = df[keys].isna().all(axis=1)
+    dup = df.duplicated(subset=keys, keep=req.keep) & ~blank_key
+
+    n_dup = int(dup.sum())
+    if req.dry_run:
+        return {
+            "deleted": 0,
+            "duplicate_rows": n_dup,
+            "remaining_rows": int(len(df) - n_dup),
+            "blank_key_rows": int(blank_key.sum()),
+            "key_columns": keys,
+            "keep": req.keep,
+        }
+
+    # Positions are how the grid addresses rows, so the index is reset the way
+    # delete_rows resets it: a gap would send later edits to the wrong record.
+    df = df[~dup].reset_index(drop=True)
+    store.save(session_id, df)
+    store.log_action(session_id, "deduplicate", {
+        "key_columns": keys, "keep": req.keep, "n_deleted": n_dup,
+    })
+    return {
+        "deleted": n_dup,
+        "duplicate_rows": n_dup,
+        "remaining_rows": int(len(df)),
+        "blank_key_rows": int(blank_key.sum()),
+        "key_columns": keys,
+        "keep": req.keep,
+    }
+
+
 # ── 8. Add row ─────────────────────────────────────────────────────────────
 
 class AddRowRequest(BaseModel):

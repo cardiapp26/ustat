@@ -232,6 +232,43 @@ describe('DataTable row virtualisation', () => {
     expect(patched!.column).toBe('c0')
   })
 
+  it('opens the duplicate-row cleanup from the row menu and refreshes after it', async () => {
+    // The menu is where a user notices duplicates — they are looking at two
+    // identical rows when they right-click.
+    installSession(bigSession(6))
+    let refreshed = 0
+    server.use(
+      http.post('/api/compute/test-session/deduplicate', async ({ request }) => {
+        const body = (await request.json()) as { dry_run: boolean }
+        return HttpResponse.json({
+          deleted: body.dry_run ? 0 : 2,
+          duplicate_rows: 2, remaining_rows: 4, blank_key_rows: 0,
+          key_columns: [], keep: 'first',
+        })
+      }),
+      http.get('/api/stats/test-session/refresh', () => {
+        refreshed += 1
+        return HttpResponse.json({ rows: 4, columns: [], preview: [] })
+      }),
+    )
+    const user = userEvent.setup()
+    render(<DataTable />)
+
+    const gutter = document.querySelectorAll('tbody tr[class*="group"]')[0].querySelectorAll('td')[0]
+    fireEvent.contextMenu(gutter)
+    await user.click(screen.getByText(/Delete duplicates/))
+
+    await waitFor(() =>
+      expect(screen.getByText(/2 rows would be deleted/)).toBeInTheDocument(),
+    )
+    await user.click(screen.getByRole('button', { name: /Delete 2 rows/ }))
+
+    // Ticks and selections are stored as row positions, so dropping rows has
+    // to be followed by a reload rather than a re-render of stale positions.
+    await waitFor(() => expect(refreshed).toBe(1))
+    expect(screen.queryByText(/would be deleted/)).not.toBeInTheDocument()
+  })
+
   it('leaves every row alone when no filter is set', () => {
     installSession(bigSession(10))
     render(<DataTable />)
