@@ -1800,6 +1800,147 @@ def pie(req: PieRequest):
     }
 
 
+class WaffleRequest(BaseModel):
+    session_id: str
+    category: str
+    units: int = 100              # cells in the grid: 100 = "N in a hundred"
+    max_levels: int = 8           # the rest are folded into "Other"
+
+
+def _largest_remainder(shares: list[float], units: int) -> list[int]:
+    """Whole cells per level that add up to ``units`` exactly.
+
+    Rounding each share on its own loses or invents a cell — 49.4 + 27.4 + 23.2
+    rounds to 99 — and a hundred-cell grid with 99 cells filled reads as one
+    missing person. Hamilton's method hands the leftover cells to the largest
+    remainders, so the grid is always full and no level is off by more than one.
+    """
+    # Rounded first: 0.494 * 100 is 49.39999999999999 in binary, and a tie
+    # between two .4 remainders would otherwise be decided by that noise.
+    raw = [round(sh * units, 9) for sh in shares]
+    floors = [int(np.floor(v)) for v in raw]
+    left = units - sum(floors)
+    # Ties go to the larger share, then to the earlier level — deterministic,
+    # so the same data always draws the same grid.
+    order = sorted(
+        range(len(raw)), key=lambda i: (raw[i] - floors[i], raw[i], -i), reverse=True
+    )
+    for i in order[:left]:
+        floors[i] += 1
+    return floors
+
+
+@router.post("/waffle")
+def waffle(req: WaffleRequest):
+    """Composition as a grid of countable units — the icon array.
+
+    "Twelve in a hundred" is how a risk is meant to be told to a patient, and
+    a hundred squares with twelve filled is the figure that says it; a pie
+    asks the reader to judge an angle. Each level's cells are integers that
+    sum to the grid exactly, and the count behind each is returned so the
+    hover can say "12 of 100 — 47 of 391 patients".
+    """
+    df = _get_df(req.session_id)
+    if req.category not in df.columns:
+        raise HTTPException(status_code=400, detail=f"Column '{req.category}' not found")
+    if not (10 <= req.units <= 1000):
+        raise HTTPException(status_code=400, detail="units must be between 10 and 1000")
+    if req.max_levels < 2:
+        raise HTTPException(status_code=400, detail="max_levels must be at least 2")
+    series = df[req.category].dropna()
+    if series.empty:
+        raise HTTPException(status_code=400, detail=f"Nothing to plot for '{req.category}'.")
+    counts = series.value_counts()
+    levels = [lv for lv in sorted_groups(series) if lv in counts.index]
+    folded = 0
+    if len(levels) > req.max_levels:
+        keep = levels[: req.max_levels - 1]
+        folded = len(levels) - len(keep)
+        other = int(sum(int(counts[lv]) for lv in levels[len(keep):]))
+        entries = [(level_key(lv), int(counts[lv])) for lv in keep] + [("Other", other)]
+    else:
+        entries = [(level_key(lv), int(counts[lv])) for lv in levels]
+    n = int(sum(c for _, c in entries))
+    cells = _largest_remainder([c / n for _, c in entries], req.units)
+    return {
+        "type": "waffle",
+        "category": req.category,
+        "n": n,
+        "units": req.units,
+        "levels": [
+            {"label": lab, "count": c, "percent": c / n * 100.0, "cells": k}
+            for (lab, c), k in zip(entries, cells)
+        ],
+        "n_folded_into_other": folded,
+    }
+
+
+class WaterfallRequest(BaseModel):
+    session_id: str
+    y: str                                  # per-subject value, e.g. % change from baseline
+    group: Optional[str] = None             # colours the bars, e.g. best response
+    label: Optional[str] = None             # names each bar on hover, e.g. patient id
+    # Lines the bars are judged against, counted on the side they point to:
+    # a positive threshold counts bars at or above it, a negative one bars at
+    # or below. RECIST's +20 / -30 is the usual pair.
+    thresholds: Optional[List[float]] = None
+
+
+@router.post("/waterfall")
+def waterfall(req: WaterfallRequest):
+    """One bar per subject, sorted — the oncology waterfall plot.
+
+    The sort is the chart: bars ranked from the largest increase to the
+    largest decrease turn a column of numbers into the shape of the
+    response, and the share past a threshold is read off the x axis. Missing
+    values are counted, not silently dropped, because a waterfall of the
+    patients who happened to have a follow-up scan is a different figure
+    from the one it implies.
+    """
+    df = _get_df(req.session_id)
+    for col in (req.y, req.group, req.label):
+        if col and col not in df.columns:
+            raise HTTPException(status_code=400, detail=f"Column '{col}' not found")
+    values = coerce_numeric(df[req.y]).replace([np.inf, -np.inf], np.nan)
+    frame = pd.DataFrame({"v": values}, index=df.index)
+    if req.group:
+        frame["g"] = df[req.group].map(level_key)
+    if req.label:
+        frame["l"] = df[req.label].astype(str)
+    n_missing = int(frame["v"].isna().sum())
+    frame = frame.dropna(subset=["v"]).sort_values("v", ascending=False)
+    if frame.empty:
+        raise HTTPException(status_code=400, detail=f"No numeric values in '{req.y}'.")
+    rows = [
+        {
+            "rank": i + 1,
+            "value": float(r["v"]),
+            **({"group": r["g"] if pd.notna(r["g"]) else None} if req.group else {}),
+            **({"label": r["l"]} if req.label else {}),
+        }
+        for i, (_, r) in enumerate(frame.iterrows())
+    ]
+    thresholds = []
+    for t in req.thresholds or []:
+        if t >= 0:
+            k = int((frame["v"] >= t).sum())
+            thresholds.append({"value": float(t), "side": "at_or_above", "n": k})
+        else:
+            k = int((frame["v"] <= t).sum())
+            thresholds.append({"value": float(t), "side": "at_or_below", "n": k})
+    return {
+        "type": "waterfall",
+        "y": req.y,
+        "group": req.group,
+        "label": req.label,
+        "n": int(len(frame)),
+        "n_missing": n_missing,
+        "rows": rows,
+        "thresholds": thresholds,
+        "warnings": _plausibility_warnings(req.y, df[req.y]),
+    }
+
+
 class BalloonRequest(BaseModel):
     session_id: str
     row: str
