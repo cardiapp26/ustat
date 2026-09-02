@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applySeriesPins, baseLayout } from './plotStyle'
+import { applySeriesPins, applyHighlight, baseLayout, ordinalLadder } from './plotStyle'
 import { DEFAULT_THEME, PALETTES, paletteOf, type PlotTheme } from './store'
 import { PRESET_ORDER, THEME_PRESETS, legendLayout } from './lib/plotPresets'
 
@@ -121,5 +121,66 @@ describe('legend position', () => {
   it('reaches the base layout', () => {
     const l = baseLayout({ ...DEFAULT_THEME, legendPosition: 'none' }, true)
     expect(l.showlegend).toBe(false)
+  })
+})
+
+describe('ordinalLadder', () => {
+  it('runs light to dark in one hue, one step per level', () => {
+    const ladder = ordinalLadder('#334eac', 4)
+    expect(ladder).toHaveLength(4)
+    // Lightness falls monotonically: each step carries more ink than the last.
+    const lum = (hex: string) => parseInt(hex.slice(1, 3), 16) + parseInt(hex.slice(3, 5), 16) + parseInt(hex.slice(5, 7), 16)
+    for (let i = 1; i < ladder.length; i++) expect(lum(ladder[i])).toBeLessThan(lum(ladder[i - 1]))
+    // All valid hex, none white or black.
+    for (const c of ladder) expect(c).toMatch(/^#[0-9a-f]{6}$/)
+    expect(ladder[0]).not.toBe('#ffffff')
+    expect(ladder[3]).not.toBe('#000000')
+  })
+
+  it('keeps a grey base grey', () => {
+    const ladder = ordinalLadder('#8f8e88', 3)
+    for (const c of ladder) {
+      const [r, g, b] = [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16))
+      // A warm grey keeps its faint warmth, but never turns into a colour.
+      expect(Math.max(r, g, b) - Math.min(r, g, b)).toBeLessThanOrEqual(8)
+    }
+  })
+
+  it('hands the base back for a single level or a colour it cannot read', () => {
+    expect(ordinalLadder('#334eac', 1)).toEqual(['#334eac'])
+    expect(ordinalLadder('rgba(1,2,3,0.5)', 4)).toEqual(['rgba(1,2,3,0.5)'])
+  })
+})
+
+describe('applyHighlight', () => {
+  const traces = [
+    { name: 'Control', marker: { color: '#6366f1' } },
+    { name: 'Treatment', marker: { color: '#f59e0b' }, fillcolor: '#f59e0b55' },
+    { marker: { color: '#10b981' } },
+    { name: 'By value', marker: { color: [1, 2, 3] } },
+  ]
+
+  it('colours the named group and greys every other named series', () => {
+    const out = applyHighlight(traces, 'Treatment', '#f5572f')!
+    expect((out[0].marker as { color: string }).color).toBe('#b0afa9')
+    expect((out[1].marker as { color: string }).color).toBe('#f5572f')
+    expect(out[1].fillcolor).toBe('#f5572f55')
+  })
+
+  it('leaves unnamed traces and array colours alone', () => {
+    const out = applyHighlight(traces, 'Treatment', '#f5572f')!
+    expect((out[2].marker as { color: string }).color).toBe('#10b981')
+    expect((out[3].marker as { color: number[] }).color).toEqual([1, 2, 3])
+  })
+
+  it('does nothing when the group is not on the chart, or blank', () => {
+    expect(applyHighlight(traces, 'Placebo', '#f5572f')).toBe(traces)
+    expect(applyHighlight(traces, '  ', '#f5572f')).toBe(traces)
+  })
+})
+
+describe('grayscale palette', () => {
+  it('is a ladder with no repeated grey', () => {
+    expect(new Set(PALETTES.grayscale).size).toBe(PALETTES.grayscale.length)
   })
 })

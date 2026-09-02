@@ -16,6 +16,8 @@ const PALETTE_LABELS: Record<PaletteName, string> = {
   grayscale: "Grayscale",
   warm:      "Warm",
   jama:      "JAMA",
+  porcelain: "Porcelain (one hue, ordered)",
+  palm:      "Palm (soft, unordered)",
   custom:    "Custom",
 };
 
@@ -245,6 +247,38 @@ export default function PlotThemeBar() {
               </form>
               <p className="mt-1 text-[10px] text-gray-400">
                 Matched against the label printed in the legend, exactly as shown.
+              </p>
+            </div>
+
+            {/* One group in colour, the rest in grey. The figure a trial
+                paper draws when the intervention arm is the story and the
+                comparators are context. Overrides the pins above: the point
+                is that nothing else keeps its colour. */}
+            <div>
+              <p className="text-xs text-gray-500 mb-1.5">Highlight one group</p>
+              <div className="flex gap-1.5">
+                <input
+                  value={plotTheme.highlightGroup}
+                  onChange={(e) => setPlotTheme({ highlightGroup: e.target.value })}
+                  placeholder="Group label, e.g. Treatment"
+                  aria-label="Group to highlight"
+                  className="min-w-0 flex-1 rounded border border-gray-300 px-1.5 py-1 text-[11px] outline-none focus:border-indigo-400"
+                />
+                <input
+                  type="color"
+                  aria-label="Highlight colour"
+                  value={plotTheme.highlightColor}
+                  onChange={(e) => setPlotTheme({ highlightColor: e.target.value })}
+                  className="h-7 w-8 shrink-0 cursor-pointer rounded border border-gray-200 bg-white p-0.5"
+                />
+                {plotTheme.highlightGroup && (
+                  <button type="button" aria-label="Clear highlight"
+                    onClick={() => setPlotTheme({ highlightGroup: "" })}
+                    className="px-1 text-[11px] text-gray-400 hover:text-red-500">✕</button>
+                )}
+              </div>
+              <p className="mt-1 text-[10px] text-gray-400">
+                Every other series turns grey. Matched against the legend label, exactly as shown.
               </p>
             </div>
 

@@ -57,7 +57,9 @@ export interface Session {
   case_filter?: CaseFilter | null;
 }
 
-export type PaletteName = "indigo" | "clinical" | "nature" | "grayscale" | "warm" | "jama" | "custom";
+export type PaletteName =
+  | "indigo" | "clinical" | "nature" | "grayscale" | "warm" | "jama"
+  | "porcelain" | "palm" | "custom";
 
 export interface PlotTheme {
   palette: PaletteName;
@@ -80,6 +82,13 @@ export interface PlotTheme {
    * so adding a third arm silently recolours the first two.
    */
   seriesColors: Record<string, string>;
+  /**
+   * One group drawn in an accent while every other series recedes to grey —
+   * the "treatment arm in colour, everything else quiet" figure. Matched
+   * against the legend label, like seriesColors. Blank = off.
+   */
+  highlightGroup: string;
+  highlightColor: string;
 }
 
 export const DEFAULT_THEME: PlotTheme = {
@@ -97,15 +106,26 @@ export const DEFAULT_THEME: PlotTheme = {
   plotBg: "#ffffff",
   customPalette: ["#4c72b0", "#dd8452", "#55a868", "#c44e52", "#8172b3", "#937860", "#da8bc3", "#8c8c8c"],
   seriesColors: {},
+  highlightGroup: "",
+  highlightColor: "#f5572f",
 };
 
 export const PALETTES: Record<PaletteName, string[]> = {
   indigo:    ["#6366f1","#f59e0b","#10b981","#ef4444","#8b5cf6","#06b6d4","#84cc16","#f97316"],
   clinical:  ["#1a5276","#2874a6","#5dade2","#27ae60","#d35400","#8e44ad","#c0392b","#2c3e50"],
   nature:    ["#27ae60","#2ecc71","#f39c12","#e67e22","#8e44ad","#3498db","#e74c3c","#1abc9c"],
-  grayscale: ["#111827","#374151","#6b7280","#9ca3af","#d1d5db","#4b5563","#1f2937","#374151"],
+  // A monotone ladder, darkest first: the most important series takes the
+  // most ink. The old list doubled back on itself (#4b5563 after #d1d5db, then
+  // two repeats), so a six-group figure had two groups in one grey.
+  grayscale: ["#1c1c1a","#4a4944","#6a6963","#8f8e88","#b0afa9","#c6c5bf","#d8d7d1","#2e2d29"],
   warm:      ["#dc2626","#ea580c","#d97706","#ca8a04","#65a30d","#16a34a","#0891b2","#7c3aed"],
   jama:      ["#003087","#7f0000","#003b00","#5e0070","#663300","#004c4c","#004080","#380038"],
+  // Single-hue blue ladder: lightness carries the order, the hue never
+  // changes. For groups that are ranked — tertiles, stages, grades.
+  porcelain: ["#081f5c","#334eac","#7096d1","#bad6eb","#d0e3ff","#4d82c6","#1b3159","#9eb3cd"],
+  // Low-saturation greens with one amber: hue separates a few unordered
+  // groups without any of them shouting.
+  palm:      ["#43593b","#d4a017","#77835a","#f2d17e","#acad79","#58402e","#929960","#5a7049"],
   // Placeholder: the live values come from theme.customPalette, so that a
   // palette the user edits is not frozen into a module constant.
   custom:    ["#4c72b0","#dd8452","#55a868","#c44e52","#8172b3","#937860","#da8bc3","#8c8c8c"],

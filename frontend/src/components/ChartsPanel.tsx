@@ -1,7 +1,9 @@
 import { useState, useRef } from "react";
 import { useStore, isNumericKind, isCategoricalKind, type Session } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
-import { usePlotLayout, usePalette, useTraceDefaults, applySeriesPins } from "../plotStyle";
+import {
+  usePlotLayout, usePalette, useTraceDefaults, applySeriesPins, applyHighlight, ordinalLadder,
+} from "../plotStyle";
 import { getHistogram, getScatter, getBoxplot, getBar, getPairedBox, getDumbbell, getCompareMeans, getErrorPlot, getEcdf, getPie, getBalloon, getSummaryStats, getFacet, getLinePlot, getSlopePlot, getSankey, getStackPlot, getRidgePlot, getSets } from "../api";
 import type { PlotData, PlotLayout, PlotCaptureHandle } from "../lib/plotTypes";
 import TitledPlot from "./TitledPlot";
@@ -395,13 +397,25 @@ function ChartsPanelBody({ session }: { session: Session }) {
 
   const chartRef = useRef<PlotCaptureHandle | null>(null);
   const seriesColors = useStore((s) => s.plotTheme.seriesColors);
-  const traces = applySeriesPins(
-    plotData ? buildTraces(
-      plotData, chartType, pal, td, session, showPoints, donut ? 0.45 : 0, showMean,
-      chartType === "bar" ? barHorizontal : horizontal,
-      { stat: histStat, display: histDisplay, rug: histRug, gradientScale, varyLineStyle },
-    ) : null,
-    seriesColors,
+  const highlightGroup = useStore((s) => s.plotTheme.highlightGroup);
+  const highlightColor = useStore((s) => s.plotTheme.highlightColor);
+  // An ORDERED grouping column takes a lightness ladder of the palette's
+  // first hue instead of the palette's unrelated hues, so tertile 3 is
+  // visibly "more" than tertile 1 without a trip to the legend.
+  const colourMeta = color ? session.columns.find((c) => c.name === color) : undefined;
+  const groupLevels = colourMeta?.kind === "ordinal" ? countGroupLevels(plotData) : 0;
+  const chartPalette = groupLevels >= 2 ? ordinalLadder(pal[0], groupLevels) : pal;
+  const traces = applyHighlight(
+    applySeriesPins(
+      plotData ? buildTraces(
+        plotData, chartType, chartPalette, td, session, showPoints, donut ? 0.45 : 0, showMean,
+        chartType === "bar" ? barHorizontal : horizontal,
+        { stat: histStat, display: histDisplay, rug: histRug, gradientScale, varyLineStyle },
+      ) : null,
+      seriesColors,
+    ),
+    highlightGroup,
+    highlightColor,
   );
   const brackets = buildBrackets(plotData, comparisons);
   const groupedChart = chartType === "boxplot" || chartType === "violin"
@@ -2506,6 +2520,33 @@ function fitTraces(
 
 /** Per-chart drawing choices that live only on the client — the backend
  *  neither needs them nor echoes them. */
+/** How many groups a chart response carries, whatever shape it came in —
+ *  the count a lightness ladder needs before a single trace is built. Zero
+ *  when the response has no grouping, so the caller keeps the palette. */
+function countGroupLevels(d: Record<string, unknown> | null): number {
+  if (!d) return 0;
+  const lengthOf = (key: string): number => {
+    const v = d[key];
+    return Array.isArray(v) ? v.length : 0;
+  };
+  // Box, violin, strip, raincloud, histogram: one entry per group.
+  if (Array.isArray(d.groups)) return lengthOf("groups");
+  // Grouped bar, line plot: one series per group.
+  if (Array.isArray(d.series)) return lengthOf("series");
+  if (Array.isArray(d.curves)) return lengthOf("curves");
+  if (Array.isArray(d.ridges)) return lengthOf("ridges");
+  // Scatter, slope plot: a group key on each row.
+  const key = typeof d.color === "string" ? d.color : null;
+  const rows = (Array.isArray(d.points) ? d.points : Array.isArray(d.pairs) ? d.pairs : null) as
+    Array<Record<string, unknown>> | null;
+  if (rows && rows.length) {
+    const field = Array.isArray(d.pairs) ? "group" : key;
+    if (!field) return 0;
+    return new Set(rows.map((r) => String(r[field]))).size;
+  }
+  return 0;
+}
+
 /** A column's display label, falling back to its name. */
 function columnLabel(session: Session, name: string): string {
   const meta = session.columns.find((c) => c.name === name);
