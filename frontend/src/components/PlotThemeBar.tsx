@@ -4,6 +4,9 @@
  */
 import { useState } from "react";
 import { useStore, PALETTES, DEFAULT_THEME, paletteOf, type PaletteName } from "../store";
+import {
+  THEME_PRESETS, PRESET_ORDER, LEGEND_POSITION_LABELS, type LegendPosition,
+} from "../lib/plotPresets";
 import { Palette } from "lucide-react";
 
 const PALETTE_LABELS: Record<PaletteName, string> = {
@@ -24,7 +27,7 @@ const FONTS = [
 ];
 
 export default function PlotThemeBar() {
-  const { plotTheme, setPlotTheme } = useStore();
+  const { plotTheme, setPlotTheme, setShowGrid } = useStore();
   const [open, setOpen] = useState(false);
   const [pinName, setPinName] = useState("");
   const [pinColour, setPinColour] = useState("#c0392b");
@@ -46,6 +49,71 @@ export default function PlotThemeBar() {
           {/* Panel */}
           <div className="absolute right-0 top-9 z-20 bg-white border border-gray-200 rounded-xl shadow-2xl p-4 w-72 space-y-4">
             <p className="text-sm font-semibold text-gray-800">Chart Theme</p>
+
+            {/* Frame preset — ggplot2's theme_*(). The palette colours the
+                series; this is the grid, axis lines and panel around them.
+                Picking one also sets the panel colour and the grid default,
+                both of which the controls below can still override. */}
+            <div>
+              <p className="text-xs text-gray-500 mb-2">Frame (ggplot2 theme)</p>
+              <div className="grid grid-cols-2 gap-1.5">
+                {PRESET_ORDER.map((p) => {
+                  const spec = THEME_PRESETS[p];
+                  const active = plotTheme.preset === p;
+                  const box = spec.axisLine === "box";
+                  const lb = spec.axisLine === "lb";
+                  return (
+                    <button
+                      key={p}
+                      type="button"
+                      title={spec.description}
+                      aria-pressed={active}
+                      onClick={() => {
+                        setPlotTheme({ preset: p, plotBg: spec.plotBg });
+                        setShowGrid(spec.gridDefault);
+                      }}
+                      className={`flex items-center gap-2 px-2 py-1.5 rounded-lg border transition-colors text-left
+                        ${active ? "bg-indigo-50 border-indigo-200" : "border-transparent hover:bg-gray-50"}`}
+                    >
+                      {/* Thumbnail: the panel, its grid and its axis lines. */}
+                      <span
+                        aria-hidden
+                        className="w-7 h-5 shrink-0 rounded-sm"
+                        style={{
+                          backgroundColor: spec.plotBg,
+                          backgroundImage: spec.gridDefault
+                            ? `linear-gradient(${spec.gridColor} 1px, transparent 1px), linear-gradient(90deg, ${spec.gridColor} 1px, transparent 1px)`
+                            : undefined,
+                          backgroundSize: "6px 6px",
+                          borderStyle: "solid",
+                          borderColor: box || lb ? spec.lineColor : "#e5e7eb",
+                          borderWidth: box ? 1 : lb ? "0 0 1px 1px" : 1,
+                        }}
+                      />
+                      <span className={`text-[11px] font-mono ${active ? "text-indigo-700 font-semibold" : "text-gray-600"}`}>
+                        {spec.label}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Legend placement — theme(legend.position). A panel that places
+                its own legend keeps that; this is the default for the rest. */}
+            <div>
+              <p className="text-xs text-gray-500 mb-1.5">Legend</p>
+              <select
+                value={plotTheme.legendPosition}
+                aria-label="Legend position"
+                onChange={(e) => setPlotTheme({ legendPosition: e.target.value as LegendPosition })}
+                className="select w-full text-xs"
+              >
+                {(Object.keys(LEGEND_POSITION_LABELS) as LegendPosition[]).map((k) => (
+                  <option key={k} value={k}>{LEGEND_POSITION_LABELS[k]}</option>
+                ))}
+              </select>
+            </div>
 
             {/* Palette swatches */}
             <div>
@@ -222,6 +290,19 @@ export default function PlotThemeBar() {
               </div>
               <input type="range" min={2} max={14} step={1} value={plotTheme.markerSize}
                 onChange={(e) => setPlotTheme({ markerSize: +e.target.value })}
+                className="w-full accent-indigo-500" />
+            </div>
+
+            {/* Marker opacity — ggplot2's alpha. Was in the theme with no
+                control: the only way to change it was to edit localStorage. */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <p className="text-xs text-gray-500">Marker Opacity</p>
+                <span className="text-xs font-mono text-gray-600">{Math.round(plotTheme.markerOpacity * 100)}%</span>
+              </div>
+              <input type="range" min={0.1} max={1} step={0.05} value={plotTheme.markerOpacity}
+                aria-label="Marker opacity"
+                onChange={(e) => setPlotTheme({ markerOpacity: +e.target.value })}
                 className="w-full accent-indigo-500" />
             </div>
 

@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { runColumnStructureMutation } from "./lib/columnStructureLock";
 import type { EngineKind } from "./lib/engine/types";
+import type { LegendPosition, ThemePreset } from "./lib/plotPresets";
 
 export { runColumnStructureMutation } from "./lib/columnStructureLock";
 
@@ -60,6 +61,10 @@ export type PaletteName = "indigo" | "clinical" | "nature" | "grayscale" | "warm
 
 export interface PlotTheme {
   palette: PaletteName;
+  /** ggplot2-style frame: grid, axis lines, panel background. The palette
+   *  colours the series; this styles everything around them. */
+  preset: ThemePreset;
+  legendPosition: LegendPosition;
   fontFamily: string;
   fontSize: number;
   lineWidth: number;
@@ -79,6 +84,11 @@ export interface PlotTheme {
 
 export const DEFAULT_THEME: PlotTheme = {
   palette: "indigo",
+  // "minimal" is the frame every chart already had: white panel, faint
+  // grid, no axis lines. A saved theme from before presets existed loads
+  // into it unchanged.
+  preset: "minimal",
+  legendPosition: "auto",
   fontFamily: "system-ui, sans-serif",
   fontSize: 11,
   lineWidth: 2,
@@ -260,6 +270,7 @@ interface AppState {
   renameSession: (name: string) => void;
   setActiveTab: (t: string) => void;
   toggleGrid: () => void;
+  setShowGrid: (on: boolean) => void;
   clearSession: () => void;
   setPlotTheme: (patch: Partial<PlotTheme>) => void;
   setCaseFilter: (f: CaseFilter | null) => void;
@@ -549,6 +560,10 @@ export const useStore = create<AppState>((set, get) => ({
     const next = !state.showGrid;
     localStorage.setItem("showGrid", String(next));
     return { showGrid: next };
+  }),
+  setShowGrid: (on) => set(() => {
+    localStorage.setItem("showGrid", String(on));
+    return { showGrid: on };
   }),
   setPlotTheme: (patch) => set((state) => {
     const next = { ...state.plotTheme, ...patch };

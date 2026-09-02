@@ -2,23 +2,34 @@
  * Centralized plot style system.
  * All Plotly charts should merge `usePlotLayout()` into their layout prop.
  */
-import { useStore, paletteOf } from "./store";
+import { useStore, paletteOf, type PlotTheme } from "./store";
+import { legendLayout, presetAxis } from "./lib/plotPresets";
 
-/** Returns a base Plotly layout object that reflects the current global theme. */
-export function usePlotLayout(overrides?: Record<string, unknown>): Record<string, unknown> {
-  const theme   = useStore((s) => s.plotTheme);
-  const showGrid = useStore((s) => s.showGrid);
-  const gc = showGrid ? "#e5e7eb" : "transparent";
-
+/** The base layout for a theme, as a pure function so it can be tested
+ *  without a store. `usePlotLayout` reads the store and calls this. */
+export function baseLayout(
+  theme: PlotTheme,
+  showGrid: boolean,
+  overrides?: Record<string, unknown>,
+): Record<string, unknown> {
+  const axis = presetAxis(theme.preset ?? "minimal", showGrid);
   return {
     paper_bgcolor: "transparent",
     plot_bgcolor:  theme.plotBg,
     font: { family: theme.fontFamily, color: "#374151", size: theme.fontSize },
     colorway: paletteOf(theme),
-    xaxis: { gridcolor: gc, zeroline: false },
-    yaxis: { gridcolor: gc, zeroline: false },
+    xaxis: { ...axis },
+    yaxis: { ...axis },
+    ...legendLayout(theme.legendPosition ?? "auto"),
     ...overrides,
   };
+}
+
+/** Returns a base Plotly layout object that reflects the current global theme. */
+export function usePlotLayout(overrides?: Record<string, unknown>): Record<string, unknown> {
+  const theme   = useStore((s) => s.plotTheme);
+  const showGrid = useStore((s) => s.showGrid);
+  return baseLayout(theme, showGrid, overrides);
 }
 
 /** Returns the primary color palette array for the current theme. */
