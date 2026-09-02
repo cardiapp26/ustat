@@ -100,6 +100,13 @@ function ChartsPanelBody({ session }: { session: Session }) {
   const [histDisplay, setHistDisplay] = usePersistedPanelState<string>("charts", "histDisplay", "both");
   const [histRug, setHistRug] = usePersistedPanelState<boolean>("charts", "histRug", false);
   const [binwidth, setBinwidth] = usePersistedPanelState<string>("charts", "binwidth", "");
+  // facet_wrap(scales =, ncol =).
+  const [facetScales, setFacetScales] = usePersistedPanelState<string>("charts", "facetScales", "fixed");
+  const [facetNcol, setFacetNcol] = usePersistedPanelState<string>("charts", "facetNcol", "auto");
+  // A numeric column mapped to a colour ramp on the scatter — a continuous
+  // scale where Color / Group gives a discrete one.
+  const [gradientCol, setGradientCol] = usePersistedPanelState<string>("charts", "gradientCol", "");
+  const [gradientScale, setGradientScale] = usePersistedPanelState<string>("charts", "gradientScale", "Viridis");
   const [shapeCol, setShapeCol] = usePersistedPanelState<string>("charts", "shapeCol", "");
   // Pie / donut, balloon, facet
   const [pieValue, setPieValue] = usePersistedPanelState<string>("charts", "pieValue", "");
@@ -197,6 +204,7 @@ function ChartsPanelBody({ session }: { session: Session }) {
         label: labelCol || undefined, shape: shapeCol || undefined,
         ellipse, marginal,
         fit: fitMethod, fit_per_group: fitPerGroup && Boolean(color), loess_span: loessSpan,
+        ...(gradientCol && !color ? { gradient: gradientCol } : {}),
       });
       else if (chartType === "boxplot" || chartType === "violin" || chartType === "raincloud" || chartType === "strip") res = await getBoxplot({ ...base, color: color || undefined });
       else if (chartType === "paired") res = await getPairedBox({ session_id: session.session_id, y: x, group: color, pair_id: pairId });
@@ -239,17 +247,23 @@ function ChartsPanelBody({ session }: { session: Session }) {
       else if (chartType === "sets") res = await getSets({
         session_id: session.session_id, columns: setCols,
       });
-      else if (chartType === "facet") res = await getFacet(
-        facetMode === "variable" && facetKind === "boxplot"
-          ? {
-            session_id: session.session_id, kind: "boxplot",
-            variables: facetVars, color: color || undefined,
-          }
-          : {
-            session_id: session.session_id, kind: facetKind, x,
-            y: facetKind === "scatter" ? y : undefined,
-            facet: facetCol, color: color || undefined,
-          });
+      else if (chartType === "facet") {
+        const grid = {
+          scales: facetScales,
+          ...(facetNcol !== "auto" ? { ncol: Number(facetNcol) } : {}),
+        };
+        res = await getFacet(
+          facetMode === "variable" && facetKind === "boxplot"
+            ? {
+              session_id: session.session_id, kind: "boxplot",
+              variables: facetVars, color: color || undefined, ...grid,
+            }
+            : {
+              session_id: session.session_id, kind: facetKind, x,
+              y: facetKind === "scatter" ? y : undefined,
+              facet: facetCol, color: color || undefined, ...grid,
+            });
+      }
       else res = await getBar({
         ...base, y: y || undefined, color: color || undefined,
         y_mode: barMode,
@@ -372,7 +386,7 @@ function ChartsPanelBody({ session }: { session: Session }) {
     plotData ? buildTraces(
       plotData, chartType, pal, td, session, showPoints, donut ? 0.45 : 0, showMean,
       chartType === "bar" ? barHorizontal : horizontal,
-      { stat: histStat, display: histDisplay, rug: histRug },
+      { stat: histStat, display: histDisplay, rug: histRug, gradientScale },
     ) : null,
     seriesColors,
   );
@@ -769,6 +783,36 @@ function ChartsPanelBody({ session }: { session: Session }) {
                   </p>
                 </div>
               )}
+              {/* facet_wrap(scales =). Panels of one measurement are only
+                  comparable while they share an axis, so freeing one is
+                  deliberate — it shows each panel's own shape and gives up the
+                  comparison. A panel per variable is always free: milliseconds
+                  and a unitless index have nothing to share. */}
+              {!(facetKind === "boxplot" && facetMode === "variable") && (
+                <div>
+                  <label className="text-xs text-gray-400 block mb-1">Panel scales</label>
+                  <select className="select w-full" aria-label="Panel scales" value={facetScales}
+                    onChange={(e) => setFacetScales(e.target.value)}>
+                    <option value="fixed">Shared (comparable)</option>
+                    <option value="free">Free — each panel its own</option>
+                    {facetKind === "scatter" && <option value="free_x">Free X only</option>}
+                    <option value="free_y">Free Y only</option>
+                  </select>
+                  {facetScales !== "fixed" && (
+                    <p className="text-[10px] text-amber-700 mt-1">
+                      Panels can no longer be compared by eye. Say so in the caption.
+                    </p>
+                  )}
+                </div>
+              )}
+              <div>
+                <label className="text-xs text-gray-400 block mb-1">Columns</label>
+                <select className="select w-full" aria-label="Panel columns" value={facetNcol}
+                  onChange={(e) => setFacetNcol(e.target.value)}>
+                  <option value="auto">Auto (up to 3)</option>
+                  {[1, 2, 3, 4, 5, 6].map((n) => <option key={n} value={String(n)}>{n}</option>)}
+                </select>
+              </div>
             </>
           )}
           {chartType === "errorplot" && (
@@ -912,6 +956,38 @@ function ChartsPanelBody({ session }: { session: Session }) {
                 </select>
                 <p className="text-[10px] text-gray-400 mt-1">Names each point on the figure — use it to call out the rows that miss the line.</p>
               </div>
+              {/* A continuous colour scale. Offered only with no Color /
+                  Group column: one set of markers cannot carry a legend of
+                  groups and a colour bar of values at once, and a control that
+                  silently loses to another is worse than an absent one. */}
+              {!color && (
+                <>
+                  <div>
+                    <label className="text-xs text-gray-400 block mb-1"
+                      title="Colours every point by the value of a numeric column, with a colour bar — ggplot2's continuous scale. Use it for a third quantity: age over a risk plot, follow-up over an agreement plot.">
+                      Colour by value
+                    </label>
+                    <select className="select w-full" aria-label="Colour by value" value={gradientCol}
+                      onChange={(e) => setGradientCol(e.target.value)}>
+                      <option value="">None</option>
+                      {numCols.map((c) => <option key={c}>{c}</option>)}
+                    </select>
+                  </div>
+                  {gradientCol && (
+                    <div>
+                      <label className="text-xs text-gray-400 block mb-1">Colour ramp</label>
+                      <select className="select w-full" aria-label="Colour ramp" value={gradientScale}
+                        onChange={(e) => setGradientScale(e.target.value)}>
+                        {GRADIENT_SCALES.map((g) => <option key={g.value} value={g.value}>{g.label}</option>)}
+                      </select>
+                      <p className="text-[10px] text-gray-400 mt-1">
+                        Viridis and Cividis stay ordered in greyscale and for colour-blind readers;
+                        Red-Blue is for a value with a meaningful middle.
+                      </p>
+                    </div>
+                  )}
+                </>
+              )}
               <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider pt-1">Trend line</p>
               <div>
                 <label
@@ -1417,12 +1493,23 @@ function facetLayout(plotData: Record<string, unknown> | null): Record<string, u
   const panels = (plotData.panels as Array<Record<string, unknown>>) ?? [];
   if (!panels.length) return {};
   const shared = (plotData.shared_range ?? {}) as { x?: number[]; y?: number[] };
-  const cols = Math.min(3, panels.length);
+  // A freed axis simply has no shared range, so nothing is set on it and
+  // Plotly autoscales that panel — which is what a free scale means, and
+  // it keeps the padding an explicit range would lose.
+  const requested = Number(plotData.ncol);
+  const cols = Math.min(Number.isFinite(requested) && requested > 0 ? requested : 3, panels.length);
   const rows = Math.ceil(panels.length / cols);
   const kind = String(plotData.kind);
   const pad = 0.06;
+  const height = Math.max(360, rows * 260 + 120);
+  // Rows need a real gap, not the 3% margin a single row wants: between two
+  // rows sit the upper panel's tick labels AND the lower panel's title, and
+  // at 3% those collide. Sized in pixels, then expressed as a fraction.
+  const outer = pad / 2;
+  const gap = rows > 1 ? Math.min(0.18, 76 / height) : 0;
+  const rowHeight = (1 - 2 * outer - gap * (rows - 1)) / rows;
   const out: Record<string, unknown> = {
-    height: Math.max(360, rows * 260 + 120),
+    height,
     annotations: [] as Record<string, unknown>[],
     showlegend: kind === "boxplot",
   };
@@ -1433,8 +1520,8 @@ function facetLayout(plotData: Record<string, unknown> | null): Record<string, u
     const c = i % cols;
     const x0 = c / cols + pad / 2;
     const x1 = (c + 1) / cols - pad / 2;
-    const yTop = 1 - r / rows - pad / 2;
-    const yBot = 1 - (r + 1) / rows + pad / 2;
+    const yTop = 1 - outer - r * (rowHeight + gap);
+    const yBot = yTop - rowHeight;
     const suffix = i === 0 ? "" : String(i + 1);
     out[`xaxis${suffix}`] = {
       domain: [x0, x1],
@@ -1525,7 +1612,7 @@ function buildTraces(
   // does this whenever the category names are words — "PTC follicular
   // variant" does not fit under a tick and rotating it costs the reader.
   horizontal = false,
-  hist: HistOptions = { stat: "count", display: "both", rug: false },
+  opts: ChartOptions = { stat: "count", display: "both", rug: false, gradientScale: "Viridis" },
 ): PlotData[] | null {
   if (!d) return null;
 
@@ -1535,7 +1622,7 @@ function buildTraces(
   };
 
   if (d.type === "histogram") {
-    return histogramTraces(d, C, td, hist, valueLabelsFor(d.color));
+    return histogramTraces(d, C, td, opts, valueLabelsFor(d.color));
   }
 
   if (d.type === "scatter") {
@@ -1573,6 +1660,24 @@ function buildTraces(
     // Marginal histograms live on their own axes: one strip above the plot for
     // x, one to the right for y. Bars, not densities — the counts are what the
     // backend computed and a KDE would imply smoothing nobody asked for.
+    // A continuous colour scale over a numeric column, with the colour bar
+    // that makes it readable. Mutually exclusive with the group colouring, so
+    // it only ever reaches the ungrouped branch below.
+    const gradientKey = d.gradient ? String(d.gradient) : null;
+    const gradientMarker = gradientKey
+      ? {
+        color: points.map((p) => Number(p[gradientKey])),
+        colorscale: opts.gradientScale,
+        showscale: true,
+        colorbar: {
+          title: { text: columnLabel(session, gradientKey), side: "right" },
+          thickness: 12,
+        },
+        ...(Array.isArray(d.gradient_range) && (d.gradient_range as number[]).length === 2
+          ? { cmin: (d.gradient_range as number[])[0], cmax: (d.gradient_range as number[])[1] }
+          : {}),
+      }
+      : null;
     const marg = (d.marginal ?? {}) as {
       x?: Array<Record<string, number>>;
       y?: Array<Record<string, number>>;
@@ -1657,7 +1762,9 @@ function buildTraces(
         text: textFor(points),
         textposition: "top center",
         textfont: { size: 9 },
-        marker: { color: C[0], size: td.markerSize, opacity: td.markerOpacity },
+        marker: gradientMarker
+          ? { ...gradientMarker, size: td.markerSize, opacity: td.markerOpacity, symbol: symbolFor(points) }
+          : { color: C[0], size: td.markerSize, opacity: td.markerOpacity, symbol: symbolFor(points) },
         name: yKey,
       } as PlotData,
       ...fit.line,
@@ -2272,13 +2379,34 @@ function fitTraces(
   };
 }
 
-interface HistOptions {
-  /** count | density | percent — after_stat(). */
-  stat: string;
-  /** both | bars | density — geom_histogram, geom_histogram alone, geom_density. */
-  display: string;
-  rug: boolean;
+/** Per-chart drawing choices that live only on the client — the backend
+ *  neither needs them nor echoes them. */
+/** A column's display label, falling back to its name. */
+function columnLabel(session: Session, name: string): string {
+  const meta = session.columns.find((c) => c.name === name);
+  return meta?.label || name;
 }
+
+interface ChartOptions {
+  /** Histogram y axis: count | density | percent — after_stat(). */
+  stat: string;
+  /** Histogram: both | bars | density — geom_histogram, bars alone, geom_density. */
+  display: string;
+  /** Histogram: geom_rug. */
+  rug: boolean;
+  /** Scatter: named Plotly colourscale for the continuous colour column. */
+  gradientScale: string;
+}
+
+/** Colour ramps offered for a continuous scale. Viridis and Cividis are
+ *  perceptually uniform and survive greyscale printing; RdBu is diverging,
+ *  for a value with a meaningful middle. */
+const GRADIENT_SCALES = [
+  { value: "Viridis", label: "Viridis" },
+  { value: "Cividis", label: "Cividis (colour-blind safe)" },
+  { value: "Plasma", label: "Plasma" },
+  { value: "RdBu", label: "Red-Blue (diverging)" },
+] as const;
 
 interface HistGroup {
   group: string;
@@ -2299,7 +2427,7 @@ function histogramTraces(
   d: Record<string, unknown>,
   C: string[],
   td: { lineWidth: number; markerSize: number; markerOpacity: number },
-  opts: HistOptions,
+  opts: ChartOptions,
   labels: Record<string, string>,
 ): PlotData[] {
   const bins = d.bins as Array<Record<string, number>>;

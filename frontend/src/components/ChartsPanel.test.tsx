@@ -990,3 +990,86 @@ describe('ChartsPanel grouped histogram', () => {
     expect(curves[0].fill).toBe('tozeroy')
   })
 })
+
+describe('ChartsPanel facet grid and continuous colour', () => {
+  const facetBody = {
+    type: 'facet', kind: 'boxplot', x: 'AGE', y: null, facet: 'GROUP', color: null,
+    panels: [
+      { panel: 'A', n: 4, groups: [{ group: 'All', values: [1, 2, 3, 4] }], range: [1, 4] },
+      { panel: 'B', n: 4, groups: [{ group: 'All', values: [5, 6, 7, 8] }], range: [5, 8] },
+    ],
+    shared_range: {}, scales: 'free', ncol: 1, warnings: [],
+  }
+
+  it('leaves a freed axis to autoscale and lays the panels out in one column', async () => {
+    installSession()
+    let sent: Record<string, unknown> = {}
+    server.use(http.post('/api/charts/facet', async ({ request }) => {
+      sent = (await request.json()) as Record<string, unknown>
+      return HttpResponse.json(facetBody)
+    }))
+    const user = userEvent.setup()
+    render(<ChartsPanel />)
+    await user.click(screen.getByRole('radio', { name: /facet grid/i }))
+    const facetSelect = screen.getAllByRole('combobox').find(
+      (s) => s.previousElementSibling?.textContent?.match(/split into panels/i))
+    await user.selectOptions(facetSelect!, 'GROUP')
+    await user.selectOptions(screen.getByRole('combobox', { name: /panel scales/i }), 'free')
+    await user.selectOptions(screen.getByRole('combobox', { name: /panel columns/i }), '1')
+    await user.click(screen.getByRole('button', { name: /generate chart/i }))
+    await waitFor(() => expect(screen.getByTestId('plotly-mock')).toBeInTheDocument())
+
+    expect(sent.scales).toBe('free')
+    expect(sent.ncol).toBe(1)
+    const layout = JSON.parse(screen.getByTestId('plotly-mock').dataset.layout!)
+    // Freed: no range is imposed, so each panel autoscales with its padding.
+    expect(layout.yaxis.range).toBeUndefined()
+    expect(layout.yaxis2.range).toBeUndefined()
+    // One column: the two panels sit on top of each other, not side by side.
+    expect(layout.xaxis.domain).toEqual(layout.xaxis2.domain)
+    expect(layout.yaxis.domain[0]).toBeGreaterThan(layout.yaxis2.domain[1])
+  })
+
+  it('colours scatter points by a numeric column with a colour bar', async () => {
+    installSession()
+    let sent: Record<string, unknown> = {}
+    server.use(http.post('/api/charts/scatter', async ({ request }) => {
+      sent = (await request.json()) as Record<string, unknown>
+      return HttpResponse.json({
+        type: 'scatter', x: 'AGE', y: 'LDL', gradient: 'DM', gradient_range: [0, 1],
+        points: [{ AGE: 55, LDL: 120, DM: 0 }, { AGE: 62, LDL: 140, DM: 1 }],
+        regression: { method: 'lm', line_x: [55, 62], line_y: [120, 140], r2: 0.8, r: 0.9, p: 0.1, n: 2 },
+        regressions: [],
+      })
+    }))
+    const user = userEvent.setup()
+    render(<ChartsPanel />)
+    await user.click(screen.getByRole('radio', { name: /scatter/i }))
+    await user.selectOptions(screen.getByRole('combobox', { name: /colour by value/i }), 'DM')
+    await user.selectOptions(screen.getByRole('combobox', { name: /colour ramp/i }), 'Cividis')
+    await user.click(screen.getByRole('button', { name: /generate chart/i }))
+    await waitFor(() => expect(screen.getByTestId('plotly-mock')).toBeInTheDocument())
+
+    expect(sent.gradient).toBe('DM')
+    const traces = JSON.parse(screen.getByTestId('plotly-mock').getAttribute('data-plotly') ?? '[]') as Array<Record<string, never>>
+    const markers = traces.find((t) => t.mode === 'markers')!
+    const marker = markers.marker as unknown as Record<string, unknown>
+    expect(marker.color).toEqual([0, 1])
+    expect(marker.colorscale).toBe('Cividis')
+    expect(marker.showscale).toBe(true)
+    expect(marker.cmin).toBe(0)
+    expect(marker.cmax).toBe(1)
+  })
+
+  it('hides the colour ramp once a group column owns the colours', async () => {
+    installSession()
+    const user = userEvent.setup()
+    render(<ChartsPanel />)
+    await user.click(screen.getByRole('radio', { name: /scatter/i }))
+    expect(screen.getByRole('combobox', { name: /colour by value/i })).toBeInTheDocument()
+    const groupSelect = screen.getAllByRole('combobox').find(
+      (el) => el.previousElementSibling?.textContent?.match(/^color \/ group$/i))
+    await user.selectOptions(groupSelect!, 'GROUP')
+    expect(screen.queryByRole('combobox', { name: /colour by value/i })).not.toBeInTheDocument()
+  })
+})

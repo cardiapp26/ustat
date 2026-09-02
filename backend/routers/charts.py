@@ -97,6 +97,11 @@ class ChartRequest(BaseModel):
     # for the raw values back so each observation can be ticked along the axis.
     binwidth: Optional[float] = None
     rug: bool = False
+    # Scatter-only. A NUMERIC column mapped to a colour ramp rather than to
+    # discrete groups — ggplot2's aes(colour = value) with a continuous scale.
+    # Mutually exclusive with `color`: one set of markers cannot carry a legend
+    # of groups and a colour bar of values at once.
+    gradient: Optional[str] = None
 
 
 def _mean_bars(sub: pd.DataFrame, x: str, y: str, spread: Optional[str]) -> list[dict]:
@@ -384,9 +389,19 @@ def scatter(req: ChartRequest):
     df = _get_df(req.session_id)
 
     # Build deduplicated column list
+    if req.gradient and req.color:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Colour by group and colour by value cannot both be set — the "
+                "markers would need a legend and a colour bar at once."
+            ),
+        )
     needed = [req.x, req.y]
     if req.color and req.color not in needed:
         needed.append(req.color)
+    if req.gradient and req.gradient not in needed:
+        needed.append(req.gradient)
     if req.shape and req.shape not in needed:
         needed.append(req.shape)
     if req.label and req.label not in needed:
@@ -408,6 +423,15 @@ def scatter(req: ChartRequest):
             status_code=400,
             detail="Not enough non-missing data points to draw scatter (need ≥ 2)",
         )
+
+    if req.gradient:
+        sub[req.gradient] = coerce_numeric(sub[req.gradient])
+        sub = sub.dropna(subset=[req.gradient])
+        if sub.empty:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Column '{req.gradient}' has no numeric values to colour by.",
+            )
 
     # Regression only when both axes are numeric
     x_numeric = df[req.x].dtype.kind in ("f", "i", "u")
@@ -594,6 +618,11 @@ def scatter(req: ChartRequest):
         "color": req.color,
         "shape": req.shape,
         "label": req.label,
+        "gradient": req.gradient,
+        "gradient_range": (
+            [float(sub[req.gradient].min()), float(sub[req.gradient].max())]
+            if req.gradient else None
+        ),
         "log_x": req.log_x,
         "log_y": req.log_y,
         "identity": identity,
@@ -1377,6 +1406,28 @@ class FacetRequest(BaseModel):
     variables: Optional[List[str]] = None
     color: Optional[str] = None
     max_panels: int = 12
+    # ggplot2's facet_wrap(scales = ). "fixed" is the default and the safe one:
+    # one range across every panel. Freeing an axis lets each panel show its own
+    # shape, at the cost of the comparison between panels — which is the whole
+    # point of small multiples, so it is opt-in and named in the response.
+    scales: str = "fixed"          # fixed | free | free_x | free_y
+    # facet_wrap(ncol = ). None lets the client choose (it uses 3).
+    ncol: Optional[int] = None
+
+
+FACET_SCALES = frozenset({"fixed", "free", "free_x", "free_y"})
+MAX_FACET_COLS = 6
+
+
+def _check_facet_layout(req: FacetRequest) -> None:
+    if req.scales not in FACET_SCALES:
+        raise HTTPException(
+            status_code=400, detail=f"scales must be one of {sorted(FACET_SCALES)}"
+        )
+    if req.ncol is not None and not (1 <= req.ncol <= MAX_FACET_COLS):
+        raise HTTPException(
+            status_code=400, detail=f"ncol must be between 1 and {MAX_FACET_COLS}"
+        )
 
 
 def _facet_by_variable(df: pd.DataFrame, req: FacetRequest) -> dict:
@@ -1406,6 +1457,7 @@ def _facet_by_variable(df: pd.DataFrame, req: FacetRequest) -> dict:
         raise HTTPException(status_code=400, detail=f"Column '{req.color}' not found")
     if req.max_panels < 1:
         raise HTTPException(status_code=400, detail="max_panels must be at least 1")
+    _check_facet_layout(req)
 
     dropped_panels = max(0, len(variables) - req.max_panels)
     variables = variables[: req.max_panels]
@@ -1470,7 +1522,10 @@ def _facet_by_variable(df: pd.DataFrame, req: FacetRequest) -> dict:
         "color": req.color,
         "panels": panels,
         # Explicitly empty: the frontend must not fall back to a shared range.
+        # Panels here are different measurements, so they are always free.
         "shared_range": {},
+        "scales": "free",
+        "ncol": req.ncol,
         "warnings": warnings,
     }
 
@@ -1508,6 +1563,7 @@ def facet(req: FacetRequest):
             raise HTTPException(status_code=400, detail=f"Column '{col}' not found")
     if req.max_panels < 1:
         raise HTTPException(status_code=400, detail="max_panels must be at least 1")
+    _check_facet_layout(req)
 
     sub = df[list(dict.fromkeys(needed))].copy()
     numeric_cols = [req.x] if req.kind == "boxplot" else [req.x, req.y]
@@ -1540,7 +1596,15 @@ def facet(req: FacetRequest):
                 )[req.x].astype(float).tolist()
                 if vals:
                     groups.append({"group": str(gname), "values": vals})
-            panels.append({"panel": str(lv), "n": int(len(block)), "groups": groups})
+            panels.append({
+                "panel": str(lv),
+                "n": int(len(block)),
+                "groups": groups,
+                # The panel's own span. Only meaningful once the axis is freed,
+                # and then it is what a caller drawing its own axes needs; our
+                # client leaves a freed axis to Plotly's autoscale instead.
+                "range": [float(block[req.x].min()), float(block[req.x].max())],
+            })
         else:
             panels.append(
                 {
@@ -1551,14 +1615,24 @@ def facet(req: FacetRequest):
                     "color": (
                         block[req.color].astype(str).tolist() if req.color else None
                     ),
+                    "range_x": [float(block[req.x].min()), float(block[req.x].max())],
+                    "range_y": [float(block[req.y].min()), float(block[req.y].max())],
                 }
             )
 
-    shared: dict = {
-        "x": [float(sub[req.x].min()), float(sub[req.x].max())],
-    }
-    if req.kind == "scatter":
-        shared["y"] = [float(sub[req.y].min()), float(sub[req.y].max())]
+    # What stays shared. A freed axis is simply absent here, so the client has
+    # nothing to fall back on but the panel's own range.
+    shared: dict = {}
+    if req.kind == "boxplot":
+        # The value axis is y for a box plot; the x axis carries category
+        # names, which no "free_x" can meaningfully rescale.
+        if req.scales in {"fixed", "free_x"}:
+            shared["x"] = [float(sub[req.x].min()), float(sub[req.x].max())]
+    else:
+        if req.scales in {"fixed", "free_y"}:
+            shared["x"] = [float(sub[req.x].min()), float(sub[req.x].max())]
+        if req.scales in {"fixed", "free_x"}:
+            shared["y"] = [float(sub[req.y].min()), float(sub[req.y].max())]
 
     warnings: list[dict] = []
     if dropped_panels:
@@ -1583,6 +1657,8 @@ def facet(req: FacetRequest):
         "color": req.color,
         "panels": panels,
         "shared_range": shared,
+        "scales": req.scales,
+        "ncol": req.ncol,
         "warnings": warnings,
     }
 
