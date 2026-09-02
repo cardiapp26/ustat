@@ -10,6 +10,17 @@ import { fmtP } from "../lib/format";
 import { labelFor } from "../lib/valueLabels";
 import { categoryColors } from "../lib/categoryColors";
 import { CHART_TYPES } from "../lib/chartTypes";
+import { parseRefValue, referenceLineOverlay, type RefLine } from "../lib/referenceLines";
+
+/** Charts drawn on one x/y pair, where a reference line has a place to go.
+ *  A pie has no axes; a facet has several; a Sankey's axes are not values. */
+const REF_LINE_CHARTS = new Set([
+  "histogram", "scatter", "boxplot", "violin", "raincloud", "strip", "bar", "paired",
+  "dumbbell", "errorplot", "ecdf", "lineplot", "slopeplot", "stackplot", "ridgeplot",
+]);
+
+/** A reference line as typed: the value stays text until it parses. */
+interface RefLineDraft { axis: "x" | "y"; value: string; label: string }
 
 /** Charts whose request actually carries the Color / Group column. */
 const COLOUR_AWARE_CHARTS = new Set([
@@ -65,6 +76,11 @@ function ChartsPanelBody({ session }: { session: Session }) {
   const [logValue, setLogValue] = usePersistedPanelState<boolean>("charts", "logValue", false);
   const [barMode, setBarMode] = usePersistedPanelState<string>("charts", "barMode", "mean");
   const [barTarget, setBarTarget] = usePersistedPanelState<string>("charts", "barTarget", "");
+  // Whisker on a bar of means (geom_col + errorbar) and coord_flip for bars.
+  const [barError, setBarError] = usePersistedPanelState<string>("charts", "barError", "none");
+  const [barHorizontal, setBarHorizontal] = usePersistedPanelState<boolean>("charts", "barHorizontal", false);
+  // geom_hline / geom_vline: thresholds drawn in data coordinates.
+  const [refLines, setRefLines] = usePersistedPanelState<RefLineDraft[]>("charts", "refLines", []);
   // Error plot / ECDF
   const [errCentre, setErrCentre] = usePersistedPanelState<string>("charts", "errCentre", "mean");
   const [errSpread, setErrSpread] = usePersistedPanelState<string>("charts", "errSpread", "ci");
@@ -218,6 +234,7 @@ function ChartsPanelBody({ session }: { session: Session }) {
         ...base, y: y || undefined, color: color || undefined,
         y_mode: barMode,
         ...(barMode === "percentage" && barTarget.trim() ? { target_value: barTarget.trim() } : {}),
+        ...(barMode === "mean" && y && barError !== "none" ? { error: barError } : {}),
       });
       setPlotData(res.data);
 
@@ -313,9 +330,10 @@ function ChartsPanelBody({ session }: { session: Session }) {
       // A transposed chart swaps which axis carries the values, so the titles
       // have to swap with it — otherwise the value axis is captioned with the
       // grouping variable's name, which is worse than no caption.
-      const transposed = horizontal
+      const transposed = (horizontal
         && (chartType === "boxplot" || chartType === "violin"
-            || chartType === "raincloud" || chartType === "strip");
+            || chartType === "raincloud" || chartType === "strip"))
+        || (chartType === "bar" && barHorizontal);
       setCustomXLabel(transposed ? autoY : autoX);
       setCustomYLabel(transposed ? autoX : autoY);
     } catch (e: unknown) {
@@ -329,14 +347,36 @@ function ChartsPanelBody({ session }: { session: Session }) {
   const chartRef = useRef<PlotCaptureHandle | null>(null);
   const seriesColors = useStore((s) => s.plotTheme.seriesColors);
   const traces = applySeriesPins(
-    plotData ? buildTraces(plotData, chartType, pal, td, session, showPoints, donut ? 0.45 : 0, showMean, horizontal) : null,
+    plotData ? buildTraces(
+      plotData, chartType, pal, td, session, showPoints, donut ? 0.45 : 0, showMean,
+      chartType === "bar" ? barHorizontal : horizontal,
+    ) : null,
     seriesColors,
   );
   const brackets = buildBrackets(plotData, comparisons);
   const groupedChart = chartType === "boxplot" || chartType === "violin"
     || chartType === "raincloud" || chartType === "strip";
   const valueAxisIsLog = groupedChart && logValue;
+  const barFlipped = chartType === "bar" && barHorizontal && plotData?.type === "bar";
   const marginalAxes = marginalLayout(plotData);
+  const facetOverlay = facetLayout(plotData);
+  // Reference lines and significance brackets are both shapes + annotations;
+  // the facet grid adds panel titles as annotations too. Merged once here so
+  // none of the three overwrites another.
+  const refOverlay = referenceLineOverlay(
+    REF_LINE_CHARTS.has(chartType)
+      ? refLines.flatMap((l): RefLine[] => {
+        const v = parseRefValue(l.value);
+        return v === null ? [] : [{ axis: l.axis, value: v, label: l.label }];
+      })
+      : [],
+  );
+  const overlayShapes = [...brackets.shapes, ...refOverlay.shapes];
+  const overlayAnnotations = [
+    ...((facetOverlay.annotations as Record<string, unknown>[] | undefined) ?? []),
+    ...brackets.annotations,
+    ...refOverlay.annotations,
+  ];
 
   return (
     <div className="flex gap-4 h-full">
@@ -467,6 +507,24 @@ function ChartsPanelBody({ session }: { session: Session }) {
                   />
                 </div>
               )}
+              {barMode === "mean" && y && (
+                <div>
+                  <label
+                    className="text-xs text-gray-400 block mb-1"
+                    title="Whisker on each bar. A bar of means with no spread — the dynamite plot — says nothing about how firm each mean is. SD describes the sample; SE and CI describe the estimate and differ from SD by √n, so name the one shown."
+                  >Whisker</label>
+                  <select className="select w-full" value={barError} onChange={(e) => setBarError(e.target.value)}>
+                    <option value="none">None</option>
+                    <option value="sd">SD (spread of the sample)</option>
+                    <option value="se">SE (precision of the mean)</option>
+                    <option value="ci">95% CI (precision of the mean)</option>
+                  </select>
+                </div>
+              )}
+              <label className="flex items-center gap-2 cursor-pointer" title="Puts the categories down the side and the bars across — coord_flip. Worth it as soon as the category names are words rather than codes.">
+                <input type="checkbox" checked={barHorizontal} onChange={(e) => setBarHorizontal(e.target.checked)} className="accent-indigo-500" />
+                <span className="text-xs text-gray-600">Horizontal bars</span>
+              </label>
             </div>
           )}
           {/* Only where it does something. It used to appear on every chart
@@ -845,6 +903,68 @@ function ChartsPanelBody({ session }: { session: Session }) {
           {error && <p className="text-red-500 text-xs mt-2">{error}</p>}
         </div>
 
+        {/* Reference lines — geom_hline / geom_vline. A threshold the reader
+            is meant to judge the data against: LDL 100, BMI 30, a cut-off on
+            the axis. Applied live; no regeneration needed. */}
+        {REF_LINE_CHARTS.has(chartType) && (
+          <div className="panel space-y-2 bg-white border border-gray-200 shadow-sm rounded-2xl p-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-gray-700">Reference lines</h3>
+              <button
+                type="button"
+                className="text-[11px] text-indigo-600 hover:text-indigo-800"
+                onClick={() => setRefLines([...refLines, { axis: "y", value: "", label: "" }])}
+              >+ Add</button>
+            </div>
+            {refLines.length === 0 && (
+              <p className="text-[10px] text-gray-400">
+                A dashed line at a value on the X or Y axis, with a label — a clinical threshold or a cut-off.
+              </p>
+            )}
+            {refLines.map((line, i) => {
+              const update = (patch: Partial<RefLineDraft>) =>
+                setRefLines(refLines.map((l, j) => (j === i ? { ...l, ...patch } : l)));
+              const bad = line.value.trim() !== "" && parseRefValue(line.value) === null;
+              return (
+                <div key={i} className="space-y-1 border-t border-gray-100 pt-2">
+                  <div className="flex gap-1.5">
+                    <select
+                      className="select text-xs w-14"
+                      aria-label={`Reference line ${i + 1} axis`}
+                      value={line.axis}
+                      onChange={(e) => update({ axis: e.target.value as "x" | "y" })}
+                    >
+                      <option value="y">Y =</option>
+                      <option value="x">X =</option>
+                    </select>
+                    <input
+                      className={`select w-full text-xs ${bad ? "border-red-400" : ""}`}
+                      aria-label={`Reference line ${i + 1} value`}
+                      placeholder="value"
+                      value={line.value}
+                      onChange={(e) => update({ value: e.target.value })}
+                    />
+                    <button
+                      type="button"
+                      aria-label={`Remove reference line ${i + 1}`}
+                      className="px-1 text-gray-400 hover:text-red-500 text-xs"
+                      onClick={() => setRefLines(refLines.filter((_, j) => j !== i))}
+                    >✕</button>
+                  </div>
+                  <input
+                    className="select w-full text-xs"
+                    aria-label={`Reference line ${i + 1} label`}
+                    placeholder="label (optional)"
+                    value={line.label}
+                    onChange={(e) => update({ label: e.target.value })}
+                  />
+                  {bad && <p className="text-[10px] text-red-500">Not a number.</p>}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
         {/* Custom Labels Panel */}
         {plotData && (
           <div className="panel space-y-3 bg-white border border-gray-200 shadow-sm rounded-2xl p-4">
@@ -1090,12 +1210,13 @@ function ChartsPanelBody({ session }: { session: Session }) {
                 ...(plotData?.type === "dumbbell" ? { type: "category", automargin: true } : {}),
                 // automargin so a long histology name is not clipped.
                 ...(groupedChart && horizontal ? { type: "category", automargin: true } : {}),
+                // Flipped bars: categories down the side, values along the bottom.
+                ...(barFlipped ? { type: "category", automargin: true } : {}),
                 ...(marginalAxes.yDomain ? { domain: marginalAxes.yDomain } : {}),
               },
-              ...(brackets.shapes.length
-                ? { shapes: brackets.shapes, annotations: brackets.annotations }
-                : {}),
-              ...facetLayout(plotData),
+              ...facetOverlay,
+              ...(overlayShapes.length ? { shapes: overlayShapes } : {}),
+              ...(overlayAnnotations.length ? { annotations: overlayAnnotations } : {}),
               ...marginalAxes.extra,
               ...(plotData?.type === "stackplot" ? { barmode: "stack" } : {}),
               ...(plotData?.type === "ridgeplot"
@@ -1969,19 +2090,18 @@ function buildTraces(
     const xLabels = valueLabelsFor(d.x);
     const groupLabels = valueLabelsFor(d.color);
     const isPct = d.y_mode === "percentage";
-    const series = d.series as Array<{ group: unknown; data: Array<{ label: unknown; value: unknown; n?: number; k?: number }> }>;
+    const series = d.series as Array<{ group: unknown; data: BarRow[] }>;
     return series.map((sr, i) => ({
       type: "bar",
       name: labelFor(groupLabels, sr.group, String(sr.group)),
-      x: sr.data.map((r) => labelFor(xLabels, r.label, String(r.label))),
-      y: sr.data.map((r) => r.value),
+      ...barGeometry(sr.data.map((r) => labelFor(xLabels, r.label, String(r.label))), sr.data, horizontal),
       marker: { color: C[i % C.length] },
       text: sr.data.map((r) => (isPct ? `${Number(r.value).toFixed(0)}%` : String(r.value))),
-      textposition: "outside",
+      ...barTextPlacement(sr.data),
       cliponaxis: false,
       hovertemplate: isPct
-        ? "%{x}<br>%{y}%" + (sr.data[0]?.n != null ? " (%{customdata[0]}/%{customdata[1]})" : "") + "<extra>%{fullData.name}</extra>"
-        : "%{x}<br>%{y}<extra>%{fullData.name}</extra>",
+        ? `${barHoverCore(horizontal)}%` + (sr.data[0]?.n != null ? " (%{customdata[0]}/%{customdata[1]})" : "") + "<extra>%{fullData.name}</extra>"
+        : `${barHoverCore(horizontal)}<extra>%{fullData.name}</extra>`,
       ...(isPct && sr.data[0]?.n != null
         ? { customdata: sr.data.map((r) => [r.k ?? 0, r.n ?? 0]) }
         : {}),
@@ -1990,26 +2110,26 @@ function buildTraces(
 
   if (d.type === "bar") {
     const xLabels = valueLabelsFor(d.x);
-    const data = d.data as Array<{ label: unknown; value: unknown; n?: number; k?: number }>;
+    const data = d.data as BarRow[];
     const isPct = d.y_mode === "percentage";
     return [{
       type: "bar",
-      x: data.map((r) => labelFor(xLabels, r.label, String(r.label))),
-      y: data.map((r) => r.value),
+      ...barGeometry(data.map((r) => labelFor(xLabels, r.label, String(r.label))), data, horizontal),
       marker: { color: C[0] },
       // The number over the bar. Reading a percentage off a gridline is a
       // guess, and a figure that states 36% is not making the reader guess.
       text: data.map((r) => (isPct ? `${Number(r.value).toFixed(0)}%` : String(r.value))),
-      textposition: "outside",
+      ...barTextPlacement(data),
       cliponaxis: false,
       // n and k travel with a percentage because 37% of 8 and 37% of 800 are
       // the same bar and not the same finding.
       hovertemplate: isPct
-        ? "%{x}<br>%{y}%" + (data[0]?.n != null ? " (%{customdata[0]}/%{customdata[1]})" : "") + "<extra></extra>"
-        : "%{x}<br>%{y}<extra></extra>",
+        ? `${barHoverCore(horizontal)}%` + (data[0]?.n != null ? " (%{customdata[0]}/%{customdata[1]})" : "") + "<extra></extra>"
+        : `${barHoverCore(horizontal)}<extra></extra>`,
       ...(isPct && data[0]?.n != null
         ? { customdata: data.map((r) => [r.k ?? 0, r.n ?? 0]) }
         : {}),
+      ...(d.error_label ? { name: String(d.error_label) } : {}),
     }];
   }
 
@@ -2054,6 +2174,52 @@ function buildTraces(
   }
 
   return null;
+}
+
+interface BarRow {
+  label: unknown;
+  value: unknown;
+  n?: number;
+  k?: number;
+  lower?: number;
+  upper?: number;
+}
+
+/** Category and value arrays for a bar trace, flipped when horizontal, plus
+ *  the whisker whenever the backend sent one (geom_col + geom_errorbar). The
+ *  whisker rides on the value axis, so it flips with the bars. */
+function barGeometry(labels: string[], rows: BarRow[], horizontal: boolean): PlotData {
+  const values = rows.map((r) => r.value);
+  const hasWhisker = rows.some((r) => typeof r.lower === "number" && typeof r.upper === "number");
+  const whisker = hasWhisker
+    ? {
+      type: "data",
+      symmetric: false,
+      array: rows.map((r) => Number(r.upper) - Number(r.value)),
+      arrayminus: rows.map((r) => Number(r.value) - Number(r.lower)),
+      thickness: 1.5,
+      width: 6,
+      color: "#374151",
+    }
+    : undefined;
+  return horizontal
+    ? { orientation: "h", x: values, y: labels, ...(whisker ? { error_x: whisker } : {}) }
+    : { x: labels, y: values, ...(whisker ? { error_y: whisker } : {}) };
+}
+
+/** Where the bar's number goes. Outside the end as usual; but a whisker
+ *  starts exactly there, so with one the number moves to the bar's middle
+ *  rather than sit on top of the error bar. */
+function barTextPlacement(rows: BarRow[]): PlotData {
+  const hasWhisker = rows.some((r) => typeof r.lower === "number" && typeof r.upper === "number");
+  return hasWhisker
+    ? { textposition: "inside", insidetextanchor: "middle" }
+    : { textposition: "outside" };
+}
+
+/** "%{category}<br>%{value}" with the axes the right way round. */
+function barHoverCore(horizontal: boolean): string {
+  return horizontal ? "%{y}<br>%{x}" : "%{x}<br>%{y}";
 }
 
 // Deterministic per-point horizontal jitter (seeded by pair/row id) so the

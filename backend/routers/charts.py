@@ -83,8 +83,48 @@ class ChartRequest(BaseModel):
     # needs, and the one a 0/1 mean silently gives at the wrong scale.
     y_mode: Optional[str] = "mean"
     target_value: Optional[str] = None
+    # Bar-only, mean mode. Whisker on each bar — ggplot2's geom_col with
+    # stat_summary's errorbar. sd | se | ci; None draws bare bars.
+    error: Optional[str] = None
     # Column whose value labels each point (e.g. the variable name per row).
     label: Optional[str] = None
+
+
+def _mean_bars(sub: pd.DataFrame, x: str, y: str, spread: Optional[str]) -> list[dict]:
+    """One bar per level of ``x`` at the mean of ``y``, with the whisker asked for.
+
+    A bar chart of means without a spread is the figure reviewers call a
+    dynamite plot; with the whisker it at least says how firm each mean is.
+    Same arithmetic as the error plot: SD describes the sample, SE and the
+    t-based CI describe the estimate.
+    """
+    if spread not in (None, "", "sd", "se", "ci"):
+        raise HTTPException(status_code=400, detail="error must be sd, se or ci")
+    rows: list[dict] = []
+    values = coerce_numeric(sub[y]).replace([np.inf, -np.inf], np.nan)
+    block = pd.DataFrame({"x": sub[x], "y": values}).dropna(subset=["y"])
+    for level in sorted_groups(block["x"]):
+        vals = block.loc[block["x"] == level, "y"].astype(float).to_numpy()
+        n = int(len(vals))
+        if n == 0:
+            continue
+        mean = float(np.mean(vals))
+        row: dict = {"label": level_key(level), "value": mean, "n": n}
+        if spread:
+            sd = float(np.std(vals, ddof=1)) if n > 1 else 0.0
+            se = sd / np.sqrt(n)
+            if spread == "sd":
+                half = sd
+            elif spread == "se":
+                half = se
+            else:
+                half = float(scipy_stats.t.ppf(0.975, n - 1)) * se if n > 1 else 0.0
+            row.update({"sd": sd, "se": se, "lower": mean - half, "upper": mean + half})
+        rows.append(row)
+    return rows
+
+
+_BAR_ERROR_LABEL = {"sd": "mean ± SD", "se": "mean ± SE", "ci": "mean with 95% CI"}
 
 
 @router.post("/histogram")
@@ -2096,9 +2136,7 @@ def _bar_series(sub: pd.DataFrame, req: ChartRequest, mode: str) -> list[dict]:
             for label, g in grouped
         ]
     if req.y:
-        grp = sub.groupby(req.x)[req.y].mean().reset_index()
-        return [{"label": level_key(row[req.x]), "value": float(row[req.y])}
-                for _, row in grp.iterrows()]
+        return _mean_bars(sub, req.x, req.y, req.error)
     # sorted_groups, not value_counts' own order: that is frequency-descending,
     # so tertile 3 came before tertile 1 on the axis, and two series of a
     # grouped chart could order their bars differently from each other.
@@ -2209,10 +2247,9 @@ def bar(req: ChartRequest):
             "x": req.x,
             "y": req.y,
             "y_mode": "mean",
-            "data": [
-                {"label": level_key(row[req.x]), "value": float(row[req.y])}
-                for _, row in grp.iterrows()
-            ],
+            "error": req.error or None,
+            "error_label": _BAR_ERROR_LABEL.get(req.error or "", None),
+            "data": _mean_bars(df, req.x, req.y, req.error),
         }
     counts = df[req.x].value_counts()
     return {
