@@ -187,6 +187,26 @@ export const GLYPHS: Record<string, React.ReactNode> = {
       <circle cx="15" cy="8" r="5" />
     </>
   ),
+  // A grid of units, a few of them filled: "N in a hundred".
+  waffle: (
+    <>
+      {[0, 1, 2, 3, 4].flatMap((c) => [0, 1, 2].map((r) => (
+        <rect key={`${c}-${r}`} x={2.5 + c * 4} y={2.5 + r * 4} width="3" height="3" rx="0.4"
+          fill="currentColor" stroke="none" opacity={c + r * 5 < 4 ? 1 : 0.3} />
+      )))}
+    </>
+  ),
+  // Bars ranked from the tallest rise to the deepest fall, either side of a
+  // baseline — the sort is what makes it a waterfall.
+  waterfall: (
+    <>
+      <line x1="1.5" y1="8" x2="22.5" y2="8" opacity="0.5" />
+      {[7, 5, 3, 1.5, -1.5, -3, -4.5, -6].map((h, i) => (
+        <rect key={i} x={2 + i * 2.6} y={h > 0 ? 8 - h : 8} width="2" height={Math.abs(h)}
+          fill="currentColor" stroke="none" />
+      ))}
+    </>
+  ),
 };
 
 /** Chart types that have a glyph — the source of truth for the coverage test. */

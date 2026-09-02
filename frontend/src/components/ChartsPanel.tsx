@@ -4,7 +4,7 @@ import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
 import {
   usePlotLayout, usePalette, useTraceDefaults, applySeriesPins, applyHighlight, ordinalLadder,
 } from "../plotStyle";
-import { getHistogram, getScatter, getBoxplot, getBar, getPairedBox, getDumbbell, getCompareMeans, getErrorPlot, getEcdf, getPie, getBalloon, getSummaryStats, getFacet, getLinePlot, getSlopePlot, getSankey, getStackPlot, getRidgePlot, getSets } from "../api";
+import { getHistogram, getScatter, getBoxplot, getBar, getPairedBox, getDumbbell, getCompareMeans, getErrorPlot, getEcdf, getPie, getBalloon, getSummaryStats, getFacet, getLinePlot, getSlopePlot, getSankey, getStackPlot, getRidgePlot, getSets, getWaffle, getWaterfall } from "../api";
 import type { PlotData, PlotLayout, PlotCaptureHandle } from "../lib/plotTypes";
 import TitledPlot from "./TitledPlot";
 import ChartTypeIcon from "./charts/ChartTypeIcon";
@@ -18,7 +18,7 @@ import { parseRefValue, referenceLineOverlay, type RefLine } from "../lib/refere
  *  A pie has no axes; a facet has several; a Sankey's axes are not values. */
 const REF_LINE_CHARTS = new Set([
   "histogram", "scatter", "boxplot", "violin", "raincloud", "strip", "bar", "paired",
-  "dumbbell", "errorplot", "ecdf", "lineplot", "slopeplot", "stackplot", "ridgeplot",
+  "dumbbell", "errorplot", "ecdf", "lineplot", "slopeplot", "stackplot", "ridgeplot", "waterfall",
 ]);
 
 /** A reference line as typed: the value stays text until it parses. */
@@ -27,7 +27,7 @@ interface RefLineDraft { axis: "x" | "y"; value: string; label: string }
 /** Charts whose request actually carries the Color / Group column. */
 const COLOUR_AWARE_CHARTS = new Set([
   "histogram", "scatter", "boxplot", "violin", "raincloud", "strip", "bar", "paired",
-  "dumbbell", "errorplot", "ecdf", "facet", "lineplot", "slopeplot", "ridgeplot",
+  "dumbbell", "errorplot", "ecdf", "facet", "lineplot", "slopeplot", "ridgeplot", "waterfall",
 ]);
 
 export default function ChartsPanel() {
@@ -117,6 +117,8 @@ function ChartsPanelBody({ session }: { session: Session }) {
   const [varyLineStyle, setVaryLineStyle] = usePersistedPanelState<boolean>("charts", "varyLineStyle", false);
   // coord_cartesian(xlim =, ylim =): a manual window on the axes. Kept as
   // typed text so a half-entered number is not read as a limit.
+  // Waterfall: RECIST's +20 / -30 % lines, counted on the side they point to.
+  const [wfRecist, setWfRecist] = usePersistedPanelState<boolean>("charts", "wfRecist", true);
   const [xMin, setXMin] = usePersistedPanelState<string>("charts", "xMin", "");
   const [xMax, setXMax] = usePersistedPanelState<string>("charts", "xMax", "");
   const [yMin, setYMin] = usePersistedPanelState<string>("charts", "yMin", "");
@@ -195,6 +197,12 @@ function ChartsPanelBody({ session }: { session: Session }) {
     if (chartType === "ridgeplot" && !color) {
       setError("Select a Color / Group column — a ridge plot draws one density per group."); return;
     }
+    if (chartType === "waterfall" && !x) {
+      setError("Select the per-subject value — e.g. % change from baseline."); return;
+    }
+    if (chartType === "waffle" && !x) {
+      setError("Select the category to split the hundred into."); return;
+    }
     if (chartType === "sets" && setCols.length < 2) {
       setError("Tick at least two membership columns."); return;
     }
@@ -258,6 +266,14 @@ function ChartsPanelBody({ session }: { session: Session }) {
       });
       else if (chartType === "ridgeplot") res = await getRidgePlot({
         session_id: session.session_id, x, group: color,
+      });
+      else if (chartType === "waffle") res = await getWaffle({
+        session_id: session.session_id, category: x,
+      });
+      else if (chartType === "waterfall") res = await getWaterfall({
+        session_id: session.session_id, y: x, group: color || undefined,
+        label: labelCol || undefined,
+        ...(wfRecist ? { thresholds: [20, -30] } : {}),
       });
       else if (chartType === "sets") res = await getSets({
         session_id: session.session_id, columns: setCols,
@@ -367,6 +383,14 @@ function ChartsPanelBody({ session }: { session: Session }) {
         autoTitle = colorLabelText ? `Cumulative distribution of ${xLabelText} by ${colorLabelText}` : `Cumulative distribution of ${xLabelText}`;
         autoX = xLabelText;
         autoY = "Cumulative proportion";
+      } else if (chartType === "waffle") {
+        autoTitle = `${xLabelText}, in a hundred`;
+        autoX = "";
+        autoY = "";
+      } else if (chartType === "waterfall") {
+        autoTitle = colorLabelText ? `${xLabelText} per subject, by ${colorLabelText}` : `${xLabelText} per subject`;
+        autoX = "Subjects, ranked";
+        autoY = xLabelText;
       } else if (chartType === "dumbbell") {
         const startMeta = session.columns.find((c) => c.name === dbStart);
         const endMeta = session.columns.find((c) => c.name === dbEnd);
@@ -432,14 +456,22 @@ function ChartsPanelBody({ session }: { session: Session }) {
   // Reference lines and significance brackets are both shapes + annotations;
   // the facet grid adds panel titles as annotations too. Merged once here so
   // none of the three overwrites another.
-  const refOverlay = referenceLineOverlay(
-    REF_LINE_CHARTS.has(chartType)
+  // The waterfall's thresholds are reference lines the backend already
+  // counted against, so they are drawn through the same overlay.
+  const thresholdLines: RefLine[] = plotData?.type === "waterfall"
+    ? ((plotData.thresholds as Array<{ value: number }>) ?? []).map((t) => ({
+      axis: "y", value: t.value, label: t.value > 0 ? `+${t.value}%` : `${t.value}%`,
+    }))
+    : [];
+  const refOverlay = referenceLineOverlay([
+    ...thresholdLines,
+    ...(REF_LINE_CHARTS.has(chartType)
       ? refLines.flatMap((l): RefLine[] => {
         const v = parseRefValue(l.value);
         return v === null ? [] : [{ axis: l.axis, value: v, label: l.label }];
       })
-      : [],
-  );
+      : []),
+  ]);
   const overlayShapes = [...brackets.shapes, ...refOverlay.shapes];
   const overlayAnnotations = [
     ...((facetOverlay.annotations as Record<string, unknown>[] | undefined) ?? []),
@@ -469,7 +501,8 @@ function ChartsPanelBody({ session }: { session: Session }) {
                   : t === "lineplot" ? "Line (over visits)" : t === "slopeplot" ? "Slope (before / after)"
                   : t === "sankey" ? "Sankey (flow)" : t === "stackplot" ? "Stacked bar"
                   : t === "ridgeplot" ? "Ridge" : t === "sets" ? "Set overlap"
-                  : t === "raincloud" ? "Raincloud" : t === "strip" ? "Strip (points + median)" : t}
+                  : t === "raincloud" ? "Raincloud" : t === "strip" ? "Strip (points + median)"
+                  : t === "waffle" ? "Icon array (N in 100)" : t === "waterfall" ? "Waterfall (per subject)" : t}
               </span>
             </label>
           ))}
@@ -488,12 +521,15 @@ function ChartsPanelBody({ session }: { session: Session }) {
                 : chartType === "stackplot" ? "Bars (axis category)"
                 : chartType === "ridgeplot" ? "Value"
                 : chartType === "sets" ? "— use the tick list below —"
+                : chartType === "waffle" ? "Category"
+                : chartType === "waterfall" ? "Value per subject (e.g. % change)"
                 : "X axis"}
             </label>
             <select className="select w-full" value={x} onChange={(e) => setX(e.target.value)}>
               {(chartType === "boxplot" || chartType === "violin" || chartType === "raincloud" || chartType === "paired"
                 || chartType === "errorplot" || chartType === "ecdf" || chartType === "facet"
-                || chartType === "ridgeplot" ? numCols
+                || chartType === "ridgeplot" || chartType === "waterfall" ? numCols
+                : chartType === "waffle" ? [...catCols, ...numCols.filter((c) => !catCols.includes(c))]
                 : chartType === "dumbbell" || chartType === "pie" || chartType === "balloon"
                 || chartType === "lineplot" || chartType === "sankey" || chartType === "stackplot"
                   ? [...catCols, ...numCols]
@@ -1081,6 +1117,21 @@ function ChartsPanelBody({ session }: { session: Session }) {
               )}
             </div>
           )}
+          {chartType === "waterfall" && (
+            <div className="pt-2 border-t border-gray-100 space-y-2">
+              <label className="flex items-center gap-2 cursor-pointer" title="Draws the RECIST lines at +20 % (progression) and -30 % (partial response), and counts the subjects past each. Only meaningful when the value is a % change from baseline in the sum of target lesions.">
+                <input type="checkbox" checked={wfRecist} onChange={(e) => setWfRecist(e.target.checked)} className="accent-indigo-500" />
+                <span className="text-xs text-gray-600">RECIST lines (+20 % / −30 %)</span>
+              </label>
+              <div>
+                <label className="text-xs text-gray-400 block mb-1">Subject label (hover)</label>
+                <select className="select w-full" value={labelCol} onChange={(e) => setLabelCol(e.target.value)}>
+                  <option value="">Row number</option>
+                  {session.columns.map((c) => <option key={c.name}>{c.name}</option>)}
+                </select>
+              </div>
+            </div>
+          )}
           {chartType === "histogram" && (
             <div className="space-y-2">
               <div>
@@ -1298,6 +1349,8 @@ function ChartsPanelBody({ session }: { session: Session }) {
             chartType === "facet" ? "One panel per level of a grouping variable — small multiples. Every panel shares a single axis range computed across all of them, because per-panel autoscaling makes different distributions look identical. Panels beyond the limit are dropped with a warning rather than quietly omitted." :
             chartType === "errorplot" ? "Centre and spread per group, without the box. Pick the whisker deliberately: SD says how spread the observations are, SE and CI say how precisely the mean is estimated. They differ by a factor of √n, so an SE plot looks far tighter than an SD plot on identical data — journals ask which one you used." :
             chartType === "ecdf" ? "The empirical cumulative distribution: for each value on the x axis, the proportion of observations at or below it. Unlike a histogram it involves no binning choice, so it cannot be made to tell a different story by changing bin width. With exactly two groups the largest vertical gap between the curves is the Kolmogorov-Smirnov D, reported below the chart." :
+            chartType === "waffle" ? "A hundred squares, filled by share — the icon array. 'Twelve in a hundred' is how a risk is meant to be told to a patient, and this is the figure that says it; a pie asks the reader to judge an angle. Each level gets whole squares that add up to exactly a hundred, and the true count behind each is on hover." :
+            chartType === "waterfall" ? "One bar per subject, ranked from the largest increase to the largest decrease — the oncology waterfall plot. The sort is the chart: it turns a column of numbers into the shape of the response, and the share past a threshold is read straight off the x axis. Colour by best response, and switch the RECIST lines on when the value is a % change in target-lesion sum." :
             chartType === "dumbbell" ? "Two values per category, joined by a line — the line length is the point. Use it to compare a reference against an observation across many variables at once: an expected effect size against the one computed from the raw data, a baseline against follow-up, model A against model B. Rows are ranked so the largest disagreement sits at the top. Needs exactly one row per category." :
             "Shows counts or aggregated values for categories. Use for comparing frequencies across groups. Add a Color variable for stacked/grouped comparisons."
           }</p>
@@ -1426,6 +1479,36 @@ function ChartsPanelBody({ session }: { session: Session }) {
           </div>
         )}
 
+        {/* Waffle: what a hundred squares stand for */}
+        {plotData?.type === "waffle" && (
+          <div className="panel bg-gray-50 border-gray-200 p-4 rounded-2xl">
+            <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Units</p>
+            <p className="text-xs text-gray-600 leading-relaxed">
+              One square = one in {String(plotData.units)} of {String(plotData.n)} rows.{" "}
+              {(plotData.levels as Array<{ label: string; count: number; percent: number; cells: number }>)
+                .map((l) => `${labelFor(valueLabelsOf(session, String(plotData.category)), l.label, l.label)}: ${l.cells} (${l.count}, ${l.percent.toFixed(1)}%)`)
+                .join(" · ")}.
+              {Number(plotData.n_folded_into_other) > 0 && ` ${String(plotData.n_folded_into_other)} smaller levels are folded into "Other".`}
+            </p>
+          </div>
+        )}
+
+        {/* Waterfall: who is past each line, and who is missing */}
+        {plotData?.type === "waterfall" && (
+          <div className="panel bg-gray-50 border-gray-200 p-4 rounded-2xl">
+            <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Subjects</p>
+            <p className="text-xs text-gray-600 leading-relaxed">
+              {String(plotData.n)} subjects drawn
+              {Number(plotData.n_missing) > 0 && <span className="text-amber-700"> · {String(plotData.n_missing)} without a value are not on the chart</span>}.
+              {(plotData.thresholds as Array<{ value: number; side: string; n: number }>).map((t) => (
+                <span key={t.value}>
+                  {" "}{t.n} of {String(plotData.n)} ({(t.n / Number(plotData.n) * 100).toFixed(0)}%) at or {t.side === "at_or_above" ? "above" : "below"} {t.value > 0 ? `+${t.value}` : t.value}.
+                </span>
+              ))}
+            </p>
+          </div>
+        )}
+
         {/* Dumbbell summary — the numbers behind the picture */}
         {plotData?.type === "dumbbell" && (() => {
           const s = plotData.summary as Record<string, number | string>;
@@ -1469,6 +1552,9 @@ function ChartsPanelBody({ session }: { session: Session }) {
                 // logged — that axis carries names, not numbers.
                 ...(valueAxisIsLog && horizontal ? { type: "log" } : {}),
                 ...(groupedChart && !horizontal ? { type: "category", automargin: true } : {}),
+                // One tick per subject would be a smear; the rank is the axis.
+                ...(plotData?.type === "waterfall" ? { showticklabels: false, ticks: "" } : {}),
+                ...(plotData?.type === "waffle" ? { visible: false } : {}),
                 ...(marginalAxes.xDomain ? { domain: marginalAxes.xDomain } : {}),
                 // Last, so a manual window wins over the data-driven range.
                 ...xWindow,
@@ -1479,6 +1565,8 @@ function ChartsPanelBody({ session }: { session: Session }) {
                 ...(valueAxisIsLog && !horizontal ? { type: "log" } : {}),
                 // Category order comes from the trace arrays, not alphabetical.
                 ...(plotData?.type === "dumbbell" ? { type: "category", automargin: true } : {}),
+                // A hundred squares is a picture, not a plot: no axes.
+                ...(plotData?.type === "waffle" ? { visible: false, scaleanchor: "x", scaleratio: 1 } : {}),
                 // automargin so a long histology name is not clipped.
                 ...(groupedChart && horizontal ? { type: "category", automargin: true } : {}),
                 // Flipped bars: categories down the side, values along the bottom.
@@ -2461,7 +2549,81 @@ function buildTraces(
     return [...boxTraces, ...lineTraces, ...markerTraces];
   }
 
+  if (d.type === "waffle") return waffleTraces(d, C, valueLabelsFor(d.category));
+
+  if (d.type === "waterfall") return waterfallTraces(d, C, valueLabelsFor(d.group));
+
   return null;
+}
+
+/** The icon array: `units` squares in a grid ten wide, filled level by level
+ *  from the top-left, one trace per level so the legend names each. Square
+ *  markers on an axis-free plot rather than a heatmap, so each unit stays a
+ *  countable thing with its own hover. */
+function waffleTraces(
+  d: Record<string, unknown>,
+  C: string[],
+  labels: Record<string, string>,
+): PlotData[] {
+  const levels = (d.levels as Array<{ label: string; count: number; percent: number; cells: number }>) ?? [];
+  const units = Number(d.units) || 100;
+  const cols = 10;
+  const rows = Math.ceil(units / cols);
+  let next = 0;
+  return levels.map((lv, i) => {
+    const xs: number[] = [];
+    const ys: number[] = [];
+    for (let k = 0; k < lv.cells; k++) {
+      const cell = next + k;
+      xs.push(cell % cols);
+      // Row 0 at the top, as a reader fills a grid.
+      ys.push(rows - 1 - Math.floor(cell / cols));
+    }
+    next += lv.cells;
+    const name = labelFor(labels, lv.label, lv.label);
+    return {
+      type: "scatter",
+      mode: "markers",
+      x: xs,
+      y: ys,
+      name,
+      marker: { symbol: "square", size: 18, color: C[i % C.length], line: { color: "#ffffff", width: 1.5 } },
+      hovertemplate: `${name}<br>${lv.cells} in ${units} · ${lv.count} of ${String(d.n)} (${lv.percent.toFixed(1)}%)<extra></extra>`,
+    } as PlotData;
+  });
+}
+
+/** One bar per subject at its rank, coloured by group when there is one.
+ *  Colour is carried per bar rather than per trace so the bars keep their
+ *  sorted order on a single category axis; a legend entry per group is added
+ *  as an empty trace, since a per-bar colour array has no legend of its own. */
+function waterfallTraces(
+  d: Record<string, unknown>,
+  C: string[],
+  labels: Record<string, string>,
+): PlotData[] {
+  const rows = (d.rows as Array<{ rank: number; value: number; group?: string | null; label?: string }>) ?? [];
+  const groups = [...new Set(rows.map((r) => r.group ?? null))].filter((g): g is string => g !== null);
+  const colourOf = (g: string | null | undefined) => (g && groups.length ? C[groups.indexOf(g) % C.length] : C[0]);
+  const bars: PlotData = {
+    type: "bar",
+    x: rows.map((r) => String(r.rank)),
+    y: rows.map((r) => r.value),
+    marker: { color: rows.map((r) => colourOf(r.group)) },
+    text: rows.map((r) => r.label ?? `#${r.rank}`),
+    textposition: "none",
+    showlegend: false,
+    hovertemplate: "%{text}<br>%{y:.1f}<extra></extra>",
+  };
+  const legend: PlotData[] = groups.map((g, i) => ({
+    type: "bar",
+    x: [rows[0] ? String(rows[0].rank) : "1"],
+    y: [0],
+    name: labelFor(labels, g, g),
+    marker: { color: C[i % C.length] },
+    hoverinfo: "skip",
+  } as PlotData));
+  return [bars, ...legend];
 }
 
 /** One trend from the backend: the overall regression or a per-group fit. */
@@ -2547,6 +2709,11 @@ function countGroupLevels(d: Record<string, unknown> | null): number {
   return 0;
 }
 
+/** A column's value labels, or an empty map. */
+function valueLabelsOf(session: Session, name: string): Record<string, string> {
+  return (session.columns.find((c) => c.name === name)?.value_labels as Record<string, string> | undefined) ?? {};
+}
+
 /** A column's display label, falling back to its name. */
 function columnLabel(session: Session, name: string): string {
   const meta = session.columns.find((c) => c.name === name);
@@ -2595,6 +2762,8 @@ function numericAxesFor(
     case "dumbbell":
     case "ridgeplot":
       return { x: true, y: false };
+    case "waterfall":
+      return { x: false, y: true };
     // A pie has no axes, a Sankey's are not values, and a facet has one pair
     // per panel — a single window would silently apply to the first only.
     default:

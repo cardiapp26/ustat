@@ -4,5 +4,5 @@
 export const CHART_TYPES = [
   "histogram", "scatter", "boxplot", "violin", "raincloud", "strip", "bar", "paired",
   "dumbbell", "errorplot", "ecdf", "pie", "balloon", "facet", "lineplot",
-  "slopeplot", "sankey", "stackplot", "ridgeplot", "sets",
+  "slopeplot", "sankey", "stackplot", "ridgeplot", "sets", "waffle", "waterfall",
 ] as const;

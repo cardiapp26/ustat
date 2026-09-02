@@ -1175,3 +1175,113 @@ describe('ChartsPanel axis limits, line styles and 2-D bins', () => {
     expect(traces.map((t) => t.line?.dash)).toEqual(['solid', 'dash'])
   })
 })
+
+describe('ChartsPanel icon array and waterfall', () => {
+  it('draws the hundred squares level by level and names each unit', async () => {
+    installSession()
+    server.use(http.post('/api/charts/waffle', () => HttpResponse.json({
+      type: 'waffle', category: 'GROUP', n: 391, units: 100,
+      levels: [
+        { label: 'A', count: 193, percent: 49.4, cells: 50 },
+        { label: 'B', count: 198, percent: 50.6, cells: 50 },
+      ],
+      n_folded_into_other: 0,
+    })))
+    const user = userEvent.setup()
+    render(<ChartsPanel />)
+    await user.click(screen.getByRole('radio', { name: /icon array/i }))
+    await user.click(screen.getByRole('button', { name: /generate chart/i }))
+    await waitFor(() => expect(screen.getByTestId('plotly-mock')).toBeInTheDocument())
+
+    const traces = JSON.parse(screen.getByTestId('plotly-mock').getAttribute('data-plotly') ?? '[]') as Array<Record<string, unknown>>
+    expect(traces.map((t) => t.name)).toEqual(['A', 'B'])
+    expect((traces[0].x as number[]).length + (traces[1].x as number[]).length).toBe(100)
+    // A fills the top five rows, B the bottom five: level by level, top down.
+    expect(Math.min(...(traces[0].y as number[]))).toBe(5)
+    expect(Math.max(...(traces[1].y as number[]))).toBe(4)
+    expect((traces[0].marker as { symbol: string }).symbol).toBe('square')
+    const layout = JSON.parse(screen.getByTestId('plotly-mock').dataset.layout!)
+    expect(layout.xaxis.visible).toBe(false)
+    expect(layout.yaxis.visible).toBe(false)
+    expect(screen.getByText(/One square = one in 100 of 391 rows/)).toBeInTheDocument()
+  })
+
+  it('ranks the bars, colours them by group, and draws the RECIST lines it counted', async () => {
+    installSession()
+    let sent: Record<string, unknown> = {}
+    server.use(http.post('/api/charts/waterfall', async ({ request }) => {
+      sent = (await request.json()) as Record<string, unknown>
+      return HttpResponse.json({
+        type: 'waterfall', y: 'LDL', group: 'GROUP', label: null, n: 3, n_missing: 1,
+        rows: [
+          { rank: 1, value: 35, group: 'B' },
+          { rank: 2, value: -10, group: 'A' },
+          { rank: 3, value: -45, group: 'A' },
+        ],
+        thresholds: [
+          { value: 20, side: 'at_or_above', n: 1 },
+          { value: -30, side: 'at_or_below', n: 1 },
+        ],
+        warnings: [],
+      })
+    }))
+    const user = userEvent.setup()
+    render(<ChartsPanel />)
+    await user.click(screen.getByRole('radio', { name: /waterfall/i }))
+    const groupSelect = screen.getAllByRole('combobox').find(
+      (el) => el.previousElementSibling?.textContent?.match(/^color \/ group$/i))
+    await user.selectOptions(groupSelect!, 'GROUP')
+    await user.click(screen.getByRole('button', { name: /generate chart/i }))
+    await waitFor(() => expect(screen.getByTestId('plotly-mock')).toBeInTheDocument())
+
+    expect(sent.thresholds).toEqual([20, -30])
+    const traces = JSON.parse(screen.getByTestId('plotly-mock').getAttribute('data-plotly') ?? '[]') as Array<Record<string, unknown>>
+    const bars = traces[0]
+    expect(bars.y).toEqual([35, -10, -45])
+    const colours = (bars.marker as { color: string[] }).color
+    expect(colours[1]).toBe(colours[2])
+    expect(colours[0]).not.toBe(colours[1])
+    // One legend entry per group, in the group's colour.
+    expect(traces.slice(1).map((t) => t.name)).toEqual(['B', 'A'])
+    const layout = JSON.parse(screen.getByTestId('plotly-mock').dataset.layout!)
+    expect(layout.xaxis.showticklabels).toBe(false)
+    expect((layout.shapes as Array<{ y0: number }>).map((s) => s.y0)).toEqual([20, -30])
+    expect(screen.getByText(/1 without a value are not on the chart/)).toBeInTheDocument()
+    expect(screen.getByText(/at or above \+20/)).toBeInTheDocument()
+  })
+})
+
+describe('ChartsPanel ordered groups', () => {
+  it('gives an ordinal grouping column a lightness ladder instead of the palette hues', async () => {
+    installSession(makeSession({
+      columns: [
+        { name: 'LDL', dtype: 'float64', kind: 'numeric' },
+        { name: 'TERTILE', dtype: 'int64', kind: 'ordinal' },
+      ],
+    }))
+    server.use(http.post('/api/charts/boxplot', () => HttpResponse.json({
+      type: 'boxplot', x: 'LDL', color: 'TERTILE',
+      groups: [
+        { group: '1', values: [1, 2, 3] },
+        { group: '2', values: [2, 3, 4] },
+        { group: '3', values: [3, 4, 5] },
+      ],
+    })))
+    const user = userEvent.setup()
+    render(<ChartsPanel />)
+    await user.click(screen.getByRole('radio', { name: /boxplot/i }))
+    const groupSelect = screen.getAllByRole('combobox').find(
+      (el) => el.previousElementSibling?.textContent?.match(/^color \/ group$/i))
+    await user.selectOptions(groupSelect!, 'TERTILE')
+    await user.click(screen.getByRole('button', { name: /generate chart/i }))
+    await waitFor(() => expect(screen.getByTestId('plotly-mock')).toBeInTheDocument())
+
+    const traces = JSON.parse(screen.getByTestId('plotly-mock').getAttribute('data-plotly') ?? '[]') as Array<{ marker: { color: string } }>
+    const colours = traces.slice(0, 3).map((t) => t.marker.color)
+    const lum = (hex: string) => [1, 3, 5].reduce((a, i) => a + parseInt(hex.slice(i, i + 2), 16), 0)
+    // Tertile 1 lightest, tertile 3 darkest — one hue, more ink per level.
+    expect(lum(colours[0])).toBeGreaterThan(lum(colours[1]))
+    expect(lum(colours[1])).toBeGreaterThan(lum(colours[2]))
+    expect(new Set(colours).size).toBe(3)
+  })
+})

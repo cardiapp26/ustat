@@ -146,6 +146,8 @@ export const getSankey = (data: object) => api.post("/api/charts/sankey", data);
 export const getStackPlot = (data: object) => api.post("/api/charts/stackplot", data);
 export const getRidgePlot = (data: object) => api.post("/api/charts/ridgeplot", data);
 export const getSets = (data: object) => api.post("/api/charts/sets", data);
+export const getWaffle = (data: object) => api.post("/api/charts/waffle", data);
+export const getWaterfall = (data: object) => api.post("/api/charts/waterfall", data);
 export const getBar = (data: object) => api.post("/api/charts/bar", data);
 export const runSubgroupBar = (data: object) => api.post("/api/charts/subgroup_bar", data);
 export const runScoreComposite = (data: object) => api.post("/api/charts/score_composite", data);
