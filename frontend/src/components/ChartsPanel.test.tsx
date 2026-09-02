@@ -866,3 +866,64 @@ describe('ChartsPanel', () => {
     await waitFor(() => expect(screen.getByText('Column not found')).toBeInTheDocument())
   })
 })
+
+describe('ChartsPanel scatter trend lines', () => {
+  const points = [{ AGE: 55, LDL: 120, SEX: 'F' }, { AGE: 62, LDL: 140, SEX: 'M' }, { AGE: 70, LDL: 150, SEX: 'F' }]
+
+  it('draws one LOESS curve per group in place of the overall line, and no band', async () => {
+    installSession()
+    server.use(
+      http.post('/api/charts/scatter', () =>
+        HttpResponse.json({
+          type: 'scatter', x: 'AGE', y: 'LDL', color: 'SEX', fit: 'loess', fit_per_group: true,
+          points,
+          regression: { method: 'loess', line_x: [55, 62, 70], line_y: [120, 140, 150], r2: 0.9, r: 0.95, p: 0.01, n: 3, span: 0.75, band: {} },
+          regressions: [
+            { group: 'F', n: 2, method: 'loess', line_x: [55, 70], line_y: [120, 150], r: 1, r2: 1, span: 0.75, band: {} },
+            { group: 'M', n: 1, method: 'loess', line_x: [], line_y: [], r: null, r2: null, note: 'LOESS needs at least 4 points spread along x' },
+          ],
+        }),
+      ),
+    )
+    const user = userEvent.setup()
+    render(<ChartsPanel />)
+    await user.click(screen.getByRole('radio', { name: /scatter/i }))
+    await user.click(screen.getByRole('button', { name: /generate chart/i }))
+    await waitFor(() => expect(screen.getByTestId('plotly-mock')).toBeInTheDocument())
+
+    const traces = JSON.parse(screen.getByTestId('plotly-mock').getAttribute('data-plotly') ?? '[]') as Array<{ name?: string; fill?: string }>
+    const names = traces.map((t) => t.name ?? '')
+    expect(names.some((n) => n.startsWith('F · LOESS'))).toBe(true)
+    // The group that could not be fitted gets no line, and no overall line stands in for it.
+    expect(names.some((n) => n.startsWith('M · LOESS'))).toBe(false)
+    expect(names.filter((n) => /LOESS|Fit \(/.test(n))).toHaveLength(1)
+    expect(traces.some((t) => t.fill === 'tonexty')).toBe(false)
+    expect(screen.getByText(/carries no band/)).toBeInTheDocument()
+    expect(screen.getByText(/M: LOESS needs at least 4 points/)).toBeInTheDocument()
+  })
+
+  it('sends the chosen method and span with the request', async () => {
+    installSession()
+    let sent: Record<string, unknown> = {}
+    server.use(
+      http.post('/api/charts/scatter', async ({ request }) => {
+        sent = (await request.json()) as Record<string, unknown>
+        return HttpResponse.json({
+          type: 'scatter', x: 'AGE', y: 'LDL', fit: 'none', points,
+          regression: { method: 'none', line_x: [], line_y: [], r: 0.5, r2: 0.25, p: 0.3, n: 3 },
+          regressions: [],
+        })
+      }),
+    )
+    const user = userEvent.setup()
+    render(<ChartsPanel />)
+    await user.click(screen.getByRole('radio', { name: /scatter/i }))
+    await user.selectOptions(screen.getByRole("combobox", { name: /trend line method/i }), 'none')
+    await user.click(screen.getByRole('button', { name: /generate chart/i }))
+    await waitFor(() => expect(screen.getByTestId('plotly-mock')).toBeInTheDocument())
+    expect(sent.fit).toBe('none')
+    expect(sent.loess_span).toBe(0.75)
+    const traces = JSON.parse(screen.getByTestId('plotly-mock').getAttribute('data-plotly') ?? '[]') as Array<{ name?: string }>
+    expect(traces.filter((t) => /Fit \(|LOESS/.test(t.name ?? ''))).toHaveLength(0)
+  })
+})

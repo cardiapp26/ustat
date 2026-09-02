@@ -87,6 +87,11 @@ function ChartsPanelBody({ session }: { session: Session }) {
   // Scatter cloud description (ellipse / marginal) and marker shape.
   const [ellipse, setEllipse] = usePersistedPanelState<boolean>("charts", "ellipse", false);
   const [marginal, setMarginal] = usePersistedPanelState<boolean>("charts", "marginal", false);
+  // geom_smooth: the straight line (lm), the local curve (loess), or none;
+  // and whether each colour group gets its own.
+  const [fitMethod, setFitMethod] = usePersistedPanelState<string>("charts", "fitMethod", "lm");
+  const [fitPerGroup, setFitPerGroup] = usePersistedPanelState<boolean>("charts", "fitPerGroup", false);
+  const [loessSpan, setLoessSpan] = usePersistedPanelState<number>("charts", "loessSpan", 0.75);
   const [shapeCol, setShapeCol] = usePersistedPanelState<string>("charts", "shapeCol", "");
   // Pie / donut, balloon, facet
   const [pieValue, setPieValue] = usePersistedPanelState<string>("charts", "pieValue", "");
@@ -177,6 +182,7 @@ function ChartsPanelBody({ session }: { session: Session }) {
         log_x: logX, log_y: logY, identity_line: identityLine,
         label: labelCol || undefined, shape: shapeCol || undefined,
         ellipse, marginal,
+        fit: fitMethod, fit_per_group: fitPerGroup && Boolean(color), loess_span: loessSpan,
       });
       else if (chartType === "boxplot" || chartType === "violin" || chartType === "raincloud" || chartType === "strip") res = await getBoxplot({ ...base, color: color || undefined });
       else if (chartType === "paired") res = await getPairedBox({ session_id: session.session_id, y: x, group: color, pair_id: pairId });
@@ -889,6 +895,35 @@ function ChartsPanelBody({ session }: { session: Session }) {
                 </select>
                 <p className="text-[10px] text-gray-400 mt-1">Names each point on the figure — use it to call out the rows that miss the line.</p>
               </div>
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider pt-1">Trend line</p>
+              <div>
+                <label
+                  className="text-xs text-gray-400 block mb-1"
+                  title="geom_smooth. The straight line comes with the 95% CI of the fitted line. LOESS follows the data locally — the shape to show when the relation bends — and carries no band, because it has none it can justify."
+                >Method</label>
+                <select className="select w-full" aria-label="Trend line method" value={fitMethod} onChange={(e) => setFitMethod(e.target.value)}>
+                  <option value="lm">Linear (lm) with 95% CI</option>
+                  <option value="loess">LOESS (local curve)</option>
+                  <option value="none">None</option>
+                </select>
+              </div>
+              {fitMethod === "loess" && (
+                <div>
+                  <label className="text-xs text-gray-400 block mb-1">Span: {loessSpan.toFixed(2)}</label>
+                  <input type="range" min={0.2} max={1} step={0.05} value={loessSpan}
+                    aria-label="LOESS span"
+                    onChange={(e) => setLoessSpan(+e.target.value)} className="w-full accent-indigo-500" />
+                  <p className="text-[10px] text-gray-400 mt-1">
+                    The share of points each local fit sees. Smaller follows every wiggle; 0.75 is ggplot2's default.
+                  </p>
+                </div>
+              )}
+              {fitMethod !== "none" && color && (
+                <label className="flex items-center gap-2 cursor-pointer" title="One trend per level of the Color / Group column, in that group's colour — geom_smooth(aes(colour = group)). Replaces the single overall line.">
+                  <input type="checkbox" checked={fitPerGroup} onChange={(e) => setFitPerGroup(e.target.checked)} className="accent-indigo-500" />
+                  <span className="text-xs text-gray-600">One trend per group</span>
+                </label>
+              )}
             </div>
           )}
           {chartType === "histogram" && (
@@ -1251,6 +1286,11 @@ function ChartsPanelBody({ session }: { session: Session }) {
               : null;
           }
           const rho = reg.spearman?.rho;
+          const fit = String(plotData.fit ?? "lm");
+          const perGroup = (plotData.regressions as Array<{ group: unknown; r?: number | null; r2?: number | null; n?: number; note?: string }> | undefined) ?? [];
+          const fitNote = fit === "loess"
+            ? " The curve is a LOESS fit; it carries no band."
+            : fit === "none" ? "" : " The shaded band is the 95% CI of the fitted line.";
           return (
             <p className="mt-2 text-[11px] text-gray-500">
               Pearson r = {reg.r.toFixed(3)} (R² = {(reg.r2 ?? 0).toFixed(3)}), p = {fmtP(reg.p ?? NaN)}
@@ -1258,7 +1298,14 @@ function ChartsPanelBody({ session }: { session: Session }) {
                 <> · Spearman ρ = {rho.toFixed(3)}, p = {fmtP(reg.spearman?.p ?? NaN)}</>
               )}
               {typeof reg.n === "number" && <> · n = {reg.n}</>}
-              . The shaded band is the 95% CI of the fitted line.
+              .{fitNote}
+              {perGroup.length > 0 && (
+                <> Per group: {perGroup.map((g) => (
+                  typeof g.r === "number"
+                    ? `${String(g.group)} r = ${g.r.toFixed(3)} (n = ${g.n ?? "?"})`
+                    : `${String(g.group)}: ${g.note ?? "no fit"}`
+                )).join(" · ")}.</>
+              )}
             </p>
           );
         })()}
@@ -1471,37 +1518,10 @@ function buildTraces(
 
   if (d.type === "scatter") {
     const points = d.points as Array<Record<string, unknown>>;
-    const regression = d.regression as {
-      line_x: unknown; line_y: unknown; r2: number;
-      band?: { x?: number[]; lo?: number[]; hi?: number[]; level?: number };
-    };
-    // The 95% band around the FITTED LINE. Drawn as one filled ribbon: the
-    // lower edge is invisible and the upper edge fills down to it. A bare line
-    // says nothing about how well the slope is pinned down, and it is pinned
-    // down least at the ends of the x range — which is where a reader
-    // extrapolates.
-    const band = regression.band;
-    const bandTraces: PlotData[] =
-      band?.x?.length && band.lo?.length && band.hi?.length
-        ? [
-          {
-            type: "scatter", mode: "lines",
-            x: band.x, y: band.lo,
-            line: { width: 0 },
-            hoverinfo: "skip",
-            showlegend: false,
-          } as PlotData,
-          {
-            type: "scatter", mode: "lines",
-            x: band.x, y: band.hi,
-            line: { width: 0 },
-            fill: "tonexty",
-            fillcolor: "rgba(107,114,128,0.18)",
-            name: `${Math.round((band.level ?? 0.95) * 100)}% CI of the fit`,
-            hoverinfo: "skip",
-          } as PlotData,
-        ]
-        : [];
+    const regression = d.regression as FitResult;
+    // One fit per colour group replaces the overall line — ggplot2's
+    // geom_smooth(aes(colour = group)).
+    const groupFits = (d.regressions as Array<FitResult & { group: unknown }> | undefined) ?? [];
     const xKey = String(d.x);
     const yKey = String(d.y);
     const labelKey = d.label ? String(d.label) : null;
@@ -1574,8 +1594,17 @@ function buildTraces(
       const colorKey = String(d.color);
       const colorLabels = valueLabelsFor(d.color);
       const groups = [...new Set(points.map((p) => p[colorKey]))];
+      const fits = groupFits.length
+        ? groupFits.map((g) => {
+          const idx = groups.findIndex((name) => String(name) === String(g.group));
+          const colour = idx >= 0 ? C[idx % C.length] : "#374151";
+          const label = idx >= 0 ? labelFor(colorLabels, groups[idx], String(g.group)) : String(g.group);
+          return fitTraces(g, colour, td.lineWidth, label, "dash");
+        })
+        : [fitTraces(regression, "#374151", 1.5, "", "dash")];
+      // Bands under the points, lines over them.
       return [
-        ...bandTraces,
+        ...fits.flatMap((f) => f.band),
         ...groups.map((g, i) => {
           const rows = points.filter((p) => p[colorKey] === g);
           return {
@@ -1590,19 +1619,15 @@ function buildTraces(
             marker: { color: C[i % C.length], size: td.markerSize, opacity: td.markerOpacity, symbol: symbolFor(rows) },
           } as PlotData;
         }),
-        {
-          type: "scatter", mode: "lines",
-          x: regression.line_x, y: regression.line_y,
-          line: { color: "#374151", width: 1.5, dash: "dash" },
-          name: `Fit (R²=${regression.r2.toFixed(3)})`,
-        } as PlotData,
+        ...fits.flatMap((f) => f.line),
         ...identityTrace,
         ...ellipseTraces,
         ...marginalTraces,
       ];
     }
+    const fit = fitTraces(regression, C[1], td.lineWidth, "", "solid");
     return [
-      ...bandTraces,
+      ...fit.band,
       {
         type: "scatter", mode: markerMode,
         x: points.map((p) => p[xKey]),
@@ -1613,12 +1638,7 @@ function buildTraces(
         marker: { color: C[0], size: td.markerSize, opacity: td.markerOpacity },
         name: yKey,
       } as PlotData,
-      {
-        type: "scatter", mode: "lines",
-        x: regression.line_x, y: regression.line_y,
-        line: { color: C[1], width: td.lineWidth },
-        name: `Fit (R²=${regression.r2.toFixed(3)})`,
-      } as PlotData,
+      ...fit.line,
       ...identityTrace,
       ...ellipseTraces,
       ...marginalTraces,
@@ -2174,6 +2194,60 @@ function buildTraces(
   }
 
   return null;
+}
+
+/** One trend from the backend: the overall regression or a per-group fit. */
+interface FitResult {
+  method?: string;
+  line_x?: unknown[];
+  line_y?: unknown[];
+  r2?: number | null;
+  span?: number;
+  note?: string;
+  band?: { x?: number[]; lo?: number[]; hi?: number[]; level?: number };
+}
+
+/** Line plus band for one fit. Nothing when the fit has no line (method
+ *  "none", or a group too small to fit). The band is the 95% CI of the fitted
+ *  LINE, drawn as one ribbon: an invisible lower edge and an upper edge filled
+ *  down to it. A bare line says nothing about how well the slope is pinned
+ *  down, and it is pinned down least at the ends — where readers extrapolate. */
+function fitTraces(
+  fit: FitResult,
+  colour: string,
+  width: number,
+  groupLabel: string,
+  dash: "solid" | "dash",
+): { band: PlotData[]; line: PlotData[] } {
+  if (!fit.line_x?.length || !fit.line_y?.length) return { band: [], line: [] };
+  const prefix = groupLabel ? `${groupLabel} · ` : "";
+  const name = fit.method === "loess"
+    ? `${prefix}LOESS (span ${(fit.span ?? 0.75).toFixed(2)})`
+    : `${prefix}Fit (R²=${(fit.r2 ?? 0).toFixed(3)})`;
+  const band = fit.band;
+  const bandTraces: PlotData[] =
+    band?.x?.length && band.lo?.length && band.hi?.length
+      ? [
+        { type: "scatter", mode: "lines", x: band.x, y: band.lo, line: { width: 0 }, hoverinfo: "skip", showlegend: false },
+        {
+          type: "scatter", mode: "lines", x: band.x, y: band.hi,
+          line: { width: 0 }, fill: "tonexty",
+          // The group's own colour at low alpha, so two bands stay tellable apart.
+          fillcolor: /^#[0-9a-f]{6}$/i.test(colour) ? `${colour}2e` : "rgba(107,114,128,0.18)",
+          name: `${prefix}${Math.round((band.level ?? 0.95) * 100)}% CI of the fit`,
+          hoverinfo: "skip",
+        },
+      ]
+      : [];
+  return {
+    band: bandTraces,
+    line: [{
+      type: "scatter", mode: "lines",
+      x: fit.line_x, y: fit.line_y,
+      line: { color: colour, width, ...(dash === "dash" ? { dash: "dash" } : {}) },
+      name,
+    }],
+  };
 }
 
 interface BarRow {

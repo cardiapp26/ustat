@@ -88,6 +88,11 @@ class ChartRequest(BaseModel):
     error: Optional[str] = None
     # Column whose value labels each point (e.g. the variable name per row).
     label: Optional[str] = None
+    # Scatter-only — geom_smooth. "lm" is the straight line with its CI band,
+    # "loess" the local curve (statsmodels lowess), "none" the bare cloud.
+    fit: str = "lm"
+    fit_per_group: bool = False
+    loess_span: float = 0.75
 
 
 def _mean_bars(sub: pd.DataFrame, x: str, y: str, spread: Optional[str]) -> list[dict]:
@@ -160,6 +165,141 @@ def histogram(req: ChartRequest):
         },
         "warnings": _plausibility_warnings(req.x, df[req.x]),
     }
+
+
+def _empty_fit(note: Optional[str], method: str) -> dict:
+    return {
+        "method": method,
+        "slope": None, "intercept": None, "r": None, "r2": None, "p": None,
+        "se": None, "line_x": [], "line_y": [], "band": {},
+        "spearman": {"rho": None, "p": None},
+        "note": note,
+    }
+
+
+def _finite_or_none(v) -> Optional[float]:
+    # scipy answers n = 2 with rho = 1 and p = nan. A nan reaching the
+    # response is not a small annoyance: the endpoint's non-finite guard
+    # rejects the WHOLE payload with a 400, so a two-point group would have
+    # cost the user the entire scatter.
+    fv = float(v)
+    return fv if np.isfinite(fv) else None
+
+
+def _fit_curve(
+    x_raw: pd.Series,
+    y_raw: pd.Series,
+    log_x: bool,
+    log_y: bool,
+    method: str,
+    span: float,
+) -> dict:
+    """Trend through a cloud — ggplot2's geom_smooth(method = lm | loess).
+
+    Fitted in the space the reader sees: on a log axis a fit computed from raw
+    values renders as a curve matching no visible trend, so the transformed
+    variables are fitted and back-transformed with the line. Pearson and
+    Spearman are reported for every method, including "none" — the caption of
+    a skewed clinical scatter quotes rho whether or not a line is drawn.
+    """
+    if method not in {"lm", "loess", "none"}:
+        raise HTTPException(status_code=400, detail="fit must be lm, loess or none")
+    if not (0.1 <= span <= 1.0):
+        raise HTTPException(status_code=400, detail="loess_span must be between 0.1 and 1")
+    fit_x = np.log10(x_raw) if log_x else x_raw
+    fit_y = np.log10(y_raw) if log_y else y_raw
+    fx = np.asarray(fit_x, dtype=float)
+    fy = np.asarray(fit_y, dtype=float)
+    n_fit = int(len(fx))
+    space = (
+        "log10-log10" if log_x and log_y
+        else "log10-x" if log_x
+        else "log10-y" if log_y
+        else "linear"
+    )
+
+    def _back_x(v: float) -> float:
+        return float(10 ** v) if log_x else float(v)
+
+    def _back_y(v: float) -> float:
+        return float(10 ** v) if log_y else float(v)
+
+    try:
+        slope, intercept, r, p, se = scipy_stats.linregress(fx.tolist(), fy.tolist())
+        if np.isnan(r) or np.isinf(r):
+            raise ValueError("degenerate")
+    except Exception:
+        return _empty_fit("Regression unavailable (constant or degenerate data)", method)
+
+    try:
+        rho, p_rho = scipy_stats.spearmanr(fx, fy)
+        spearman = {"rho": _finite_or_none(rho), "p": _finite_or_none(p_rho)}
+    except Exception:
+        spearman = {"rho": None, "p": None}
+
+    out: dict = {
+        "method": method,
+        "slope": float(slope),
+        "intercept": float(intercept),
+        "r": float(r),
+        "r2": float(r ** 2),
+        "p": float(p),
+        "se": float(se),
+        "line_x": [],
+        "line_y": [],
+        "band": {},
+        "spearman": spearman,
+        "n": n_fit,
+        "space": space,
+    }
+    fit_lo, fit_hi = float(fx.min()), float(fx.max())
+
+    if method == "lm":
+        out["line_x"] = [_back_x(fit_lo), _back_x(fit_hi)]
+        out["line_y"] = [_back_y(slope * v + intercept) for v in (fit_lo, fit_hi)]
+        # Confidence band for the fitted LINE (not a prediction interval):
+        #   se_fit(x) = s * sqrt(1/n + (x - x̄)² / Sxx)
+        # A bare line says nothing about how well the slope is pinned down,
+        # and at the ends of the x range — where readers extrapolate — it is
+        # pinned down least.
+        if n_fit > 2:
+            sxx = float(((fx - fx.mean()) ** 2).sum())
+            resid = fy - (slope * fx + intercept)
+            dof = n_fit - 2
+            s_err = float(np.sqrt((resid ** 2).sum() / dof))
+            if sxx > 0 and np.isfinite(s_err):
+                t_crit = float(scipy_stats.t.ppf(0.975, dof))
+                grid = np.linspace(fit_lo, fit_hi, 60)
+                centre = slope * grid + intercept
+                half = t_crit * s_err * np.sqrt(1.0 / n_fit + (grid - fx.mean()) ** 2 / sxx)
+                out["band"] = {
+                    "x": [_back_x(v) for v in grid],
+                    "lo": [_back_y(v) for v in (centre - half)],
+                    "hi": [_back_y(v) for v in (centre + half)],
+                    "level": 0.95,
+                }
+    elif method == "loess":
+        # statsmodels' lowess is the local regression ggplot2 draws; no
+        # closed-form band, so none is claimed.
+        out["span"] = float(span)
+        if n_fit < 4 or fit_lo == fit_hi:
+            out["note"] = "LOESS needs at least 4 points spread along x"
+        else:
+            from statsmodels.nonparametric.smoothers_lowess import lowess
+
+            curve = lowess(fy, fx, frac=span, it=3, return_sorted=True)
+            # One point per distinct x, on the fitting scale, then back.
+            xs = [_back_x(float(v)) for v in curve[:, 0]]
+            ys = [_back_y(float(v)) for v in curve[:, 1]]
+            seen: dict[float, float] = {}
+            for xv, yv in zip(xs, ys):
+                seen[xv] = yv
+            if any(not np.isfinite(v) for v in seen.values()):
+                out["note"] = "LOESS did not converge on these data"
+            else:
+                out["line_x"] = list(seen.keys())
+                out["line_y"] = list(seen.values())
+    return out
 
 
 @router.post("/scatter")
@@ -237,124 +377,27 @@ def scatter(req: ChartRequest):
                 ),
             )
 
-    reg: dict = {}
+    # The fit — ggplot2's geom_smooth. Overall, and per group when asked,
+    # each computed in the space the reader sees (see _fit_curve).
     if x_numeric and y_numeric:
-        # Fit in the space the reader sees. On a log axis a fit computed from
-        # raw values renders as a curve that matches no visible trend, so the
-        # transformed variables are fitted and the space is reported.
-        x_raw = sub[req.x].astype(float)
-        y_raw = sub[req.y].astype(float)
-        fit_x = np.log10(x_raw) if req.log_x else x_raw
-        fit_y = np.log10(y_raw) if req.log_y else y_raw
-        space = (
-            "log10-log10" if req.log_x and req.log_y
-            else "log10-x" if req.log_x
-            else "log10-y" if req.log_y
-            else "linear"
+        reg = _fit_curve(
+            sub[req.x].astype(float), sub[req.y].astype(float),
+            req.log_x, req.log_y, req.fit, req.loess_span,
         )
-        try:
-            slope, intercept, r, p, se = scipy_stats.linregress(
-                fit_x.tolist(), fit_y.tolist()
-            )
-            if np.isnan(r) or np.isinf(r):
-                raise ValueError("degenerate")
-            fit_lo, fit_hi = float(fit_x.min()), float(fit_x.max())
-            line_fit_x = [fit_lo, fit_hi]
-            line_fit_y = [float(slope * lx + intercept) for lx in line_fit_x]
-            # Back-transform so the frontend plots in data coordinates.
-            line_x = [float(10**v) if req.log_x else float(v) for v in line_fit_x]
-            line_y = [float(10**v) if req.log_y else float(v) for v in line_fit_y]
-            # Confidence band for the fitted LINE (not a prediction interval):
-            #   se_fit(x) = s * sqrt(1/n + (x - x̄)² / Sxx)
-            # A bare line says nothing about how well the slope is pinned down,
-            # and at the ends of the x range — where readers extrapolate — it is
-            # pinned down least. Drawn on the fitting scale and back-transformed
-            # with the line, so a log axis keeps its curve.
-            fx = np.asarray(fit_x, dtype=float)
-            fy = np.asarray(fit_y, dtype=float)
-            n_fit = int(len(fx))
-            band: dict = {}
-            if n_fit > 2:
-                sxx = float(((fx - fx.mean()) ** 2).sum())
-                resid = fy - (slope * fx + intercept)
-                dof = n_fit - 2
-                s_err = float(np.sqrt((resid ** 2).sum() / dof))
-                if sxx > 0 and np.isfinite(s_err):
-                    t_crit = float(scipy_stats.t.ppf(0.975, dof))
-                    grid = np.linspace(fit_lo, fit_hi, 60)
-                    centre = slope * grid + intercept
-                    half = t_crit * s_err * np.sqrt(1.0 / n_fit + (grid - fx.mean()) ** 2 / sxx)
-                    def _back_x(v: float) -> float:
-                        return float(10 ** v) if req.log_x else float(v)
-
-                    def _back_y(v: float) -> float:
-                        return float(10 ** v) if req.log_y else float(v)
-
-                    band = {
-                        "x": [_back_x(v) for v in grid],
-                        "lo": [_back_y(v) for v in (centre - half)],
-                        "hi": [_back_y(v) for v in (centre + half)],
-                        "level": 0.95,
-                    }
-            # Spearman alongside Pearson: the figure caption of a skewed
-            # clinical scatter usually quotes rho, and computing it here saves
-            # the reader pairing a number from another panel with this plot.
-            def _finite(v) -> Optional[float]:
-                # scipy answers n = 2 with rho = 1 and p = nan. A nan reaching
-                # the response is not a small annoyance here: the endpoint's
-                # non-finite guard rejects the WHOLE payload with a 400, so a
-                # two-point group would have cost the user the entire scatter.
-                fv = float(v)
-                return fv if np.isfinite(fv) else None
-
-            try:
-                rho, p_rho = scipy_stats.spearmanr(fit_x, fit_y)
-                spearman = {"rho": _finite(rho), "p": _finite(p_rho)}
-            except Exception:
-                spearman = {"rho": None, "p": None}
-
-            reg = {
-                "slope": float(slope),
-                "intercept": float(intercept),
-                "r": float(r),
-                "r2": float(r**2),
-                "p": float(p),
-                "se": float(se),
-                "line_x": line_x,
-                "line_y": line_y,
-                "band": band,
-                "spearman": spearman,
-                "n": n_fit,
-                "space": space,
-            }
-        except Exception:
-            reg = {
-                "slope": None,
-                "intercept": None,
-                "r": None,
-                "r2": None,
-                "p": None,
-                "se": None,
-                "line_x": [],
-                "line_y": [],
-                "band": {},
-                "spearman": {"rho": None, "p": None},
-                "note": "Regression unavailable (constant or degenerate data)",
-            }
     else:
-        reg = {
-            "slope": None,
-            "intercept": None,
-            "r": None,
-            "r2": None,
-            "p": None,
-            "se": None,
-            "line_x": [],
-            "line_y": [],
-            "band": {},
-            "spearman": {"rho": None, "p": None},
-            "note": "Regression requires two numeric axes",
-        }
+        reg = _empty_fit("Regression requires two numeric axes", req.fit)
+    group_fits: list[dict] = []
+    if req.color and req.fit_per_group and x_numeric and y_numeric and req.fit != "none":
+        for level in sorted_groups(sub[req.color]):
+            rows = sub[sub[req.color] == level]
+            group_fits.append({
+                "group": str(level),
+                "n": int(len(rows)),
+                **_fit_curve(
+                    rows[req.x].astype(float), rows[req.y].astype(float),
+                    req.log_x, req.log_y, req.fit, req.loess_span,
+                ),
+            })
 
     # y = x over the span both axes share, so the line stops where the data
     # stops instead of stretching the plot to an empty corner.
@@ -468,6 +511,9 @@ def scatter(req: ChartRequest):
         "y": req.y,
         "points": points,
         "regression": reg,
+        "fit": req.fit,
+        "fit_per_group": bool(group_fits),
+        "regressions": group_fits,
         "color": req.color,
         "shape": req.shape,
         "label": req.label,
