@@ -57,6 +57,11 @@ export interface Session {
   case_filter?: CaseFilter | null;
 }
 
+/** Chart sub-tabs of the Summary tab. Numeric columns get the first five;
+ *  a categorical column gets the breakdown (shown under "histogram") and the
+ *  icon array. */
+export type DescriptiveTab = "histogram" | "boxplot" | "violin" | "qq" | "waterfall" | "iconarray";
+
 export type PaletteName =
   | "indigo" | "clinical" | "nature" | "grayscale" | "warm" | "jama"
   | "porcelain" | "palm" | "custom";
@@ -369,8 +374,8 @@ interface AppState {
   deleteRow: (rowIdx: number) => Promise<void>;
   
   // Descriptive tab UI state
-  descriptiveTab: "histogram" | "boxplot" | "violin" | "qq";
-  setDescriptiveTab: (tab: "histogram" | "boxplot" | "violin" | "qq") => void;
+  descriptiveTab: DescriptiveTab;
+  setDescriptiveTab: (tab: DescriptiveTab) => void;
 
   /** Which statistics engine this session runs in the browser. Chosen at the
    *  welcome gate; see `loadSessionEngine` for why it lives in sessionStorage. */

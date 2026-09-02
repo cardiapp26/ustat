@@ -5,6 +5,7 @@ import {
   paletteOf,
   isNumericKind,
   runColumnStructureMutation,
+  type DescriptiveTab,
 } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
 import { usePalette, usePlotLayout } from "../plotStyle";
@@ -14,6 +15,7 @@ import TitledPlot from "./TitledPlot";
 import { fmtP } from "../lib/format";
 import { labelFor } from "../lib/valueLabels";
 import { categoryColors } from "../lib/categoryColors";
+import { waffleTraces, waterfallTraces, type WaffleLevel } from "../lib/unitTraces";
 import type { PlotData, PlotCaptureHandle } from "../lib/plotTypes";
 
 // ── Result shapes returned by the descriptive / column-summary endpoints ─────
@@ -57,7 +59,7 @@ interface ColumnSummary {
   shapiro_p?: number;
 }
 
-type ChartTab = "histogram" | "boxplot" | "violin" | "qq";
+type ChartTab = DescriptiveTab;
 
 interface ScatterResult {
   points: Record<string, unknown>[];
@@ -235,12 +237,102 @@ const BASE_LAYOUT = {
 };
 const SUMMARY_CHART_HEIGHT = 360;
 
+// ── One chart fetched from a /charts endpoint for the selected column ───────
+//
+// The icon array and the ranked bars are drawn from the same endpoints and
+// the same trace builders as the Charts panel, so the two tabs cannot drift.
+// The response is keyed by its request so a column switched mid-flight does
+// not paint the previous column's answer.
+
+function UnitChart({
+  endpoint, body, storageKey, defaultTitle, defaultYAxis, kind,
+}: {
+  endpoint: string;
+  body: Record<string, unknown>;
+  storageKey: string;
+  defaultTitle: string;
+  defaultYAxis: string;
+  kind: "waffle" | "waterfall";
+}) {
+  const themedBase = { ...usePlotLayout(), ...BASE_LAYOUT };
+  const showGrid = useStore((s) => s.showGrid);
+  const session = useStore((s) => s.session);
+  const pal = usePalette();
+  const ref = useRef<PlotCaptureHandle | null>(null);
+  const key = `${endpoint}|${JSON.stringify(body)}`;
+  const [result, setResult] = useState<{ key: string; data: Record<string, unknown> } | null>(null);
+  const [error, setError] = useState<{ key: string; message: string } | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    api.post(endpoint, body)
+      .then((r) => { if (live) setResult({ key, data: r.data }); })
+      .catch((e) => {
+        if (live) setError({ key, message: e.response?.data?.detail ?? e.message });
+      });
+    return () => { live = false; };
+    // body is captured by key
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [endpoint, key]);
+
+  if (error?.key === key) return <p className="text-xs text-red-500 p-3">{error.message}</p>;
+  if (result?.key !== key) return <p className="text-xs text-gray-400 p-3">Loading…</p>;
+  const d = result.data;
+  const column = String(kind === "waffle" ? d.category : d.y);
+  const valueLabels = (session?.columns.find((c) => c.name === column)?.value_labels as Record<string, string> | undefined) ?? {};
+
+  if (kind === "waffle") {
+    const levels = (d.levels as WaffleLevel[]) ?? [];
+    return (
+      <div className="flex flex-col gap-2">
+        <TitledPlot plotRefOut={ref} storageKey={storageKey}
+          data={waffleTraces(d, pal, valueLabels)}
+          layout={{
+            ...themedBase, autosize: true, height: SUMMARY_CHART_HEIGHT,
+            // A hundred squares is a picture, not a plot: no axes, square cells.
+            xaxis: { visible: false },
+            yaxis: { visible: false, scaleanchor: "x", scaleratio: 1 },
+            margin: { t: 24, r: 160, b: 24, l: 24 },
+            legend: { font: { color: "#374151" }, bgcolor: "transparent" },
+          }}
+          config={{ responsive: true, displaylogo: false, displayModeBar: false }}
+          defaultTitle={defaultTitle} defaultSubtitle="" defaultXAxis="" defaultYAxis="" />
+        <p className="text-[11px] text-gray-500 px-1">
+          One square = one in {String(d.units)} of {String(d.n)} rows.{" "}
+          {levels.map((l) => `${labelFor(valueLabels, l.label, l.label)}: ${l.cells} (${l.count}, ${l.percent.toFixed(1)}%)`).join(" · ")}.
+          {Number(d.n_folded_into_other) > 0 && ` ${String(d.n_folded_into_other)} smaller levels are folded into "Other".`}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <TitledPlot plotRefOut={ref} storageKey={storageKey}
+        data={waterfallTraces(d, pal, valueLabels)}
+        layout={{
+          ...themedBase, autosize: true, height: SUMMARY_CHART_HEIGHT, bargap: 0.15,
+          // One tick per row would be a smear; the rank is the axis.
+          xaxis: { ...BASE_LAYOUT.xaxis, showgrid: false, showticklabels: false, ticks: "", title: { text: "Rows, ranked" } },
+          yaxis: { ...BASE_LAYOUT.yaxis, showgrid: showGrid, title: { text: defaultYAxis } },
+        }}
+        config={{ responsive: true, displaylogo: false, displayModeBar: false }}
+        defaultTitle={defaultTitle} defaultSubtitle="" defaultXAxis="Rows, ranked" defaultYAxis={defaultYAxis} />
+      <p className="text-[11px] text-gray-500 px-1">
+        {String(d.n)} rows, ranked from the largest value to the smallest
+        {Number(d.n_missing) > 0 && <span className="text-amber-700"> · {String(d.n_missing)} without a value are not drawn</span>}.
+      </p>
+    </div>
+  );
+}
+
 // ── Main chart for numeric columns ──────────────────────────────────────────
 
 function NumericView({ summary, loadSummary, selected }: { summary: ColumnSummary; loadSummary: (col: string) => void; selected: string }) {
   const themedBase = { ...usePlotLayout(), ...BASE_LAYOUT };
   const chartTab = useStore((s) => s.descriptiveTab);
   const showGrid = useStore((s) => s.showGrid);
+  const sessionId = useStore((s) => s.session?.session_id ?? "");
   const pal = usePalette();
   const histRef = useRef<PlotCaptureHandle | null>(null);
   const boxRef = useRef<PlotCaptureHandle | null>(null);
@@ -497,6 +589,15 @@ function NumericView({ summary, loadSummary, selected }: { summary: ColumnSummar
       )}
 
       {/* Q-Q Plot */}
+      {/* Ranked bars: every row as one bar, sorted — the waterfall shape.
+          Reads the tail and any cluster at a value that a histogram bins away. */}
+      {chartTab === "waterfall" && (
+        <UnitChart kind="waterfall" endpoint="/api/charts/waterfall"
+          body={{ session_id: sessionId, y: selected }}
+          storageKey={`desc:waterfall:${selected}`}
+          defaultTitle="" defaultYAxis={selected} />
+      )}
+
       {chartTab === "qq" && (
         <div className="relative">
         <TitledPlot plotRefOut={qqRef} storageKey="desc:qq"
@@ -522,9 +623,11 @@ function NumericView({ summary, loadSummary, selected }: { summary: ColumnSummar
 
 // ── Main chart for categorical columns ──────────────────────────────────────
 
-function CategoricalView({ summary }: { summary: ColumnSummary }) {
+function CategoricalView({ summary, selected }: { summary: ColumnSummary; selected: string }) {
   const themedBase = { ...usePlotLayout(), ...BASE_LAYOUT };
   const showGrid = useStore((s) => s.showGrid);
+  const chartTab = useStore((s) => s.descriptiveTab);
+  const sessionId = useStore((s) => s.session?.session_id ?? "");
   const donutRef = useRef<PlotCaptureHandle | null>(null);
   const barRef = useRef<PlotCaptureHandle | null>(null);
   const cats: CatRow[] = (summary.categories ?? []).slice(0, 20);
@@ -560,6 +663,19 @@ function CategoricalView({ summary }: { summary: ColumnSummary }) {
     textposition: "outside" as const,
     hovertemplate: "%{y}: %{x}<extra></extra>",
   }];
+
+  // The icon array: the same hundred squares the Charts panel draws, for the
+  // "N in a hundred" a patient is told.
+  if (chartTab === "iconarray") {
+    return (
+      <div className="flex flex-col gap-3 h-full">
+        <UnitChart kind="waffle" endpoint="/api/charts/waffle"
+          body={{ session_id: sessionId, category: selected }}
+          storageKey={`desc:cat:waffle:${selected}`}
+          defaultTitle="" defaultYAxis="" />
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-3 h-full">
@@ -1659,6 +1775,8 @@ export default function DescriptivePanel() {
             { id: "boxplot",   label: "Box Plot" },
             { id: "violin",    label: "Violin" },
             { id: "qq",        label: "Q-Q Plot" },
+            { id: "waterfall", label: "Ranked bars" },
+            { id: "iconarray", label: "Icon array" },
             { id: "scatter",   label: "Scatter Plot" },
           ].map(({ id, label }) => {
             // A box plot, a violin and a Q-Q plot all need an ordered numeric
@@ -1667,11 +1785,16 @@ export default function DescriptivePanel() {
             // all four tabs rendered the identical pie-and-bar while the tab
             // bar highlighted whichever one had been clicked — a live control
             // that did nothing, and looked like the chart had failed to load.
-            const numericOnly = id === "boxplot" || id === "violin" || id === "qq";
-            const disabled = numericOnly && summaryIsCategorical;
+            const numericOnly = id === "boxplot" || id === "violin" || id === "qq" || id === "waterfall";
+            // And a hundred squares split by category has nothing to split
+            // a continuous measurement into.
+            const categoricalOnly = id === "iconarray";
+            const disabled = (numericOnly && summaryIsCategorical) || (categoricalOnly && !summaryIsCategorical);
             // Highlight what is actually on screen: for a categorical column
-            // that is always the category breakdown.
-            const shownTab = summaryIsCategorical ? "histogram" : chartTab;
+            // that is the category breakdown, unless the icon array is up.
+            const shownTab = summaryIsCategorical
+              ? (chartTab === "iconarray" ? "iconarray" : "histogram")
+              : chartTab;
             const isActive = (id === "scatter"
               ? view === "scatter"
               : view === "distribution" && shownTab === id);
@@ -1680,7 +1803,9 @@ export default function DescriptivePanel() {
                 key={id}
                 disabled={disabled}
                 title={disabled
-                  ? `${label} needs an ordered numeric scale — ${selected} is categorical`
+                  ? (categoricalOnly
+                    ? `${label} splits a hundred by category — ${selected} is numeric`
+                    : `${label} needs an ordered numeric scale — ${selected} is categorical`)
                   : undefined}
                 onClick={() => {
                   if (id === "scatter") {
@@ -1887,7 +2012,7 @@ export default function DescriptivePanel() {
                     {/* The actual distribution plot content */}
                     <div className="absolute inset-0 overflow-auto p-4">
                       {summary.type === "numeric" && <NumericView summary={summary} loadSummary={loadSummary} selected={selected ?? ""} />}
-                      {summary.type === "categorical" && <CategoricalView summary={summary} />}
+                      {summary.type === "categorical" && <CategoricalView summary={summary} selected={selected ?? ""} />}
                     </div>
 
                     {/* Right vertical red resize line (drag to change width) */}

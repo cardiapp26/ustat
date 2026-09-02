@@ -802,3 +802,75 @@ describe('DescriptivePanel', () => {
       .toContain('bg-indigo-600')
   })
 })
+
+describe('DescriptivePanel icon array and ranked bars', () => {
+  function mountWith(summary: object) {
+    installSession()
+    server.use(
+      http.get('/api/stats/test-session/sparklines', () => HttpResponse.json({})),
+      http.get('/api/stats/test-session/descriptive', () => HttpResponse.json({})),
+      http.get('/api/stats/test-session/column_summary', () => HttpResponse.json(summary)),
+    )
+    return userEvent.setup()
+  }
+
+  it('offers the icon array to a categorical column and the ranked bars to a numeric one', async () => {
+    const user = mountWith(numericSummary)
+    render(<DescriptivePanel />)
+    await waitFor(() => expect(screen.getAllByText('AGE').length).toBeGreaterThan(0))
+    await user.click(screen.getAllByText('AGE')[0])
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Ranked bars' })).toBeEnabled())
+    expect(screen.getByRole('button', { name: 'Icon array' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Icon array' })).toHaveAttribute(
+      'title', expect.stringContaining('numeric') as unknown as string,
+    )
+
+    server.use(http.get('/api/stats/test-session/column_summary', () => HttpResponse.json(categoricalSummary)))
+    await user.click(screen.getAllByText('GROUP')[0])
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Icon array' })).toBeEnabled())
+    expect(screen.getByRole('button', { name: 'Ranked bars' })).toBeDisabled()
+  })
+
+  it('draws the hundred squares for the selected categorical column', async () => {
+    const user = mountWith(categoricalSummary)
+    let sent: Record<string, unknown> = {}
+    server.use(http.post('/api/charts/waffle', async ({ request }) => {
+      sent = (await request.json()) as Record<string, unknown>
+      return HttpResponse.json({
+        type: 'waffle', category: 'GROUP', n: 3, units: 100,
+        levels: [{ label: 'A', count: 2, percent: 66.7, cells: 67 }, { label: 'B', count: 1, percent: 33.3, cells: 33 }],
+        n_folded_into_other: 0,
+      })
+    }))
+    render(<DescriptivePanel />)
+    await waitFor(() => expect(screen.getAllByText('GROUP').length).toBeGreaterThan(0))
+    await user.click(screen.getAllByText('GROUP')[0])
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Icon array' })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: 'Icon array' }))
+    await waitFor(() => expect(screen.getByText(/One square = one in 100 of 3 rows/)).toBeInTheDocument())
+    expect(sent).toEqual({ session_id: 'test-session', category: 'GROUP' })
+    const mocks = screen.getAllByTestId('plotly-mock')
+    const traces = JSON.parse(mocks[mocks.length - 1].getAttribute('data-plotly') ?? '[]') as Array<{ name: string; x: number[] }>
+    expect(traces.map((t) => t.name)).toEqual(['A', 'B'])
+    expect(traces[0].x).toHaveLength(67)
+  })
+
+  it('draws every row as a ranked bar for a numeric column', async () => {
+    const user = mountWith(numericSummary)
+    server.use(http.post('/api/charts/waterfall', () => HttpResponse.json({
+      type: 'waterfall', y: 'AGE', group: null, label: null, n: 3, n_missing: 1,
+      rows: [{ rank: 1, value: 62 }, { rank: 2, value: 55 }, { rank: 3, value: 48 }],
+      thresholds: [], warnings: [],
+    })))
+    render(<DescriptivePanel />)
+    await waitFor(() => expect(screen.getAllByText('AGE').length).toBeGreaterThan(0))
+    await user.click(screen.getAllByText('AGE')[0])
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Ranked bars' })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: 'Ranked bars' }))
+    await waitFor(() => expect(screen.getByText(/3 rows, ranked/)).toBeInTheDocument())
+    expect(screen.getByText(/1 without a value are not drawn/)).toBeInTheDocument()
+    const mocks = screen.getAllByTestId('plotly-mock')
+    const traces = JSON.parse(mocks[mocks.length - 1].getAttribute('data-plotly') ?? '[]') as Array<{ y: number[] }>
+    expect(traces[0].y).toEqual([62, 55, 48])
+  })
+})
