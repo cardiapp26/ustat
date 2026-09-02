@@ -93,6 +93,10 @@ class ChartRequest(BaseModel):
     fit: str = "lm"
     fit_per_group: bool = False
     loess_span: float = 0.75
+    # Histogram-only. A bin width in data units overrides `bins`; `rug` asks
+    # for the raw values back so each observation can be ticked along the axis.
+    binwidth: Optional[float] = None
+    rug: bool = False
 
 
 def _mean_bars(sub: pd.DataFrame, x: str, y: str, spread: Optional[str]) -> list[dict]:
@@ -132,32 +136,106 @@ def _mean_bars(sub: pd.DataFrame, x: str, y: str, spread: Optional[str]) -> list
 _BAR_ERROR_LABEL = {"sd": "mean ± SD", "se": "mean ± SE", "ci": "mean with 95% CI"}
 
 
+MAX_HISTOGRAM_BINS = 500
+
+
+def _histogram_edges(values: pd.Series, bins: int, binwidth: Optional[float]) -> np.ndarray:
+    """Shared bin edges for every group of a histogram.
+
+    A bin width in data units (ggplot2's binwidth) beats a bin count when the
+    variable has natural units — 5 mmHg, 1 year — and the edges are then
+    aligned to multiples of the width so 0 falls on an edge, not mid-bin.
+    """
+    if binwidth is not None:
+        if not (binwidth > 0):
+            raise HTTPException(status_code=400, detail="binwidth must be positive")
+        lo = float(np.floor(values.min() / binwidth) * binwidth)
+        hi = float(np.ceil(values.max() / binwidth) * binwidth)
+        if hi <= lo:
+            hi = lo + binwidth
+        n_bins = int(round((hi - lo) / binwidth))
+        if n_bins > MAX_HISTOGRAM_BINS:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"A bin width of {binwidth:g} would make {n_bins} bins over this "
+                    f"range; the limit is {MAX_HISTOGRAM_BINS}."
+                ),
+            )
+        return np.linspace(lo, hi, n_bins + 1)
+    if not (2 <= bins <= MAX_HISTOGRAM_BINS):
+        raise HTTPException(
+            status_code=400, detail=f"bins must be between 2 and {MAX_HISTOGRAM_BINS}"
+        )
+    return np.histogram_bin_edges(values, bins=bins)
+
+
+def _kde_points(values: np.ndarray, grid: np.ndarray) -> list[dict]:
+    if len(values) < 3 or float(np.std(values)) <= 0:
+        return []
+    kde = scipy_stats.gaussian_kde(values)
+    return [{"x": float(kx), "y": float(ky)} for kx, ky in zip(grid, kde(grid))]
+
+
 @router.post("/histogram")
 def histogram(req: ChartRequest):
+    """Histogram with a KDE, overall and — with a colour column — per group.
+
+    Groups share one set of edges and one KDE grid: the comparison a grouped
+    histogram exists to make is only honest when every group is binned the
+    same way. Counts are returned; the client rescales to density or percent,
+    since that needs nothing the client does not already hold.
+    """
     df = _get_df(req.session_id)
     if req.x not in df.columns:
         raise HTTPException(status_code=400, detail=f"Column '{req.x}' not found")
-    s = coerce_numeric(df[req.x]).replace([np.inf, -np.inf], np.nan).dropna()
+    if req.color and req.color not in df.columns:
+        raise HTTPException(status_code=400, detail=f"Column '{req.color}' not found")
+    values = coerce_numeric(df[req.x]).replace([np.inf, -np.inf], np.nan)
+    frame = pd.DataFrame({"v": values})
+    if req.color:
+        frame["g"] = df[req.color].values
+        frame = frame.dropna(subset=["g"])
+    frame = frame.dropna(subset=["v"])
+    s = frame["v"].astype(float)
     if len(s) < 2:
         raise HTTPException(
             status_code=400, detail="Need at least 2 numeric values for a histogram."
         )
-    counts, edges = np.histogram(s, bins=req.bins)
-    kde_x = np.linspace(s.min(), s.max(), 200)
-    kde_points = []
-    if len(s) >= 3 and float(s.std()) > 0:
-        kde = scipy_stats.gaussian_kde(s)
-        kde_points = [
-            {"x": float(kx), "y": float(ky)} for kx, ky in zip(kde_x, kde(kde_x))
-        ]
+    edges = _histogram_edges(s, req.bins, req.binwidth)
+    counts, _ = np.histogram(s, bins=edges)
+    kde_x = np.linspace(float(s.min()), float(s.max()), 200)
+
+    levels = sorted_groups(frame["g"]) if req.color else ["All"]
+    groups: list[dict] = []
+    for level in levels:
+        arm = frame[frame["g"] == level]["v"] if req.color else s
+        vals = arm.astype(float).to_numpy()
+        if len(vals) == 0:
+            continue
+        gcounts, _ = np.histogram(vals, bins=edges)
+        entry: dict = {
+            "group": str(level),
+            "n": int(len(vals)),
+            "counts": [int(c) for c in gcounts],
+            "kde": _kde_points(vals, kde_x),
+        }
+        if req.rug:
+            entry["values"] = [float(v) for v in vals]
+        groups.append(entry)
+
     return {
         "type": "histogram",
         "x": req.x,
+        "color": req.color,
         "bins": [
             {"x0": float(edges[i]), "x1": float(edges[i + 1]), "count": int(counts[i])}
             for i in range(len(counts))
         ],
-        "kde": kde_points,
+        "edges": [float(e) for e in edges],
+        "bin_width": float(edges[1] - edges[0]),
+        "kde": _kde_points(s.to_numpy(), kde_x),
+        "groups": groups,
         "stats": {
             "mean": float(s.mean()),
             "median": float(s.median()),
@@ -165,7 +243,6 @@ def histogram(req: ChartRequest):
         },
         "warnings": _plausibility_warnings(req.x, df[req.x]),
     }
-
 
 def _empty_fit(note: Optional[str], method: str) -> dict:
     return {

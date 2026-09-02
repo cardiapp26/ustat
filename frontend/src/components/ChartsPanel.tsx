@@ -24,7 +24,7 @@ interface RefLineDraft { axis: "x" | "y"; value: string; label: string }
 
 /** Charts whose request actually carries the Color / Group column. */
 const COLOUR_AWARE_CHARTS = new Set([
-  "scatter", "boxplot", "violin", "raincloud", "strip", "bar", "paired",
+  "histogram", "scatter", "boxplot", "violin", "raincloud", "strip", "bar", "paired",
   "dumbbell", "errorplot", "ecdf", "facet", "lineplot", "slopeplot", "ridgeplot",
 ]);
 
@@ -92,6 +92,14 @@ function ChartsPanelBody({ session }: { session: Session }) {
   const [fitMethod, setFitMethod] = usePersistedPanelState<string>("charts", "fitMethod", "lm");
   const [fitPerGroup, setFitPerGroup] = usePersistedPanelState<boolean>("charts", "fitPerGroup", false);
   const [loessSpan, setLoessSpan] = usePersistedPanelState<number>("charts", "loessSpan", 0.75);
+  // Histogram: what the y axis counts, how groups are laid over each other,
+  // whether bars / density / both are drawn, a rug, and a bin width in data
+  // units that overrides the bin count when set.
+  const [histStat, setHistStat] = usePersistedPanelState<string>("charts", "histStat", "count");
+  const [histPosition, setHistPosition] = usePersistedPanelState<string>("charts", "histPosition", "overlay");
+  const [histDisplay, setHistDisplay] = usePersistedPanelState<string>("charts", "histDisplay", "both");
+  const [histRug, setHistRug] = usePersistedPanelState<boolean>("charts", "histRug", false);
+  const [binwidth, setBinwidth] = usePersistedPanelState<string>("charts", "binwidth", "");
   const [shapeCol, setShapeCol] = usePersistedPanelState<string>("charts", "shapeCol", "");
   // Pie / donut, balloon, facet
   const [pieValue, setPieValue] = usePersistedPanelState<string>("charts", "pieValue", "");
@@ -176,7 +184,13 @@ function ChartsPanelBody({ session }: { session: Session }) {
     try {
       const base = { session_id: session.session_id, x, bins };
       let res;
-      if (chartType === "histogram") res = await getHistogram(base);
+      if (chartType === "histogram") {
+        const bw = parseRefValue(binwidth);
+        res = await getHistogram({
+          ...base, color: color || undefined, rug: histRug,
+          ...(bw !== null && bw > 0 ? { binwidth: bw } : {}),
+        });
+      }
       else if (chartType === "scatter") res = await getScatter({
         ...base, y, color: color || undefined,
         log_x: logX, log_y: logY, identity_line: identityLine,
@@ -286,9 +300,11 @@ function ChartsPanelBody({ session }: { session: Session }) {
       let autoY = "";
 
       if (chartType === "histogram") {
-        autoTitle = `Distribution of ${xLabelText}`;
+        autoTitle = colorLabelText
+          ? `Distribution of ${xLabelText} by ${colorLabelText}`
+          : `Distribution of ${xLabelText}`;
         autoX = xLabelText;
-        autoY = "Count";
+        autoY = histStat === "density" ? "Density" : histStat === "percent" ? "% of observations" : "Count";
       } else if (chartType === "scatter") {
         autoTitle = `${yLabelText} vs ${xLabelText}`;
         autoX = xLabelText;
@@ -356,6 +372,7 @@ function ChartsPanelBody({ session }: { session: Session }) {
     plotData ? buildTraces(
       plotData, chartType, pal, td, session, showPoints, donut ? 0.45 : 0, showMean,
       chartType === "bar" ? barHorizontal : horizontal,
+      { stat: histStat, display: histDisplay, rug: histRug },
     ) : null,
     seriesColors,
   );
@@ -927,9 +944,49 @@ function ChartsPanelBody({ session }: { session: Session }) {
             </div>
           )}
           {chartType === "histogram" && (
-            <div>
-              <label className="text-xs text-gray-400 block mb-1">Bins: {bins}</label>
-              <input type="range" min={5} max={100} value={bins} onChange={(e) => setBins(+e.target.value)} className="w-full accent-indigo-500" />
+            <div className="space-y-2">
+              <div>
+                <label className="text-xs text-gray-400 block mb-1">Bins: {bins}</label>
+                <input type="range" min={5} max={100} value={bins} onChange={(e) => setBins(+e.target.value)}
+                  disabled={parseRefValue(binwidth) !== null} className="w-full accent-indigo-500 disabled:opacity-40" />
+              </div>
+              <div>
+                <label className="text-xs text-gray-400 block mb-1" title="ggplot2's binwidth. A width in the variable's own units — 5 mmHg, 1 year — beats a bin count when the units mean something; edges are aligned to multiples of it. Leave blank to use the bin count.">
+                  Bin width (overrides bins)
+                </label>
+                <input className="select w-full text-sm" aria-label="Bin width" placeholder="blank = use bin count"
+                  value={binwidth} onChange={(e) => setBinwidth(e.target.value)} />
+              </div>
+              <div>
+                <label className="text-xs text-gray-400 block mb-1" title="after_stat(count | density). Density makes groups of different sizes comparable by shape; percent does the same in units a reader can quote.">Y axis</label>
+                <select className="select w-full" aria-label="Histogram y axis" value={histStat} onChange={(e) => setHistStat(e.target.value)}>
+                  <option value="count">Count</option>
+                  <option value="density">Density</option>
+                  <option value="percent">Percent of observations</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-gray-400 block mb-1">Show</label>
+                <select className="select w-full" aria-label="Histogram display" value={histDisplay} onChange={(e) => setHistDisplay(e.target.value)}>
+                  <option value="both">Bars with KDE curve</option>
+                  <option value="bars">Bars only</option>
+                  <option value="density">Density curve only (geom_density)</option>
+                </select>
+              </div>
+              {color && histDisplay !== "density" && (
+                <div>
+                  <label className="text-xs text-gray-400 block mb-1" title="position = identity (overlaid, translucent), stack, or dodge (side by side).">Groups</label>
+                  <select className="select w-full" aria-label="Histogram group position" value={histPosition} onChange={(e) => setHistPosition(e.target.value)}>
+                    <option value="overlay">Overlaid (translucent)</option>
+                    <option value="stack">Stacked</option>
+                    <option value="dodge">Side by side</option>
+                  </select>
+                </div>
+              )}
+              <label className="flex items-center gap-2 cursor-pointer" title="geom_rug: a tick per observation along the x axis, so the reader sees where the data actually sit — gaps, clumps, a lone outlier — which bins can hide.">
+                <input type="checkbox" checked={histRug} onChange={(e) => setHistRug(e.target.checked)} className="accent-indigo-500" />
+                <span className="text-xs text-gray-600">Rug (a tick per observation)</span>
+              </label>
             </div>
           )}
           <button className="btn-primary w-full mt-2" onClick={run} disabled={loading}>
@@ -1254,6 +1311,9 @@ function ChartsPanelBody({ session }: { session: Session }) {
               ...(overlayAnnotations.length ? { annotations: overlayAnnotations } : {}),
               ...marginalAxes.extra,
               ...(plotData?.type === "stackplot" ? { barmode: "stack" } : {}),
+              ...(plotData?.type === "histogram"
+                ? { barmode: histPosition === "stack" ? "stack" : histPosition === "dodge" ? "group" : "overlay", bargap: 0.05 }
+                : {}),
               ...(plotData?.type === "ridgeplot"
                 ? { yaxis: { showticklabels: false, title: { text: "" } } }
                 : {}),
@@ -1465,6 +1525,7 @@ function buildTraces(
   // does this whenever the category names are words — "PTC follicular
   // variant" does not fit under a tick and rotating it costs the reader.
   horizontal = false,
+  hist: HistOptions = { stat: "count", display: "both", rug: false },
 ): PlotData[] | null {
   if (!d) return null;
 
@@ -1474,46 +1535,7 @@ function buildTraces(
   };
 
   if (d.type === "histogram") {
-    const bins = d.bins as Array<Record<string, number>>;
-    const kde = d.kde as Array<Record<string, number>>;
-    const totalCount = bins.reduce((a, b) => a + b.count, 0);
-    const binWidth = bins[0].x1 - bins[0].x0;
-    // Counts printed on the bars rather than only on hover: a histogram is
-    // usually read for "how many are in this category", and a printed figure
-    // has no hover at all. Above the bar rather than inside it, because a bar
-    // one pixel tall has no inside — and `cliponaxis: false` so the label on
-    // the tallest bar is not cut off by the top of the plot.
-    //
-    // Suppressed past 30 bins: at that density the labels collide into an
-    // unreadable band, and a continuous variable cut that finely is being read
-    // for its shape, not its bin counts.
-    const showCounts = bins.length <= 30;
-    return [
-      {
-        type: "bar",
-        x: bins.map((b) => (b.x0 + b.x1) / 2),
-        y: bins.map((b) => b.count),
-        marker: { color: C[0], opacity: 0.8 },
-        name: "Count",
-        ...(showCounts ? {
-          // Empty bins print nothing: a row of zeroes along the axis is noise.
-          text: bins.map((b) => (b.count ? String(b.count) : "")),
-          textposition: "outside",
-          cliponaxis: false,
-          textfont: { size: Math.max(8, (td.markerSize ?? 6) + 3) },
-          hovertemplate: "%{x}<br>%{y} observations<extra></extra>",
-        } : {}),
-      },
-      {
-        type: "scatter",
-        x: kde.map((k) => k.x),
-        y: kde.map((k) => k.y * totalCount * binWidth),
-        mode: "lines",
-        line: { color: C[1], width: td.lineWidth },
-        name: "KDE",
-        yaxis: "y",
-      },
-    ];
+    return histogramTraces(d, C, td, hist, valueLabelsFor(d.color));
   }
 
   if (d.type === "scatter") {
@@ -2248,6 +2270,123 @@ function fitTraces(
       name,
     }],
   };
+}
+
+interface HistOptions {
+  /** count | density | percent — after_stat(). */
+  stat: string;
+  /** both | bars | density — geom_histogram, geom_histogram alone, geom_density. */
+  display: string;
+  rug: boolean;
+}
+
+interface HistGroup {
+  group: string;
+  n: number;
+  counts: number[];
+  kde: Array<{ x: number; y: number }>;
+  values?: number[];
+}
+
+/** Bars, KDE curve and rug for one or more groups on shared bin edges.
+ *
+ *  Counts arrive from the backend; density and percent are rescalings of the
+ *  same numbers (count / (n · width), count · 100 / n) so the y axis can be
+ *  switched without another request. The KDE integrates to 1, so it is scaled
+ *  the opposite way to sit on the bars. A response from before groups existed
+ *  (bins + kde only) is read as a single group, so nothing old breaks. */
+function histogramTraces(
+  d: Record<string, unknown>,
+  C: string[],
+  td: { lineWidth: number; markerSize: number; markerOpacity: number },
+  opts: HistOptions,
+  labels: Record<string, string>,
+): PlotData[] {
+  const bins = d.bins as Array<Record<string, number>>;
+  const binWidth = typeof d.bin_width === "number" ? d.bin_width : bins[0].x1 - bins[0].x0;
+  const centres = bins.map((b) => (b.x0 + b.x1) / 2);
+  const groups: HistGroup[] = (d.groups as HistGroup[] | undefined)?.length
+    ? (d.groups as HistGroup[])
+    : [{
+      group: "All",
+      n: bins.reduce((a, b) => a + b.count, 0),
+      counts: bins.map((b) => b.count),
+      kde: (d.kde as Array<{ x: number; y: number }>) ?? [],
+    }];
+  const single = groups.length === 1 && !d.color;
+  const barScale = (n: number) =>
+    opts.stat === "density" ? 1 / (n * binWidth) : opts.stat === "percent" ? 100 / n : 1;
+  const kdeScale = (n: number) =>
+    opts.stat === "density" ? 1 : opts.stat === "percent" ? 100 * binWidth : n * binWidth;
+  const statName = opts.stat === "density" ? "Density" : opts.stat === "percent" ? "Percent" : "Count";
+  // Counts printed on the bars rather than only on hover: a histogram is
+  // usually read for "how many are in this category", and a printed figure
+  // has no hover at all. Above the bar rather than inside it, because a bar
+  // one pixel tall has no inside — and `cliponaxis: false` so the label on
+  // the tallest bar is not cut off by the top of the plot.
+  //
+  // Only for a single ungrouped count histogram of at most 30 bins: with
+  // groups or finer bins the labels collide into an unreadable band, and a
+  // density has no integer to print.
+  const showCounts = single && opts.stat === "count" && bins.length <= 30;
+  const hoverUnit = opts.stat === "percent" ? "%" : opts.stat === "density" ? "" : " observations";
+  const out: PlotData[] = [];
+  groups.forEach((g, i) => {
+    const colour = C[i % C.length];
+    const name = single ? statName : labelFor(labels, g.group, g.group);
+    if (opts.display !== "density") {
+      const scale = barScale(g.n);
+      out.push({
+        type: "bar",
+        x: centres,
+        y: g.counts.map((c) => c * scale),
+        width: binWidth,
+        marker: { color: colour, opacity: groups.length > 1 ? 0.55 : 0.8 },
+        name,
+        legendgroup: g.group,
+        hovertemplate: `%{x}<br>%{y:.3~g}${hoverUnit}<extra>${name}</extra>`,
+        ...(showCounts ? {
+          // Empty bins print nothing: a row of zeroes along the axis is noise.
+          text: g.counts.map((c) => (c ? String(c) : "")),
+          textposition: "outside",
+          cliponaxis: false,
+          textfont: { size: Math.max(8, (td.markerSize ?? 6) + 3) },
+          hovertemplate: "%{x}<br>%{y} observations<extra></extra>",
+        } : {}),
+      });
+    }
+    if (opts.display !== "bars" && g.kde.length) {
+      const scale = kdeScale(g.n);
+      const densityOnly = opts.display === "density";
+      out.push({
+        type: "scatter",
+        x: g.kde.map((k) => k.x),
+        y: g.kde.map((k) => k.y * scale),
+        mode: "lines",
+        line: { color: single && !densityOnly ? C[1] : colour, width: td.lineWidth },
+        ...(densityOnly ? { fill: "tozeroy", fillcolor: `${colour}33` } : {}),
+        name: single ? "KDE" : `${name} KDE`,
+        legendgroup: g.group,
+        showlegend: single || densityOnly,
+        hoverinfo: "skip",
+      });
+    }
+    if (opts.rug && g.values?.length) {
+      out.push({
+        type: "scatter",
+        mode: "markers",
+        x: g.values,
+        y: g.values.map(() => 0),
+        marker: { symbol: "line-ns-open", size: 9, color: colour, opacity: 0.6, line: { width: 1 } },
+        name: `${name} rug`,
+        legendgroup: g.group,
+        showlegend: false,
+        hovertemplate: "%{x}<extra></extra>",
+        cliponaxis: false,
+      });
+    }
+  });
+  return out;
 }
 
 interface BarRow {

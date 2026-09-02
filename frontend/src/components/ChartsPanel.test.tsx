@@ -927,3 +927,66 @@ describe('ChartsPanel scatter trend lines', () => {
     expect(traces.filter((t) => /Fit \(|LOESS/.test(t.name ?? ''))).toHaveLength(0)
   })
 })
+
+describe('ChartsPanel grouped histogram', () => {
+  const grouped = {
+    type: 'histogram', x: 'AGE', color: 'SEX',
+    bins: [{ x0: 0, x1: 10, count: 6 }, { x0: 10, x1: 20, count: 4 }],
+    edges: [0, 10, 20], bin_width: 10,
+    kde: [{ x: 5, y: 0.06 }, { x: 15, y: 0.04 }],
+    groups: [
+      { group: 'F', n: 4, counts: [3, 1], kde: [{ x: 5, y: 0.075 }, { x: 15, y: 0.025 }], values: [1, 2, 3, 12] },
+      { group: 'M', n: 6, counts: [3, 3], kde: [{ x: 5, y: 0.05 }, { x: 15, y: 0.05 }], values: [4, 5, 6, 13, 14, 15] },
+    ],
+  }
+
+  async function draw() {
+    installSession()
+    server.use(http.post('/api/charts/histogram', () => HttpResponse.json(grouped)))
+    const user = userEvent.setup()
+    render(<ChartsPanel />)
+    return user
+  }
+
+  it('draws one bar series per group on the shared edges, without printed counts', async () => {
+    const user = await draw()
+    await user.click(screen.getByRole('button', { name: /generate chart/i }))
+    await waitFor(() => expect(screen.getByTestId('plotly-mock')).toBeInTheDocument())
+    const traces = JSON.parse(screen.getByTestId('plotly-mock').getAttribute('data-plotly') ?? '[]') as Array<Record<string, unknown>>
+    const bars = traces.filter((t) => t.type === 'bar')
+    expect(bars.map((b) => b.name)).toEqual(['F', 'M'])
+    expect(bars[0].x).toEqual([5, 15])
+    expect(bars[0].y).toEqual([3, 1])
+    expect(bars[0].text).toBeUndefined()
+    // No rug until asked for.
+    expect(traces.some((t) => String(t.name).endsWith('rug'))).toBe(false)
+  })
+
+  it('rescales counts to percent per group and adds a rug on request', async () => {
+    const user = await draw()
+    await user.selectOptions(screen.getByRole('combobox', { name: /histogram y axis/i }), 'percent')
+    await user.click(screen.getByRole('checkbox', { name: /rug/i }))
+    await user.click(screen.getByRole('button', { name: /generate chart/i }))
+    await waitFor(() => expect(screen.getByTestId('plotly-mock')).toBeInTheDocument())
+    const traces = JSON.parse(screen.getByTestId('plotly-mock').getAttribute('data-plotly') ?? '[]') as Array<Record<string, unknown>>
+    const bars = traces.filter((t) => t.type === 'bar')
+    // F: 3 of 4 and 1 of 4; M: 3 of 6 twice — each group over its own n.
+    expect(bars[0].y).toEqual([75, 25])
+    expect(bars[1].y).toEqual([50, 50])
+    const rugs = traces.filter((t) => String(t.name).endsWith('rug'))
+    expect(rugs).toHaveLength(2)
+    expect(rugs[0].x).toEqual([1, 2, 3, 12])
+  })
+
+  it('draws only the density curves when asked, one per group, filled', async () => {
+    const user = await draw()
+    await user.selectOptions(screen.getByRole('combobox', { name: /histogram display/i }), 'density')
+    await user.click(screen.getByRole('button', { name: /generate chart/i }))
+    await waitFor(() => expect(screen.getByTestId('plotly-mock')).toBeInTheDocument())
+    const traces = JSON.parse(screen.getByTestId('plotly-mock').getAttribute('data-plotly') ?? '[]') as Array<Record<string, unknown>>
+    expect(traces.some((t) => t.type === 'bar')).toBe(false)
+    const curves = traces.filter((t) => t.mode === 'lines')
+    expect(curves.map((c) => c.name)).toEqual(['F KDE', 'M KDE'])
+    expect(curves[0].fill).toBe('tozeroy')
+  })
+})
