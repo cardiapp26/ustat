@@ -102,6 +102,12 @@ class ChartRequest(BaseModel):
     # Mutually exclusive with `color`: one set of markers cannot carry a legend
     # of groups and a colour bar of values at once.
     gradient: Optional[str] = None
+    # Scatter-only. Bin the cloud into a 2-D grid of counts — ggplot2's
+    # geom_bin2d. Past a few thousand points a scatter is a solid blob that
+    # hides where the mass actually is, and the points cost more to ship than
+    # the grid does.
+    bin2d: bool = False
+    bin2d_bins: int = 30
 
 
 def _mean_bars(sub: pd.DataFrame, x: str, y: str, spread: Optional[str]) -> list[dict]:
@@ -389,6 +395,18 @@ def scatter(req: ChartRequest):
     df = _get_df(req.session_id)
 
     # Build deduplicated column list
+    if req.bin2d and (req.color or req.gradient):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "A 2-D bin grid already uses colour for the counts, so it "
+                "cannot also colour by a group or by a value."
+            ),
+        )
+    if not (5 <= req.bin2d_bins <= 200):
+        raise HTTPException(
+            status_code=400, detail="bin2d_bins must be between 5 and 200"
+        )
     if req.gradient and req.color:
         raise HTTPException(
             status_code=400,
@@ -599,8 +617,45 @@ def scatter(req: ChartRequest):
                 for i, c in enumerate(counts)
             ]
 
-    # Serialize points safely (NaN → null via json round-trip)
-    points = _json.loads(
+    # A 2-D grid of counts instead of the points — geom_bin2d.
+    #
+    # Binned in the space the reader sees, like the fit: on a log axis, bins
+    # even in data units would be a handful of wide bins at the top and a
+    # sliver at the bottom. Edges come back in data coordinates, so the client
+    # draws a heatmap without knowing any of this.
+    bin2d: dict = {}
+    if req.bin2d:
+        if not (x_numeric and y_numeric):
+            raise HTTPException(
+                status_code=400,
+                detail="A 2-D bin grid requires both axes to be numeric.",
+            )
+        bx = sub[req.x].astype(float)
+        by = sub[req.y].astype(float)
+        gx = np.log10(bx) if req.log_x else bx
+        gy = np.log10(by) if req.log_y else by
+        counts2d, xedges, yedges = np.histogram2d(
+            gx.to_numpy(), gy.to_numpy(), bins=req.bin2d_bins
+        )
+
+        def _centres(edges: np.ndarray, logged: bool) -> list[float]:
+            mids = (edges[:-1] + edges[1:]) / 2
+            return [float(10 ** v) if logged else float(v) for v in mids]
+
+        # z is row-major over y, as a heatmap wants; histogram2d is x-major.
+        bin2d = {
+            "x": _centres(xedges, req.log_x),
+            "y": _centres(yedges, req.log_y),
+            "z": [[int(v) for v in row] for row in counts2d.T],
+            "max": int(counts2d.max()) if counts2d.size else 0,
+            "n": int(len(sub)),
+            "bins": int(req.bin2d_bins),
+        }
+
+    # Serialize points safely (NaN → null via json round-trip). The grid
+    # replaces them: shipping both would send the very payload the grid exists
+    # to avoid.
+    points = [] if req.bin2d else _json.loads(
         sub.to_json(
             orient="records", default_handler=str, date_format="iso", date_unit="s"
         )
@@ -618,6 +673,7 @@ def scatter(req: ChartRequest):
         "color": req.color,
         "shape": req.shape,
         "label": req.label,
+        "bin2d": bin2d,
         "gradient": req.gradient,
         "gradient_range": (
             [float(sub[req.gradient].min()), float(sub[req.gradient].max())]

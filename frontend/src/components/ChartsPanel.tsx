@@ -107,6 +107,18 @@ function ChartsPanelBody({ session }: { session: Session }) {
   // scale where Color / Group gives a discrete one.
   const [gradientCol, setGradientCol] = usePersistedPanelState<string>("charts", "gradientCol", "");
   const [gradientScale, setGradientScale] = usePersistedPanelState<string>("charts", "gradientScale", "Viridis");
+  // geom_bin2d: the cloud as a grid of counts once the points are a blob.
+  const [bin2d, setBin2d] = usePersistedPanelState<boolean>("charts", "bin2d", false);
+  const [bin2dBins, setBin2dBins] = usePersistedPanelState<number>("charts", "bin2dBins", 30);
+  // A dash pattern per group, so a figure printed in greyscale still
+  // separates its lines — ggplot2's aes(linetype = group).
+  const [varyLineStyle, setVaryLineStyle] = usePersistedPanelState<boolean>("charts", "varyLineStyle", false);
+  // coord_cartesian(xlim =, ylim =): a manual window on the axes. Kept as
+  // typed text so a half-entered number is not read as a limit.
+  const [xMin, setXMin] = usePersistedPanelState<string>("charts", "xMin", "");
+  const [xMax, setXMax] = usePersistedPanelState<string>("charts", "xMax", "");
+  const [yMin, setYMin] = usePersistedPanelState<string>("charts", "yMin", "");
+  const [yMax, setYMax] = usePersistedPanelState<string>("charts", "yMax", "");
   const [shapeCol, setShapeCol] = usePersistedPanelState<string>("charts", "shapeCol", "");
   // Pie / donut, balloon, facet
   const [pieValue, setPieValue] = usePersistedPanelState<string>("charts", "pieValue", "");
@@ -204,7 +216,8 @@ function ChartsPanelBody({ session }: { session: Session }) {
         label: labelCol || undefined, shape: shapeCol || undefined,
         ellipse, marginal,
         fit: fitMethod, fit_per_group: fitPerGroup && Boolean(color), loess_span: loessSpan,
-        ...(gradientCol && !color ? { gradient: gradientCol } : {}),
+        ...(gradientCol && !color && !bin2d ? { gradient: gradientCol } : {}),
+        ...(bin2d ? { bin2d: true, bin2d_bins: bin2dBins } : {}),
       });
       else if (chartType === "boxplot" || chartType === "violin" || chartType === "raincloud" || chartType === "strip") res = await getBoxplot({ ...base, color: color || undefined });
       else if (chartType === "paired") res = await getPairedBox({ session_id: session.session_id, y: x, group: color, pair_id: pairId });
@@ -386,7 +399,7 @@ function ChartsPanelBody({ session }: { session: Session }) {
     plotData ? buildTraces(
       plotData, chartType, pal, td, session, showPoints, donut ? 0.45 : 0, showMean,
       chartType === "bar" ? barHorizontal : horizontal,
-      { stat: histStat, display: histDisplay, rug: histRug, gradientScale },
+      { stat: histStat, display: histDisplay, rug: histRug, gradientScale, varyLineStyle },
     ) : null,
     seriesColors,
   );
@@ -395,6 +408,11 @@ function ChartsPanelBody({ session }: { session: Session }) {
     || chartType === "raincloud" || chartType === "strip";
   const valueAxisIsLog = groupedChart && logValue;
   const barFlipped = chartType === "bar" && barHorizontal && plotData?.type === "bar";
+  const numericAxes = numericAxesFor(chartType, horizontal, barHorizontal);
+  const xIsLog = Boolean(plotData?.log_x) || (valueAxisIsLog && horizontal);
+  const yIsLog = Boolean(plotData?.log_y) || (valueAxisIsLog && !horizontal);
+  const xWindow = numericAxes.x ? axisWindow(xMin, xMax, xIsLog) : {};
+  const yWindow = numericAxes.y ? axisWindow(yMin, yMax, yIsLog) : {};
   const marginalAxes = marginalLayout(plotData);
   const facetOverlay = facetLayout(plotData);
   // Reference lines and significance brackets are both shapes + annotations;
@@ -587,6 +605,12 @@ function ChartsPanelBody({ session }: { session: Session }) {
               </select>
               <p className="text-[10px] text-gray-400 mt-1">Links each matched pair — e.g. PSM's <code>match_set_id</code>, or a case-number column.</p>
             </div>
+          )}
+          {LINE_STYLE_CHARTS.has(chartType) && color && (
+            <label className="flex items-center gap-2 cursor-pointer" title="A dash pattern per group as well as a colour — aes(linetype = group). A figure printed in greyscale, or read by someone who cannot separate the palette, keeps its groups apart.">
+              <input type="checkbox" checked={varyLineStyle} onChange={(e) => setVaryLineStyle(e.target.checked)} className="accent-indigo-500" />
+              <span className="text-xs text-gray-600">Vary line style by group</span>
+            </label>
           )}
           {chartType === "lineplot" && (
             <div>
@@ -960,7 +984,22 @@ function ChartsPanelBody({ session }: { session: Session }) {
                   Group column: one set of markers cannot carry a legend of
                   groups and a colour bar of values at once, and a control that
                   silently loses to another is worse than an absent one. */}
-              {!color && (
+              <label className="flex items-center gap-2 cursor-pointer" title="geom_bin2d. Past a few thousand points a scatter is a solid blob that hides where the mass sits; the grid counts the points in each cell and colours by the count. The fit is still computed from every row.">
+                <input type="checkbox" checked={bin2d} onChange={(e) => setBin2d(e.target.checked)} className="accent-indigo-500" />
+                <span className="text-xs text-gray-600">Bin into a 2-D grid (dense clouds)</span>
+              </label>
+              {bin2d && (
+                <div>
+                  <label className="text-xs text-gray-400 block mb-1">Grid: {bin2dBins} × {bin2dBins}</label>
+                  <input type="range" min={5} max={100} step={5} value={bin2dBins}
+                    aria-label="Grid bins"
+                    onChange={(e) => setBin2dBins(+e.target.value)} className="w-full accent-indigo-500" />
+                  <p className="text-[10px] text-gray-400 mt-1">
+                    The points are replaced by the grid, so the marker shape and point labels no longer apply.
+                  </p>
+                </div>
+              )}
+              {!color && !bin2d && (
                 <>
                   <div>
                     <label className="text-xs text-gray-400 block mb-1"
@@ -987,6 +1026,15 @@ function ChartsPanelBody({ session }: { session: Session }) {
                     </div>
                   )}
                 </>
+              )}
+              {bin2d && (
+                <div>
+                  <label className="text-xs text-gray-400 block mb-1">Colour ramp</label>
+                  <select className="select w-full" aria-label="Colour ramp" value={gradientScale}
+                    onChange={(e) => setGradientScale(e.target.value)}>
+                    {GRADIENT_SCALES.map((g) => <option key={g.value} value={g.value}>{g.label}</option>)}
+                  </select>
+                </div>
               )}
               <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider pt-1">Trend line</p>
               <div>
@@ -1130,6 +1178,45 @@ function ChartsPanelBody({ session }: { session: Session }) {
                 </div>
               );
             })}
+          </div>
+        )}
+
+        {/* coord_cartesian(xlim =, ylim =). A window on the axes that zooms
+            rather than dropping rows: the statistics printed under the chart
+            are still computed from every row, which is the difference between
+            this and filtering the data. */}
+        {(numericAxes.x || numericAxes.y) && (
+          <div className="panel space-y-2 bg-white border border-gray-200 shadow-sm rounded-2xl p-4">
+            <h3 className="text-sm font-semibold text-gray-700">Axis limits</h3>
+            {numericAxes.x && (
+              <div className="flex items-center gap-1.5">
+                <span className="w-4 text-[11px] text-gray-400">X</span>
+                <input className="select w-full text-xs" aria-label="X axis minimum" placeholder="min"
+                  value={xMin} onChange={(e) => setXMin(e.target.value)} />
+                <input className="select w-full text-xs" aria-label="X axis maximum" placeholder="max"
+                  value={xMax} onChange={(e) => setXMax(e.target.value)} />
+              </div>
+            )}
+            {numericAxes.y && (
+              <div className="flex items-center gap-1.5">
+                <span className="w-4 text-[11px] text-gray-400">Y</span>
+                <input className="select w-full text-xs" aria-label="Y axis minimum" placeholder="min"
+                  value={yMin} onChange={(e) => setYMin(e.target.value)} />
+                <input className="select w-full text-xs" aria-label="Y axis maximum" placeholder="max"
+                  value={yMax} onChange={(e) => setYMax(e.target.value)} />
+              </div>
+            )}
+            <p className="text-[10px] text-gray-400">
+              Zooms the view; no row is dropped, so the statistics under the chart are unchanged.
+              Leave one end blank to let the data set it.
+            </p>
+            {(xMin || xMax || yMin || yMax) && (
+              <button type="button"
+                className="text-[10px] text-gray-500 hover:text-indigo-600"
+                onClick={() => { setXMin(""); setXMax(""); setYMin(""); setYMax(""); }}>
+                Clear limits
+              </button>
+            )}
           </div>
         )}
 
@@ -1369,6 +1456,8 @@ function ChartsPanelBody({ session }: { session: Session }) {
                 ...(valueAxisIsLog && horizontal ? { type: "log" } : {}),
                 ...(groupedChart && !horizontal ? { type: "category", automargin: true } : {}),
                 ...(marginalAxes.xDomain ? { domain: marginalAxes.xDomain } : {}),
+                // Last, so a manual window wins over the data-driven range.
+                ...xWindow,
               },
               yaxis: {
                 ...(layout.yaxis as PlotLayout),
@@ -1381,6 +1470,7 @@ function ChartsPanelBody({ session }: { session: Session }) {
                 // Flipped bars: categories down the side, values along the bottom.
                 ...(barFlipped ? { type: "category", automargin: true } : {}),
                 ...(marginalAxes.yDomain ? { domain: marginalAxes.yDomain } : {}),
+                ...yWindow,
               },
               ...facetOverlay,
               ...(overlayShapes.length ? { shapes: overlayShapes } : {}),
@@ -1612,7 +1702,9 @@ function buildTraces(
   // does this whenever the category names are words — "PTC follicular
   // variant" does not fit under a tick and rotating it costs the reader.
   horizontal = false,
-  opts: ChartOptions = { stat: "count", display: "both", rug: false, gradientScale: "Viridis" },
+  opts: ChartOptions = {
+    stat: "count", display: "both", rug: false, gradientScale: "Viridis", varyLineStyle: false,
+  },
 ): PlotData[] | null {
   if (!d) return null;
 
@@ -1717,6 +1809,30 @@ function buildTraces(
             hoverinfo: "name",
           } as PlotData]
         : [];
+    // The grid replaces the cloud: the backend sends no points with it.
+    const grid = (d.bin2d ?? {}) as { x?: number[]; y?: number[]; z?: number[][]; n?: number };
+    if (grid.z?.length) {
+      return [
+        {
+          type: "heatmap",
+          x: grid.x, y: grid.y, z: grid.z,
+          colorscale: opts.gradientScale,
+          // Empty cells stay empty rather than taking the ramp's lowest
+          // colour, which would read as "a few points here".
+          zmin: 0,
+          zauto: false,
+          zmax: Math.max(1, ...(grid.z.flat())),
+          hoverongaps: false,
+          colorbar: { title: { text: "Points", side: "right" }, thickness: 12 },
+          hovertemplate: "%{x}, %{y}<br>%{z} points<extra></extra>",
+        } as PlotData,
+        ...fitTraces(regression, "#f97316", Math.max(2, td.lineWidth), "", "solid").band,
+        ...fitTraces(regression, "#f97316", Math.max(2, td.lineWidth), "", "solid").line,
+        ...identityTrace,
+        ...ellipseTraces,
+        ...marginalTraces,
+      ];
+    }
     if (d.color) {
       const colorKey = String(d.color);
       const colorLabels = valueLabelsFor(d.color);
@@ -1798,7 +1914,10 @@ function buildTraces(
         type: "scatter", mode: "lines+markers",
         x: xs,
         y: pts.map((p) => Number(p.centre)),
-        line: { color: C[i % C.length], width: td.lineWidth },
+        line: {
+          color: C[i % C.length], width: td.lineWidth,
+          ...(dashFor(i, opts.varyLineStyle) ? { dash: dashFor(i, opts.varyLineStyle) } : {}),
+        },
         marker: { color: C[i % C.length], size: td.markerSize },
         name: String(s.group),
         // n per point, because attrition is the thing a line hides.
@@ -1812,14 +1931,17 @@ function buildTraces(
   if (d.type === "slopeplot") {
     const pairs = (d.pairs as Array<Record<string, unknown>>) ?? [];
     const groups = [...new Set(pairs.map((p) => String(p.group ?? "All")))];
-    const colourOf = (p: Record<string, unknown>) =>
-      C[groups.indexOf(String(p.group ?? "All")) % C.length];
+    const groupIndex = (p: Record<string, unknown>) => groups.indexOf(String(p.group ?? "All"));
+    const colourOf = (p: Record<string, unknown>) => C[groupIndex(p) % C.length];
     // One two-point trace per subject; legend carries the group, not 200 lines.
     const lines: PlotData[] = pairs.map((p, i) => ({
       type: "scatter", mode: "lines+markers",
       x: [String(d.before), String(d.after)],
       y: [Number(p.before), Number(p.after)],
-      line: { color: colourOf(p), width: 1 },
+      line: {
+        color: colourOf(p), width: 1,
+        ...(dashFor(groupIndex(p), opts.varyLineStyle) ? { dash: dashFor(groupIndex(p), opts.varyLineStyle) } : {}),
+      },
       marker: { color: colourOf(p), size: 5 },
       opacity: 0.5,
       name: String(p.group ?? "All"),
@@ -2024,7 +2146,10 @@ function buildTraces(
       mode: "lines",
       // A step shape is the honest rendering: the ECDF jumps at each
       // observation and is flat between them.
-      line: { shape: "hv", color: C[i % C.length], width: td.lineWidth },
+      line: {
+        shape: "hv", color: C[i % C.length], width: td.lineWidth,
+        ...(dashFor(i, opts.varyLineStyle) ? { dash: dashFor(i, opts.varyLineStyle) } : {}),
+      },
       x: c.x,
       y: c.y,
       name: `${String(c.group)} (n=${c.n})`,
@@ -2396,6 +2521,80 @@ interface ChartOptions {
   rug: boolean;
   /** Scatter: named Plotly colourscale for the continuous colour column. */
   gradientScale: string;
+  /** Line charts: a dash pattern per group as well as a colour. */
+  varyLineStyle: boolean;
+}
+
+/** Which axes of a chart carry numbers, and so can take a manual window.
+ *  The other axis holds category names, where a numeric limit means nothing —
+ *  and an input that cannot work is worse than an absent one. */
+function numericAxesFor(
+  chartType: string,
+  horizontal: boolean,
+  barHorizontal: boolean,
+): { x: boolean; y: boolean } {
+  switch (chartType) {
+    case "histogram":
+    case "scatter":
+    case "ecdf":
+      return { x: true, y: true };
+    case "boxplot":
+    case "violin":
+    case "raincloud":
+    case "strip":
+      return horizontal ? { x: true, y: false } : { x: false, y: true };
+    case "bar":
+      return barHorizontal ? { x: true, y: false } : { x: false, y: true };
+    case "paired":
+    case "errorplot":
+    case "lineplot":
+    case "slopeplot":
+    case "stackplot":
+      return { x: false, y: true };
+    case "dumbbell":
+    case "ridgeplot":
+      return { x: true, y: false };
+    // A pie has no axes, a Sankey's are not values, and a facet has one pair
+    // per panel — a single window would silently apply to the first only.
+    default:
+      return { x: false, y: false };
+  }
+}
+
+/** A manual window on one axis — ggplot2's coord_cartesian(xlim = ), which
+ *  zooms rather than dropping the rows outside it.
+ *
+ *  Plotly wants a log axis's range in log10 units, so a limit typed in data
+ *  units is converted; a non-positive limit on a log axis has no logarithm and
+ *  is ignored rather than rendering the axis blank. One end on its own becomes
+ *  an autorange bound, so the other end still follows the data. */
+function axisWindow(min: string, max: string, isLog: boolean): Record<string, unknown> {
+  const convert = (v: number | null): number | null => {
+    if (v === null) return null;
+    if (!isLog) return v;
+    return v > 0 ? Math.log10(v) : null;
+  };
+  const lo = convert(parseRefValue(min));
+  const hi = convert(parseRefValue(max));
+  if (lo !== null && hi !== null) {
+    return lo === hi ? {} : { range: lo < hi ? [lo, hi] : [hi, lo], autorange: false };
+  }
+  if (lo !== null) return { autorangeoptions: { minallowed: lo } };
+  if (hi !== null) return { autorangeoptions: { maxallowed: hi } };
+  return {};
+}
+
+/** Charts that draw one line per group, where a dash pattern can carry the
+ *  grouping alongside the colour. */
+const LINE_STYLE_CHARTS = new Set(["lineplot", "ecdf", "slopeplot"]);
+
+/** Dash patterns in the order groups take them. The first is solid, so a
+ *  single-group figure is unchanged. */
+const LINE_DASHES = ["solid", "dash", "dot", "dashdot", "longdash", "longdashdot"];
+
+/** The dash for group `i`, or undefined when the feature is off. */
+function dashFor(i: number, on: boolean): string | undefined {
+  return on ? LINE_DASHES[i % LINE_DASHES.length] : undefined;
 }
 
 /** Colour ramps offered for a continuous scale. Viridis and Cividis are

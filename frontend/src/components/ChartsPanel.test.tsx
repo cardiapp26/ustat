@@ -1073,3 +1073,105 @@ describe('ChartsPanel facet grid and continuous colour', () => {
     expect(screen.queryByRole('combobox', { name: /colour by value/i })).not.toBeInTheDocument()
   })
 })
+
+describe('ChartsPanel axis limits, line styles and 2-D bins', () => {
+  const scatterBody = {
+    type: 'scatter', x: 'AGE', y: 'LDL',
+    points: [{ AGE: 55, LDL: 120 }, { AGE: 62, LDL: 140 }],
+    regression: { method: 'lm', line_x: [55, 62], line_y: [120, 140], r2: 0.8, r: 0.9, p: 0.1, n: 2 },
+    regressions: [],
+  }
+
+  async function drawScatter(body: object = scatterBody) {
+    installSession()
+    server.use(http.post('/api/charts/scatter', () => HttpResponse.json(body)))
+    const user = userEvent.setup()
+    render(<ChartsPanel />)
+    await user.click(screen.getByRole('radio', { name: /scatter/i }))
+    return user
+  }
+
+  it('windows both axes without touching the data', async () => {
+    const user = await drawScatter()
+    await user.click(screen.getByRole('button', { name: /generate chart/i }))
+    await waitFor(() => expect(screen.getByTestId('plotly-mock')).toBeInTheDocument())
+    await user.type(screen.getByRole('textbox', { name: /x axis minimum/i }), '50')
+    await user.type(screen.getByRole('textbox', { name: /x axis maximum/i }), '70')
+    await user.type(screen.getByRole('textbox', { name: /y axis minimum/i }), '100')
+
+    const layout = JSON.parse(screen.getByTestId('plotly-mock').dataset.layout!)
+    expect(layout.xaxis.range).toEqual([50, 70])
+    expect(layout.xaxis.autorange).toBe(false)
+    // One end alone leaves the other to the data.
+    expect(layout.yaxis.range).toBeUndefined()
+    expect(layout.yaxis.autorangeoptions).toEqual({ minallowed: 100 })
+    // The regression still reports every row.
+    expect(screen.getByText(/n = 2/)).toBeInTheDocument()
+  })
+
+  it('converts a limit to log units on a log axis', async () => {
+    const user = await drawScatter({ ...scatterBody, log_y: true })
+    await user.click(screen.getByRole('checkbox', { name: /log y axis/i }))
+    await user.click(screen.getByRole('button', { name: /generate chart/i }))
+    await waitFor(() => expect(screen.getByTestId('plotly-mock')).toBeInTheDocument())
+    await user.type(screen.getByRole('textbox', { name: /y axis minimum/i }), '100')
+    await user.type(screen.getByRole('textbox', { name: /y axis maximum/i }), '1000')
+
+    const layout = JSON.parse(screen.getByTestId('plotly-mock').dataset.layout!)
+    expect(layout.yaxis.type).toBe('log')
+    // Plotly reads a log axis range in log10 units; 100..1000 is 2..3.
+    expect(layout.yaxis.range).toEqual([2, 3])
+  })
+
+  it('offers no limits on a chart whose axes are not numbers', async () => {
+    installSession()
+    const user = userEvent.setup()
+    render(<ChartsPanel />)
+    expect(screen.getByRole('textbox', { name: /x axis minimum/i })).toBeInTheDocument()
+    await user.click(screen.getByRole('radio', { name: /^pie$/i }))
+    expect(screen.queryByRole('textbox', { name: /x axis minimum/i })).not.toBeInTheDocument()
+  })
+
+  it('draws the dense cloud as a heatmap and keeps the fit over it', async () => {
+    const user = await drawScatter({
+      type: 'scatter', x: 'AGE', y: 'LDL', points: [],
+      bin2d: { x: [50, 60], y: [100, 140], z: [[1, 2], [3, 4]], max: 4, n: 10, bins: 2 },
+      regression: { method: 'lm', line_x: [50, 60], line_y: [100, 140], r2: 0.8, r: 0.9, p: 0.1, n: 10 },
+      regressions: [],
+    })
+    await user.click(screen.getByRole('checkbox', { name: /bin into a 2-d grid/i }))
+    await user.click(screen.getByRole('button', { name: /generate chart/i }))
+    await waitFor(() => expect(screen.getByTestId('plotly-mock')).toBeInTheDocument())
+
+    const traces = JSON.parse(screen.getByTestId('plotly-mock').getAttribute('data-plotly') ?? '[]') as Array<Record<string, unknown>>
+    const heat = traces.find((t) => t.type === 'heatmap')!
+    expect(heat.z).toEqual([[1, 2], [3, 4]])
+    expect(heat.zmin).toBe(0)
+    expect(heat.zmax).toBe(4)
+    expect(traces.some((t) => t.mode === 'markers')).toBe(false)
+    expect(traces.some((t) => String(t.name).startsWith('Fit'))).toBe(true)
+  })
+
+  it('gives each ECDF group its own dash when asked', async () => {
+    installSession()
+    server.use(http.post('/api/charts/ecdf', () => HttpResponse.json({
+      type: 'ecdf', x: 'AGE', group: 'GROUP',
+      curves: [
+        { group: 'A', n: 2, x: [1, 2], y: [0.5, 1] },
+        { group: 'B', n: 2, x: [3, 4], y: [0.5, 1] },
+      ],
+    })))
+    const user = userEvent.setup()
+    render(<ChartsPanel />)
+    await user.click(screen.getByRole('radio', { name: /ecdf/i }))
+    const groupSelect = screen.getAllByRole('combobox').find(
+      (el) => el.previousElementSibling?.textContent?.match(/^color \/ group$/i))
+    await user.selectOptions(groupSelect!, 'GROUP')
+    await user.click(screen.getByRole('checkbox', { name: /vary line style by group/i }))
+    await user.click(screen.getByRole('button', { name: /generate chart/i }))
+    await waitFor(() => expect(screen.getByTestId('plotly-mock')).toBeInTheDocument())
+
+    const traces = JSON.parse(screen.getByTestId('plotly-mock').getAttribute('data-plotly') ?? '[]') as Array<{ line?: { dash?: string } }>
+    expect(traces.map((t) => t.line?.dash)).toEqual(['solid', 'dash'])
+  })
+})
