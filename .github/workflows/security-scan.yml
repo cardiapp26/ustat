@@ -65,7 +65,29 @@ jobs:
       - name: Install deps
         run: npm ci --legacy-peer-deps
       - name: npm audit — high+ severity gate
-        run: npm audit --audit-level=high
+        # The registry's audit endpoint 503s often enough to redden a clean
+        # build, and npm has announced it is being retired. Retry a transient
+        # endpoint error; a real advisory still fails the job on the first
+        # try, because that failure prints findings rather than an endpoint
+        # error and the loop stops on it.
+        run: |
+          for attempt in 1 2 3; do
+            set +e
+            output=$(npm audit --audit-level=high 2>&1)
+            status=$?
+            set -e
+            echo "$output"
+            if [ $status -eq 0 ]; then
+              exit 0
+            fi
+            if ! echo "$output" | grep -q "audit endpoint returned an error"; then
+              exit $status
+            fi
+            echo "::warning::npm audit endpoint error on attempt $attempt; retrying"
+            sleep $((attempt * 20))
+          done
+          echo "::error::npm audit could not reach the registry after 3 attempts"
+          exit 1
 
   secrets-scan:
     name: Secret scan (gitleaks)
