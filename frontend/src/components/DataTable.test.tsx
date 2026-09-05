@@ -161,6 +161,44 @@ describe('DataTable row virtualisation', () => {
     )
   })
 
+  it('keeps the previous sort as the tie-breaker when another column is sorted', async () => {
+    // SPSS semantics: a sort physically reorders the cases, so sorting a
+    // second column reorders the sheet it finds, so ties in the new key keep
+    // the order the previous sort left them in. Falling back to file order
+    // instead scatters the first sort the moment a second one is applied.
+    installSession(makeSession({
+      columns: [
+        { name: 'a', dtype: 'int64', kind: 'numeric' },
+        { name: 'b', dtype: 'int64', kind: 'numeric' },
+      ],
+      preview: [
+        { a: 1, b: 1 }, { a: 2, b: 1 }, { a: 3, b: 2 }, { a: 1, b: 2 }, { a: 2, b: 2 },
+      ],
+      rows: 5,
+    }))
+    const user = userEvent.setup()
+    render(<DataTable />)
+    const colA = () =>
+      [...document.querySelectorAll('tbody tr[class*="group"]')].map(
+        (r) => r.querySelectorAll('td')[1].textContent,
+      )
+
+    // a ▼
+    await user.click(screen.getAllByTitle('Sort')[0])
+    await user.click(screen.getAllByTitle('Sort')[0])
+    await waitFor(() => expect(colA()).toEqual(['3', '2', '2', '1', '1']))
+
+    // then b ▼: within each b group the a ▼ order survives
+    await user.click(screen.getAllByTitle('Sort')[1])
+    await user.click(screen.getAllByTitle('Sort')[1])
+    await waitFor(() => expect(colA()).toEqual(['3', '2', '1', '2', '1']))
+    expect(screen.getByText(/Sort: b ▼/)).toHaveTextContent('then a ▼')
+
+    // a third click on b drops it; the sheet is back to a ▼ alone
+    await user.click(screen.getAllByTitle('Sort')[1])
+    await waitFor(() => expect(colA()).toEqual(['3', '2', '2', '1', '1']))
+  })
+
   /** A 6-row sheet with rows 1 and 2 excluded by an active Select Cases. */
   function excludedSession() {
     installSession(bigSession(6))

@@ -61,6 +61,18 @@ import { FormulaFillModal } from "./datatable/FormulaFillModal";
 import { FindReplaceModal } from "./datatable/FindReplaceModal";
 import { ParseDatesModal } from "./datatable/ParseDatesModal";
 type SortDir = "asc" | "desc";
+/** One sort key; the sheet is ordered by `sortKeys[0]`, ties by `[1]`, and so on. */
+type SortKey = { col: string; dir: SortDir };
+
+/** Missing values sink to the end whichever way the column is sorted. */
+function compareCells(av: unknown, bv: unknown): number {
+  if (av == null && bv == null) return 0;
+  if (av == null) return 1;
+  if (bv == null) return -1;
+  return typeof av === "number" && typeof bv === "number"
+    ? av - bv
+    : String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: "base" });
+}
 
 type ContextMenuAnchor = { x: number; y: number };
 
@@ -297,8 +309,12 @@ function DataTableBody({ session }: { session: Session }) {
   const setColumnDecimals = useStore((s) => s.setColumnDecimals);
   const clearColumnDecimals = useStore((s) => s.clearColumnDecimals);
 
-  const [sortCol,     setSortCol]     = useState<string | null>(null);
-  const [sortDir,     setSortDir]     = useState<SortDir>("asc");
+  // Most recent sort first. SPSS semantics: a sort physically reorders the
+  // cases, so sorting a second column reorders the sheet it finds and ties in
+  // the new key keep the order the previous sort left them in. Keeping every
+  // key, newest primary, is that same composition of stable sorts.
+  const [sortKeys,    setSortKeys]    = useState<SortKey[]>([]);
+  const sortCol = sortKeys[0]?.col ?? null;
   const [filters,     setFilters]     = useState<Record<string, string>>({});
   const [showFilters, setShowFilters] = useState(false);
   // SPSS offers "filter out" (the case stays, struck through) and "delete
@@ -431,7 +447,7 @@ function DataTableBody({ session }: { session: Session }) {
   }, [editCell]);
 
   useEffect(() => {
-    setSortCol(null); setFilters({}); setShowMissingOnly(false); setSelectedCells(new Set());
+    setSortKeys([]); setFilters({}); setShowMissingOnly(false); setSelectedCells(new Set());
     setHideUnselected(false);
     setSelAnchor(null); setSelFocus(null);
   }, [session?.session_id]);
@@ -551,7 +567,7 @@ function DataTableBody({ session }: { session: Session }) {
   }, [indexedRows, filters, columns, showMissingOnly, hideUnselected, excludedRows]);
 
   const displayRows = useMemo(() => {
-    if (!sortCol) return filtered;
+    if (sortKeys.length === 0) return filtered;
     return [...filtered].sort((a, b) => {
       // Select Cases rows are not part of the sort. Ordering them in among the
       // selected ones scatters the cases the filter just set aside back
@@ -562,16 +578,13 @@ function DataTableBody({ session }: { session: Session }) {
       const aOut = excludedRows.has(a._idx), bOut = excludedRows.has(b._idx);
       if (aOut !== bOut) return aOut ? 1 : -1;
       if (aOut && bOut) return a._idx - b._idx;
-      const av = a[sortCol], bv = b[sortCol];
-      if (av == null) return 1;
-      if (bv == null) return -1;
-      const cmp =
-        typeof av === "number" && typeof bv === "number"
-          ? av - bv
-          : String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: "base" });
-      return sortDir === "asc" ? cmp : -cmp;
+      for (const { col, dir } of sortKeys) {
+        const cmp = compareCells(a[col], b[col]);
+        if (cmp !== 0) return dir === "asc" ? cmp : -cmp;
+      }
+      return 0;
     });
-  }, [filtered, sortCol, sortDir, excludedRows]);
+  }, [filtered, sortKeys, excludedRows]);
 
   // ── Row virtualisation ──────────────────────────────────────────────────
   // A 1000 x 125 sheet is 126,000 <td>s and ~256k DOM nodes; rendering them
@@ -1487,14 +1500,16 @@ function DataTableBody({ session }: { session: Session }) {
     }
   };
 
+  // asc → desc → off on the primary key; any other column becomes the new
+  // primary and the keys before it turn into tie-breakers.
   const toggleSort = (colName: string) => {
-    if (sortCol === colName) {
-      if (sortDir === "asc") setSortDir("desc");
-      else setSortCol(null);
-    } else {
-      setSortCol(colName);
-      setSortDir("asc");
-    }
+    setSortKeys((keys) => {
+      const [primary, ...rest] = keys;
+      if (primary?.col === colName) {
+        return primary.dir === "asc" ? [{ col: colName, dir: "desc" }, ...rest] : rest;
+      }
+      return [{ col: colName, dir: "asc" }, ...keys.filter((k) => k.col !== colName)];
+    });
   };
 
   const cycleKind = (colName: string) => {
@@ -1846,12 +1861,15 @@ function DataTableBody({ session }: { session: Session }) {
             )}
           </div>
 
-          {sortCol && (
+          {sortKeys.length > 0 && (
             <button
-              onClick={() => setSortCol(null)}
+              onClick={() => setSortKeys([])}
               className="text-xs text-orange-600 hover:text-orange-700 border border-orange-300 rounded-lg px-2.5 py-1 transition-colors bg-orange-50"
             >
-              ✕ Sort: {sortCol} {sortDir === "asc" ? "▲" : "▼"}
+              ✕ Sort: {sortKeys[0].col} {sortKeys[0].dir === "asc" ? "▲" : "▼"}
+              {sortKeys.slice(1).map((k) => (
+                <span key={k.col} className="text-orange-500/80"> · then {k.col} {k.dir === "asc" ? "▲" : "▼"}</span>
+              ))}
               {/* The rows sorted are the SELECTED ones; saying so beats
                   leaving the user to work out why the struck-through rows all
                   sit at the end. */}
@@ -2024,7 +2042,9 @@ function DataTableBody({ session }: { session: Session }) {
                 </span>
               </th>
               {columns.map((col, colIdx) => {
-                const isSorted = sortCol === col.name;
+                const sortKey = sortKeys.find((k) => k.col === col.name);
+                const isSorted = sortKey !== undefined;
+                const isPrimarySort = sortCol === col.name;
                 const serverBadge = columnBadges[col.name];
                 // Server counts cover the whole frame; the preview-derived
                 // count is the fallback until that request lands.
@@ -2169,11 +2189,13 @@ function DataTableBody({ session }: { session: Session }) {
                           onClick={() => toggleSort(col.name)}
                           title="Sort"
                           className={`flex-shrink-0 text-xs w-5 h-5 rounded flex items-center justify-center transition-colors
-                            ${isSorted
+                            ${isPrimarySort
                               ? "text-indigo-600 bg-indigo-100"
-                              : "text-gray-300 hover:text-gray-500 hover:bg-gray-100"}`}
+                              : isSorted
+                                ? "text-indigo-400 bg-indigo-50"
+                                : "text-gray-300 hover:text-gray-500 hover:bg-gray-100"}`}
                         >
-                          {isSorted ? (sortDir === "asc" ? "▲" : "▼") : "⇅"}
+                          {sortKey ? (sortKey.dir === "asc" ? "▲" : "▼") : "⇅"}
                         </button>
                       </div>
                       {(nMissing > 0 || nImplausible > 0 || range) && (
