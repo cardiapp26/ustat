@@ -309,10 +309,10 @@ function DataTableBody({ session }: { session: Session }) {
   const setColumnDecimals = useStore((s) => s.setColumnDecimals);
   const clearColumnDecimals = useStore((s) => s.clearColumnDecimals);
 
-  // Oldest sort first. The first column sorted stays the primary key and
-  // each column sorted after it orders the rows WITHIN the ties of the keys
-  // before it (a nested, multi-level sort), so an earlier sort is never
-  // disturbed by a later one.
+  // Most recent sort first. SPSS semantics: a sort physically reorders the
+  // cases, so sorting a second column reorders the sheet it finds and ties in
+  // the new key keep the order the previous sort left them in. Keeping every
+  // key, newest primary, is that same composition of stable sorts.
   const [sortKeys,    setSortKeys]    = useState<SortKey[]>([]);
   const sortCol = sortKeys[0]?.col ?? null;
   const [filters,     setFilters]     = useState<Record<string, string>>({});
@@ -1500,16 +1500,14 @@ function DataTableBody({ session }: { session: Session }) {
     }
   };
 
-  // One button per direction. A column not yet sorted joins the end of the
-  // chain, ordering rows within the ties of the keys before it. On a column
-  // already in the chain the other direction flips it in place, and the
-  // direction that is already active removes it.
+  // One button per direction. Pressing a direction sorts by that column: it
+  // becomes the primary key and the keys before it turn into tie-breakers.
+  // Pressing the direction that is already the primary key removes it.
   const sortBy = (colName: string, dir: SortDir) => {
     setSortKeys((keys) => {
-      const current = keys.find((k) => k.col === colName);
-      if (!current) return [...keys, { col: colName, dir }];
-      if (current.dir === dir) return keys.filter((k) => k.col !== colName);
-      return keys.map((k) => (k.col === colName ? { col: colName, dir } : k));
+      const [primary, ...rest] = keys;
+      if (primary?.col === colName && primary.dir === dir) return rest;
+      return [{ col: colName, dir }, ...keys.filter((k) => k.col !== colName)];
     });
   };
 

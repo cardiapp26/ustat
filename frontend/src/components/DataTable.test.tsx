@@ -161,10 +161,11 @@ describe('DataTable row virtualisation', () => {
     )
   })
 
-  it('nests a later sort inside the ties of the earlier one', async () => {
-    // The first column sorted stays the primary key. Sorting a second column
-    // orders the rows within the ties of the first, so the earlier sort is
-    // never disturbed by a later one.
+  it('keeps the previous sort as the tie-breaker when another column is sorted', async () => {
+    // SPSS semantics: a sort physically reorders the cases, so sorting a
+    // second column reorders the sheet it finds, and ties in the new key keep
+    // the order the previous sort left them in. Falling back to file order
+    // instead scatters the first sort the moment a second one is applied.
     installSession(makeSession({
       columns: [
         { name: 'a', dtype: 'int64', kind: 'numeric' },
@@ -185,28 +186,28 @@ describe('DataTable row virtualisation', () => {
     const desc = () => screen.getAllByTitle('Sort descending')
     const asc = () => screen.getAllByTitle('Sort ascending')
 
-    // a ▼: ties keep file order
+    // a ▼
     await user.click(desc()[0])
     await waitFor(() => expect(colA()).toEqual(['3', '2', '2', '1', '1']))
-    expect(colB()).toEqual(['2', '1', '2', '1', '2'])
 
-    // then b ▼: a is untouched, b descends inside each a group
+    // then b ▼: b leads, and within each b group the a ▼ order survives
     await user.click(desc()[1])
-    await waitFor(() => expect(colB()).toEqual(['2', '2', '1', '2', '1']))
-    expect(colA()).toEqual(['3', '2', '2', '1', '1'])
-    expect(screen.getByText(/Sort: a ▼/)).toHaveTextContent('then b ▼')
+    await waitFor(() => expect(colB()).toEqual(['2', '2', '2', '1', '1']))
+    expect(colA()).toEqual(['3', '2', '1', '2', '1'])
+    expect(screen.getByText(/Sort: b ▼/)).toHaveTextContent('then a ▼')
     expect(desc()[1]).toHaveAttribute('aria-pressed', 'true')
 
-    // b ▲ flips b in place; a still leads
-    await user.click(asc()[1])
-    await waitFor(() => expect(colB()).toEqual(['2', '1', '2', '1', '2']))
-    expect(colA()).toEqual(['3', '2', '2', '1', '1'])
+    // a ▲ takes the lead back; b ▼ is now the tie-breaker
+    await user.click(asc()[0])
+    await waitFor(() => expect(colA()).toEqual(['1', '1', '2', '2', '3']))
+    expect(colB()).toEqual(['2', '1', '2', '1', '2'])
+    expect(screen.getByText(/Sort: a ▲/)).toHaveTextContent('then b ▼')
 
-    // pressing the active direction again drops b; a ▼ alone remains
-    await user.click(asc()[1])
-    await waitFor(() => expect(asc()[1]).toHaveAttribute('aria-pressed', 'false'))
-    expect(colA()).toEqual(['3', '2', '2', '1', '1'])
-    expect(screen.getByText(/Sort: a ▼/)).not.toHaveTextContent('then')
+    // pressing the active direction of the primary key drops it; b ▼ leads again
+    await user.click(asc()[0])
+    await waitFor(() => expect(colB()).toEqual(['2', '2', '2', '1', '1']))
+    expect(asc()[0]).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByText(/Sort: b ▼/)).not.toHaveTextContent('then')
   })
 
   /** A 6-row sheet with rows 1 and 2 excluded by an active Select Cases. */
