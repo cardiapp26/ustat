@@ -154,7 +154,7 @@ describe('DataTable row virtualisation', () => {
       )
     expect(firstCol()).toEqual(['0', '100', '200', '300', '400', '500'])
 
-    await user.click(screen.getAllByTitle('Sort')[0])
+    await user.click(screen.getAllByTitle('Sort ascending')[0])
 
     await waitFor(() =>
       expect(firstCol()).toEqual(['0', '300', '400', '500', '100', '200']),
@@ -183,20 +183,22 @@ describe('DataTable row virtualisation', () => {
         (r) => r.querySelectorAll('td')[1].textContent,
       )
 
+    const desc = () => screen.getAllByTitle('Sort descending')
+
     // a ▼
-    await user.click(screen.getAllByTitle('Sort')[0])
-    await user.click(screen.getAllByTitle('Sort')[0])
+    await user.click(desc()[0])
     await waitFor(() => expect(colA()).toEqual(['3', '2', '2', '1', '1']))
 
     // then b ▼: within each b group the a ▼ order survives
-    await user.click(screen.getAllByTitle('Sort')[1])
-    await user.click(screen.getAllByTitle('Sort')[1])
+    await user.click(desc()[1])
     await waitFor(() => expect(colA()).toEqual(['3', '2', '1', '2', '1']))
     expect(screen.getByText(/Sort: b ▼/)).toHaveTextContent('then a ▼')
+    expect(desc()[1]).toHaveAttribute('aria-pressed', 'true')
 
-    // a third click on b drops it; the sheet is back to a ▼ alone
-    await user.click(screen.getAllByTitle('Sort')[1])
+    // pressing the active direction again drops b; the sheet is back to a ▼ alone
+    await user.click(desc()[1])
     await waitFor(() => expect(colA()).toEqual(['3', '2', '2', '1', '1']))
+    expect(desc()[1]).toHaveAttribute('aria-pressed', 'false')
   })
 
   /** A 6-row sheet with rows 1 and 2 excluded by an active Select Cases. */

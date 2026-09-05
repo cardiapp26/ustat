@@ -1500,15 +1500,14 @@ function DataTableBody({ session }: { session: Session }) {
     }
   };
 
-  // asc → desc → off on the primary key; any other column becomes the new
-  // primary and the keys before it turn into tie-breakers.
-  const toggleSort = (colName: string) => {
+  // One button per direction. Pressing a direction makes the column the new
+  // primary key (the keys before it turn into tie-breakers, SPSS-style);
+  // pressing the direction that is already the primary key removes it.
+  const sortBy = (colName: string, dir: SortDir) => {
     setSortKeys((keys) => {
       const [primary, ...rest] = keys;
-      if (primary?.col === colName) {
-        return primary.dir === "asc" ? [{ col: colName, dir: "desc" }, ...rest] : rest;
-      }
-      return [{ col: colName, dir: "asc" }, ...keys.filter((k) => k.col !== colName)];
+      if (primary?.col === colName && primary.dir === dir) return rest;
+      return [{ col: colName, dir }, ...keys.filter((k) => k.col !== colName)];
     });
   };
 
@@ -2043,7 +2042,6 @@ function DataTableBody({ session }: { session: Session }) {
               </th>
               {columns.map((col, colIdx) => {
                 const sortKey = sortKeys.find((k) => k.col === col.name);
-                const isSorted = sortKey !== undefined;
                 const isPrimarySort = sortCol === col.name;
                 const serverBadge = columnBadges[col.name];
                 // Server counts cover the whole frame; the preview-derived
@@ -2185,18 +2183,27 @@ function DataTableBody({ session }: { session: Session }) {
                               title="Excluded from analysis (kept in the dataset)">excl</span>
                           )}
                         </div>
-                        <button
-                          onClick={() => toggleSort(col.name)}
-                          title="Sort"
-                          className={`flex-shrink-0 text-xs w-5 h-5 rounded flex items-center justify-center transition-colors
-                            ${isPrimarySort
-                              ? "text-indigo-600 bg-indigo-100"
-                              : isSorted
-                                ? "text-indigo-400 bg-indigo-50"
-                                : "text-gray-300 hover:text-gray-500 hover:bg-gray-100"}`}
-                        >
-                          {sortKey ? (sortKey.dir === "asc" ? "▲" : "▼") : "⇅"}
-                        </button>
+                        <span className="flex-shrink-0 flex h-5 items-center rounded overflow-hidden">
+                          {(["asc", "desc"] as const).map((dir) => {
+                            const active = sortKey?.dir === dir;
+                            return (
+                              <button
+                                key={dir}
+                                onClick={() => sortBy(col.name, dir)}
+                                title={dir === "asc" ? "Sort ascending" : "Sort descending"}
+                                aria-pressed={active}
+                                className={`text-[10px] w-4 h-5 flex items-center justify-center transition-colors
+                                  ${active && isPrimarySort
+                                    ? "text-indigo-600 bg-indigo-100"
+                                    : active
+                                      ? "text-indigo-400 bg-indigo-50"
+                                      : "text-gray-300 hover:text-gray-500 hover:bg-gray-100"}`}
+                              >
+                                {dir === "asc" ? "▲" : "▼"}
+                              </button>
+                            );
+                          })}
+                        </span>
                       </div>
                       {(nMissing > 0 || nImplausible > 0 || range) && (
                         <div className="flex justify-start items-center gap-1 flex-wrap">
