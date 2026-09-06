@@ -91,6 +91,14 @@ def _measure_for_export(kind: str, metadata: dict) -> str:
 
 _SPSS_NAME_MAX_LEN = 64
 
+# SPSS command keywords cannot be variable names. readstat does not rename them
+# for us: it refuses the whole file with "A provided name is a reserved word",
+# so a single column called OR or TO cost the user every other column too.
+_SPSS_RESERVED = frozenset({
+    "ALL", "AND", "BY", "EQ", "GE", "GT", "LE", "LT", "NE", "NOT", "OR", "TO",
+    "WITH",
+})
+
 
 def _sanitize_spss_name(name: str, used: set) -> str:
     """Return a valid SPSS variable name, preserving the original via column_labels later."""
@@ -99,8 +107,12 @@ def _sanitize_spss_name(name: str, used: set) -> str:
     else:
         # Replace spaces and any character that is not alphanumeric, @, #, $, _, or .
         base = re.sub(r"[^A-Za-z0-9@#$_.]", "_", str(name))
-        # SPSS names must start with a letter or @/#/$; underscore is not allowed at the start.
-        if base and base[0] not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz@#$":
+        # The first character must be a letter. SPSS documents @, # and $ as
+        # legal openers for scratch and system variables, but readstat rejects
+        # every one of them ("starts with an illegal (non-alphabetic)
+        # character"), so a column named $cost took the whole export down.
+        first = base[:1]
+        if not (first.isascii() and first.isalpha()):
             base = "v" + base
 
     # Truncate to leave room for a uniqueness suffix (_nnn)
@@ -108,6 +120,13 @@ def _sanitize_spss_name(name: str, used: set) -> str:
 
     # Remove trailing underscores/periods and ensure non-empty
     base = base.rstrip("_.") or "var"
+
+    # A trailing underscore is the smallest edit that clears a keyword, and the
+    # name the user typed survives as the variable label either way. Matched
+    # without regard to case: SPSS reads its keywords that way, even though
+    # readstat only rejects the upper-case spelling.
+    if base.upper() in _SPSS_RESERVED:
+        base = f"{base}_"[:_SPSS_NAME_MAX_LEN]
 
     candidate = base
     counter = 1

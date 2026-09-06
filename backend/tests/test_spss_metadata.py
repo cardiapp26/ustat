@@ -109,6 +109,37 @@ def test_spss_export_writes_dictionary_metadata(client):
     assert meta.variable_measure["Age"] == "scale"
 
 
+def test_spss_export_renames_columns_that_are_spss_keywords(client):
+    """readstat refuses the whole file over one reserved name, so a column
+    called OR or TO used to cost the user every other column with it."""
+    df = pd.DataFrame({"OR": [1, 2], "to": [3, 4], "With": [5, 6], "keep": [7, 8]})
+    store.save("sav_reserved", df)
+
+    response = client.get(
+        "/api/sessions/sav_reserved/export", params={"fmt": "sav", "filename": "reserved"}
+    )
+    assert response.status_code == 200, response.text
+
+    fd, path = tempfile.mkstemp(suffix=".sav")
+    os.close(fd)
+    try:
+        with open(path, "wb") as f:
+            f.write(response.content)
+        df_out, meta = pyreadstat.read_sav(path, metadataonly=True, user_missing=True)
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+    names = list(df_out.columns)
+    assert names == ["OR_", "to_", "With_", "keep"]
+    # The name the user typed survives as the variable label.
+    assert meta.column_names_to_labels["OR_"] == "OR"
+    assert meta.column_names_to_labels["to_"] == "to"
+    assert "keep" not in meta.column_names_to_labels or not meta.column_names_to_labels["keep"]
+
+
 def test_spss_export_sanitizes_invalid_variable_names(client):
     """Columns with spaces, long names, or leading digits must not crash SAV export."""
     df = pd.DataFrame(
@@ -117,6 +148,8 @@ def test_spss_export_sanitizes_invalid_variable_names(client):
             "a" * 70: [4, 5, 6],
             "1x": [7, 8, 9],
             "yaş aralığı": [10, 11, 12],
+            "$cost": [13, 14, 15],
+            "#tag": [16, 17, 18],
         }
     )
     store.save("sav_sanitize", df)
@@ -139,6 +172,9 @@ def test_spss_export_sanitizes_invalid_variable_names(client):
     names = list(df_out.columns)
     assert "x_y" in names
     assert "v1x" in names
+    # SPSS documents @, # and $ as legal openers; readstat rejects all three.
+    assert "v$cost" in names
+    assert "v#tag" in names
     assert all(len(n) <= 64 for n in names)
     # Original names survive as column labels
     assert meta.column_names_to_labels["x_y"] == "x y"
