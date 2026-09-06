@@ -30,7 +30,7 @@ function setup(over: Partial<Parameters<typeof ValueLabelsModal>[0]> = {}) {
 
 /** The two calls a swap makes: the rewrite, then the reread of the column. */
 function stubSwap(detail?: string) {
-  const posted: Array<{ column: string; labels: Record<string, string> }> = []
+  const posted: Array<{ column: string; labels: Record<string, string>; swap?: string[] }> = []
   server.use(
     http.post('/api/sessions/test-session/swap_value_labels', async ({ request }) => {
       posted.push((await request.json()) as (typeof posted)[number])
@@ -144,10 +144,38 @@ describe('ValueLabelsModal', () => {
     await userEvent.click(swapButton())
 
     await waitFor(() => expect(posted).toHaveLength(1))
-    expect(posted[0]).toEqual({ column: 'bethesda', labels: { 0: 'yok' } })
+    expect(posted[0]).toEqual({ column: 'bethesda', labels: { 0: 'yok' }, swap: ['0'] })
     // The dialog now reads the other way round: the label is the code.
     await waitFor(() => expect(setDraft).toHaveBeenCalledWith({ yok: '0' }))
     expect(onApplied).toHaveBeenCalled()
+  })
+
+  it('cannot tick a value that has no label to trade places with', () => {
+    setup()
+    expect(screen.getByRole('checkbox', { name: 'Swap 1' })).toBeDisabled()
+    expect(screen.getByRole('checkbox', { name: 'Swap 0' })).toBeChecked()
+  })
+
+  it('leaves an unticked row out of the swap, values and label alike', async () => {
+    // Half a column is often already the right way round, and swapping those
+    // rows with the rest would undo the ones that were already right.
+    setup({ draft: { 0: 'yok', 1: 'var' } })
+    const posted = stubSwap()
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Swap 0' }))
+
+    await userEvent.click(swapButton())
+    expect(swapButton()).toHaveTextContent('Rewrite 1 value')
+    await userEvent.click(swapButton())
+    await waitFor(() => expect(posted).toHaveLength(1))
+    expect(posted[0].swap).toEqual(['1'])
+    // The label of the untouched row still travels, so the server can keep it.
+    expect(posted[0].labels).toEqual({ 0: 'yok', 1: 'var' })
+  })
+
+  it('will not swap once every labelled row has been unticked', async () => {
+    setup()
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Swap 0' }))
+    expect(swapButton()).toBeDisabled()
   })
 
   it('disarms the confirmation when a label is edited after it was armed', async () => {

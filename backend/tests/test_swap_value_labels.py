@@ -1,8 +1,8 @@
-"""POST /api/sessions/{id}/swap_value_labels — put the labels in the cells.
+"""POST /api/sessions/{id}/swap_value_labels: put the labels in the cells.
 
 A column typed as words reads "ANTERIOR = 1" the moment someone writes the code
 they meant into the label box: backwards from what they want stored. Swapping
-makes it "1 = ANTERIOR" — the codes live in the data, the words label them.
+makes it "1 = ANTERIOR": the codes live in the data, the words label them.
 """
 from __future__ import annotations
 
@@ -104,6 +104,62 @@ def test_undo_restores_the_data_and_the_labels_together(client, sid):
 def test_the_columns_kind_survives_words_becoming_digits(client, sid):
     _swap(client, sid, {"ANTERIOR": "1", "LATERAL": "2", "POSTERIOR": "3"})
     assert store.get_kind_overrides(sid).get("stemi") == "categorical"
+
+
+def test_only_the_picked_values_are_turned_around(client, sid):
+    """Half a column is often already the right way round: a code that already
+    carries its word must not be swapped along with the rest."""
+    r = client.post(
+        f"/api/sessions/{sid}/swap_value_labels",
+        json={
+            "column": "stemi",
+            "labels": {"ANTERIOR": "1", "LATERAL": "2", "POSTERIOR": "3"},
+            "swap": ["ANTERIOR", "LATERAL"],
+        },
+    )
+    assert r.status_code == 200
+    assert store.get(sid)["stemi"].dropna().tolist() == ["1", "2", "1", "POSTERIOR"]
+
+
+def test_a_label_left_unticked_is_carried_over_not_dropped(client, sid):
+    """It is the row that was already right; losing its label would be the
+    swap quietly deleting work."""
+    r = client.post(
+        f"/api/sessions/{sid}/swap_value_labels",
+        json={
+            "column": "stemi",
+            "labels": {"ANTERIOR": "1", "POSTERIOR": "NSTEMI"},
+            "swap": ["ANTERIOR"],
+        },
+    )
+    assert r.json()["value_labels"] == {"POSTERIOR": "NSTEMI", "1": "ANTERIOR"}
+    assert store.get_metadata(sid)["stemi"]["value_labels"] == {
+        "POSTERIOR": "NSTEMI", "1": "ANTERIOR",
+    }
+
+
+def test_a_label_colliding_with_a_value_left_behind_is_refused(client, sid):
+    """LATERAL stays put because it was not ticked, so it cannot also become
+    the code ANTERIOR is written as."""
+    r = client.post(
+        f"/api/sessions/{sid}/swap_value_labels",
+        json={
+            "column": "stemi",
+            "labels": {"ANTERIOR": "LATERAL", "LATERAL": "2"},
+            "swap": ["ANTERIOR"],
+        },
+    )
+    assert r.status_code == 422
+    assert "already appears in the column" in r.json()["detail"]
+
+
+def test_ticking_nothing_is_refused(client, sid):
+    r = client.post(
+        f"/api/sessions/{sid}/swap_value_labels",
+        json={"column": "stemi", "labels": {"ANTERIOR": "1"}, "swap": []},
+    )
+    assert r.status_code == 422
+    assert "Nothing to swap" in r.json()["detail"]
 
 
 def test_no_labels_at_all_is_refused(client, sid):

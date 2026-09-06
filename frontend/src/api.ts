@@ -567,9 +567,13 @@ export const createBlankSession = () => api.post("/api/sessions/blank");
 export const loadSession   = (file: File) => { const fd = new FormData(); fd.append("file", file); return api.post("/api/sessions/load_session", fd); };
 export const getAuditTrail = (sessionId: string) => api.get(`/api/sessions/${sessionId}/audit`);
 export const saveMetadata  = (sessionId: string, columns: Record<string, unknown>) => api.post(`/api/sessions/${sessionId}/metadata`, { columns });
-export const swapValueLabels = (sessionId: string, column: string, labels: Record<string, string>) =>
+/** Swap the picked values with their labels. `swap` names the rows to rewrite;
+ *  every other label in `labels` is carried over untouched. */
+export const swapValueLabels = (
+  sessionId: string, column: string, labels: Record<string, string>, swap?: string[],
+) =>
   api.post<{ changed: number; value_labels: Record<string, string> }>(
-    `/api/sessions/${sessionId}/swap_value_labels`, { column, labels });
+    `/api/sessions/${sessionId}/swap_value_labels`, { column, labels, ...(swap ? { swap } : {}) });
 export const setColumnKind = (sessionId: string, column: string, kind: string) => api.post(`/api/sessions/${sessionId}/kind`, { column, kind });
 export const setColumnDecimalsApi = (sessionId: string, column: string, decimals: number | null) =>
   api.post(`/api/sessions/${sessionId}/decimals`, { column, decimals });

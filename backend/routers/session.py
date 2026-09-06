@@ -9,7 +9,7 @@ import time
 import uuid
 import numpy as np
 import pandas as pd
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File
 from fastapi.responses import StreamingResponse, Response
@@ -350,15 +350,21 @@ async def set_cells(session_id: str, body: SetCellsRequest):
 class SwapValueLabelsRequest(BaseModel):
     """Turn a column's labels into its data, and its data into the labels.
 
-    A column typed in as words — ANTERIOR, LATERAL — is labelled the wrong way
+    A column typed in as words (ANTERIOR, LATERAL) is labelled the wrong way
     round the moment someone writes the code they meant into the label box:
     the dialog then reads "ANTERIOR = 1" when what they want stored is 1, read
-    back as ANTERIOR. Swapping is the whole edit: every cell becomes its label
-    and the label map is inverted, so the dialog reads "1 = ANTERIOR" and every
+    back as ANTERIOR. Swapping is the whole edit: the cell becomes its label
+    and the pair is inverted, so the dialog reads "1 = ANTERIOR" and every
     analysis groups on the code while still printing the word.
+
+    Half a column is often already the right way round, though: a 0 that means
+    NSTEMI is a code with a label, not a label with a code, and swapping it
+    with the rest would undo the one row that was already right. ``swap`` names
+    the values to turn around; every other label survives as it was.
     """
     column: str
-    labels: Dict[str, str]   # current cell value -> label to store in its place
+    labels: Dict[str, str]            # cell value -> its label
+    swap: Optional[List[str]] = None  # which of those to turn around (default: all)
 
 
 @router.post("/{session_id}/swap_value_labels")
@@ -369,17 +375,28 @@ async def swap_value_labels(session_id: str, body: SwapValueLabelsRequest):
     if body.column not in df.columns:
         raise HTTPException(status_code=400, detail=f"Column '{body.column}' not found")
 
-    # An empty label means "no code for this value" — the cell keeps what it
+    # An empty label means "no code for this value": the cell keeps what it
     # holds, so the pair is dropped rather than blanking the column.
-    pairs = [
+    labelled = [
         (str(code).strip(), str(label).strip())
         for code, label in (body.labels or {}).items()
         if str(label).strip() != ""
     ]
+    picked = None if body.swap is None else {str(v).strip() for v in body.swap}
+    pairs = [
+        (code, label) for code, label in labelled
+        if picked is None or code in picked
+    ]
+    # Labels on the values left alone are carried over rather than dropped:
+    # they are the rows that were already the right way round.
+    kept = {
+        code: label for code, label in labelled
+        if picked is not None and code not in picked
+    }
     if not pairs:
         raise HTTPException(
             status_code=422,
-            detail="Nothing to swap: give at least one value a label first.",
+            detail="Nothing to swap: give at least one value a label and tick it.",
         )
 
     seen: Dict[str, str] = {}
@@ -390,20 +407,20 @@ async def swap_value_labels(session_id: str, body: SwapValueLabelsRequest):
                 detail=(
                     f"'{label}' is the label of both '{seen[label]}' and "
                     f"'{code}'. Swapping would merge two distinct values into "
-                    "one — give them different labels first."
+                    "one: give them different labels first."
                 ),
             )
         seen[label] = code
 
     series = df[body.column]
-    # A label that collides with a value nobody labelled would silently merge
-    # the two once written, and the swap is meant to rename values, not pool
-    # them. Caught before anything is saved.
-    unlabelled = [
+    # A label that collides with a value staying put would silently merge the
+    # two once written, and the swap is meant to rename values, not pool them.
+    # Caught before anything is saved.
+    staying = [
         value for value in series.dropna().unique()
         if not any(_matches(value, code) for code, _ in pairs)
     ]
-    for value in unlabelled:
+    for value in staying:
         if str(value).strip() in seen:
             raise HTTPException(
                 status_code=422,
@@ -435,12 +452,12 @@ async def swap_value_labels(session_id: str, body: SwapValueLabelsRequest):
         swapped = numeric
 
     # The recode does not change what the column MEANS, so its kind is pinned
-    # rather than left to re-detection — words becoming digits would otherwise
+    # rather than left to re-detection: words becoming digits would otherwise
     # turn a categorical column numeric.
     from routers.upload import _detect_kind
     kind = store.get_kind_overrides(session_id).get(body.column) or _detect_kind(series)
 
-    value_labels = {label: code for code, label in pairs}
+    value_labels = {**kept, **{label: code for code, label in pairs}}
     store.set_column_and_labels(
         session_id, body.column, swapped, value_labels, kind=kind
     )

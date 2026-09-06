@@ -83,19 +83,28 @@ export function ValueLabelsModal({
     e.currentTarget.releasePointerCapture(e.pointerId);
   };
 
-  // Swapping rewrites real data, so it asks once before it runs — two clicks
+  // Swapping rewrites real data, so it asks once before it runs: two clicks
   // on the same button rather than a second dialog stacked on this one.
   const [confirmSwap, setConfirmSwap] = useState(false);
   const [swapping, setSwapping] = useState(false);
   const [swapError, setSwapError] = useState<string | null>(null);
 
-  // Only values that were actually given a label can change places.
-  const swappable = uniqueVals.filter((v) => (draft[v] ?? "").trim() !== "");
+  // Which rows the swap covers. Half a column is often already the right way
+  // round (a 0 that means NSTEMI is a code with a label, not a label with a
+  // code), and swapping it too would undo the one row that was already right.
+  // Only the rows the user unticks are remembered, so a label typed after the
+  // fact joins the swap rather than being silently left out of it.
+  const [excluded, setExcluded] = useState<Record<string, boolean>>({});
+  const isLabelled = (v: string) => (draft[v] ?? "").trim() !== "";
+  const isPicked = (v: string) => isLabelled(v) && !excluded[v];
+
+  // Only values that were given a label and left ticked change places.
+  const swappable = uniqueVals.filter(isPicked);
 
   /** Put the labels in the cells and the cells in the labels.
    *
    * A column typed as words reads "ANTERIOR = 1" the moment someone writes the
-   * code they meant into the label box — backwards from what they want stored.
+   * code they meant into the label box: backwards from what they want stored.
    * One swap turns it into "1 = ANTERIOR": the data becomes the codes, and the
    * words become the labels printed on top of them.
    */
@@ -104,7 +113,7 @@ export function ValueLabelsModal({
     setSwapping(true);
     setSwapError(null);
     try {
-      await swapValueLabels(session.session_id, colName, draft);
+      await swapValueLabels(session.session_id, colName, draft, swappable);
       const res = await refreshSession(session.session_id);
       const data = res.data as { columns: ColMeta[] };
       useStore.getState().setSession({ ...session, ...res.data });
@@ -143,7 +152,7 @@ export function ValueLabelsModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="value-labels-title"
-        className="bg-white rounded-xl shadow-2xl w-96 max-h-[80vh] flex flex-col"
+        className="bg-white rounded-xl shadow-2xl w-[27rem] max-h-[80vh] flex flex-col"
         style={pos ? { position: "fixed", left: pos.x, top: pos.y, margin: 0 } : undefined}
       >
         {/* Header — also the drag handle */}
@@ -173,7 +182,24 @@ export function ValueLabelsModal({
           ) : (
             uniqueVals.map((val) => (
               <div key={val} className="flex items-center gap-2">
-                <span className="w-14 text-xs font-mono text-gray-500 bg-gray-100 px-2 py-1 rounded text-center flex-shrink-0">
+                <input
+                  type="checkbox"
+                  className="flex-shrink-0 accent-amber-500 disabled:opacity-30"
+                  checked={isPicked(val)}
+                  disabled={!isLabelled(val)}
+                  aria-label={`Swap ${val}`}
+                  title={isLabelled(val)
+                    ? "Include this value in the swap"
+                    : "Nothing to swap: this value has no label"}
+                  onChange={(e) => {
+                    setConfirmSwap(false);
+                    setExcluded((prev) => ({ ...prev, [val]: !e.target.checked }));
+                  }}
+                />
+                <span
+                  className="max-w-[7rem] truncate text-xs font-mono text-gray-500 bg-gray-100 px-2 py-1 rounded flex-shrink-0"
+                  title={val}
+                >
                   {val}
                 </span>
                 <span className="text-gray-400 text-xs">=</span>
@@ -193,7 +219,7 @@ export function ValueLabelsModal({
           )}
         </div>
 
-        {/* Swap — rewrites the column, so it is kept away from Save Labels */}
+        {/* Swap rewrites the column, so it is kept away from Save Labels */}
         <div className="px-5 pb-2 space-y-1.5">
           <button
             onClick={() => (confirmSwap ? handleSwap() : setConfirmSwap(true))}
@@ -208,14 +234,16 @@ export function ValueLabelsModal({
             {swapping
               ? "Swapping…"
               : confirmSwap
-                ? `Rewrite ${swappable.length} value${swappable.length === 1 ? "" : "s"} — click to confirm`
+                ? `Rewrite ${swappable.length} value${swappable.length === 1 ? "" : "s"}: click to confirm`
                 : "⇄ Swap value ↔ label"}
           </button>
           {confirmSwap && !swapping && (
             <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1.5 leading-snug">
-              Each labelled cell is replaced by its label, and the labels become
-              the values it holds now — so <span className="font-mono">{swappable[0]} = {draft[swappable[0]]}</span>{" "}
+              Every ticked cell is replaced by its label, and the labels become
+              the values those cells hold now, so{" "}
+              <span className="font-mono">{swappable[0]} = {draft[swappable[0]]}</span>{" "}
               becomes <span className="font-mono">{draft[swappable[0]]} = {swappable[0]}</span>.
+              Unticked rows keep both their value and their label.
               This changes the data; Undo puts it back.
             </p>
           )}
@@ -225,7 +253,7 @@ export function ValueLabelsModal({
         {/* Footer */}
         <div className="px-5 py-3 border-t border-gray-200 flex items-center justify-between">
           <button
-            onClick={() => { setConfirmSwap(false); setDraft({}); }}
+            onClick={() => { setConfirmSwap(false); setExcluded({}); setDraft({}); }}
             className="text-xs text-gray-400 hover:text-red-500"
           >Clear all</button>
           <div className="flex gap-2">

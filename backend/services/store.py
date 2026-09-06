@@ -760,7 +760,7 @@ def set_column_and_labels(
     Recoding a column into its own labels rewrites the data and the metadata
     that explains it in the same breath. Saved separately, an undo would put
     the old codes back under the new labels and the column would come back
-    unreadable — so both go under one snapshot.
+    unreadable, so both go under one snapshot.
     """
     with _lock:
         entry = _store.get(session_id)
