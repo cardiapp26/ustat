@@ -2984,6 +2984,7 @@ function DataTableBody({ session }: { session: Session }) {
           setDraft={setValueLabelDraft}
           session={session}
           onClose={() => setValueLabelCol(null)}
+          onApplied={bumpUndo}
         />
       )}
 

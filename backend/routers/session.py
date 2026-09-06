@@ -347,6 +347,106 @@ async def set_cells(session_id: str, body: SetCellsRequest):
     return {"changed": changed, "skipped": skipped}
 
 
+class SwapValueLabelsRequest(BaseModel):
+    """Turn a column's labels into its data, and its data into the labels.
+
+    A column typed in as words — ANTERIOR, LATERAL — is labelled the wrong way
+    round the moment someone writes the code they meant into the label box:
+    the dialog then reads "ANTERIOR = 1" when what they want stored is 1, read
+    back as ANTERIOR. Swapping is the whole edit: every cell becomes its label
+    and the label map is inverted, so the dialog reads "1 = ANTERIOR" and every
+    analysis groups on the code while still printing the word.
+    """
+    column: str
+    labels: Dict[str, str]   # current cell value -> label to store in its place
+
+
+@router.post("/{session_id}/swap_value_labels")
+async def swap_value_labels(session_id: str, body: SwapValueLabelsRequest):
+    df = store.get(session_id)
+    if df is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if body.column not in df.columns:
+        raise HTTPException(status_code=400, detail=f"Column '{body.column}' not found")
+
+    # An empty label means "no code for this value" — the cell keeps what it
+    # holds, so the pair is dropped rather than blanking the column.
+    pairs = [
+        (str(code).strip(), str(label).strip())
+        for code, label in (body.labels or {}).items()
+        if str(label).strip() != ""
+    ]
+    if not pairs:
+        raise HTTPException(
+            status_code=422,
+            detail="Nothing to swap: give at least one value a label first.",
+        )
+
+    seen: Dict[str, str] = {}
+    for code, label in pairs:
+        if label in seen:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"'{label}' is the label of both '{seen[label]}' and "
+                    f"'{code}'. Swapping would merge two distinct values into "
+                    "one — give them different labels first."
+                ),
+            )
+        seen[label] = code
+
+    series = df[body.column]
+    # A label that collides with a value nobody labelled would silently merge
+    # the two once written, and the swap is meant to rename values, not pool
+    # them. Caught before anything is saved.
+    unlabelled = [
+        value for value in series.dropna().unique()
+        if not any(_matches(value, code) for code, _ in pairs)
+    ]
+    for value in unlabelled:
+        if str(value).strip() in seen:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"'{str(value).strip()}' already appears in the column as a "
+                    "value of its own, so it cannot also be the label of "
+                    f"'{seen[str(value).strip()]}'."
+                ),
+            )
+
+    def recoded(value):
+        if _is_blank(value):
+            return value
+        for code, label in pairs:
+            if _matches(value, code):
+                return label
+        return value
+
+    swapped = series.map(recoded)
+    changed = int(sum(
+        1 for old, new in zip(series, swapped)
+        if not _is_blank(old) and str(old) != str(new)
+    ))
+
+    # Codes typed as numbers are stored as numbers: left as text, the column
+    # sorts lexicographically and every model reads its codes as free labels.
+    numeric = pd.to_numeric(swapped, errors="coerce")
+    if numeric.notna().sum() == swapped.notna().sum():
+        swapped = numeric
+
+    # The recode does not change what the column MEANS, so its kind is pinned
+    # rather than left to re-detection — words becoming digits would otherwise
+    # turn a categorical column numeric.
+    from routers.upload import _detect_kind
+    kind = store.get_kind_overrides(session_id).get(body.column) or _detect_kind(series)
+
+    value_labels = {label: code for code, label in pairs}
+    store.set_column_and_labels(
+        session_id, body.column, swapped, value_labels, kind=kind
+    )
+    return {"changed": changed, "value_labels": value_labels}
+
+
 @router.delete("/{session_id}/row/{row_index}")
 async def delete_row(session_id: str, row_index: int):
     """Delete a specific row containing an outlier."""

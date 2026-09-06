@@ -748,6 +748,54 @@ def delete_dataframe_columns(
         return reduced
 
 
+def set_column_and_labels(
+    session_id: str,
+    column: str,
+    values: pd.Series,
+    value_labels: Dict[str, str],
+    kind: Optional[str] = None,
+) -> pd.DataFrame:
+    """Atomically replace one column's data and its value-label map.
+
+    Recoding a column into its own labels rewrites the data and the metadata
+    that explains it in the same breath. Saved separately, an undo would put
+    the old codes back under the new labels and the column would come back
+    unreadable — so both go under one snapshot.
+    """
+    with _lock:
+        entry = _store.get(session_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        current = entry["df"]
+        if column not in current.columns:
+            raise HTTPException(status_code=404, detail=f"Column '{column}' not found")
+
+        _undo.setdefault(session_id, []).append(
+            _undo_snapshot(session_id, current, include_column_state=True)
+        )
+        if len(_undo[session_id]) > MAX_UNDO:
+            _undo[session_id] = _undo[session_id][-MAX_UNDO:]
+        _redo.pop(session_id, None)
+
+        updated = current.copy()
+        updated[column] = values
+        _store[session_id] = {"df": updated, "timestamp": time.time()}
+
+        meta = dict(_metadata.get(session_id, {}))
+        col_meta = dict(meta.get(column, {}) or {})
+        col_meta["value_labels"] = dict(value_labels)
+        meta[column] = col_meta
+        _metadata[session_id] = meta
+
+        if kind:
+            kinds = dict(_kinds.get(session_id, {}))
+            kinds[column] = kind
+            _kinds[session_id] = kinds
+
+        _dirty.add(session_id)
+        return updated
+
+
 # ── Session display name (user-facing rename) ────────────────────────────────
 
 def set_filename(session_id: str, name: str) -> None:

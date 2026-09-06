@@ -1,7 +1,9 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { http, HttpResponse } from 'msw'
 import { describe, expect, it, vi } from 'vitest'
 import type { ColMeta, Session } from '../../store'
+import { server } from '../../test/server'
 import { makeSession } from '../../test/testUtils'
 import { ValueLabelsModal } from './ValueLabelsModal'
 
@@ -11,18 +13,42 @@ const preview = [{ bethesda: 0 }, { bethesda: 1 }, { bethesda: 2 }, { bethesda: 
 function setup(over: Partial<Parameters<typeof ValueLabelsModal>[0]> = {}) {
   const onClose = vi.fn()
   const setDraft = vi.fn()
+  const onApplied = vi.fn()
   const session: Session = makeSession({ columns, preview, rows: preview.length })
   render(
     <ValueLabelsModal
       colName="bethesda" columns={columns} preview={preview}
       draft={{ 0: 'yok' }} setDraft={setDraft} session={session} onClose={onClose}
+      onApplied={onApplied}
       {...over}
     />,
   )
   const dialog = screen.getByRole('dialog')
   const backdrop = dialog.parentElement as HTMLElement
-  return { onClose, setDraft, dialog, backdrop }
+  return { onClose, setDraft, onApplied, dialog, backdrop }
 }
+
+/** The two calls a swap makes: the rewrite, then the reread of the column. */
+function stubSwap(detail?: string) {
+  const posted: Array<{ column: string; labels: Record<string, string> }> = []
+  server.use(
+    http.post('/api/sessions/test-session/swap_value_labels', async ({ request }) => {
+      posted.push((await request.json()) as (typeof posted)[number])
+      if (detail) return HttpResponse.json({ detail }, { status: 422 })
+      return HttpResponse.json({ changed: 1, value_labels: { yok: '0' } })
+    }),
+    http.get('/api/stats/test-session/refresh', () =>
+      HttpResponse.json({
+        rows: 4,
+        columns: [{ name: 'bethesda', dtype: 'object', kind: 'categorical', value_labels: { yok: '0' } }],
+        preview: [{ bethesda: 'yok' }, { bethesda: 1 }, { bethesda: 2 }, { bethesda: 5 }],
+      }),
+    ),
+  )
+  return posted
+}
+
+const swapButton = () => screen.getByRole('button', { name: /swap|rewrite/i })
 
 describe('ValueLabelsModal', () => {
   it('lists each distinct value in numeric order with its label', () => {
@@ -95,6 +121,51 @@ describe('ValueLabelsModal', () => {
     expect(dialog.style.position).toBe('')
     fireEvent.click(close)
     expect(onClose).toHaveBeenCalled()
+  })
+
+  it('will not swap a column where nothing has been labelled yet', () => {
+    setup({ draft: {} })
+    expect(swapButton()).toBeDisabled()
+  })
+
+  it('asks once before rewriting, naming what the swap will produce', async () => {
+    setup()
+    const posted = stubSwap()
+    await userEvent.click(swapButton())
+    // Armed, not fired: the data is not touched by the first click.
+    expect(posted).toHaveLength(0)
+    expect(screen.getByText(/yok = 0/)).toBeInTheDocument()
+  })
+
+  it('puts the labels in the cells and the cells in the labels', async () => {
+    const { setDraft, onApplied } = setup()
+    const posted = stubSwap()
+    await userEvent.click(swapButton())
+    await userEvent.click(swapButton())
+
+    await waitFor(() => expect(posted).toHaveLength(1))
+    expect(posted[0]).toEqual({ column: 'bethesda', labels: { 0: 'yok' } })
+    // The dialog now reads the other way round: the label is the code.
+    await waitFor(() => expect(setDraft).toHaveBeenCalledWith({ yok: '0' }))
+    expect(onApplied).toHaveBeenCalled()
+  })
+
+  it('disarms the confirmation when a label is edited after it was armed', async () => {
+    setup()
+    stubSwap()
+    await userEvent.click(swapButton())
+    expect(screen.getByText(/yok = 0/)).toBeInTheDocument()
+    fireEvent.change(screen.getByDisplayValue('yok'), { target: { value: 'yok2' } })
+    expect(screen.queryByText(/yok = 0/)).not.toBeInTheDocument()
+  })
+
+  it("shows the server's reason when a swap would merge two values", async () => {
+    const { setDraft } = setup()
+    stubSwap('Swapping would merge two distinct values into one')
+    await userEvent.click(swapButton())
+    await userEvent.click(swapButton())
+    expect(await screen.findByText(/merge two distinct values/)).toBeInTheDocument()
+    expect(setDraft).not.toHaveBeenCalled()
   })
 
   it('closes on Escape', () => {

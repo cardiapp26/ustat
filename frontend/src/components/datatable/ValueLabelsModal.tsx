@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Dispatch, PointerEvent as ReactPointerEvent, SetStateAction } from "react";
-import { saveMetadata } from "../../api";
+import { refreshSession, saveMetadata, swapValueLabels } from "../../api";
 import { useStore } from "../../store";
 import type { ColMeta, Session } from "../../store";
 
@@ -10,7 +10,7 @@ const KEEP_VISIBLE = 60;
 /** Modal for assigning human-readable labels to a column's distinct values.
  * Extracted from DataTable. */
 export function ValueLabelsModal({
-  colName, columns, preview, draft, setDraft, session, onClose,
+  colName, columns, preview, draft, setDraft, session, onClose, onApplied,
 }: {
   colName: string;
   columns: ColMeta[];
@@ -19,6 +19,8 @@ export function ValueLabelsModal({
   setDraft: Dispatch<SetStateAction<Record<string, string>>>;
   session: Session;
   onClose: () => void;
+  /** Called after a swap has rewritten the column, so the grid can bump undo. */
+  onApplied?: () => void;
 }) {
   const col = columns.find((c) => c.name === colName);
   const uniqueVals = Array.from(
@@ -81,6 +83,44 @@ export function ValueLabelsModal({
     e.currentTarget.releasePointerCapture(e.pointerId);
   };
 
+  // Swapping rewrites real data, so it asks once before it runs — two clicks
+  // on the same button rather than a second dialog stacked on this one.
+  const [confirmSwap, setConfirmSwap] = useState(false);
+  const [swapping, setSwapping] = useState(false);
+  const [swapError, setSwapError] = useState<string | null>(null);
+
+  // Only values that were actually given a label can change places.
+  const swappable = uniqueVals.filter((v) => (draft[v] ?? "").trim() !== "");
+
+  /** Put the labels in the cells and the cells in the labels.
+   *
+   * A column typed as words reads "ANTERIOR = 1" the moment someone writes the
+   * code they meant into the label box — backwards from what they want stored.
+   * One swap turns it into "1 = ANTERIOR": the data becomes the codes, and the
+   * words become the labels printed on top of them.
+   */
+  const handleSwap = async () => {
+    if (swappable.length === 0) return;
+    setSwapping(true);
+    setSwapError(null);
+    try {
+      await swapValueLabels(session.session_id, colName, draft);
+      const res = await refreshSession(session.session_id);
+      const data = res.data as { columns: ColMeta[] };
+      useStore.getState().setSession({ ...session, ...res.data });
+      setDraft({ ...(data.columns.find((c) => c.name === colName)?.value_labels ?? {}) });
+      onApplied?.();
+      setConfirmSwap(false);
+    } catch (err: unknown) {
+      setSwapError(
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+          ?? "Swap failed",
+      );
+    } finally {
+      setSwapping(false);
+    }
+  };
+
   const handleSaveLabels = async () => {
     const updatedCols = session.columns.map((c) =>
       c.name === colName ? { ...c, value_labels: { ...draft } } : c
@@ -141,17 +181,51 @@ export function ValueLabelsModal({
                   className="flex-1 text-xs border border-gray-300 rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-200"
                   placeholder={`Label for ${val}`}
                   value={draft[val] ?? ""}
-                  onChange={(e) => setDraft((prev) => ({ ...prev, [val]: e.target.value }))}
+                  onChange={(e) => {
+                    // Editing a label after arming the swap re-arms it: the
+                    // confirmed mapping is no longer the one on screen.
+                    setConfirmSwap(false);
+                    setDraft((prev) => ({ ...prev, [val]: e.target.value }));
+                  }}
                 />
               </div>
             ))
           )}
         </div>
 
+        {/* Swap — rewrites the column, so it is kept away from Save Labels */}
+        <div className="px-5 pb-2 space-y-1.5">
+          <button
+            onClick={() => (confirmSwap ? handleSwap() : setConfirmSwap(true))}
+            disabled={swappable.length === 0 || swapping}
+            title="Store the labels as the data and label them with the current values"
+            className={`w-full px-3 py-1.5 text-xs rounded-lg border disabled:opacity-40 ${
+              confirmSwap
+                ? "bg-amber-500 text-white border-amber-500 hover:bg-amber-600"
+                : "text-gray-600 border-gray-200 hover:bg-gray-50"
+            }`}
+          >
+            {swapping
+              ? "Swapping…"
+              : confirmSwap
+                ? `Rewrite ${swappable.length} value${swappable.length === 1 ? "" : "s"} — click to confirm`
+                : "⇄ Swap value ↔ label"}
+          </button>
+          {confirmSwap && !swapping && (
+            <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1.5 leading-snug">
+              Each labelled cell is replaced by its label, and the labels become
+              the values it holds now — so <span className="font-mono">{swappable[0]} = {draft[swappable[0]]}</span>{" "}
+              becomes <span className="font-mono">{draft[swappable[0]]} = {swappable[0]}</span>.
+              This changes the data; Undo puts it back.
+            </p>
+          )}
+          {swapError && <p className="text-[11px] text-red-500 leading-snug">{swapError}</p>}
+        </div>
+
         {/* Footer */}
         <div className="px-5 py-3 border-t border-gray-200 flex items-center justify-between">
           <button
-            onClick={() => { setDraft({}); }}
+            onClick={() => { setConfirmSwap(false); setDraft({}); }}
             className="text-xs text-gray-400 hover:text-red-500"
           >Clear all</button>
           <div className="flex gap-2">
