@@ -9,11 +9,17 @@ import { server } from './server'
 // machine a test can fail while the test itself still has nineteen seconds
 // left. That is what CI hit -- ROCPanel's findByRole('status') gave up at
 // 1055 ms on a two-core runner, green on every local run and green in
-// isolation there too. Five seconds is the same kind of number as the
-// testTimeout above: the machine's budget, not the product's, and still short
-// enough that a query which will never match reports where it was waiting
-// instead of running out the whole test.
-configure({ asyncUtilTimeout: 5000 })
+// isolation there too.
+//
+// Raised twice since, because the number was always the machine's budget
+// rather than the product's and the machine kept asking for more: a run
+// under the full suite landed its mocked response 8.05 s after the click,
+// against a wait of 8 s, and failed by fifty milliseconds. Fifteen is the
+// same kind of number as the testTimeout above, with five seconds still in
+// hand, and it is set in one place so the next slow runner does not need a
+// third per-test override. A query that will never match still reports where
+// it was waiting rather than running out the whole test.
+configure({ asyncUtilTimeout: 15000 })
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
 afterEach(() => {

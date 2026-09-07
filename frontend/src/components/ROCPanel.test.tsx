@@ -140,11 +140,9 @@ describe('ROCPanel', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Run ROC' })).toBeEnabled())
     await user.click(screen.getByRole('button', { name: 'Run ROC' }))
 
-    // The banner appears as soon as the ROC response lands, but the render
-    // that carries it also mounts the curve. On a two-core CI runner under
-    // the whole suite that has taken longer than the 5 s asyncUtilTimeout,
-    // failing a test the code passes.
-    expect(await screen.findByRole('status', {}, { timeout: 8000 })).toHaveTextContent(
+    // No per-test timeout: the wait this needs is the machine's, and it is set
+    // once for the whole suite in src/test/setup.ts.
+    expect(await screen.findByRole('status')).toHaveTextContent(
       'Auto direction flipped to lower = event: low values of SCORE1 predict the event',
     )
   })
