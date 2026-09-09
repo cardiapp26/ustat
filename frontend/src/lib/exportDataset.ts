@@ -97,20 +97,20 @@ export async function downloadProjectFile(session: MinimalSession): Promise<void
 /** Download the replay script (.py): import + recorded prep steps + export,
  *  plus the saved analyses as definitions. Generated server-side from the
  *  prep recipe; see backend/services/script_export.py. */
-export async function downloadAnalysisScript(session: MinimalSession): Promise<void> {
+export async function downloadAnalysisScript(session: MinimalSession, lang: "python" | "r" = "python"): Promise<void> {
   try {
     const { collectUiState } = await import("./projectUiState");
     const res = await api.post(
-      `/api/project/${session.session_id}/script`,
+      `/api/project/${session.session_id}/script?lang=${lang}`,
       { ui_state: collectUiState() },
       { responseType: "blob" },
     );
-    const blob = new Blob([res.data], { type: "text/x-python" });
+    const blob = new Blob([res.data], { type: lang === "python" ? "text/x-python" : "text/x-r" });
     const url = URL.createObjectURL(blob);
     const base = (session.filename ?? "project").replace(/\.[^.]+$/, "");
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${base}_replay.py`;
+    a.download = `${base}_replay.${lang === "python" ? "py" : "R"}`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);

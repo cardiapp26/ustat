@@ -64,6 +64,53 @@ def test_analyses_listed_as_definitions():
     assert "models/logistic" not in script
 
 
+def test_r_script_mirrors_python_and_parses():
+    from services.script_export import generate_r_script
+
+    script = generate_r_script(_steps(), project_name="trial")
+    assert 'RAW_FILE <- "trial.csv"' in script
+    assert "library(httr)" in script
+    assert "/api/compute/%s/formula" in script
+    assert 'encode = "json"' in script
+    assert "PATCH(" in script  # edit_cell
+    assert "export/csv" in script
+    # Same skip behavior as Python for unknown ops.
+    unknown = generate_r_script([{"op": "someday/new_op", "params": {"x": 1}, "t": 1.0}])
+    assert "no replay route known" in unknown
+
+    # Parse with R when available; otherwise the structural checks above stand.
+    import shutil, subprocess, tempfile, os
+    if shutil.which("Rscript"):
+        with tempfile.NamedTemporaryFile("w", suffix=".R", delete=False) as fh:
+            fh.write(script)
+            path = fh.name
+        try:
+            proc = subprocess.run(
+                ["Rscript", "-e", f"invisible(parse(file='{path}'))"],
+                capture_output=True, text=True, timeout=60,
+            )
+            assert proc.returncode == 0, proc.stderr
+        finally:
+            os.unlink(path)
+
+
+def test_r_value_rendering():
+    from services.script_export import _r
+
+    assert _r({"a": 1, "b": [True, None, "x"]}) == 'list("a" = 1, "b" = list(TRUE, NULL, "x"))'
+
+
+def test_endpoint_serves_r_script():
+    import pandas as _pd
+
+    sid = "script_ep_r"
+    store.save(sid, _pd.DataFrame({"age": [30.0, 41.0]}))
+    r = client.post(f"/api/project/{sid}/script?lang=r", json={"ui_state": None})
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/x-r")
+    assert "library(httr)" in r.text
+
+
 def test_endpoint_serves_script_from_recorded_steps():
     sid = "script_ep"
     store.save(sid, pd.DataFrame({"age": [30.0, 41.0]}))
@@ -77,7 +124,7 @@ def test_endpoint_serves_script_from_recorded_steps():
     assert "Project: trial dataset" in r.text
     assert "/api/compute/{sid}/formula" in r.text
 
-    r2 = client.post(f"/api/project/{sid}/script?lang=r", json={"ui_state": None})
+    r2 = client.post(f"/api/project/{sid}/script?lang=julia", json={"ui_state": None})
     assert r2.status_code == 400
 
     r3 = client.post("/api/project/nope/script", json={"ui_state": None})

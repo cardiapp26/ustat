@@ -62,10 +62,24 @@ replay correctly because the server replays its own undo stack. The
 upload router now writes the recipe's opening `import` step (the
 middleware cannot see the session id being born). Saved analyses appear
 in the script as definitions (name, panel, params), not guessed calls: a
-snapshot records its params but not its endpoint. Still open: an R
-flavor of the script, a pandas/R *translation* view per analysis (the
-jamovi-style syntax mode), `plots/` as separate parts, one-click re-run
-from stored params, seeds.
+snapshot records its params but not its endpoint.
+
+The R flavor and the syntax mode landed 2026-09-10. `lang=r` on the
+script endpoint generates the same replay in R (httr): one recipe, two
+client languages, identical requests by construction. The syntax mode
+(`services/syntax_templates.py`, `POST /api/project/syntax`, a code icon
+on each saved analysis opening `SyntaxView`) is the jamovi-style view:
+one analysis definition as scipy/statsmodels/lifelines Python and as R
+formulas. It is deliberately a different artifact from the replay script:
+replay reproduces numbers exactly through uSTAT's own API; the syntax
+view shows what the analysis IS in the reader's language, carries a
+disclaimer that uSTAT's defaults may differ, and names the per-result
+provenance line as the authority. Coverage is an explicit allow-list
+(hypothesis: t-tests, ANOVA, Mann-Whitney, Kruskal-Wallis, chi-square,
+Fisher; models: linear, logistic, Poisson, Cox); anything else returns
+"no translation yet" with the raw params, because an honest gap beats a
+wrong formula. Still open: widening template coverage, `plots/` as
+separate parts, one-click re-run from stored params, seeds.
 
 ## Goal
 

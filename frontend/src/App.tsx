@@ -965,6 +965,15 @@ export default function App() {
                     </div>
                   </button>
                   <button
+                    onClick={() => { setShowHeaderSaveMenu(false); downloadAnalysisScript(session, "r"); }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-gray-50 transition-colors"
+                  >
+                    <div>
+                      <p className="text-xs text-gray-700 font-medium">Replay script (.R)</p>
+                      <p className="text-[10px] text-gray-400">Same replay, for R (httr)</p>
+                    </div>
+                  </button>
+                  <button
                     onClick={() => { setShowHeaderSaveMenu(false); downloadSessionJson(session); }}
                     className="w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-gray-50 transition-colors"
                   >

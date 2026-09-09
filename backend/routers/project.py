@@ -72,21 +72,44 @@ async def export_script(session_id: str, body: SaveProjectRequest, lang: str = "
     """The project's replay script: import, recorded prep steps, export,
     saved-analysis definitions. See services/script_export.py for why it
     replays the API rather than translating steps to pandas."""
-    if lang != "python":
-        raise HTTPException(status_code=400, detail="Only lang=python is supported for now.")
+    if lang not in ("python", "r"):
+        raise HTTPException(status_code=400, detail="lang must be 'python' or 'r'.")
     if not store.exists(session_id):
         raise HTTPException(status_code=404, detail="Session not found")
 
-    from services.script_export import generate_python_script
+    from services.script_export import generate_python_script, generate_r_script
 
     ui_state = body.ui_state or {}
     analyses = ui_state.get("savedAnalyses") if isinstance(ui_state, dict) else None
-    script = generate_python_script(
+    generate = generate_python_script if lang == "python" else generate_r_script
+    script = generate(
         steps=store.get_steps(session_id),
         analyses=analyses if isinstance(analyses, list) else None,
         project_name=store.get_filename(session_id) or session_id[:8],
     )
-    return PlainTextResponse(script, media_type="text/x-python")
+    media = "text/x-python" if lang == "python" else "text/x-r"
+    return PlainTextResponse(script, media_type=media)
+
+
+class SyntaxRequest(BaseModel):
+    panel: str
+    params: dict
+
+
+@router.post("/syntax")
+async def analysis_syntax(body: SyntaxRequest):
+    """The jamovi-style syntax view: one analysis definition as Python and R.
+
+    Not a reproduction guarantee -- the replay script is that. This shows what
+    the analysis is in the reader's own language; unknown panels return nulls
+    so the client can say "no translation yet" instead of guessing.
+    """
+    from services.syntax_templates import translate
+
+    out = translate(body.panel, body.params)
+    if out is None:
+        return {"title": None, "python": None, "r": None}
+    return out
 
 
 @router.post("/load")

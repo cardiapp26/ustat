@@ -261,7 +261,7 @@ describe('downloadAnalysisScript', () => {
     await downloadAnalysisScript({ session_id: 'sess1', filename: 'trial.csv' })
 
     const [url, body] = mockedPost.mock.calls[0]
-    expect(url).toBe('/api/project/sess1/script')
+    expect(url).toBe('/api/project/sess1/script?lang=python')
     expect((body as { ui_state: { panelCache: unknown } }).ui_state.panelCache).toBeDefined()
     expect(downloadName).toBe('trial_replay.py')
   })

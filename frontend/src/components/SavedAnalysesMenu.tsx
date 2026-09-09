@@ -12,8 +12,9 @@
  * just ran (the overwhelmingly common case) that is its own tab.
  */
 import { useEffect, useRef, useState } from "react";
-import { Bookmark, Check, Pencil, Trash2 } from "lucide-react";
-import { useStore } from "../store";
+import { Bookmark, Check, Code2, Pencil, Trash2 } from "lucide-react";
+import { useStore, type SavedAnalysis } from "../store";
+import SyntaxView from "./SyntaxView";
 
 interface CacheEntryWithResult {
   result?: unknown;
@@ -38,6 +39,7 @@ export default function SavedAnalysesMenu() {
   const [open, setOpen] = useState(false);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [syntaxFor, setSyntaxFor] = useState<SavedAnalysis | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -106,6 +108,13 @@ export default function SavedAnalysesMenu() {
                     </p>
                   </button>
                   <button
+                    onClick={() => { setSyntaxFor(a); setOpen(false); }}
+                    className="p-1 text-gray-300 hover:text-violet-600 opacity-0 group-hover:opacity-100"
+                    title="Show syntax (Python / R)"
+                  >
+                    <Code2 size={12} />
+                  </button>
+                  <button
                     onClick={() => { setRenamingId(a.id); setRenameValue(a.name); }}
                     className="p-1 text-gray-300 hover:text-gray-600 opacity-0 group-hover:opacity-100"
                     title="Rename"
@@ -142,6 +151,7 @@ export default function SavedAnalysesMenu() {
           )}
         </div>
       )}
+      {syntaxFor && <SyntaxView analysis={syntaxFor} onClose={() => setSyntaxFor(null)} />}
     </div>
   );
 }
