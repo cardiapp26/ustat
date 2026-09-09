@@ -1,0 +1,39 @@
+method: independent_ttest
+title: Independent-samples t-test (Student and Welch, auto-selection by Levene)
+panel: tests
+endpoints: ["/api/stats/ttest"]
+covers: ["tests:welch", "tests:student", "parity:ttest.json"]
+implementation:
+  library: scipy (server) and webR (local engine)
+  entrypoint: ustat_engine.stats.ttest, served by /api/stats/ttest and runnable in-browser; the parity fixtures pin both engines to the same numbers
+  version_source: /api/engine/identity (X-uStat-Packages); per-result provenance headers
+assumptions:
+  - Approximate normality per group (assessed, reported, does not choose the test)
+  - Variance equality chosen by Levene when method=auto; user can force student/welch
+unsupported:
+  - Frequency or sampling weights
+behavior:
+  missing_data: Pairwise deletion within the two analysed columns
+  weights: Not supported
+  ties: Not applicable
+  category_coding: Group column's two levels in first-seen order; both levels named in the response
+reference:
+  software: R (pinned image qa/r_reference) plus cross-engine parity fixtures
+  entrypoint: t.test(y ~ g, var.equal = TRUE/FALSE)
+  artifacts:
+    - {file: qa/tests_audit/reference.json, key: welch}
+    - {file: qa/tests_audit/reference.json, key: student}
+    - {file: qa/parity/ttest.json, key: null}
+compared: [t, df, p, group_means, hedges_g, df_method, variance_assumption]
+tolerance:
+  rel: 1.0e-14
+  rationale: closed-form statistic; measured agreement against R is at machine precision, so the bound is set there (qa/parity/ttest.json tolerances)
+edge_cases:
+  - {case: filtered subset reaches the same rows in both runtimes, status: covered, test: qa/parity/ttest.json (filtered fixture)}
+  - {case: stale filter fingerprint rejected with 409, status: covered, test: qa/parity/ttest.json (fingerprint fixture)}
+  - {case: group with n=1, status: open}
+findings:
+  - id: lilliefors-p-approximation
+    summary: Normality assumption lines differ between engines (nortest Dallal-Wilkinson vs statsmodels table interpolation); statistic identical, met/not-met identical, test choice unaffected
+    status: re-verified
+    evidence: qa/parity/ttest.json divergence notes, byte-level fixtures

@@ -1,0 +1,35 @@
+method: meta_analysis
+title: Meta-analysis (pooled effect, heterogeneity)
+panel: meta
+endpoints: ["/api/meta/analyze"]
+covers: ["parity:meta.json"]
+implementation:
+  library: custom
+  entrypoint: Fixed and random effects (DerSimonian-Laird) implemented in-repo, backend/routers/meta.py + services
+  version_source: /api/engine/identity (engine fingerprint)
+assumptions:
+  - Study-level effect sizes with standard errors supplied or standardised upstream
+unsupported:
+  - REML/Paule-Mandel tau2 estimators; multivariate meta-analysis
+behavior:
+  missing_data: Studies missing effect or SE are excluded and counted
+  weights: Inverse-variance weights, computed, not user-supplied
+  ties: Not applicable
+  category_coding: Not applicable
+reference:
+  software: Cross-engine parity fixtures (see qa/parity/meta.json sources)
+  entrypoint: per-fixture, recorded in each fixture's source field
+  artifacts:
+    - {file: qa/parity/meta.json, key: null}
+compared: [pooled_effect, ci, tau2, i2, q]
+tolerance:
+  rel: 1.0e-8
+  rationale: closed-form given weights; per-fixture bounds recorded in the fixture file
+edge_cases:
+  - {case: single study (no heterogeneity to estimate), status: open}
+  - {case: zero-variance study, status: open}
+findings:
+  - id: dl-only-tau2
+    summary: Only DerSimonian-Laird tau2 is offered; label says so, REML absent
+    status: open
+    evidence: unsupported list; roadmap modeling-depth row

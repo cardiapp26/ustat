@@ -1,0 +1,33 @@
+method: logistic_regression
+title: Logistic regression (binary outcome, odds ratios)
+panel: models
+endpoints: ["/api/models/logistic"]
+covers: ["models:logistic"]
+implementation:
+  library: statsmodels
+  entrypoint: statsmodels Logit/GLM via backend/routers/models/logistic.py
+  version_source: /api/engine/identity (X-uStat-Packages)
+assumptions:
+  - Binary outcome; linearity in the logit for continuous predictors
+  - Independent observations
+unsupported:
+  - Weights; exact logistic regression
+behavior:
+  missing_data: Listwise deletion over outcome + predictors; optional imputation via services/impute
+  weights: Not supported
+  ties: Not applicable
+  category_coding: Pandas dummy coding, first level reference; scale_factors rescale chosen continuous predictors before the fit
+reference:
+  software: R (pinned image qa/r_reference)
+  entrypoint: stats::glm(family = binomial)
+  artifacts:
+    - {file: qa/models_audit/reference.json, key: models.logistic}
+compared: [coefficients, standard_errors, p_values, odds_ratios]
+tolerance:
+  rel: 1.0e-4
+  rationale: qa/models_audit/compare.py REL; IRLS converges to slightly different points across implementations
+edge_cases:
+  - {case: complete separation, status: covered, test: backend/tests/simulation/test_edge_cases.py}
+  - {case: quasi-separation warning surfaced to the user, status: open}
+  - {case: outcome with a single class, status: open}
+findings: []

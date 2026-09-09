@@ -1,0 +1,30 @@
+method: restricted_cubic_spline
+title: Restricted cubic spline terms in regression
+panel: models
+endpoints: ["/api/models/rcs"]
+covers: ["models:rcs"]
+implementation:
+  library: statsmodels + custom basis
+  entrypoint: RCS basis constructed in-repo to Harrell knot conventions, fitted with statsmodels
+  version_source: /api/engine/identity (X-uStat-Packages)
+assumptions:
+  - Knot placement at Harrell default quantiles unless overridden
+unsupported:
+  - Knot counts outside the exposed options
+behavior:
+  missing_data: Listwise deletion over outcome + spline variable + covariates
+  weights: Not supported
+  ties: Heavy ties can collapse quantile knots; degenerate knots must be surfaced
+  category_coding: Covariates dummy-coded, first level reference
+reference:
+  software: R (pinned image qa/r_reference)
+  entrypoint: rms::rcs inside rms::ols/lrm
+  artifacts:
+    - {file: qa/models_audit/reference.json, key: models.rcs}
+compared: [coefficients, standard_errors, p_values]
+tolerance:
+  rel: 1.0e-4
+  rationale: qa/models_audit/compare.py REL; identical knots make the basis identical, so only optimiser noise remains
+edge_cases:
+  - {case: tied quantiles collapsing two knots, status: open}
+findings: []

@@ -1,0 +1,33 @@
+method: gee
+title: Generalized estimating equations
+panel: models
+endpoints: ["/api/models/gee"]
+covers: ["models:gee_independence", "models:gee_exchangeable", "models:gee_ar1"]
+implementation:
+  library: statsmodels
+  entrypoint: statsmodels GEE via backend/routers/models/glm.py; AR(1) fit falls back to exchangeable on failure with a logged warning
+  version_source: /api/engine/identity (X-uStat-Packages)
+assumptions:
+  - Working correlation structure chosen by the user; robust (sandwich) SEs reported
+unsupported:
+  - Unstructured working correlation; QIC model selection
+behavior:
+  missing_data: Listwise deletion; clusters shrink rather than drop whole
+  weights: Not supported
+  ties: Not applicable
+  category_coding: Pandas dummy coding, first level reference
+reference:
+  software: R (pinned image qa/r_reference)
+  entrypoint: geepack::geeglm (independence / exchangeable / ar1)
+  artifacts:
+    - {file: qa/models_audit/reference.json, key: models.gee_independence}
+    - {file: qa/models_audit/reference.json, key: models.gee_exchangeable}
+    - {file: qa/models_audit/reference.json, key: models.gee_ar1}
+compared: [coefficients, robust_standard_errors, p_values]
+tolerance:
+  rel: 1.0e-4
+  rationale: qa/models_audit/compare.py REL; estimating-equation solutions differ at optimiser precision
+edge_cases:
+  - {case: silent AR(1) to exchangeable fallback must be visible in the response, status: open}
+  - {case: cluster of size 1, status: open}
+findings: []

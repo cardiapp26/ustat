@@ -1,0 +1,34 @@
+method: survival_cox_km
+title: Cox proportional hazards and Kaplan-Meier
+panel: models
+endpoints: ["/api/models/survival/cox", "/api/models/survival/km"]
+covers: ["models:cox", "models:km"]
+implementation:
+  library: lifelines
+  entrypoint: lifelines CoxPHFitter / KaplanMeierFitter via backend/routers/models/cox.py; log-rank from lifelines.statistics
+  version_source: /api/engine/identity (X-uStat-Packages)
+assumptions:
+  - Proportional hazards (Schoenfeld-based check surfaced by diagnostics endpoints)
+  - Non-informative censoring
+unsupported:
+  - Left truncation / delayed entry; exact tie handling (see behavior.ties)
+behavior:
+  missing_data: Listwise deletion over duration, event and predictors
+  weights: Not supported
+  ties: lifelines uses Efron approximation; R survival::coxph default is also Efron, which is what makes the comparison fair
+  category_coding: Pandas dummy coding, first level reference
+reference:
+  software: R (pinned image qa/r_reference)
+  entrypoint: survival::coxph (ties = efron); survival::survfit for KM
+  artifacts:
+    - {file: qa/models_audit/reference.json, key: models.cox}
+    - {file: qa/models_audit/reference.json, key: models.km}
+compared: [coefficients, hazard_ratios, standard_errors, p_values, km_survival_at_times]
+tolerance:
+  rel: 1.0e-4
+  rationale: qa/models_audit/compare.py REL; partial-likelihood optimisers stop at slightly different points
+edge_cases:
+  - {case: zero events, status: covered, test: backend/tests/simulation/test_edge_cases.py}
+  - {case: constant covariate in Cox, status: covered, test: backend/tests/simulation/test_edge_cases.py}
+  - {case: all subjects censored in one group (KM curve flat), status: open}
+findings: []

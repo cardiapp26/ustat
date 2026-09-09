@@ -1,0 +1,31 @@
+method: linear_mixed_model
+title: Linear mixed model (random intercept)
+panel: models
+endpoints: ["/api/models/lmm"]
+covers: ["models:lmm"]
+implementation:
+  library: statsmodels
+  entrypoint: statsmodels MixedLM (REML) via backend/routers/models/linear.py
+  version_source: /api/engine/identity (X-uStat-Packages)
+assumptions:
+  - Random intercept per group; normal residuals and random effects
+unsupported:
+  - Random slopes; crossed or multi-level nesting; convergence diagnostics beyond the fit warning
+behavior:
+  missing_data: Listwise deletion over outcome, predictors and grouping column
+  weights: Not supported
+  ties: Not applicable
+  category_coding: Pandas dummy coding, first level reference
+reference:
+  software: R (pinned image qa/r_reference)
+  entrypoint: lme4::lmer (REML)
+  artifacts:
+    - {file: qa/models_audit/reference.json, key: models.lmm}
+compared: [fixed_effect_coefficients, standard_errors, variance_components]
+tolerance:
+  rel: 1.0e-4
+  rationale: qa/models_audit/compare.py REL; REML surfaces are flat near the optimum and optimisers differ (also why AIC/BIC are not compared under REML)
+edge_cases:
+  - {case: single group (no between variance), status: open}
+  - {case: non-convergence surfaced rather than NaN-filled, status: open}
+findings: []

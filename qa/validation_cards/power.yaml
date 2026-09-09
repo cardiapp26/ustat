@@ -1,0 +1,31 @@
+method: power_analysis
+title: Power and sample size (t-test, ANOVA, correlation, proportions, chi-square, logistic, Cox)
+panel: power
+endpoints: ["/api/stats/power"]
+covers: ["parity:power.json"]
+implementation:
+  library: statsmodels + custom
+  entrypoint: statsmodels.stats.power where it exists; pwr-convention wrappers in-repo where it does not (ANOVA n is per-group, as pwr defines it)
+  version_source: /api/engine/identity (X-uStat-Packages)
+assumptions:
+  - Effect-size conventions follow Cohen as implemented by R pwr; each fixture names its pwr call
+unsupported:
+  - Simulation-based power; survival power beyond powerSurvEpi's covered scenarios
+behavior:
+  missing_data: Not applicable (a-priori calculation, no dataset)
+  weights: Not applicable
+  ties: Not applicable
+  category_coding: Not applicable
+reference:
+  software: R (pinned image qa/r_reference)
+  entrypoint: pwr::pwr.*.test and powerSurvEpi, one call per fixture
+  artifacts:
+    - {file: qa/parity/power.json, key: null}
+compared: [power, n, per_fixture_labels]
+tolerance:
+  rel: 1.0e-8
+  rationale: closed-form or 1-D root-finding; fixtures record per-case measured bounds, ceil'd n compared exactly
+edge_cases:
+  - {case: n solved then ceiled matches pwr convention (per-group, labelled), status: covered, test: qa/parity/power.json}
+  - {case: unreachable power (effect ~ 0) surfaced, status: open}
+findings: []

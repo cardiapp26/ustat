@@ -1,0 +1,32 @@
+method: psm_iptw
+title: Propensity score matching and inverse probability of treatment weighting
+panel: psm
+endpoints: ["/api/models/psm", "/api/models/iptw"]
+covers: ["models:psm", "models:iptw"]
+implementation:
+  library: statsmodels + custom matching
+  entrypoint: Propensity model and weighting in backend/routers/models/psm_iptw.py; nearest-neighbour matching implemented in-repo
+  version_source: /api/engine/identity (X-uStat-Packages)
+assumptions:
+  - No unmeasured confounding; positivity (overlap diagnostics reported)
+unsupported:
+  - Caliper variants beyond the exposed options; full/optimal matching; survey-design variance for IPTW estimates
+behavior:
+  missing_data: Listwise deletion over treatment + covariates
+  weights: IPTW produces weights; they are analysis weights for the weighted estimate, not survey weights, and are not propagated to other panels
+  ties: Matching ties broken by order after seeded shuffle
+  category_coding: Pandas dummy coding, first level reference
+reference:
+  software: R (pinned image qa/r_reference)
+  entrypoint: MatchIt::matchit (nearest); survey::svyglm for the weighted comparison
+  artifacts:
+    - {file: qa/models_audit/reference.json, key: models.psm}
+    - {file: qa/models_audit/reference.json, key: models.iptw}
+compared: [propensity_coefficients, matched_n, smd_balance, weighted_estimate]
+tolerance:
+  rel: 1.0e-4
+  rationale: qa/models_audit/compare.py REL; matching additionally depends on tie order, which the seed pins
+edge_cases:
+  - {case: no overlap between groups, status: open}
+  - {case: extreme weights (positivity violation) flagged, status: open}
+findings: []

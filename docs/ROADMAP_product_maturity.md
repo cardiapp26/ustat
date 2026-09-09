@@ -66,6 +66,19 @@ Status notes (2026-09-09):
   live CRAN; now pinned to a dated Posit Package Manager snapshot
   (`qa/r_reference/install_packages.R`).
 
+Status notes (2026-09-10): validation cards landed in
+`qa/validation_cards/` (schema in its README): one YAML card per method
+family covering implementation, assumptions, the four data-semantics
+behavior answers, reference artifact pointers, tolerance with rationale,
+edge cases and findings with explicit statuses.
+`backend/tests/test_validation_cards.py` enforces them in CI: malformed
+cards, dangling artifact pointers, unserved endpoints, unclaimed
+reference entries, covered edge cases without a named test, and findings
+without a status are all red builds. Initial coverage: every entry in
+`qa/models_audit` (23 methods), `qa/tests_audit` and `qa/parity`.
+Edge cases marked `open` in the cards are the worked inventory of what
+still needs a regression test.
+
 ## P0.3 Result integrity
 
 Status notes (2026-09-09): first pass landed. Results are stamped with the

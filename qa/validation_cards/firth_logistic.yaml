@@ -1,0 +1,35 @@
+method: firth_logistic
+title: Firth penalised logistic regression
+panel: models
+endpoints: ["/api/models/firth_logistic"]
+covers: ["models:firth_logistic"]
+implementation:
+  library: custom
+  entrypoint: Hand-rolled Newton iteration with Firth penalty, _firth_fit in backend/routers/models/logistic.py; NOT a wrapped library, which is exactly why its reference check matters
+  version_source: /api/engine/identity (engine fingerprint)
+assumptions:
+  - Same as logistic regression; intended for small samples and separation
+unsupported:
+  - Firth-corrected confidence intervals by penalised profile likelihood (Wald intervals are reported; logistf uses profile by default)
+behavior:
+  missing_data: Listwise deletion over outcome + predictors
+  weights: Not supported
+  ties: Not applicable
+  category_coding: Pandas dummy coding, first level reference
+reference:
+  software: R (pinned image qa/r_reference)
+  entrypoint: logistf::logistf
+  artifacts:
+    - {file: qa/models_audit/reference.json, key: models.firth_logistic}
+compared: [coefficients, standard_errors, p_values]
+tolerance:
+  rel: 1.0e-4
+  rationale: qa/models_audit/compare.py REL; penalised-likelihood optimum reached by different iteration schemes
+edge_cases:
+  - {case: complete separation (the method's reason to exist), status: covered, test: backend/tests/simulation/test_edge_cases.py}
+  - {case: non-convergence within max_iter surfaced rather than silently returned, status: open}
+findings:
+  - id: wald-vs-profile-ci
+    summary: CIs are Wald; R logistf defaults to penalised profile likelihood, so intervals differ near separation even when coefficients agree
+    status: open
+    evidence: unsupported list above; needs either profile CIs or an explicit UI note

@@ -1,0 +1,37 @@
+method: linear_regression
+title: Linear regression (OLS), polynomial terms, stepwise selection, VIF
+panel: models
+endpoints: ["/api/models/linear", "/api/models/polynomial", "/api/models/stepwise"]
+covers: ["models:linear", "models:polynomial", "models:polynomial_numeric_only", "models:stepwise", "models:vif"]
+implementation:
+  library: statsmodels
+  entrypoint: statsmodels OLS via backend/routers/models/linear.py
+  version_source: /api/engine/identity (X-uStat-Packages)
+assumptions:
+  - Linearity of outcome in predictors (polynomial endpoint relaxes per-term)
+  - Independent, homoscedastic, approximately normal residuals
+unsupported:
+  - Analytic weights (frequency or sampling)
+  - Regularised fits (ridge/lasso)
+behavior:
+  missing_data: Listwise deletion over outcome + predictors; optional imputation via services/impute before the fit
+  weights: Not supported; requests carry no weight column
+  ties: Not applicable
+  category_coding: Pandas dummy coding, first level is the reference; dummies named col_level (R names them collevel; see compare.py ALIASES)
+reference:
+  software: R (pinned image qa/r_reference, dated PPM snapshot)
+  entrypoint: stats::lm; car::vif for the VIF block; stats::step for stepwise
+  artifacts:
+    - {file: qa/models_audit/reference.json, key: models.linear}
+    - {file: qa/models_audit/reference.json, key: models.polynomial}
+    - {file: qa/models_audit/reference.json, key: models.stepwise}
+    - {file: qa/models_audit/reference.json, key: models.vif}
+compared: [coefficients, standard_errors, p_values, r_squared]
+tolerance:
+  rel: 1.0e-4
+  rationale: qa/models_audit/compare.py REL; separates real disagreement from optimiser noise
+edge_cases:
+  - {case: constant predictor column, status: covered, test: backend/tests/simulation/test_edge_cases.py}
+  - {case: singular design matrix (collinear dummies), status: open}
+  - {case: n smaller than number of predictors, status: open}
+findings: []

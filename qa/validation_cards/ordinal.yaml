@@ -1,0 +1,32 @@
+method: ordinal_logistic
+title: Ordinal logistic regression (proportional odds)
+panel: models
+endpoints: ["/api/models/ordinal"]
+covers: ["models:ordinal_polr", "models:ordinal_clm"]
+implementation:
+  library: statsmodels
+  entrypoint: statsmodels.miscmodels.ordinal_model.OrderedModel (logit link) via backend/routers/models/glm.py; Brant proportional-odds check alongside
+  version_source: /api/engine/identity (X-uStat-Packages)
+assumptions:
+  - Ordinal outcome with a meaningful category order; proportional odds across thresholds (Brant test reported)
+unsupported:
+  - Partial proportional odds; category-specific effects
+behavior:
+  missing_data: Listwise deletion over outcome + predictors
+  weights: Not supported
+  ties: Not applicable
+  category_coding: Outcome order taken from the dictionary's category order; predictors dummy-coded, first level reference
+reference:
+  software: R (pinned image qa/r_reference)
+  entrypoint: MASS::polr and ordinal::clm (two independent references for the same fit)
+  artifacts:
+    - {file: qa/models_audit/reference.json, key: models.ordinal_polr}
+    - {file: qa/models_audit/reference.json, key: models.ordinal_clm}
+compared: [coefficients, standard_errors, thresholds]
+tolerance:
+  rel: 1.0e-4
+  rationale: qa/models_audit/compare.py REL; polr and clm themselves differ slightly, which bounds how tight this can honestly be
+edge_cases:
+  - {case: user-defined category order respected end to end, status: open}
+  - {case: empty outcome category, status: open}
+findings: []

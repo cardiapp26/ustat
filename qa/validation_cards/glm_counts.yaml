@@ -1,0 +1,35 @@
+method: glm_count_and_gamma
+title: Poisson (with offset), negative binomial, gamma GLMs
+panel: models
+endpoints: ["/api/models/poisson", "/api/models/negbinom", "/api/models/gamma"]
+covers: ["models:poisson", "models:poisson_offset", "models:negbinom", "models:gamma"]
+implementation:
+  library: statsmodels
+  entrypoint: statsmodels GLM (Poisson/NegativeBinomial/Gamma families) via backend/routers/models/glm.py
+  version_source: /api/engine/identity (X-uStat-Packages)
+assumptions:
+  - Count outcome (Poisson/negbinom) or positive continuous outcome (gamma)
+  - Log link throughout
+unsupported:
+  - Zero-inflated variants; exposure other than a single offset column
+behavior:
+  missing_data: Listwise deletion over outcome + predictors (+ offset column when used)
+  weights: Not supported
+  ties: Not applicable
+  category_coding: Pandas dummy coding, first level reference
+reference:
+  software: R (pinned image qa/r_reference)
+  entrypoint: stats::glm(family = poisson/Gamma); MASS::glm.nb
+  artifacts:
+    - {file: qa/models_audit/reference.json, key: models.poisson}
+    - {file: qa/models_audit/reference.json, key: models.poisson_offset}
+    - {file: qa/models_audit/reference.json, key: models.negbinom}
+    - {file: qa/models_audit/reference.json, key: models.gamma}
+compared: [coefficients, standard_errors, p_values]
+tolerance:
+  rel: 1.0e-4
+  rationale: qa/models_audit/compare.py REL; negbinom additionally estimates the dispersion by different algorithms (statsmodels vs MASS theta iteration)
+edge_cases:
+  - {case: all-zero count outcome, status: open}
+  - {case: negative or zero values under gamma (must 400, not crash), status: open}
+findings: []

@@ -1,0 +1,31 @@
+method: roc
+title: ROC curve, AUC and DeLong comparison
+panel: roc
+endpoints: ["/api/stats/roc", "/api/stats/roc_compare"]
+covers: ["models:roc"]
+implementation:
+  library: scikit-learn + custom
+  entrypoint: roc_curve/AUC via sklearn; DeLong variance implemented in-repo (backend/routers/stats/nonparametric.py)
+  version_source: /api/engine/identity (X-uStat-Packages)
+assumptions:
+  - Binary reference standard; higher score = more positive (direction handled explicitly)
+unsupported:
+  - Partial AUC; covariate-adjusted ROC
+behavior:
+  missing_data: Pairwise deletion per marker (rows missing that marker or the outcome)
+  weights: Not supported
+  ties: Tied scores produce the standard step-function ROC; AUC equals the Mann-Whitney statistic under ties
+  category_coding: Outcome coerced to 0/1; positive label reported in the response
+reference:
+  software: R (pinned image qa/r_reference)
+  entrypoint: pROC::roc / pROC::roc.test (delong)
+  artifacts:
+    - {file: qa/models_audit/reference.json, key: models.roc}
+compared: [auc, auc_ci, delong_p]
+tolerance:
+  rel: 1.0e-4
+  rationale: qa/models_audit/compare.py REL; CI methods agree analytically, small numeric differences only
+edge_cases:
+  - {case: perfect separation (AUC = 1), status: covered, test: backend/tests/simulation/test_edge_cases.py}
+  - {case: marker constant across all rows, status: open}
+findings: []
