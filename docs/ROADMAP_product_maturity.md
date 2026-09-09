@@ -126,16 +126,16 @@ not share a name with the exact method.
 
 ## P1/P2 Release and maintenance standard
 
-Known documentation/CI inconsistencies to fix:
+Known documentation/CI inconsistencies (all fixed 2026-09-09):
 
-- README describes a server-centric architecture while local engines exist
-  in the code.
-- SPEC describes disk persistence as default behavior; in current code it is
-  opt-in and off by default.
-- SPEC carries stale test counts and a `tsc --noEmit` check (the project
-  uses `tsc -b`).
-- CI (`.github/workflows/ci.yml`) runs typecheck, tests and build but no
-  lint step.
+- README described a server-centric architecture while local engines exist
+  in the code; it now documents the in-browser engine path.
+- SPEC described disk persistence as default behavior; it now states the
+  opt-in `SESSION_DISK_CACHE=1` default-off reality.
+- SPEC carried stale test counts and a `tsc --noEmit` check; it now points
+  at CI for counts and names `tsc -b`.
+- CI ran typecheck, tests and build but no lint; the frontend job now runs
+  `eslint . --quiet`.
 
 Release criteria: a current method inventory, passing reference tests,
 end-to-end tests from browser to export, release notes, known limitations.
