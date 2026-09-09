@@ -4,8 +4,15 @@ Status: Phase 1 backend landed (2026-09-09): container build/parse/restore
 in `backend/services/project_file.py`, `/api/project/{sid}/save` and
 `/api/project/load` in `backend/routers/project.py`, legacy v1.x JSON
 import, round-trip and integrity tests in
-`backend/tests/test_project_file.py`. Frontend adoption (autosave stores
-`.ustat`, Save/Open UI) and Phases 2-4 remain. Implements the P0 "Project
+`backend/tests/test_project_file.py`. Phase 1 frontend landed the same
+day: the header Save menu offers "Project (.ustat)", the upload zone opens
+`.ustat` files, and every restore path (upload, Recent Sessions, crash
+recovery) goes through `/api/project/load`, which reads legacy JSON and
+`.ustat` alike by content. Deferred from Phase 1: autosave still snapshots
+the v1.2 JSON, because `.ustat` bytes are not deterministic (zip entry
+timestamps, `manifest.modified`) and the autosave dedupe hashes the whole
+payload; switching it lands with Phase 2 alongside a content-stable hash
+over the parts that matter. Phases 2-4 remain. Implements the P0 "Project
 file" row of [ROADMAP_product_maturity.md](ROADMAP_product_maturity.md).
 
 ## Goal

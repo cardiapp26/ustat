@@ -29,7 +29,7 @@ beforeEach(() => {
   rows['row-1'] = { id: 'row-1', name: 'tiroid.xlsx', payload: '{"df":1}', savedAt: 1, serverSessionId: 'dead-1' }
   useStore.setState({ session: makeSession({ session_id: 'dead-1' }), localSessionId: null, sessionRecovery: null })
   server.use(
-    http.post('/api/sessions/load_session', () => {
+    http.post('/api/project/load', () => {
       loads += 1
       return HttpResponse.json({ session_id: 'fresh-1', filename: 'tiroid.xlsx', columns: [], preview: [], rows: 0 })
     }),

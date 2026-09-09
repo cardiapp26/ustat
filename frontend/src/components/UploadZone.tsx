@@ -82,12 +82,14 @@ export default function UploadZone() {
     setLoading(true);
     setError(null);
     try {
-      // Session JSON files → load_session endpoint
-      const isSessionJson = file.name.endsWith(".json");
-      if (isSessionJson) {
+      // Project (.ustat) and legacy session JSON files → project loader.
+      // /api/project/load reads both: the zip container by content, and the
+      // old v1.x save_session JSON as migration zero.
+      const isProjectFile = file.name.endsWith(".json") || file.name.endsWith(".ustat");
+      if (isProjectFile) {
         const form = new FormData();
         form.append("file", file);
-        const res = await api.post("/api/sessions/load_session", form);
+        const res = await api.post("/api/project/load", form);
         setSession(res.data);
         // Restored sessions carry server-side decimal overrides — pull them
         // into the store so the table renders with the user's formatting.
@@ -356,7 +358,7 @@ export default function UploadZone() {
             id="file-input"
             type="file"
             className="hidden"
-            accept=".csv,.xlsx,.xls,.sas7bdat,.sav,.dta,.json"
+            accept=".csv,.xlsx,.xls,.sas7bdat,.sav,.dta,.json,.ustat"
             onChange={(e) => e.target.files?.[0] && handle(e.target.files[0])}
           />
         </div>

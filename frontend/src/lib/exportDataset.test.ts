@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { downloadSessionJson, exportDataset } from './exportDataset'
+import { downloadProjectFile, downloadSessionJson, exportDataset } from './exportDataset'
 import api from '../api'
 
 vi.mock('../api', () => ({
@@ -173,5 +173,51 @@ describe('downloadSessionJson', () => {
     window.alert = alertSpy
     await downloadSessionJson({ session_id: 'sess1' })
     expect(alertSpy).toHaveBeenCalledWith('Save session failed: boom')
+  })
+})
+
+describe('downloadProjectFile', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    URL.createObjectURL = vi.fn(() => 'blob:mock-url')
+    URL.revokeObjectURL = vi.fn()
+    window.alert = vi.fn()
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+    mockedGet.mockReset()
+  })
+
+  it('requests the project save endpoint and downloads a .ustat named after the session', async () => {
+    mockedGet.mockResolvedValue({ data: new Blob(['PK']), headers: {} })
+    let downloadName = ''
+    const origCreateElement = document.createElement.bind(document)
+    vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
+      const el = origCreateElement(tag)
+      if (tag === 'a') {
+        el.click = vi.fn()
+        Object.defineProperty(el, 'download', {
+          get: () => downloadName,
+          set: (v: string) => { downloadName = v },
+        })
+      }
+      return el
+    })
+
+    await downloadProjectFile({ session_id: 'sess1', filename: 'trial.csv' })
+
+    expect(mockedGet).toHaveBeenCalledWith('/api/project/sess1/save', { responseType: 'blob' })
+    expect(downloadName).toBe('trial.ustat')
+  })
+
+  it('alerts on failure', async () => {
+    mockedGet.mockRejectedValue(new Error('boom'))
+    const alertSpy = vi.fn()
+    window.alert = alertSpy
+    await downloadProjectFile({ session_id: 'sess1' })
+    expect(alertSpy).toHaveBeenCalledWith('Save project failed: boom')
   })
 })

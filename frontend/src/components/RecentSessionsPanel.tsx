@@ -141,12 +141,13 @@ export default function RecentSessionsPanel() {
     try {
       const rec = await getRecentSession(id);
       if (!rec) throw new Error("Snapshot not found");
-      // POST /api/sessions/load_session expects multipart File; wrap
-      // the stored payload as a Blob so the existing endpoint accepts it.
+      // POST /api/project/load expects multipart File; wrap the stored
+      // payload as a Blob. The endpoint reads by content, so legacy JSON
+      // snapshots and future .ustat blobs travel the same path.
       const blob = new Blob([rec.payload], { type: "application/json" });
       const form = new FormData();
       form.append("file", blob, `${rec.name || "session"}.json`);
-      const res = await api.post("/api/sessions/load_session", form);
+      const res = await api.post("/api/project/load", form);
       setSession(res.data);
       // Pin the row this came from. setSession has just cleared it, so this
       // has to follow. Without it autosave has only the fresh server id and

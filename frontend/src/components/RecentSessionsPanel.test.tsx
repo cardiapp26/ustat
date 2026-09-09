@@ -83,14 +83,14 @@ describe('RecentSessionsPanel', () => {
     expect(screen.getByRole('button', { name: /resume/i })).toBeInTheDocument()
   })
 
-  it('restores a session: loads it via load_session and updates the store', async () => {
+  it('restores a session: loads it via project/load and updates the store', async () => {
     mockLists([baseMeta])
     vi.mocked(sessionDb.getRecentSession).mockResolvedValue({
       ...baseMeta,
       payload: JSON.stringify({ some: 'session-json' }),
     })
     server.use(
-      http.post('/api/sessions/load_session', () =>
+      http.post('/api/project/load', () =>
         HttpResponse.json({
           session_id: 'restored-session',
           filename: 'patients.csv',

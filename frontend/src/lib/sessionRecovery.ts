@@ -52,7 +52,9 @@ export async function recoverSession(deadId: string, api: AxiosInstance): Promis
       const form = new FormData();
       form.append("file", new Blob([rec.payload], { type: "application/json" }),
                   `${rec.name || "session"}.json`);
-      const res = await api.post("/api/sessions/load_session", form);
+      // The project loader reads by content: legacy JSON snapshots today,
+      // .ustat blobs once autosave stores them.
+      const res = await api.post("/api/project/load", form);
       const restored = res.data as { session_id?: string };
       if (!restored?.session_id) { hopeless.add(deadId); return null; }
 

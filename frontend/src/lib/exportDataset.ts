@@ -65,6 +65,28 @@ export async function exportDataset(
   }
 }
 
+/** Download the session as a .ustat project file (docs/DESIGN_project_file.md):
+ *  data + dictionary + prep recipe + audit + ingest originals, in a zip whose
+ *  manifest records engine identity and a dataset hash. */
+export async function downloadProjectFile(session: MinimalSession): Promise<void> {
+  try {
+    const res = await api.get(`/api/project/${session.session_id}/save`, { responseType: "blob" });
+    const blob = new Blob([res.data], { type: "application/zip" });
+    const url = URL.createObjectURL(blob);
+    const base = (session.filename ?? "project").replace(/\.[^.]+$/, "");
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${base}.ustat`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (e: unknown) {
+    console.error("Save project failed:", e);
+    alert(`Save project failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 /** Download the session JSON (data + labels + filters + audit). */
 export async function downloadSessionJson(session: MinimalSession): Promise<void> {
   try {
