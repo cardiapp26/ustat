@@ -31,7 +31,7 @@ tolerance:
 edge_cases:
   - {case: filtered subset reaches the same rows in both runtimes, status: covered, test: qa/parity/ttest.json (filtered fixture)}
   - {case: stale filter fingerprint rejected with 409, status: covered, test: qa/parity/ttest.json (fingerprint fixture)}
-  - {case: group with n=1, status: open}
+  - {case: group with n=1, status: covered, test: backend/tests/test_validation_card_edge_cases.py::test_ttest_group_of_one}
 findings:
   - id: lilliefors-p-approximation
     summary: Normality assumption lines differ between engines (nortest Dallal-Wilkinson vs statsmodels table interpolation); statistic identical, met/not-met identical, test choice unaffected

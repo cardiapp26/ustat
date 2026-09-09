@@ -27,6 +27,6 @@ tolerance:
   rel: 1.0e-4
   rationale: qa/models_audit/compare.py REL; matching additionally depends on tie order, which the seed pins
 edge_cases:
-  - {case: no overlap between groups, status: open}
-  - {case: extreme weights (positivity violation) flagged, status: open}
+  - {case: no overlap between groups, status: covered, test: backend/tests/test_validation_card_edge_cases.py::test_psm_no_overlap_between_groups}
+  - {case: extreme weights (positivity violation) flagged, status: covered, test: backend/tests/test_validation_card_edge_cases.py::test_iptw_extreme_weights_positivity_violation}
 findings: []

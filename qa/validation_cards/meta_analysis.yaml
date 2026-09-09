@@ -26,8 +26,8 @@ tolerance:
   rel: 1.0e-8
   rationale: closed-form given weights; per-fixture bounds recorded in the fixture file
 edge_cases:
-  - {case: single study (no heterogeneity to estimate), status: open}
-  - {case: zero-variance study, status: open}
+  - {case: single study (no heterogeneity to estimate), status: covered, test: backend/tests/test_validation_card_edge_cases.py::test_meta_single_study}
+  - {case: zero-variance study, status: covered, test: backend/tests/test_validation_card_edge_cases.py::test_meta_zero_variance_study}
 findings:
   - id: dl-only-tau2
     summary: Only DerSimonian-Laird tau2 is offered; label says so, REML absent

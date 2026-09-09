@@ -28,5 +28,5 @@ tolerance:
   rationale: qa/models_audit/compare.py REL; polr and clm themselves differ slightly, which bounds how tight this can honestly be
 edge_cases:
   - {case: user-defined category order respected end to end, status: open}
-  - {case: empty outcome category, status: open}
+  - {case: empty outcome category, status: covered, test: backend/tests/test_validation_card_edge_cases.py::test_ordinal_empty_outcome_category}
 findings: []

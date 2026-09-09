@@ -30,6 +30,10 @@ tolerance:
   rel: 1.0e-4
   rationale: qa/models_audit/compare.py REL; negbinom additionally estimates the dispersion by different algorithms (statsmodels vs MASS theta iteration)
 edge_cases:
-  - {case: all-zero count outcome, status: open}
-  - {case: negative or zero values under gamma (must 400, not crash), status: open}
-findings: []
+  - {case: all-zero count outcome, status: covered, test: backend/tests/test_validation_card_edge_cases.py::test_poisson_all_zero_outcome}
+  - {case: negative or zero values under gamma (must 400, not crash), status: covered, test: backend/tests/test_validation_card_edge_cases.py::test_gamma_nonpositive_outcome_must_reject_not_return_garbage}
+findings:
+  - id: poisson-all-zero-500
+    summary: An all-zero count outcome made statsmodels' first deviance guess NaN and raised an uncaught ValueError, surfacing as a 500; now rejected with a 422 before the fit
+    status: fixed
+    evidence: "backend/routers/models/glm.py poisson_regression zero-sum guard; backend/tests/test_validation_card_edge_cases.py::test_poisson_all_zero_outcome"

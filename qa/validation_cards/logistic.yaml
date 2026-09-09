@@ -28,6 +28,6 @@ tolerance:
   rationale: qa/models_audit/compare.py REL; IRLS converges to slightly different points across implementations
 edge_cases:
   - {case: complete separation, status: covered, test: backend/tests/simulation/test_edge_cases.py}
-  - {case: quasi-separation warning surfaced to the user, status: open}
-  - {case: outcome with a single class, status: open}
+  - {case: quasi-separation warning surfaced to the user, status: covered, test: backend/tests/test_validation_card_edge_cases.py::test_logistic_quasi_separation_is_flagged_or_rejected}
+  - {case: outcome with a single class, status: covered, test: backend/tests/test_validation_card_edge_cases.py::test_logistic_single_class_outcome}
 findings: []

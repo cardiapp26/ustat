@@ -79,6 +79,15 @@ without a status are all red builds. Initial coverage: every entry in
 Edge cases marked `open` in the cards are the worked inventory of what
 still needs a regression test.
 
+Status notes (2026-09-10, cont.): the open edge cases across all cards
+now have regression tests
+(`backend/tests/test_validation_card_edge_cases.py`), and their card
+entries flipped `open` to `covered` with the test named. The contract is
+graceful handling (no 500; a 400/422 rejection or a flagged 200). Writing
+them surfaced one real defect, now fixed and recorded as a card finding:
+Poisson regression on an all-zero count outcome raised an uncaught
+`ValueError` and 500'd; it is rejected with a 422 before the fit.
+
 ## P0.3 Result integrity
 
 Status notes (2026-09-09): first pass landed. Results are stamped with the

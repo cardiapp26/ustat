@@ -123,7 +123,10 @@ def test_covered_edge_cases_name_a_real_test():
             if edge["status"] == "covered":
                 ref = edge.get("test", "")
                 assert ref, f"{path.name}: covered edge case {edge['case']!r} must name its test"
-                target = REPO / ref.split(" ", 1)[0]
+                # Accept "path::test_name" and "path (note)": the file is the
+                # part before the first "::" or space.
+                file_ref = ref.split("::", 1)[0].split(" ", 1)[0]
+                target = REPO / file_ref
                 assert target.exists(), (
                     f"{path.name}: covered edge case names missing file {target}"
                 )

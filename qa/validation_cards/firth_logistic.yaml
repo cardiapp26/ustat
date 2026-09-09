@@ -27,7 +27,7 @@ tolerance:
   rationale: qa/models_audit/compare.py REL; penalised-likelihood optimum reached by different iteration schemes
 edge_cases:
   - {case: complete separation (the method's reason to exist), status: covered, test: backend/tests/simulation/test_edge_cases.py}
-  - {case: non-convergence within max_iter surfaced rather than silently returned, status: open}
+  - {case: non-convergence within max_iter surfaced rather than silently returned, status: covered, test: backend/tests/test_validation_card_edge_cases.py::test_firth_converges_where_plain_logistic_separates}
 findings:
   - id: wald-vs-profile-ci
     summary: CIs are Wald; R logistf defaults to penalised profile likelihood, so intervals differ near separation even when coefficients agree

@@ -27,5 +27,5 @@ tolerance:
   rationale: qa/models_audit/compare.py REL; CI methods agree analytically, small numeric differences only
 edge_cases:
   - {case: perfect separation (AUC = 1), status: covered, test: backend/tests/simulation/test_edge_cases.py}
-  - {case: marker constant across all rows, status: open}
+  - {case: marker constant across all rows, status: covered, test: backend/tests/test_validation_card_edge_cases.py::test_roc_constant_marker}
 findings: []

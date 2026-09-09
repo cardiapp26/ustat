@@ -27,5 +27,5 @@ tolerance:
   rationale: closed-form or 1-D root-finding; fixtures record per-case measured bounds, ceil'd n compared exactly
 edge_cases:
   - {case: n solved then ceiled matches pwr convention (per-group, labelled), status: covered, test: qa/parity/power.json}
-  - {case: unreachable power (effect ~ 0) surfaced, status: open}
+  - {case: unreachable power (effect ~ 0) surfaced, status: covered, test: backend/tests/test_validation_card_edge_cases.py::test_power_unreachable_effect_near_zero}
 findings: []

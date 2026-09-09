@@ -28,6 +28,6 @@ tolerance:
   rel: 1.0e-4
   rationale: qa/models_audit/compare.py REL; estimating-equation solutions differ at optimiser precision
 edge_cases:
-  - {case: silent AR(1) to exchangeable fallback must be visible in the response, status: open}
-  - {case: cluster of size 1, status: open}
+  - {case: silent AR(1) to exchangeable fallback must be visible in the response, status: covered, test: backend/tests/test_validation_card_edge_cases.py::test_gee_ar1_fallback_is_visible}
+  - {case: cluster of size 1, status: covered, test: backend/tests/test_validation_card_edge_cases.py::test_gee_singleton_clusters}
 findings: []

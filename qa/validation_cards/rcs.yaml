@@ -26,5 +26,5 @@ tolerance:
   rel: 1.0e-4
   rationale: qa/models_audit/compare.py REL; identical knots make the basis identical, so only optimiser noise remains
 edge_cases:
-  - {case: tied quantiles collapsing two knots, status: open}
+  - {case: tied quantiles collapsing two knots, status: covered, test: backend/tests/test_validation_card_edge_cases.py::test_rcs_tied_quantile_knots}
 findings: []

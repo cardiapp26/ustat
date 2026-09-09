@@ -30,5 +30,5 @@ tolerance:
 edge_cases:
   - {case: zero events, status: covered, test: backend/tests/simulation/test_edge_cases.py}
   - {case: constant covariate in Cox, status: covered, test: backend/tests/simulation/test_edge_cases.py}
-  - {case: all subjects censored in one group (KM curve flat), status: open}
+  - {case: all subjects censored in one group (KM curve flat), status: covered, test: backend/tests/test_validation_card_edge_cases.py::test_km_one_group_entirely_censored}
 findings: []

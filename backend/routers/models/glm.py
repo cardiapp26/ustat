@@ -108,8 +108,17 @@ def poisson_regression(req: PoissonRequest):
         raise HTTPException(status_code=422, detail="Poisson regression requires non-negative integer counts. Negative values found.")
     if (y.dropna() % 1 != 0).any():
         raise HTTPException(status_code=422, detail="Poisson regression requires integer counts. Fractional values found — consider Gamma regression instead.")
+    if float(y.dropna().sum()) == 0.0:
+        # An all-zero count outcome makes the Poisson log-likelihood degenerate:
+        # statsmodels' first deviance guess is NaN and the fit raises an
+        # uncaught ValueError (a 500). There is nothing to model when the event
+        # never happens, so reject it clearly.
+        raise HTTPException(status_code=422, detail="Poisson regression needs at least one non-zero count; the outcome is zero for every row.")
     cov_type = "HC3" if req.robust_se else "nonrobust"
-    model = sm.GLM(y, X, family=sm.families.Poisson()).fit(cov_type=cov_type)
+    try:
+        model = sm.GLM(y, X, family=sm.families.Poisson()).fit(cov_type=cov_type)
+    except (ValueError, np.linalg.LinAlgError) as exc:
+        raise HTTPException(status_code=400, detail=f"Poisson model did not fit: {exc}")
     ci = model.conf_int()
     vifs = _compute_vif(X)
     coefs = []

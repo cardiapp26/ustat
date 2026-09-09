@@ -32,6 +32,6 @@ tolerance:
   rationale: qa/models_audit/compare.py REL; separates real disagreement from optimiser noise
 edge_cases:
   - {case: constant predictor column, status: covered, test: backend/tests/simulation/test_edge_cases.py}
-  - {case: singular design matrix (collinear dummies), status: open}
-  - {case: n smaller than number of predictors, status: open}
+  - {case: singular design matrix (collinear dummies), status: covered, test: backend/tests/test_validation_card_edge_cases.py::test_linear_singular_design_collinear_dummies}
+  - {case: n smaller than number of predictors, status: covered, test: backend/tests/test_validation_card_edge_cases.py::test_linear_more_predictors_than_rows}
 findings: []

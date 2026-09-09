@@ -26,6 +26,6 @@ tolerance:
   rel: 1.0e-4
   rationale: qa/models_audit/compare.py REL; REML surfaces are flat near the optimum and optimisers differ (also why AIC/BIC are not compared under REML)
 edge_cases:
-  - {case: single group (no between variance), status: open}
-  - {case: non-convergence surfaced rather than NaN-filled, status: open}
+  - {case: single group (no between variance), status: covered, test: backend/tests/test_validation_card_edge_cases.py::test_lmm_single_group_no_between_variance}
+  - {case: non-convergence surfaced rather than NaN-filled, status: covered, test: backend/tests/test_validation_card_edge_cases.py::test_lmm_single_group_no_between_variance}
 findings: []
