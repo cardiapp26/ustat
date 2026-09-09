@@ -59,7 +59,29 @@ interface MLResult {
   mae?: number;
   confusion?: { tp: number; tn: number; fp: number; fn: number };
   calibration?: CalibrationPoint[];
+  /* Where the permutation importance was measured. "held-out folds" is the
+   * only honest answer; the field exists because a bare number does not say
+   * whether the model had already seen the rows it was scored on. */
+  importance_scope?: string;
+  importance_metric?: string;
+  imputation?: ImputationProvenance;
   interpretation?: string;
+}
+
+/* What the backend actually did about missing values, as opposed to what was
+ * asked for. `applied` differs from `requested` when a strategy fell back, and
+ * "mice_single" is deliberately not called "mice": one completed dataset is
+ * not multiple imputation and carries no Rubin-pooled standard errors. */
+interface ImputationProvenance {
+  requested: string;
+  applied: string;
+  label: string;
+  fitted_per_fold: boolean;
+  outcome_imputed: boolean;
+  n_imputations: number;
+  pooled: boolean;
+  n_excluded_missing_outcome: number;
+  n_excluded_incomplete_predictors: number;
 }
 
 /* ── Survival ML benchmark (POST /api/survival_advanced/ml_survival_benchmark) ──
@@ -954,7 +976,15 @@ export default function MLPanel() {
               {/* Importance table + export */}
               <div className="panel space-y-2">
                 <div className="flex items-center justify-between">
-                  <h4 className="text-sm font-semibold text-gray-700">Feature importance</h4>
+                  <div>
+                    <h4 className="text-sm font-semibold text-gray-700">Feature importance</h4>
+                    {result.importance_scope && (
+                      <p className="text-[10px] text-gray-500">
+                        Permutation {result.importance_metric ?? ""} measured on {result.importance_scope};
+                        one row per variable, not per dummy.
+                      </p>
+                    )}
+                  </div>
                   <ResultExporter
                     title={`ML_${result.model}_${result.outcome}`}
                     headers={["Feature", "Permutation", "SD", "Impurity"]}
@@ -1010,6 +1040,33 @@ export default function MLPanel() {
               {result.interpretation && (
                 <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-3 py-2 text-xs text-indigo-900 leading-relaxed">
                   {result.interpretation}
+                </div>
+              )}
+
+              {result.imputation && (
+                <div className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-[10px] text-gray-600 leading-snug space-y-0.5">
+                  <p>
+                    <b>Missing data:</b> {result.imputation.label}
+                    {result.imputation.fitted_per_fold
+                      ? ", refitted inside each training fold."
+                      : "."}
+                    {result.imputation.applied !== result.imputation.requested &&
+                      ` Requested "${result.imputation.requested}".`}
+                  </p>
+                  <p>
+                    Outcomes are never imputed:{" "}
+                    {result.imputation.n_excluded_missing_outcome} row
+                    {result.imputation.n_excluded_missing_outcome === 1 ? "" : "s"} without an
+                    observed outcome and {result.imputation.n_excluded_incomplete_predictors} with
+                    incomplete predictors were excluded from <i>n</i>.
+                  </p>
+                  {!result.imputation.pooled && result.imputation.n_imputations === 1 &&
+                    result.imputation.applied !== "listwise" && (
+                    <p className="text-amber-700">
+                      One completed dataset, so the imputed cells are treated as if observed. For
+                      inference, use the multiple-imputation panel, which pools by Rubin&rsquo;s rules.
+                    </p>
+                  )}
                 </div>
               )}
 

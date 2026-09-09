@@ -133,15 +133,20 @@ def test_explicit_task_overrides_the_auto_resolution(client, sid):
     assert r.json()["task"] == "classification"
 
 
-def test_categorical_predictor_is_one_hot_encoded(client, sid):
+def test_categorical_predictor_is_reported_by_source_column(client, sid):
+    """One row per predictor, not per dummy.
+
+    The column is still one-hot encoded for the model (inside the per-fold
+    pipeline), but permuting a single level while its siblings stay put is not
+    a question anyone asks, so the importance is aggregated back to `cat`.
+    """
     r = _post(client, session_id=sid, outcome="yreg",
               predictors=["signal", "cat"])
     assert r.status_code == 200, r.text
     features = {row["feature"] for row in r.json()["importance"]}
-    # drop_first=True, so the two-level column yields exactly one dummy.
-    assert features == {"signal", "cat_b"}
+    assert features == {"signal", "cat"}
     imp = _by_feature(r.json())
-    assert imp["signal"]["permutation"] > imp["cat_b"]["permutation"]
+    assert imp["signal"]["permutation"] > imp["cat"]["permutation"]
 
 
 def test_results_are_deterministic_for_a_fixed_random_state(client, sid):
@@ -159,7 +164,11 @@ def test_response_is_the_trimmed_screening_payload(client, sid):
     d = _post(client, session_id=sid, outcome="y",
               predictors=["signal", "noise1"]).json()
     assert set(d) == {"model", "task", "n", "outcome", "importance",
+                      "importance_scope", "importance_metric", "imputation",
                       "interpretation"}
+    # The scope is part of the payload because "importance" alone does not say
+    # whether it was measured where the model could have memorised the answer.
+    assert d["importance_scope"] == "held-out folds"
     for heavy in ("roc_curve", "calibration", "confusion", "auc", "scatter"):
         assert heavy not in d
     for row in d["importance"]:
