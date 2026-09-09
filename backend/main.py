@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from middleware.security_headers import SecurityHeadersMiddleware
+from middleware.provenance_headers import ProvenanceHeadersMiddleware
 
 try:
     import psutil
@@ -32,6 +33,7 @@ except ImportError as exc:  # pragma: no cover - depends on the install profile
     agent = None
     _AGENT_IMPORT_ERROR = str(exc)
 from services import store
+from services.runtime_identity import PROVENANCE_HEADERS, runtime_identity
 
 app = FastAPI(title="Wizard Stats API", version="1.0.0")
 
@@ -65,6 +67,11 @@ async def _value_error_handler(request: Request, exc: ValueError) -> JSONRespons
 
 
 app.add_middleware(SecurityHeadersMiddleware)
+# Every /api response says which engine, runtime and library versions produced
+# it. See services/runtime_identity.py for why this is a header rather than a
+# field in each body, and why "R-based statistics" in the header bar was not an
+# answer to the question.
+app.add_middleware(ProvenanceHeadersMiddleware)
 
 # CORS: env-driven origin allow-list. Wildcard ("*") rejected by the OWASP
 # semgrep gate, and dangerous in production anyway because it disables
@@ -85,6 +92,10 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    # Custom response headers are invisible to cross-origin JavaScript unless
+    # they are named here, and provenance the client cannot read is provenance
+    # that does not exist.
+    expose_headers=list(PROVENANCE_HEADERS),
 )
 
 app.include_router(upload.router, prefix="/api/upload", tags=["upload"])
@@ -193,6 +204,10 @@ def engine_identity():
     info = _python_engine_identity()
     info["python"] = dict(info)
     info["r"] = r_identity()
+    # What is actually installed, as opposed to what the engine's own sources
+    # fingerprint to. A result is reproducible from library versions, not from
+    # the digest of our code, and until now nothing reported them.
+    info["runtime"] = runtime_identity()
     return info
 
 
