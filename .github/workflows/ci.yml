@@ -57,7 +57,7 @@ jobs:
         run: python -m pytest --cov=routers --cov=services --cov=ustat_engine --cov-report=term-missing --cov-fail-under=75 -q
 
   frontend:
-    name: Frontend (typecheck + test + build)
+    name: Frontend (typecheck + lint + test + build)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -80,6 +80,12 @@ jobs:
         run: npm ci --legacy-peer-deps
       - name: Typecheck
         run: npx tsc -b
+      # --quiet: errors fail the job, warnings do not block merges. The rule
+      # set lives in eslint.config.js; this step exists so a rule violation
+      # surfaces here rather than in whoever's editor happens to have the
+      # plugin installed.
+      - name: Lint
+        run: npx eslint . --quiet
       # These 575 tests existed and had never run in CI. Among them is the
       # check that no dataset file is sitting in public/ waiting to be
       # published, which is worth nothing if it only runs when someone

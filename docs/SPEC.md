@@ -10,17 +10,26 @@ desktop app.
 ```
 frontend (React/Vite, Zustand store, ~36 Panel components, one per tab/sub-tab)
    |  axios -> /api/*
-backend (FastAPI, 33 routers, 34 service modules, in-memory + disk-persisted
-         session store keyed by session_id)
+backend (FastAPI, 33 routers, 34 service modules, in-memory session store
+         keyed by session_id; optional opt-in disk snapshots)
 ```
 
 - **Session model**: upload a CSV/XLSX/STATA file -> backend parses into a
   DataFrame, infers column kinds (numeric/categorical/datetime), stores it
   in `services/store.py` keyed by `session_id`. All later panel calls pass
-  that `session_id`. Sessions autosave to disk (`{sid}.pkl` + `.meta.json`)
-  every 20s if dirty, and rehydrate on backend restart.
+  that `session_id`. Disk autosave is **opt-in and off by default**: only
+  with `SESSION_DISK_CACHE=1` do sessions snapshot to disk (`{sid}.pkl` +
+  `.meta.json`, every 20s if dirty) and rehydrate on backend restart. By
+  default no session data ever touches the disk; resume-after-restart is
+  covered client-side by the browser's IndexedDB autosave.
 - **No auth** — single-user local/desktop tool.
-- **No database** — sessions are the only persisted state, file-backed.
+- **No database**: by default sessions live only in RAM (file-backed only
+  under the opt-in flag above).
+- **Local engines**: the server is not the only place statistics run. A
+  short allow-list of analyses can execute in-browser (webR or Pyodide via
+  `frontend/src/lib/engine/localFirst.ts`) when the user picks a local
+  engine; everything else remains a POST to the server's Python. Every
+  result reports the runtime and engine that actually produced it.
 - **Blank workspace**: "New file" seeds a placeholder session (empty rows/
   columns) without requiring an upload; columns activate on rename, cells
   populate on edit.
@@ -93,16 +102,19 @@ summary by area:
   (`fmtP`, `fmtPubP`, `fmtPFull`, `pCellTitle`, `fmtPubPHtml`) — new code
   should use these rather than ad hoc formatting.
 
-## Test status (as of this assessment)
+## Test status
 
-- **Backend**: 730 passed, 0 failed, 2 skipped (`kaleido` optional dep for
-  static image export). pytest + Vitest run clean via
-  `backend/.venv/bin/python -m pytest -q` and `cd frontend && npx vitest run`.
-- **Frontend**: Vitest + React Testing Library + MSW stood up
-  (`frontend/vitest.config.ts`, `frontend/src/test/`). 294 tests: unit tests
-  for `lib/format.ts`, `lib/commandParser.ts`, `lib/commandSchema.ts`,
-  `lib/exportDataset.ts`, `lib/styledTable.ts`, plus a render/request/
-  loading/error smoke test for all 36 Panel components.
-- `npx tsc --noEmit` and `npx eslint . --quiet` both clean.
-- See the improvement-opportunities report (delivered alongside this spec)
-  for real bugs found during this pass and follow-up suggestions.
+Counts drift; CI (`.github/workflows/ci.yml`) is the source of truth. For
+scale, as of 2026-09-09: ~1900 backend tests (pytest, via
+`backend/.venv/bin/python -m pytest -q`) and ~800 frontend tests (Vitest +
+React Testing Library + MSW, via `cd frontend && npx vitest run`), covering
+unit tests for the `lib/` modules plus render/request/loading/error smoke
+tests for every Panel component.
+
+- Typecheck is `npx tsc -b` (project references; `tsc --noEmit` checks
+  nothing here). Lint is `npx eslint . --quiet`. Both run in CI alongside
+  the test suites and the production build.
+- See [IMPROVEMENT_OPPORTUNITIES.md](IMPROVEMENT_OPPORTUNITIES.md) for bugs
+  found during the original assessment and follow-up suggestions, and
+  [ROADMAP_product_maturity.md](ROADMAP_product_maturity.md) for the
+  product bar this spec feeds into.

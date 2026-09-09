@@ -20,8 +20,11 @@ advanced causal inference, missing-data sensitivity, external validation,
 survival ML benchmarking, and decision curve analysis — without installing anything.
 
 The backend has been completely refactored into a clean, maintainable services layer
-(20+ focused pure modules) with thin routers. All statistical work happens server-side
-in pure Python using peer-reviewed libraries (scipy, statsmodels, lifelines, scikit-learn).
+(20+ focused pure modules) with thin routers. By default, statistical work happens
+server-side in pure Python using peer-reviewed libraries (scipy, statsmodels,
+lifelines, scikit-learn). A growing allow-list of analyses can instead run entirely
+in your browser (R via webR, or Python via Pyodide) when you pick a local engine;
+every result states which runtime and engine actually produced it.
 
 > ⚠️ **Not a medical device.** uSTAT has **not yet been validated through
 > peer-reviewed publications**. Independent validation against SPSS, R, and
@@ -243,7 +246,9 @@ uSTAT follows a clean **services-first** architecture (major refactor completed 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
 │ Browser (React 19 + Plotly + zustand)                              │
-│   – UI state, charts, and result rendering only                    │
+│   – UI state, charts, result rendering                             │
+│   – optional local engines (R via webR / Python via Pyodide) for   │
+│     an allow-list of analyses, with fallback to the server         │
 └──────────────────────────────────────────────┬─────────────────────┘
                                                │ HTTPS + security headers
 ┌──────────────────────────────────────────────▼─────────────────────┐
@@ -263,8 +268,12 @@ uSTAT follows a clean **services-first** architecture (major refactor completed 
 
 Key invariants:
 
-- **Server-side computation.** The frontend renders results; it does not run
-  statistical algorithms.
+- **Server-side computation by default.** The frontend renders results; the
+  server computes them. The exception is deliberate and visible: a short
+  allow-list of analyses can run in-browser (R via webR, Python via Pyodide;
+  `frontend/src/lib/engine/localFirst.ts`) when the user chooses a local
+  engine, with automatic fallback to the server and a per-result statement
+  of which runtime and engine produced the number.
 - **No persistence (default).** Uploaded data lives only in server RAM and is
   discarded after `SESSION_TTL_SECONDS` (default 1800). Nothing is written to
   disk. (An optional `SESSION_DISK_CACHE=1` operator flag can snapshot sessions
