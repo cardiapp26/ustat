@@ -94,6 +94,33 @@ export async function downloadProjectFile(session: MinimalSession): Promise<void
   }
 }
 
+/** Download the replay script (.py): import + recorded prep steps + export,
+ *  plus the saved analyses as definitions. Generated server-side from the
+ *  prep recipe; see backend/services/script_export.py. */
+export async function downloadAnalysisScript(session: MinimalSession): Promise<void> {
+  try {
+    const { collectUiState } = await import("./projectUiState");
+    const res = await api.post(
+      `/api/project/${session.session_id}/script`,
+      { ui_state: collectUiState() },
+      { responseType: "blob" },
+    );
+    const blob = new Blob([res.data], { type: "text/x-python" });
+    const url = URL.createObjectURL(blob);
+    const base = (session.filename ?? "project").replace(/\.[^.]+$/, "");
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${base}_replay.py`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (e: unknown) {
+    console.error("Script export failed:", e);
+    alert(`Script export failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 /** Download the session JSON (data + labels + filters + audit). */
 export async function downloadSessionJson(session: MinimalSession): Promise<void> {
   try {

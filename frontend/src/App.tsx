@@ -5,7 +5,7 @@ import { clearCases, saveSession as saveSessionApi } from "./api";
 import AboutModal from "./components/AboutModal";
 import HelpModal from "./components/HelpModal";
 import { useAutoSession } from "./hooks/useAutoSession";
-import { exportDataset, downloadSessionJson, downloadProjectFile, type ExportFmt } from "./lib/exportDataset";
+import { exportDataset, downloadSessionJson, downloadProjectFile, downloadAnalysisScript, type ExportFmt } from "./lib/exportDataset";
 
 class ErrorBoundary extends Component<
   { children: ReactNode },
@@ -953,6 +953,15 @@ export default function App() {
                     <div>
                       <p className="text-xs text-gray-700 font-medium">Project (.ustat)</p>
                       <p className="text-[10px] text-gray-400">Data + dictionary + filters + audit + provenance</p>
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => { setShowHeaderSaveMenu(false); downloadAnalysisScript(session); }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-gray-50 transition-colors"
+                  >
+                    <div>
+                      <p className="text-xs text-gray-700 font-medium">Replay script (.py)</p>
+                      <p className="text-[10px] text-gray-400">Import + prep steps + analysis definitions</p>
                     </div>
                   </button>
                   <button

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { downloadProjectFile, downloadSessionJson, exportDataset } from './exportDataset'
+import { downloadAnalysisScript, downloadProjectFile, downloadSessionJson, exportDataset } from './exportDataset'
 import api from '../api'
 
 vi.mock('../api', () => ({
@@ -224,5 +224,53 @@ describe('downloadProjectFile', () => {
     window.alert = alertSpy
     await downloadProjectFile({ session_id: 'sess1' })
     expect(alertSpy).toHaveBeenCalledWith('Save project failed: boom')
+  })
+})
+
+describe('downloadAnalysisScript', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    URL.createObjectURL = vi.fn(() => 'blob:mock-url')
+    URL.revokeObjectURL = vi.fn()
+    window.alert = vi.fn()
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+    mockedPost.mockReset()
+  })
+
+  it('POSTs the panel state to the script endpoint and downloads a _replay.py', async () => {
+    mockedPost.mockResolvedValue({ data: new Blob(['#!/usr/bin/env python3']), headers: {} })
+    let downloadName = ''
+    const origCreateElement = document.createElement.bind(document)
+    vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
+      const el = origCreateElement(tag)
+      if (tag === 'a') {
+        el.click = vi.fn()
+        Object.defineProperty(el, 'download', {
+          get: () => downloadName,
+          set: (v: string) => { downloadName = v },
+        })
+      }
+      return el
+    })
+
+    await downloadAnalysisScript({ session_id: 'sess1', filename: 'trial.csv' })
+
+    const [url, body] = mockedPost.mock.calls[0]
+    expect(url).toBe('/api/project/sess1/script')
+    expect((body as { ui_state: { panelCache: unknown } }).ui_state.panelCache).toBeDefined()
+    expect(downloadName).toBe('trial_replay.py')
+  })
+
+  it('alerts on failure', async () => {
+    mockedPost.mockRejectedValue(new Error('boom'))
+    const alertSpy = vi.fn()
+    window.alert = alertSpy
+    await downloadAnalysisScript({ session_id: 'sess1' })
+    expect(alertSpy).toHaveBeenCalledWith('Script export failed: boom')
   })
 })

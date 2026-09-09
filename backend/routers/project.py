@@ -12,7 +12,7 @@ from typing import Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 
 from services import store
@@ -65,6 +65,28 @@ def _save(session_id: str, ui_state: Optional[dict]):
             )
         },
     )
+
+
+@router.post("/{session_id}/script")
+async def export_script(session_id: str, body: SaveProjectRequest, lang: str = "python"):
+    """The project's replay script: import, recorded prep steps, export,
+    saved-analysis definitions. See services/script_export.py for why it
+    replays the API rather than translating steps to pandas."""
+    if lang != "python":
+        raise HTTPException(status_code=400, detail="Only lang=python is supported for now.")
+    if not store.exists(session_id):
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    from services.script_export import generate_python_script
+
+    ui_state = body.ui_state or {}
+    analyses = ui_state.get("savedAnalyses") if isinstance(ui_state, dict) else None
+    script = generate_python_script(
+        steps=store.get_steps(session_id),
+        analyses=analyses if isinstance(analyses, list) else None,
+        project_name=store.get_filename(session_id) or session_id[:8],
+    )
+    return PlainTextResponse(script, media_type="text/x-python")
 
 
 @router.post("/load")

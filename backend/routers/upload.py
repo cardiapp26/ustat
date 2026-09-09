@@ -396,6 +396,12 @@ async def upload_file(request: Request, file: UploadFile = File(...)):
     # in sessionDb.ts cannot collapse.
     store.set_filename(session_id, file.filename)
 
+    # First entry of the prep recipe. The mutation middleware cannot record
+    # imports (the session id is born in this response), so the recipe's
+    # opening step is written here: without it a generated script has no
+    # starting point to replay from.
+    store.log_step(session_id, "import", {"filename": file.filename})
+
     columns = []
     kind_overrides = {}
     for col in df.columns:

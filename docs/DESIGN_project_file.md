@@ -49,9 +49,23 @@ HTTP, and a restored project seeds the new session's recipe so history
 appends rather than restarts. Ops are route slugs (`compute/formula`,
 `sessions/select_cases`); that is the op vocabulary. Honest limitation:
 undo/redo are recorded as steps because they happened, but a replayer or
-script generator must surface them as warnings, not code. Still open:
-script export generated from the recipe + saved analyses, `plots/` as
-separate parts, one-click re-run from stored params, seeds.
+script generator must surface them as warnings, not code.
+
+Script export landed 2026-09-10 (`services/script_export.py`,
+`POST /api/project/{sid}/script`, Save menu "Replay script (.py)"). The
+script REPLAYS the recorded requests against a running uSTAT backend
+rather than translating steps to pandas: translation is a second
+implementation of every op, and two implementations of `recode` is how a
+script and the GUI drift apart; replay goes through the same code path,
+so the prepared dataset is identical by construction, and undo/redo
+replay correctly because the server replays its own undo stack. The
+upload router now writes the recipe's opening `import` step (the
+middleware cannot see the session id being born). Saved analyses appear
+in the script as definitions (name, panel, params), not guessed calls: a
+snapshot records its params but not its endpoint. Still open: an R
+flavor of the script, a pandas/R *translation* view per analysis (the
+jamovi-style syntax mode), `plots/` as separate parts, one-click re-run
+from stored params, seeds.
 
 ## Goal
 
