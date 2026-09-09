@@ -1,0 +1,19 @@
+{
+  "version": "1.2",
+  "filename": "legacy study",
+  "created": 1750000000.0,
+  "columns": [
+    {"name": "age", "dtype": "object", "kind": "numeric"},
+    {"name": "sex", "dtype": "object", "kind": "categorical"}
+  ],
+  "col_metadata": {"sex": {"value_labels": {"f": "Female", "m": "Male"}}},
+  "kind_overrides": {"sex": "categorical"},
+  "decimals_overrides": {"age": 2},
+  "case_filter": [{"column": "sex", "op": "==", "value": "f"}],
+  "audit": [{"action": "upload", "params": {"filename": "legacy.csv"}, "timestamp": 1750000000.0}],
+  "data": [
+    {"age": "34", "sex": "f"},
+    {"age": "51", "sex": "m"},
+    {"age": "47", "sex": "f"}
+  ]
+}

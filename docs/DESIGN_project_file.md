@@ -1,7 +1,12 @@
 # uSTAT Project File (.ustat) Design
 
-Status: proposed (2026-09-09). Implements the P0 "Project file" row of
-[ROADMAP_product_maturity.md](ROADMAP_product_maturity.md).
+Status: Phase 1 backend landed (2026-09-09): container build/parse/restore
+in `backend/services/project_file.py`, `/api/project/{sid}/save` and
+`/api/project/load` in `backend/routers/project.py`, legacy v1.x JSON
+import, round-trip and integrity tests in
+`backend/tests/test_project_file.py`. Frontend adoption (autosave stores
+`.ustat`, Save/Open UI) and Phases 2-4 remain. Implements the P0 "Project
+file" row of [ROADMAP_product_maturity.md](ROADMAP_product_maturity.md).
 
 ## Goal
 

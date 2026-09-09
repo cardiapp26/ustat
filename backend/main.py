@@ -20,7 +20,7 @@ from routers import (
     pub_tables, categorical, agreement, reliability, missing_data, decision_curve,
     model_compare, diagnostics, model_diagnostics, pub_export, nomogram,
     survival_advanced, article_parser, code_runner, ml, timeseries, meta,
-    multiplicity, factor, bayesian, causal, causal_sem
+    multiplicity, factor, bayesian, causal, causal_sem, project
 )
 
 # The agent router is optional: it needs httpx + openai, which a slim
@@ -103,6 +103,7 @@ app.include_router(stats.router, prefix="/api/stats", tags=["stats"])
 app.include_router(charts.router, prefix="/api/charts", tags=["charts"])
 app.include_router(models.router, prefix="/api/models", tags=["models"])
 app.include_router(session.router, prefix="/api/sessions", tags=["sessions"])
+app.include_router(project.router, prefix="/api/project", tags=["project"])
 app.include_router(compute.router, prefix="/api/compute", tags=["compute"])
 app.include_router(repeated.router, prefix="/api/repeated", tags=["repeated"])
 app.include_router(advanced_anova.router, prefix="/api/advanced_anova", tags=["advanced_anova"])
