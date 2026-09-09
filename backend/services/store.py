@@ -33,6 +33,7 @@ _metadata: Dict[str, dict] = {}
 _kinds: Dict[str, Dict[str, str]] = {}  # {session_id: {col: "numeric"|"categorical"|...}}
 _decimals: Dict[str, Dict[str, int]] = {}  # {session_id: {col: decimal_places}} for cell-format overrides
 _filenames: Dict[str, str] = {}  # {session_id: user-chosen display name}
+_ingest: Dict[str, dict] = {}  # {session_id: {"report": {...}, "preserved": {col: {row: raw}}}}
 _undo: Dict[str, list] = {}   # {session_id: [data + dependent-state snapshots]}
 _redo: Dict[str, list] = {}
 _lock = Lock()
@@ -44,7 +45,7 @@ VALID_FILTER_OPERATORS = _select.VALID_FILTER_OPERATORS
 
 # Every per-session map, so cleanup/delete can drop a session completely
 # (a partial pop leaks the user's kinds/decimals/filename/filters after TTL).
-_SESSION_MAPS: tuple = (_store, _filters, _audit, _metadata, _kinds, _decimals, _filenames, _undo, _redo)
+_SESSION_MAPS: tuple = (_store, _filters, _audit, _metadata, _kinds, _decimals, _filenames, _ingest, _undo, _redo)
 
 
 def _purge_locked(session_id: str) -> None:
@@ -348,6 +349,18 @@ def delete_row(session_id: str, row_index: int) -> bool:
 
 
 
+def exists(session_id: str) -> bool:
+    """Is there a live session with this id?
+
+    A plain existence check, for endpoints that serve session *provenance*
+    rather than its data. They must not reach for ``get`` -- the Select Cases
+    guard in test_case_filter_analysis_scope.py reads that call as an analysis
+    router bypassing the case filter, and it is right to.
+    """
+    with _lock:
+        return session_id in _store
+
+
 def get(session_id: str) -> Optional[pd.DataFrame]:
     """Get dataframe and update access timestamp."""
     with _lock:
@@ -597,6 +610,35 @@ def set_kind_overrides(session_id: str, overrides: Dict[str, str]) -> None:
 def get_kind_overrides(session_id: str) -> Dict[str, str]:
     with _lock:
         return dict(_kinds.get(session_id, {}))
+
+
+# ── Import coercion report ───────────────────────────────────────────────────
+# What the importer changed on the way in, and the verbatim originals of the
+# cells it blanked. Kept beside the frame rather than inside it because it is
+# provenance, not data: it must survive every edit to the dataset and must
+# never be mistaken for a column. See services/ingest_coercion.py for what a
+# report contains and why a value at a measurement limit is not missingness.
+
+def save_ingest_report(session_id: str, report: dict, preserved: Optional[dict] = None) -> None:
+    """Record the import report and the raw text of every blanked cell."""
+    with _lock:
+        _ingest[session_id] = {
+            "report": deepcopy(report or {}),
+            "preserved": deepcopy(preserved or {}),
+        }
+        _dirty.add(session_id)
+
+
+def get_ingest_report(session_id: str) -> dict:
+    """The import report, or ``{}`` when the session was not imported from a file."""
+    with _lock:
+        return deepcopy(_ingest.get(session_id, {}).get("report", {}))
+
+
+def get_preserved_cells(session_id: str) -> Dict[str, Dict[int, str]]:
+    """``{column: {row position: original text}}`` for cells the import blanked."""
+    with _lock:
+        return deepcopy(_ingest.get(session_id, {}).get("preserved", {}))
 
 
 def clear_kind_override(session_id: str, column: str) -> None:

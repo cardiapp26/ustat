@@ -12,6 +12,7 @@ import pyreadstat
 from fastapi import APIRouter, UploadFile, File, HTTPException, Request
 from loguru import logger
 from services import store
+from services.ingest_coercion import coerce_with_report
 
 router = APIRouter()
 
@@ -28,71 +29,19 @@ _DATE_PATTERNS = [
     re.compile(r"^\d{4}[/\-.]\d{1,2}[/\-.]\d{1,2}[T ]\d{1,2}:\d{2}"),   # 2024-01-02T13:45
 ]
 
-_LEADING_ZERO_RE = re.compile(r"^0\d")  # 0123 — keep as text (likely an ID code)
-
-# Text values that mean "missing" in dirty CSV/SPSS/SAS exports. Recognised at
-# ingest so a column with "NA"/"n/a"/"?"/"." sprinkled in still classifies as
-# numeric (the sentinels become NaN instead of forcing the column to text).
-_TEXT_MISSING = frozenset({"", "na", "n/a", "?", "-", ".", "null", "missing", "none"})
-
-# Coverage threshold for the "almost-all numeric, a few text" case. When ≥98%
-# of non-blank values parse as a number, the column is numeric and the rest
-# are dirty sentinels we map to NaN.
-_NUMERIC_THRESHOLD = 0.98
-
-
-def _strip_meaningful(s: pd.Series) -> tuple[pd.Series, pd.Series]:
-    """Return (as_str, meaningful_mask). Lowercased text-missing sentinels are
-    *not* meaningful — they will be coerced to NaN downstream."""
-    as_str = s.astype(str).str.strip()
-    low = as_str.str.lower()
-    meaningful = s.notna() & (~low.isin(_TEXT_MISSING))
-    return as_str, meaningful
-
 
 def coerce_numeric_objects(df: pd.DataFrame) -> pd.DataFrame:
-    """Restore numeric dtype for object columns whose meaningful values are
-    numeric-coercible. Handles two flavours of dirty input:
+    """Restore numeric dtype for object columns whose values are numeric.
 
-    1. **Comma-decimals** (`"25,9"`): Turkish/EU locale leakage from Excel/CSV.
-       Replaced with `"."` before coercion so the column ends up float64
-       instead of object — every downstream that needs a number then works.
-
-    2. **Text-missing sentinels** (`"NA"`, `"n/a"`, `"?"`, …): mapped to NaN
-       so a single sentinel cell doesn't force the column to text.
-
-    JSON session round-trips serialise with ``default_handler=str`` and some
-    imports (Excel/SPSS with stray cells) leave genuinely-numeric columns as
-    strings. We coerce when it is *almost* lossless (≥98% of meaningful cells
-    parse) and skip values with a leading zero (e.g. ``"0123"``) that are
-    almost certainly identifier codes.
-
-    Mutates a copy and returns it; the input is left untouched.
+    Kept for callers that only want the frame -- notably the session-load path,
+    where a JSON round-trip has turned genuine numbers back into strings and
+    there is no user to show an import report to. Everything this does, and
+    every reason it might decline to convert a column, lives in
+    ``services.ingest_coercion``; see that module's docstring for why a value
+    at a measurement limit (``<0.1``) is not treated as dirty missingness.
     """
-    out = df.copy()
-    for col in out.columns:
-        s = out[col]
-        if s.dtype != object:
-            continue
-        as_str, meaningful = _strip_meaningful(s)
-        n = int(meaningful.sum())
-        if n == 0:
-            continue
-        # Preserve identifier-like codes with leading zeros.
-        if as_str[meaningful].str.match(_LEADING_ZERO_RE).any():
-            continue
-        # Try plain first; fall back to comma-decimal swap.
-        coerced = pd.to_numeric(as_str.where(meaningful), errors="coerce")
-        ok = int(coerced[meaningful].notna().sum())
-        if ok < n:
-            swapped = as_str.where(meaningful).str.replace(",", ".", regex=False)
-            coerced2 = pd.to_numeric(swapped, errors="coerce")
-            if int(coerced2[meaningful].notna().sum()) > ok:
-                coerced = coerced2
-                ok = int(coerced[meaningful].notna().sum())
-        if ok / n >= _NUMERIC_THRESHOLD:
-            out[col] = coerced
-    return out
+    frame, _report, _preserved = coerce_with_report(df)
+    return frame
 
 
 def _detect_kind(series: pd.Series) -> str:
@@ -426,10 +375,17 @@ async def upload_file(request: Request, file: UploadFile = File(...)):
     # (comma-decimals, text-as-missing sentinels). Without this, a single
     # "30,6" cell or "NA" pinned the whole column to text and every later
     # statistical endpoint either crashed or silently dropped rows.
-    df = coerce_numeric_objects(df)
+    #
+    # The report is the other half of that bargain. The salvage rewrites cells,
+    # and a rewrite nobody is told about is indistinguishable from data loss --
+    # which is what it was for a value at a measurement limit. Every change,
+    # its count, an example of it, and the verbatim original of anything
+    # blanked come back with the upload and are kept with the session.
+    df, ingest_report, preserved_cells = coerce_with_report(df)
 
     session_id = str(uuid.uuid4())
     store.save(session_id, df)
+    store.save_ingest_report(session_id, ingest_report, preserved_cells)
     if imported_metadata:
         store.save_metadata(session_id, imported_metadata)
     # Persist the uploaded filename so subsequent save_session snapshots
@@ -468,4 +424,28 @@ async def upload_file(request: Request, file: UploadFile = File(...)):
         "rows": len(df),
         "columns": columns,
         "preview": preview,
+        "ingest_report": ingest_report,
+    }
+
+
+@router.get("/{session_id}/ingest_report")
+def ingest_report(session_id: str):
+    """What the import changed, re-readable for as long as the session lives.
+
+    The upload response carries the same object, but a user who dismissed the
+    review panel (or reloaded) still has to be able to answer "which cells did
+    it blank, and what did they say?" without re-uploading the file.
+    """
+    if not store.exists(session_id):
+        raise HTTPException(status_code=404, detail="Session not found")
+    preserved = store.get_preserved_cells(session_id)
+    return {
+        "session_id": session_id,
+        "report": store.get_ingest_report(session_id),
+        # {column: [{row, value}]} -- the originals of every blanked cell, so
+        # the raw file value is recoverable from the session alone.
+        "preserved_cells": {
+            col: [{"row": int(row), "value": value} for row, value in sorted(cells.items())]
+            for col, cells in preserved.items()
+        },
     }
