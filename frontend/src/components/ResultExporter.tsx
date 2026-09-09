@@ -16,6 +16,7 @@ import { Download } from "lucide-react";
 import { plotlyToTiffBlob, downloadBlob } from "../lib/tiffEncoder";
 import { withRegisteredPlotCapture } from "../lib/plotCapture";
 import type { PlotRef, PlotCaptureHandle } from "../lib/plotTypes";
+import { provenanceLines, type Provenance } from "../lib/engine/provenance";
 
 /** Minimal shape of the Plotly module / graph-div fields we call. */
 interface PlotlyToImage {
@@ -60,7 +61,47 @@ interface Props {
   rows?: (string | number | null | undefined)[][];
   /** Plotly chart element ref for PNG export */
   plotRef?: PlotRef;
+  /**
+   * The result no longer matches the data / filter / settings it was computed
+   * under. Export is refused while this is true: a CSV or a 300 dpi PNG leaves
+   * the app with none of the context that would let a reader tell it is out of
+   * date, and it is a figure in a paper by the time anyone notices.
+   */
+  stale?: boolean;
+  /** Why it is stale, for the tooltip on the disabled buttons. */
+  staleReason?: string;
+  /**
+   * What computed the result, appended to every table export.
+   *
+   * A CSV leaves the app with none of the surrounding interface, so a figure
+   * whose engine and library versions are only on screen becomes a figure with
+   * no provenance the moment it is exported -- which is the moment it starts
+   * travelling towards a methods section.
+   */
+  provenance?: Provenance | null;
   className?: string;
+}
+
+/** Provenance as trailing rows of a table export: a blank line, then a label
+ *  per fact, so a spreadsheet shows them as a footer rather than as data. */
+function provenanceRows(
+  provenance: Provenance | null | undefined,
+  width: number,
+): (string | number | null | undefined)[][] {
+  const lines = provenanceLines(provenance);
+  if (!lines.length) return [];
+  const pad = (cells: (string | null)[]) =>
+    [...cells, ...Array(Math.max(0, width - cells.length)).fill(null)];
+  return [
+    pad([]),
+    pad(["Provenance", `Exported ${new Date().toISOString()}`]),
+    ...lines.map((line) => {
+      const colon = line.indexOf(":");
+      return colon > 0
+        ? pad([line.slice(0, colon), line.slice(colon + 1).trim()])
+        : pad([line]);
+    }),
+  ];
 }
 
 function downloadCSV(filename: string, headers: string[], rows: (string | number | null | undefined)[][]) {
@@ -189,7 +230,9 @@ async function copyTableToClipboard(headers: string[], rows: (string | number | 
   await navigator.clipboard.writeText(tsv);
 }
 
-export default function ResultExporter({ title, headers, rows, plotRef, className = "" }: Props) {
+export default function ResultExporter({
+  title, headers, rows, plotRef, stale = false, staleReason, provenance, className = "",
+}: Props) {
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   // "Copied" pill flashes for ~1.5 s on a successful copy.
@@ -197,15 +240,22 @@ export default function ResultExporter({ title, headers, rows, plotRef, classNam
 
   const safeTitle = title.replace(/[^\w\s-]/g, "").replace(/\s+/g, "_").slice(0, 50) || "export";
   const hasTable = headers && rows;
+  /** The table plus its provenance footer -- what actually gets written out. */
+  const exportRows = () =>
+    headers && rows ? [...rows, ...provenanceRows(provenance, headers.length)] : [];
   const hasPlot = !!plotRef;
 
+  const blockedTitle = staleReason
+    ? `Recompute first — this result predates ${staleReason}`
+    : "Recompute first — this result is out of date";
+
   const handle = async (format: "csv" | "xlsx" | "png" | "tiff" | "copy-table" | "copy-plot") => {
-    if (busy) return;
+    if (busy || stale) return;
     setBusy(format);
     setErr(null);
     try {
-      if (format === "csv" && headers && rows) downloadCSV(safeTitle, headers, rows);
-      if (format === "xlsx" && headers && rows) await downloadXLSX(safeTitle, headers, rows);
+      if (format === "csv" && headers && rows) downloadCSV(safeTitle, headers, exportRows());
+      if (format === "xlsx" && headers && rows) await downloadXLSX(safeTitle, headers, exportRows());
       if (format === "png" && plotRef) {
         await withRegisteredPlotCapture(plotRef, () => downloadPNG(plotRef, safeTitle));
       }
@@ -213,7 +263,7 @@ export default function ResultExporter({ title, headers, rows, plotRef, classNam
         await withRegisteredPlotCapture(plotRef, () => downloadTIFF(plotRef, safeTitle));
       }
       if (format === "copy-table" && headers && rows) {
-        await copyTableToClipboard(headers, rows);
+        await copyTableToClipboard(headers, exportRows());
         setCopyToast("Table copied — paste into Excel / Word");
         setTimeout(() => setCopyToast(null), 1500);
       }
@@ -235,29 +285,34 @@ export default function ResultExporter({ title, headers, rows, plotRef, classNam
 
   return (
     <div className={`flex items-center gap-1 ${className}`}>
-      <span className="text-[10px] text-gray-400 mr-0.5 flex items-center gap-0.5">
-        <Download size={10} /> Export
+      <span
+        className={`text-[10px] mr-0.5 flex items-center gap-0.5 ${stale ? "text-amber-600" : "text-gray-400"}`}
+        title={stale ? blockedTitle : undefined}
+      >
+        <Download size={10} /> {stale ? "Export blocked" : "Export"}
       </span>
       {hasTable && (
         <>
           <button
             onClick={() => handle("csv")}
-            disabled={!!busy}
+            disabled={!!busy || stale}
+            title={stale ? blockedTitle : undefined}
             className="px-2 py-0.5 text-[10px] font-medium rounded border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 hover:text-indigo-600 disabled:opacity-40 transition-colors"
           >
             {busy === "csv" ? "…" : "CSV"}
           </button>
           <button
             onClick={() => handle("xlsx")}
-            disabled={!!busy}
+            disabled={!!busy || stale}
+            title={stale ? blockedTitle : undefined}
             className="px-2 py-0.5 text-[10px] font-medium rounded border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 hover:text-indigo-600 disabled:opacity-40 transition-colors"
           >
             {busy === "xlsx" ? "…" : "XLSX"}
           </button>
           <button
             onClick={() => handle("copy-table")}
-            disabled={!!busy}
-            title="Copy table to clipboard as TSV — paste into Excel / Word / Google Sheets"
+            disabled={!!busy || stale}
+            title={stale ? blockedTitle : "Copy table to clipboard as TSV — paste into Excel / Word / Google Sheets"}
             className="px-2 py-0.5 text-[10px] font-medium rounded border border-gray-200 bg-white text-gray-600 hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-200 disabled:opacity-40 transition-colors"
           >
             {busy === "copy-table" ? "…" : "⧉ Copy"}
@@ -268,23 +323,24 @@ export default function ResultExporter({ title, headers, rows, plotRef, classNam
         <>
           <button
             onClick={() => handle("png")}
-            disabled={!!busy}
+            disabled={!!busy || stale}
+            title={stale ? blockedTitle : undefined}
             className="px-2 py-0.5 text-[10px] font-medium rounded border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 hover:text-indigo-600 disabled:opacity-40 transition-colors"
           >
             {busy === "png" ? "…" : "PNG 300dpi"}
           </button>
           <button
             onClick={() => handle("tiff")}
-            disabled={!!busy}
-            title="Baseline uncompressed RGB TIFF (journal-ready, larger file)"
+            disabled={!!busy || stale}
+            title={stale ? blockedTitle : "Baseline uncompressed RGB TIFF (journal-ready, larger file)"}
             className="px-2 py-0.5 text-[10px] font-medium rounded border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 hover:text-indigo-600 disabled:opacity-40 transition-colors"
           >
             {busy === "tiff" ? "…" : "TIFF 300dpi"}
           </button>
           <button
             onClick={() => handle("copy-plot")}
-            disabled={!!busy}
-            title="Copy chart to clipboard as PNG — paste into PowerPoint / Word / Slack"
+            disabled={!!busy || stale}
+            title={stale ? blockedTitle : "Copy chart to clipboard as PNG — paste into PowerPoint / Word / Slack"}
             className="px-2 py-0.5 text-[10px] font-medium rounded border border-gray-200 bg-white text-gray-600 hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-200 disabled:opacity-40 transition-colors"
           >
             {busy === "copy-plot" ? "…" : "⧉ Copy chart"}

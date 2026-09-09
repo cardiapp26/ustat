@@ -1,12 +1,18 @@
 /**
- * What is computing the numbers, said once, in the header.
+ * Which engine this SESSION runs, said once, in the header.
  *
- * WHY ONE MODULE AND NOT FIFTY BADGES. Provenance is a property of the session
- * and of the last run, not of a panel: threading `runtime`/`engine` through ~50
- * analysis panels would be ~50 chances to forget one, and the panel that got
- * forgotten is the one that quietly claims R computed something Python did. So
- * `localFirst` writes every routing decision into one store slice
- * (`engineNotices`) and these two components are the only things that read it.
+ * WHAT THIS CHIP IS NOT. It is not a claim about the result on screen. Only a
+ * short allow-list of analyses is routed to a local engine at all; everything
+ * else -- every regression, Cox model, ROC and forest -- is a POST to the
+ * server's Python. A chip reading "R-based statistics" above a number Python
+ * computed is a claim that will not reproduce, so the per-result answer lives
+ * with each result (`ResultProvenanceLine`, fed from the run's own reported
+ * engine and library versions) and this chip says only what was chosen.
+ *
+ * WHY ONE MODULE AND NOT FIFTY BADGES. `localFirst` writes every routing
+ * decision into one store slice (`engineNotices`) and these two components are
+ * the only things that read it -- threading `runtime`/`engine` through ~50
+ * analysis panels would be ~50 chances to forget one.
  *
  * Two components rather than one strip, because the two halves earn different
  * amounts of screen. `EngineChip` is always true and always short, so it sits
@@ -72,11 +78,12 @@ export function EngineChip() {
       }`}
       title={
         (isR
-          ? "This session runs R in your browser via webR."
+          ? "This session prefers R, in your browser via webR. Analyses R does not implement yet are computed by the server's Python."
           : "This session runs Python — in your browser when the analysis supports it, otherwise on the server.") +
         (resumed
           ? " It was restored with this saved session, which was worked in that engine, so it did not pass the welcome screen's choice."
-          : " Chosen on the welcome screen.")
+          : " Chosen on the welcome screen.") +
+        " Each result states the engine and library versions that actually produced it."
       }
     >
       {isR ? "R-based statistics" : "Python-based statistics"}

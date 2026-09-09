@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { runColumnStructureMutation } from "./lib/columnStructureLock";
 import type { EngineKind } from "./lib/engine/types";
+import type { IngestReport } from "./api";
 import type { LegendPosition, ThemePreset } from "./lib/plotPresets";
 
 export { runColumnStructureMutation } from "./lib/columnStructureLock";
@@ -282,6 +283,13 @@ interface AppState {
    *  an explanation of what the rollback cost. Cleared when they dismiss it. */
   sessionRecovery: SessionRecoveryNotice | null;
   setSessionRecovery: (n: SessionRecoveryNotice | null) => void;
+  /** What the importer changed on the way in, for the review panel.
+   *
+   *  A slice and not a field on `Session`, because it describes one import
+   *  event rather than the dataset: it must not ride along into a saved
+   *  session file and reappear, stale, next to data it no longer describes. */
+  ingestReport: IngestReport | null;
+  setIngestReport: (r: IngestReport | null) => void;
   activeTab: string;
   showGrid: boolean;
   plotTheme: PlotTheme;
@@ -556,6 +564,7 @@ export const useStore = create<AppState>((set, get) => ({
       localSessionId: null,
       activeTab: "data",
       table1Result: null,
+      ingestReport: null,
       caseFilter: s.case_filter ?? null,
       panelCache: {},
       undoDepth: 0,
@@ -600,6 +609,7 @@ export const useStore = create<AppState>((set, get) => ({
     originalSession: null,
     activeTab: "data",
     table1Result: null,
+    ingestReport: null,
     caseFilter: null,
     panelCache: {},
     undoDepth: 0,
@@ -838,6 +848,8 @@ export const useStore = create<AppState>((set, get) => ({
       });
     });
   },
+  ingestReport: null,
+  setIngestReport: (r) => set({ ingestReport: r }),
   setTable1Result: (r) => set({ table1Result: r }),
   clearTable1: () => set({ table1Result: null }),
   panelCache: {},

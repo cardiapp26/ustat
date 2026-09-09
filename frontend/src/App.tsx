@@ -55,6 +55,7 @@ class ErrorBoundary extends Component<
 import { useStore } from "./store";
 import UploadZone from "./components/UploadZone";
 import { EngineChip, EngineFallbackNotice } from "./components/EngineProvenance";
+import IngestReportNotice from "./components/IngestReportNotice";
 import DataTable from "./components/DataTable";
 import DescriptivePanel from "./components/DescriptivePanel";
 import ChartsPanel from "./components/ChartsPanel";
@@ -1013,6 +1014,10 @@ export default function App() {
       {/* Shown only when an R session's current tab was answered by Python —
           see EngineProvenance for why this half is a band and the chip is not. */}
       <EngineFallbackNotice />
+
+      {/* What import changed on the way in. Sits above the tabs because it is
+          about the dataset as a whole, not about any one analysis. */}
+      <IngestReportNotice />
 
       {/* Content */}
       <main className="flex-1 overflow-hidden flex flex-col">

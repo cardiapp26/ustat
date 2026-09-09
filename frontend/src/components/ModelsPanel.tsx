@@ -4,6 +4,11 @@ import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
 import { runLinear, runLogistic, runFirthLogistic, runKM, runCox, runLogisticTable, runPoisson, runCoxUniMulti, runOrdinal, runMultiOutcomeRegression } from "../api";
 import { Tip, InfoBanner } from "./Tip";
 import ResultExporter from "./ResultExporter";
+import StaleResultNotice from "./StaleResultNotice";
+import ResultProvenanceLine from "./ResultProvenanceLine";
+import { useStampedResult } from "../hooks/useStampedResult";
+import { describeStale } from "../lib/resultStamp";
+import type { Provenance } from "../lib/engine/provenance";
 import { fmtP, pCellTitle } from "../lib/format";
 import { MissingGuard, type ImputationStrategy } from "./MissingGuard";
 import { type ColMeta } from "../store";
@@ -170,13 +175,9 @@ export default function ModelsPanel() {
   const [eventCol, setEventCol] = usePersistedPanelState<string>("models", "eventCol", binaryCols[0] ?? numCols[1] ?? "");
   const [groupCol, setGroupCol] = usePersistedPanelState<string>("models", "groupCol", "");
   const [stratifyCol, setStratifyCol] = usePersistedPanelState<string>("models", "stratifyCol", "");
-  const cachedModels = useStore((s) => s.panelCache.models) as { result?: ModelResult | null } | undefined;
-  const setCacheModels = useStore((s) => s.setPanelCache);
   const setForestHandoff = useStore((s) => s.setForestHandoff);
   const setActiveTab = useStore((s) => s.setActiveTab);
   const setVisualSubTab = useStore((s) => s.setVisualSubTab);
-  const [result, _setResultRaw] = useState<ModelResult | null>(cachedModels?.result ?? null);
-  const setResult = (r: ModelResult | null) => { _setResultRaw(r); setCacheModels("models", { result: r }); };
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [imputation, setImputation] = useState<ImputationStrategy>("listwise");
@@ -188,6 +189,20 @@ export default function ModelsPanel() {
   const [moCovariates, setMoCovariates] = usePersistedPanelState<string[]>("models", "moCovariates", []);
   const [moStandardize, setMoStandardize] = useState(true);
   const [moRobust, setMoRobust] = useState(false);
+
+  // Everything the fit depends on, and nothing that only affects how it is
+  // displayed afterwards -- `selectedCoefIdx` and `nullHyp` are read off the
+  // returned coefficients, so listing them here would mark a perfectly current
+  // model stale for clicking a row.
+  const runParams = {
+    model, outcome, predictors, parsimonious, references, glmInteractions,
+    selection, durationCol, eventCol, groupCol, stratifyCol,
+    imputation, robustSE, scaleFactors,
+    moOutcomes, moPredictors, moCovariates, moStandardize, moRobust,
+  };
+  const {
+    result, setResult, stale, staleReasons: staleWhy, stamp,
+  } = useStampedResult<ModelResult>("models", runParams);
 
   // All hooks above run unconditionally (react-hooks/rules-of-hooks). The
   // session guard sits here, after every hook is declared.
@@ -883,6 +898,17 @@ export default function ModelsPanel() {
           </div>
         )}
 
+        {result && <ResultProvenanceLine provenance={stamp?.provenance} />}
+
+        {result && stale && (
+          <StaleResultNotice
+            reasons={staleWhy}
+            onRecompute={run}
+            busy={loading}
+            what={`This ${result.model ?? "model"}`}
+          />
+        )}
+
         {result ? (
           isHRTable && result.rows ? (
             <div className="panel">
@@ -902,7 +928,7 @@ export default function ModelsPanel() {
               />
             </div>
           ) : isMultiOutcome ? (
-            <MultiOutcomeResult result={result} standardize={moStandardize} />
+            <MultiOutcomeResult result={result} standardize={moStandardize} stale={stale} staleReason={describeStale(staleWhy)} provenance={stamp?.provenance} />
           ) : (
           <div className="space-y-4">
             {/* Summary cards */}
@@ -1194,7 +1220,13 @@ type MultiOutcomeResultData = {
 function MultiOutcomeResult({
   result,
   standardize,
+  stale = false,
+  staleReason,
+  provenance,
 }: {
+  stale?: boolean;
+  staleReason?: string;
+  provenance?: Provenance | null;
   result: MultiOutcomeResultData | null;
   standardize: boolean;
 }) {
@@ -1233,7 +1265,7 @@ function MultiOutcomeResult({
     <div className="panel space-y-3">
       <div className="flex items-center justify-between">
         <h4 className="font-semibold text-gray-900">Multi-outcome regression</h4>
-        <ResultExporter title="multi_outcome_regression" headers={exportHeaders} rows={exportRows} />
+        <ResultExporter title="multi_outcome_regression" headers={exportHeaders} rows={exportRows} stale={stale} staleReason={staleReason} provenance={provenance} />
       </div>
 
       {/* Plain-English result_text */}

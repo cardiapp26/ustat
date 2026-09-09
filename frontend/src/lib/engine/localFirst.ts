@@ -17,6 +17,8 @@
 import type { EngineKind, Runtime } from "./types";
 import { useStore } from "../../store";
 import { PYTHON_ENGINE_DETAIL } from "./engineDetail";
+import { PYTHON_VERSION, SCIPY_VERSION } from "./engineDetail";
+import { latest as latestProvenance, record as recordProvenance, type Provenance } from "./provenance";
 import {
   LocalComputeUnavailable,
   ensureEngineBooted,
@@ -55,6 +57,38 @@ export function recentDecisions(): ReadonlyArray<{
   return decisions;
 }
 
+/**
+ * A local run's own provenance.
+ *
+ * The browser's Python is the Pyodide wheel, whose scipy is pinned to the
+ * server's in backend/requirements.txt -- so the version is knowable without
+ * asking the runtime, and `engineDetail.test.ts` fails if the pin moves
+ * without these constants moving with it. R reports its own versions at boot,
+ * which arrive in `engineDetail` as a display string; the structured half is
+ * parsed back out of it rather than guessed.
+ */
+function localProvenance(engine: EngineKind, engineDetail?: string): Provenance {
+  if (engine === "r") {
+    // "R 4.5.2 · webR 0.6.0" -- take the R version, leave the rest to the label.
+    const rVersion = /R\s+([\d.]+)/.exec(engineDetail ?? "")?.[1];
+    const webr = /webR\s+([\d.]+)/.exec(engineDetail ?? "")?.[1];
+    return {
+      runtime: "local",
+      engine: "r",
+      languageVersion: rVersion,
+      packages: webr ? { webR: webr } : {},
+      at: Date.now(),
+    };
+  }
+  return {
+    runtime: "local",
+    engine: "python",
+    languageVersion: PYTHON_VERSION,
+    packages: { scipy: SCIPY_VERSION },
+    at: Date.now(),
+  };
+}
+
 function record(
   analysisId: string,
   runtime: Runtime,
@@ -64,6 +98,18 @@ function record(
 ): void {
   decisions.push({ analysisId, runtime, engine, reason });
   if (decisions.length > MAX_DECISIONS) decisions.shift();
+  // A local run has no response headers to read, so it reports itself into the
+  // same ledger the axios interceptor writes to. Server answers are recorded
+  // there by the interceptor and must not be overwritten here with a guess.
+  if (runtime === "local") {
+    recordProvenance(analysisId, localProvenance(engine, engineDetail));
+  } else if (reason) {
+    // The server's own headers already told the interceptor which versions
+    // answered; only the reason it was asked at all is known here. Keep the
+    // versions, add the reason -- inventing either would be worse than both.
+    const answered = latestProvenance();
+    if (answered) recordProvenance(analysisId, { ...answered, fellBackBecause: reason });
+  }
   // The store slice the badge bar reads. Kept here rather than in the panels so
   // that provenance cannot be reported by some analyses and not others.
   try {

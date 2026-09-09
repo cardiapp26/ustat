@@ -2,6 +2,9 @@ import React, { useState, useEffect, useRef } from "react";
 import { useStore, type Session } from "../store";
 import api from "../api";
 import ResultExporter from "./ResultExporter";
+import StaleResultNotice from "./StaleResultNotice";
+import ResultProvenanceLine from "./ResultProvenanceLine";
+import { describeStale, makeStamp, staleReasons, type ResultStamp } from "../lib/resultStamp";
 import { fmtP, warningText } from "../lib/format";
 import { labelFor } from "../lib/valueLabels";
 
@@ -227,6 +230,20 @@ function Table1PanelBody({ session }: { session: Session }) {
       }
     | undefined;
   const setPanelCache = useStore((s) => s.setPanelCache);
+  const dataVersion = useStore((s) => s.dataVersion);
+  const caseFilter = useStore((s) => s.caseFilter);
+  const engine = useStore((s) => s.engine);
+  // The stamp lives beside the form snapshot rather than in the table1Result
+  // slice, because the slice is written by three row-level editors as well as
+  // by `run` -- reordering rows or renaming a group edits the table that was
+  // computed, it does not recompute it, and re-stamping there would clear a
+  // staleness warning that is still true.
+  const table1Stamp = (useStore((s) => s.panelCache?.table1) as { stamp?: ResultStamp | null } | undefined)?.stamp ?? null;
+  const writeStamp = (stamp: ResultStamp | null) => {
+    const cur = useStore.getState().panelCache?.table1;
+    const base = cur && typeof cur === "object" ? cur as Record<string, unknown> : {};
+    setPanelCache("table1", { ...base, stamp });
+  };
 
   // Columns offered as Table 1 variables / group — drop those flagged
   // "exclude from analysis" (e.g. NAME, row-id) in the data tab.
@@ -363,6 +380,7 @@ function Table1PanelBody({ session }: { session: Session }) {
     setSelectedStats(new Set(["auto"]));
     setWithinGroupNormality(false);
     clearTable1();
+    writeStamp(null);
     setError(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.session_id]);
@@ -398,8 +416,23 @@ function Table1PanelBody({ session }: { session: Session }) {
     setResult(null);
   };
 
+  /** Everything the table is computed from, in a stable shape. */
+  const runParams = () => ({
+    groupCol,
+    variables: Array.from(selected).sort(),
+    kindOverrides,
+    selectedStats: Array.from(selectedStats).sort(),
+    withinGroupNormality,
+    columnDecimals,
+  });
+
+  const staleWhy = result
+    ? staleReasons(table1Stamp, makeStamp({ dataVersion, caseFilter, engine, params: runParams() }))
+    : [];
+  const stale = staleWhy.length > 0;
+
   const run = async () => {
-    setLoading(true); setError(null); setResult(null);
+    setLoading(true); setError(null); setResult(null); writeStamp(null);
     const variable_kinds: Record<string, string> = {};
     Array.from(selected).forEach((col) => {
       const kind = kindOverrides[col] ?? session.columns.find((c) => c.name === col)?.kind;
@@ -505,6 +538,7 @@ function Table1PanelBody({ session }: { session: Session }) {
       }
 
       setResult(rawResult);
+      writeStamp(makeStamp({ dataVersion, caseFilter, engine, params: runParams() }));
     } catch (e: unknown) {
       const detail = (e as { response?: { data?: { detail?: string } } }).response?.data?.detail;
       const msg = e instanceof Error ? e.message : String(e);
@@ -726,6 +760,9 @@ function Table1PanelBody({ session }: { session: Session }) {
               title="Table1"
               headers={exportHeaders}
               rows={exportRows}
+              stale={stale}
+              staleReason={describeStale(staleWhy)}
+              provenance={table1Stamp?.provenance}
             />
           )}
           {error && (
@@ -755,6 +792,17 @@ function Table1PanelBody({ session }: { session: Session }) {
 
         {result && (
           <div className="p-4">
+            <ResultProvenanceLine provenance={table1Stamp?.provenance} />
+            {stale && (
+              <div className="mb-3">
+                <StaleResultNotice
+                  reasons={staleWhy}
+                  onRecompute={run}
+                  busy={loading}
+                  what="This table"
+                />
+              </div>
+            )}
             {/* A blank p-value is the one cell that cannot explain itself.
                 The reason it is blank — a constant column, a level only one
                 arm has, values excluded as missing — arrives here, so show it

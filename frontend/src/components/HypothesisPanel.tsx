@@ -3,6 +3,11 @@ import { useStore, isNumericKind, isCategoricalKind, type Session } from "../sto
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
 import { runTTest, runChiSquare, runAnova, runMannWhitney, runFisher, runKruskal, runAncova, runTwoWayAnova, runJonckheereTerpstra, runMancova } from "../api";
 import ResultExporter from "./ResultExporter";
+import StaleResultNotice from "./StaleResultNotice";
+import ResultProvenanceLine from "./ResultProvenanceLine";
+import { useStampedResult } from "../hooks/useStampedResult";
+import { describeStale } from "../lib/resultStamp";
+import type { Provenance } from "../lib/engine/provenance";
 import { fmtP, warningText } from "../lib/format";
 
 /** True when a stat-grid key holds a p-value (route through the canonical fmtP). */
@@ -120,7 +125,12 @@ interface TestResult {
   [key: string]: unknown;
 }
 
-function ResultCard({ result }: { result: TestResult }) {
+function ResultCard({ result, stale = false, staleReason, provenance }: {
+  result: TestResult;
+  stale?: boolean;
+  staleReason?: string;
+  provenance?: Provenance | null;
+}) {
   const fmt = (v: unknown) => {
     if (typeof v !== "number") return String(v);
     if (Math.abs(v) < 0.001 && v !== 0) return v.toExponential(3);
@@ -141,7 +151,7 @@ function ResultCard({ result }: { result: TestResult }) {
       <div className="flex items-center justify-between">
         <h4 className="font-semibold text-gray-900">{result.test}</h4>
         <div className="flex items-center gap-2">
-          <ResultExporter title={result.test ?? "hypothesis_test"} headers={exportHeaders} rows={exportRows} />
+          <ResultExporter title={result.test ?? "hypothesis_test"} headers={exportHeaders} rows={exportRows} stale={stale} staleReason={staleReason} provenance={provenance} />
           {"significant" in result && (
             <span className={result.significant ? "badge-sig" : "badge-ns"}>
               {result.significant ? "Significant" : "Not significant"}
@@ -322,17 +332,15 @@ function HypothesisPanelBody({ session }: { session: Session }) {
   // default because it strictly dominates Bonferroni while controlling
   // the same family-wise error rate.
   const [posthocCorrection, setPosthocCorrection] = usePersistedPanelState<"holm" | "bonferroni" | "fdr" | "none">("hypothesis", "correction", "holm");
-  const cached = useStore((s) => s.panelCache.hypothesis);
-  const setCache = useStore((s) => s.setPanelCache);
-  const [result, _setResult] = useState<TestResult | null>(((cached as { result?: TestResult | null } | undefined)?.result) ?? null);
+  // Everything the test is computed from. `mu` is a string from the input and
+  // is stamped as typed: "0" and "0.0" fit the same model, and re-running is
+  // cheaper than a comparison that has to know which fields are numeric.
+  const runParams = { test, col, col2, groupCol, mu, covariates, outcomes, factor2, posthocCorrection };
+  const {
+    result, setResult, stale, staleReasons: staleWhy, stamp,
+  } = useStampedResult<TestResult>("hypothesis", runParams);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  // Merge into the existing cache object so the persisted selection keys
-  // (test, col, groupCol, …) written by usePersistedPanelState survive.
-  const setResult = (r: TestResult | null) => {
-    _setResult(r);
-    setCache("hypothesis", { ...(useStore.getState().panelCache.hypothesis ?? {}), result: r });
-  };
 
   const isCat = test === "chisquare" || test === "fisher";
   // "two_way" belongs here: the request sends factor1: groupCol, but the test
@@ -528,7 +536,18 @@ function HypothesisPanelBody({ session }: { session: Session }) {
             <p className="text-xs text-indigo-800 leading-relaxed">{TEST_GUIDANCE[test].reading}</p>
           </div>
         )}
-        {result ? <ResultCard result={result} /> : (
+        {result && <ResultProvenanceLine provenance={stamp?.provenance} />}
+        {result && stale && (
+          <StaleResultNotice
+            reasons={staleWhy}
+            onRecompute={run}
+            busy={loading}
+            what={`This ${result.test ?? "test"}`}
+          />
+        )}
+        {result ? (
+          <ResultCard result={result} stale={stale} staleReason={describeStale(staleWhy)} provenance={stamp?.provenance} />
+        ) : (
           <div className="panel h-64 flex items-center justify-center text-gray-400">
             Configure and run a hypothesis test
           </div>

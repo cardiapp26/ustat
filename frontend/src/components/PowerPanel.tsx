@@ -4,6 +4,9 @@ import { runPower, parseArticle } from "../api";
 import type { PowerResult } from "../api";
 import { useStore, paletteOf } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
+import { useStampedResult } from "../hooks/useStampedResult";
+import StaleResultNotice from "./StaleResultNotice";
+import ResultProvenanceLine from "./ResultProvenanceLine";
 import { Tip } from "./Tip";
 import type { PlotCaptureHandle, PlotData, PlotLayout } from "../lib/plotTypes";
 
@@ -179,10 +182,22 @@ export default function PowerPanel() {
   const [pExposed,   setPExposed]   = usePersistedPanelState<string>("power_sel", "pExposed", "0.50");
   const [attrition,  setAttrition]  = usePersistedPanelState<string>("power_sel", "attrition", "0");
 
-  const cachedPower = useStore((s) => s.panelCache.power);
-  const setCachePower = useStore((s) => s.setPanelCache);
-  const [result,  _setResultPower]  = useState<PowerResult | null>(((cachedPower as { result?: PowerResult | null } | undefined)?.result) ?? null);
-  const setResult = (r: PowerResult | null) => { _setResultPower(r); setCachePower("power", { result: r }); };
+  // The solved-for quantity is an OUTPUT, and `run` writes it straight back
+  // into its own input box (solve for n, get n = 64 in the n field). Stamping
+  // it as an input would therefore mark every result stale the instant it
+  // arrived, so the field being solved is excluded from the stamp.
+  const runParams = {
+    test, solveFor, alpha, tails, ratio, kGroups, p1, p2,
+    pEvent, eventRate, pExposed, attrition,
+    n: solveFor === "n" ? null : n,
+    power: solveFor === "power" ? null : power,
+    effectSize: solveFor === "effect_size" ? null : effectSize,
+  };
+  // A-priori power reads no dataset -- `runPower` sends parameters and no
+  // session id -- so a cell edit cannot invalidate it. Only the inputs can.
+  const {
+    result, setResult, stale, staleReasons: staleWhy, stamp,
+  } = useStampedResult<PowerResult>("power", runParams, { dependsOnData: false });
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState<string | null>(null);
 
@@ -665,6 +680,19 @@ export default function PowerPanel() {
       </div>
 
       {/* ── Result ── */}
+      {result && (
+        <div className="px-1">
+          <ResultProvenanceLine provenance={stamp?.provenance} />
+        </div>
+      )}
+      {result && stale && (
+        <StaleResultNotice
+          reasons={staleWhy}
+          onRecompute={calculate}
+          busy={loading}
+          what="This power calculation"
+        />
+      )}
       {result ? (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-5">
 

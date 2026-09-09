@@ -13,6 +13,7 @@ import { cloudSync, type CloudStatusInfo } from "../lib/cloudSync";
 
 export default function UploadZone() {
   const setSession = useStore((s) => s.setSession);
+  const setIngestReport = useStore((s) => s.setIngestReport);
   const engine = useStore((s) => s.engine);
   const setEngine = useStore((s) => s.setEngine);
   const [dragging, setDragging] = useState(false);
@@ -103,6 +104,9 @@ export default function UploadZone() {
       } else {
         const res = await uploadFile(file);
         setSession(res.data);
+        // setSession clears the slice for a new session_id, so the report is
+        // installed after it, not before.
+        setIngestReport(res.data.ingest_report ?? null);
       }
     } catch (e: unknown) {
       const err = e as { response?: { data?: { detail?: string }; status?: number }; message?: string };
@@ -117,7 +121,7 @@ export default function UploadZone() {
     } finally {
       setLoading(false);
     }
-  }, [setSession]);
+  }, [setSession, setIngestReport]);
 
   const startBlankWorkspace = useCallback(async () => {
     setLoading(true);
@@ -302,9 +306,10 @@ export default function UploadZone() {
                 is the honest sentence, not "about 20". */}
             <span className="block text-[11px] text-slate-500 leading-snug mt-1">
               R&apos;s own <code className="font-mono text-[10px]">t.test</code> and friends. The first
-              analysis downloads about 22&nbsp;MB of R runtime, then runs entirely in
-              this browser — your data never leaves it. Analyses without an R
-              implementation yet are computed with Python and say so.
+              analysis downloads about 22&nbsp;MB of R runtime, then the arithmetic runs in
+              this browser. Your file is still uploaded to the server to open the session,
+              and analyses without an R implementation yet are computed there, in Python —
+              each result says which.
             </span>
           </button>
         </div>

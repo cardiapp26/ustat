@@ -1,5 +1,6 @@
 import axios from "axios";
 import { runColumnStructureMutation } from "./lib/columnStructureLock";
+import { fromResponseHeaders, record as recordProvenance } from "./lib/engine/provenance";
 
 const api = axios.create({ baseURL: "" });  // Vite proxy: /api → localhost:8000
 
@@ -9,13 +10,84 @@ const api = axios.create({ baseURL: "" });  // Vite proxy: /api → localhost:80
 // it and retries rather than surfacing "Session not found".
 void import("./lib/sessionRecovery").then((m) => m.installSessionRecovery(api));
 
+// Every server answer records what produced it, read off the response's own
+// `X-uStat-*` headers. Here and not in the panels: an endpoint that forgot to
+// report its provenance would be an endpoint that silently inherits whatever
+// the session header claims, which is the bug this exists to close. See
+// lib/engine/provenance.ts.
+api.interceptors.response.use((response) => {
+  const url = response.config?.url;
+  if (typeof url === "string" && url.startsWith("/api/")) {
+    // Synchronous on purpose. A dynamic import here would record the
+    // provenance one microtask AFTER the caller's `await` resolved, so the
+    // panel would stamp its result from whatever ran before it.
+    recordProvenance(url, fromResponseHeaders(response.headers as Record<string, unknown>));
+  }
+  return response;
+});
+
 export default api;
+
+/**
+ * What the importer changed on the way in.
+ *
+ * Import is allowed to rewrite cells -- a comma-decimal becomes a dot, "NA"
+ * becomes blank -- and every rewrite it does not report is indistinguishable
+ * from data loss to whoever reads the result. A value at a measurement limit
+ * (`<0.1`) is the case that made this necessary: it is a result, not a gap,
+ * and blanking it moved a row from "measured, below the limit" to "never
+ * measured" with nothing on screen to say so. See
+ * `backend/services/ingest_coercion.py`.
+ */
+export interface IngestColumnReport {
+  column: string;
+  /** "numeric" = converted from text; "kept_text" = left exactly as the file had it. */
+  decision: "numeric" | "kept_text";
+  reason: string;
+  n_values: number;
+  n_changed: number;
+  n_missing_coded: number;
+  /** Cells blanked that were NOT a recognised missing code. Originals are kept. */
+  n_discarded: number;
+  decimal_separator: string | null;
+  missing_codes: Record<string, number>;
+  discarded_examples: { row: number; value: string }[];
+  censored?: {
+    n: number;
+    operators: Record<string, number>;
+    limits: number[];
+    examples: { row: number; value: string }[];
+  };
+  units?: {
+    n: number;
+    suffixes: Record<string, number>;
+    examples: { row: number; value: string }[];
+  };
+}
+
+export interface IngestReport {
+  n_columns_examined: number;
+  n_columns_converted: number;
+  n_cells_changed: number;
+  n_cells_discarded: number;
+  /** A measurement limit, a unit, or a blanked cell -- something a human owes a decision to. */
+  needs_review: boolean;
+  columns: IngestColumnReport[];
+}
 
 export const uploadFile = (file: File) => {
   const form = new FormData();
   form.append("file", file);
   return api.post("/api/upload/", form);
 };
+
+/** Re-read the import report after the review panel has been dismissed. */
+export const getIngestReport = (sessionId: string) =>
+  api.get<{
+    session_id: string;
+    report: IngestReport;
+    preserved_cells: Record<string, { row: number; value: string }[]>;
+  }>(`/api/upload/${sessionId}/ingest_report`);
 
 export const getDescriptive = (sessionId: string, column?: string) =>
   api.get(`/api/stats/${sessionId}/descriptive`, { params: column ? { column } : {} });
