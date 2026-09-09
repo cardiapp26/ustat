@@ -48,6 +48,12 @@ def _sha256(data: bytes) -> str:
     return f"sha256:{hashlib.sha256(data).hexdigest()}"
 
 
+def _safe_part_id(raw: str) -> str:
+    """An analysis id as a zip entry name. Ids are frontend-minted UUIDs, but
+    a hand-edited file must not be able to write outside its directory."""
+    return "".join(c for c in raw if c.isalnum() or c in "-_")[:64] or "x"
+
+
 def _canonical_json(obj) -> bytes:
     # Stable key order so a byte hash means "same content", not "same dict
     # iteration order that day".
@@ -118,6 +124,24 @@ def build_project(session_id: str, ui_state: Optional[dict] = None) -> bytes:
         parts["prep/steps.json"] = _canonical_json(steps)
 
     if ui_state:
+        ui_state = dict(ui_state)
+        # Named analyses become first-class parts: an index for the tree, a
+        # meta part per analysis, its snapshot under results/. Still opaque
+        # content-wise, but addressable -- a reader (or a future diff tool)
+        # can list a project's analyses without parsing the whole UI state.
+        analyses = ui_state.pop("savedAnalyses", None)
+        if isinstance(analyses, list):
+            index = []
+            for a in analyses:
+                if not (isinstance(a, dict) and isinstance(a.get("id"), str)):
+                    continue
+                aid = _safe_part_id(a["id"])
+                meta = {k: a.get(k) for k in ("id", "name", "panel", "tab", "createdAt")}
+                index.append(meta)
+                parts[f"analyses/{aid}.json"] = _canonical_json(meta)
+                parts[f"results/{aid}.json"] = _canonical_json(a.get("snapshot"))
+            if index:
+                parts["analyses/index.json"] = _canonical_json(index)
         parts["ui/state.json"] = _canonical_json(ui_state)
 
     ingest_report = store.get_ingest_report(session_id)
@@ -205,6 +229,25 @@ def parse_project(content: bytes) -> dict:
         except json.JSONDecodeError:
             raise ProjectFileError(f"Project part {name} is not valid JSON.")
 
+    ui_state = _read_json("ui/state.json", None)
+
+    # Merge the analyses/ and results/ parts back into ui_state, the shape the
+    # frontend hydrates from. The index defines existence and order; a meta
+    # part without a snapshot restores with snapshot None rather than dropping
+    # the name the user gave it.
+    index = _read_json("analyses/index.json", [])
+    if isinstance(index, list) and index:
+        analyses = []
+        for meta in index:
+            if not (isinstance(meta, dict) and isinstance(meta.get("id"), str)):
+                continue
+            aid = _safe_part_id(meta["id"])
+            analyses.append({**meta, "snapshot": _read_json(f"results/{aid}.json", None)})
+        if analyses:
+            if not isinstance(ui_state, dict):
+                ui_state = {"dataVersion": 0, "panelCache": {}}
+            ui_state = {**ui_state, "savedAnalyses": analyses}
+
     return {
         "manifest": manifest,
         "dataset": json.loads(dataset_bytes),
@@ -212,7 +255,7 @@ def parse_project(content: bytes) -> dict:
         "steps": _read_json("prep/steps.json", []),
         "audit": _read_json("audit.json", []),
         "originals": _read_json("data/originals.json", {}),
-        "ui_state": _read_json("ui/state.json", None),
+        "ui_state": ui_state,
     }
 
 

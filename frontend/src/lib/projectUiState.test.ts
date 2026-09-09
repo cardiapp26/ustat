@@ -65,6 +65,36 @@ describe('applyUiState', () => {
     expect(useStore.getState().activeTab).toBe('data')
   })
 
+  it('round-trips saved analyses, rebasing the stamp inside each snapshot', () => {
+    useStore.setState({
+      dataVersion: 7,
+      savedAnalyses: [
+        { id: 'a1', name: 'Model 1', panel: 'models', tab: 'models', createdAt: 1, snapshot: { result: { or: 2 }, stamp: stamp(7) } },
+        { id: 'a2', name: 'Old fit', panel: 'models', tab: 'models', createdAt: 2, snapshot: { result: { or: 3 }, stamp: stamp(4) } },
+      ],
+    })
+    const ui = collectUiState()
+    expect(ui.savedAnalyses).toHaveLength(2)
+
+    useStore.setState({ savedAnalyses: [], dataVersion: 0 })
+    applyUiState(JSON.parse(JSON.stringify(ui)))
+    const restored = useStore.getState().savedAnalyses
+    expect(restored).toHaveLength(2)
+    expect((restored[0].snapshot as { stamp: { dataVersion: number } }).stamp.dataVersion).toBe(0)
+    expect((restored[1].snapshot as { stamp: { dataVersion: number } }).stamp.dataVersion).toBe(-1)
+  })
+
+  it('drops malformed saved-analysis entries instead of restoring them broken', () => {
+    applyUiState({
+      dataVersion: 1,
+      panelCache: {},
+      savedAnalyses: [{ id: 'ok', name: 'n', panel: 'p', tab: 't', createdAt: 1, snapshot: null }, { junk: true }, null],
+    })
+    const restored = useStore.getState().savedAnalyses
+    expect(restored).toHaveLength(1)
+    expect(restored[0].id).toBe('ok')
+  })
+
   it('leaves preserved filter and params keys untouched so those comparisons still work', () => {
     applyUiState({
       dataVersion: 2,

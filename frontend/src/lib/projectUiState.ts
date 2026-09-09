@@ -23,7 +23,7 @@
  * Filter and params keys need no rebasing: they are content-derived
  * (`stableStringify`), and the restored filter/selections reproduce them.
  */
-import { useStore } from "../store";
+import { useStore, type SavedAnalysis } from "../store";
 import type { ResultStamp } from "./resultStamp";
 
 export interface ProjectUiState {
@@ -32,6 +32,9 @@ export interface ProjectUiState {
   activeTab?: string;
   panelCache: Record<string, unknown>;
   table1Result?: unknown;
+  /** Named analyses. The backend lifts these out of ui/state.json into the
+   *  project's analyses/ and results/ parts and merges them back on load. */
+  savedAnalyses?: SavedAnalysis[];
 }
 
 /** Snapshot the live store's panel state for ui/state.json. */
@@ -43,6 +46,7 @@ export function collectUiState(): ProjectUiState {
     panelCache: s.panelCache,
   };
   if (s.table1Result != null) out.table1Result = s.table1Result;
+  if (s.savedAnalyses.length > 0) out.savedAnalyses = s.savedAnalyses;
   return out;
 }
 
@@ -87,8 +91,22 @@ export function applyUiState(raw: unknown): void {
       rebaseEntry(entry, savedDataVersion),
     ]),
   );
+  // Named analyses: same rebase applies to the stamp inside each snapshot,
+  // for the same reason. Entries that do not look like a SavedAnalysis are
+  // dropped rather than restored broken.
+  const savedAnalyses = Array.isArray(ui.savedAnalyses)
+    ? ui.savedAnalyses
+        .filter(
+          (a): a is SavedAnalysis =>
+            typeof a === "object" && a !== null &&
+            typeof a.id === "string" && typeof a.name === "string" &&
+            typeof a.panel === "string" && typeof a.tab === "string",
+        )
+        .map((a) => ({ ...a, snapshot: rebaseEntry(a.snapshot, savedDataVersion) }))
+    : [];
   useStore.setState({
     panelCache,
+    savedAnalyses,
     ...(ui.table1Result !== undefined ? { table1Result: ui.table1Result as never } : {}),
     ...(typeof ui.activeTab === "string" && ui.activeTab ? { activeTab: ui.activeTab } : {}),
   });

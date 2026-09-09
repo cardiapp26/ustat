@@ -251,6 +251,25 @@ function persistSessionEngine(engine: EngineKind, source: EngineSource): void {
   }
 }
 
+/**
+ * A named, kept analysis: "Model 1", "Sensitivity analysis". The snapshot is
+ * the panel's whole cache entry at save time -- selections, result and its
+ * ResultStamp together, so restoring one brings back both the settings and
+ * the number, and the stamp keeps saying what that number was computed from.
+ * Restore is deliberately not an automatic re-run: it puts the analysis back
+ * in its panel; the panel's own Run button re-runs it with fresh data.
+ */
+export interface SavedAnalysis {
+  id: string;
+  name: string;
+  /** panelCache key the snapshot came from and restores into. */
+  panel: string;
+  /** Header tab that hosts the panel, so restore can navigate to it. */
+  tab: string;
+  createdAt: number;
+  snapshot: unknown;
+}
+
 interface ColumnDependentState {
   columnDecimals: Record<string, number>;
   caseFilter: CaseFilter | null;
@@ -336,6 +355,18 @@ interface AppState {
   panelCache: Record<string, unknown>;
   setPanelCache: (panel: string, data: unknown) => void;
   clearPanelCache: (panel: string) => void;
+  // Named analyses (project tree). Session-scoped: reset when the dataset
+  // changes, saved into the project file's analyses/ parts. Deliberately NOT
+  // cleared by setCaseFilter's panelCache wipe — a kept analysis survives a
+  // filter change, and its stamp marks it stale instead.
+  savedAnalyses: SavedAnalysis[];
+  /** Snapshot panelCache[panel] under a name; returns the new id, or null
+   *  when that panel has nothing cached to keep. */
+  saveAnalysis: (panel: string, tab: string, name?: string) => string | null;
+  renameAnalysis: (id: string, name: string) => void;
+  deleteAnalysis: (id: string) => void;
+  /** Put the snapshot back into its panel and navigate to its tab. */
+  restoreAnalysis: (id: string) => void;
   // Column rename propagation — every panel's persisted variable selection
   // (usePersistedPanelState) lives in panelCache, keyed by panel id. A rename
   // in the Data tab doesn't touch those cached strings, so a panel with the
@@ -567,6 +598,7 @@ export const useStore = create<AppState>((set, get) => ({
       ingestReport: null,
       caseFilter: s.case_filter ?? null,
       panelCache: {},
+      savedAnalyses: [],
       undoDepth: 0,
       redoDepth: 0,
       columnMutationUndo: [],
@@ -612,6 +644,7 @@ export const useStore = create<AppState>((set, get) => ({
     ingestReport: null,
     caseFilter: null,
     panelCache: {},
+    savedAnalyses: [],
     undoDepth: 0,
     redoDepth: 0,
     columnMutationUndo: [],
@@ -854,6 +887,41 @@ export const useStore = create<AppState>((set, get) => ({
   clearTable1: () => set({ table1Result: null }),
   panelCache: {},
   setPanelCache: (panel, data) => set((state) => ({ panelCache: { ...state.panelCache, [panel]: data } })),
+  savedAnalyses: [],
+  saveAnalysis: (panel, tab, name) => {
+    const state = get();
+    const entry = state.panelCache[panel];
+    if (entry == null) return null;
+    const id = crypto.randomUUID();
+    const analysis: SavedAnalysis = {
+      id,
+      name: name?.trim() || `Analysis ${state.savedAnalyses.length + 1}`,
+      panel,
+      tab,
+      createdAt: Date.now(),
+      // Deep copy: the live cache keeps mutating as the user works, and a
+      // kept analysis that silently tracked it would not be "kept" at all.
+      snapshot: structuredClone(entry),
+    };
+    set({ savedAnalyses: [...state.savedAnalyses, analysis] });
+    return id;
+  },
+  renameAnalysis: (id, name) => set((state) => ({
+    savedAnalyses: state.savedAnalyses.map((a) =>
+      a.id === id && name.trim() ? { ...a, name: name.trim() } : a
+    ),
+  })),
+  deleteAnalysis: (id) => set((state) => ({
+    savedAnalyses: state.savedAnalyses.filter((a) => a.id !== id),
+  })),
+  restoreAnalysis: (id) => set((state) => {
+    const analysis = state.savedAnalyses.find((a) => a.id === id);
+    if (!analysis) return state;
+    return {
+      panelCache: { ...state.panelCache, [analysis.panel]: structuredClone(analysis.snapshot) },
+      activeTab: analysis.tab,
+    };
+  }),
   clearPanelCache: (panel) => set((state) => {
     const next = { ...state.panelCache };
     delete next[panel];

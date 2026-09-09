@@ -162,6 +162,51 @@ def test_ui_state_round_trip_via_post_save():
     assert r2.json()["ui_state"] == ui_state
 
 
+def test_saved_analyses_become_first_class_parts_and_merge_back():
+    sid = _make_session("proj_analyses")
+    ui_state = {
+        "dataVersion": 2,
+        "panelCache": {},
+        "savedAnalyses": [
+            {
+                "id": "abc-123",
+                "name": "Model 1",
+                "panel": "models",
+                "tab": "models",
+                "createdAt": 111,
+                "snapshot": {"result": {"or": 1.7}, "stamp": {"dataVersion": 2, "paramsKey": "{}"}},
+            },
+            {
+                "id": "../evil",  # hostile id must not escape its directory
+                "name": "x",
+                "panel": "p",
+                "tab": "t",
+                "createdAt": 222,
+                "snapshot": None,
+            },
+        ],
+    }
+    r = client.post(f"/api/project/{sid}/save", json={"ui_state": ui_state})
+    parts = _zip_parts(r.content)
+    assert "analyses/index.json" in parts
+    assert "analyses/abc-123.json" in parts
+    assert "results/abc-123.json" in parts
+    # The hostile id was sanitised into the directory, not out of it.
+    assert all(name.startswith(("manifest", "data/", "dictionary", "prep/", "audit", "ui/", "analyses/", "results/")) for name in parts)
+    assert ".." not in " ".join(parts)
+    # savedAnalyses are lifted OUT of ui/state.json, not duplicated in it.
+    assert "savedAnalyses" not in json.loads(parts["ui/state.json"])
+
+    r2 = client.post(
+        "/api/project/load",
+        files={"file": ("p.ustat", r.content, "application/zip")},
+    )
+    merged = r2.json()["ui_state"]["savedAnalyses"]
+    assert len(merged) == 2
+    assert merged[0]["name"] == "Model 1"
+    assert merged[0]["snapshot"]["result"]["or"] == 1.7
+
+
 def test_get_save_has_no_ui_state_part():
     sid = _make_session("proj_no_ui")
     parts = _zip_parts(client.get(f"/api/project/{sid}/save").content)

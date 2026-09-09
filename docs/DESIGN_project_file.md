@@ -24,9 +24,22 @@ results current at save stay current and results already stale stay stale
 (`frontend/src/lib/projectUiState.ts`). Autosave now writes v1.3 JSON: the
 server's v1.2 snapshot plus the `ui_state` key, staying JSON (not .ustat)
 because the dedupe hash needs deterministic bytes and a zip does not give
-them; `/api/project/load` reads v1.3 too. Named analyses as first-class
-parts (`analyses/`, `results/`, `plots/`), the project tree UI and re-run
-move to Phase 3.
+them; `/api/project/load` reads v1.3 too.
+
+Phase 3 landed 2026-09-10: named analyses. A `savedAnalyses` store slice
+holds kept analyses ("Model 1", "Sensitivity analysis"): each is a named,
+deep-copied snapshot of a panel's cache entry (selections + result +
+stamp). A header menu (`SavedAnalysesMenu`) keeps the current result of
+any panel, lists what is kept, renames, deletes, and restores one back
+into its panel; restore is deliberately not an auto re-run, the panel's
+own Run button re-runs against current data and the stamp says whether
+the restored number is still current. In the `.ustat`, analyses are
+first-class parts (`analyses/index.json`, `analyses/{id}.json`,
+`results/{id}.json`, ids sanitised against path escape) lifted out of
+`ui/state.json` on save and merged back on load, so they also ride the
+v1.3 autosave and both survive close/reopen. Still open for later phases:
+`plots/` as separate parts, one-click re-run from stored params, the prep
+recipe, script export, seeds.
 
 ## Goal
 
