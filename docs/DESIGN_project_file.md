@@ -76,10 +76,36 @@ view shows what the analysis IS in the reader's language, carries a
 disclaimer that uSTAT's defaults may differ, and names the per-result
 provenance line as the authority. Coverage is an explicit allow-list
 (hypothesis: t-tests, ANOVA, Mann-Whitney, Kruskal-Wallis, chi-square,
-Fisher; models: linear, logistic, Poisson, Cox); anything else returns
-"no translation yet" with the raw params, because an honest gap beats a
-wrong formula. Still open: widening template coverage, `plots/` as
-separate parts, one-click re-run from stored params, seeds.
+Fisher, and since 2026-09-10 also ANCOVA and two-way ANOVA, both matched
+to uSTAT's actual fitted model (Type II SS, full factorial); models:
+linear, logistic, Poisson, Cox); anything else returns "no translation
+yet" with the raw params, because an honest gap beats a wrong formula.
+Widening this list is ongoing work, one faithful template at a time.
+
+The remaining Phase 1 sketch items are closed by decision, not code:
+
+- **`plots/` parts: dropped as obsolete.** Plots are rendered client-side
+  from result data; the chart state a panel keeps lives inside its cache
+  entry and already rides `results/{id}.json` and `ui/state.json`. A
+  separate `plots/` part would duplicate bytes it cannot own. If a real
+  standalone plot-layout object ever appears (a chart builder with saved
+  layouts), it earns its part then.
+- **One-click re-run: rejected; restore + Run is the re-run.** An
+  automatic re-run needs the endpoint and the request body. A snapshot
+  records the panel's `runParams`, whose field names differ from the
+  request the panel builds from them (`robustSE` vs `robust_se`, scale
+  factor maps, interaction encodings); a generic mapping would silently
+  re-run a *different* analysis on drift, which is worse than one click
+  more. Restore puts the exact settings back in the panel; the panel's
+  own Run button issues the request through the same code the GUI always
+  uses.
+- **Seeds: per-analysis, already captured.** Every seedable endpoint
+  takes its seed in the request (`random_state` in ML CV/importance),
+  so the seed rides the saved analysis's params, its stamp's
+  `paramsKey`, and any recorded step. A *project-level* seed threaded
+  through every panel would add a second source of truth for the same
+  value; `manifest.seed` stays a reserved field until an analysis type
+  exists whose seed genuinely lives at project scope.
 
 ## Goal
 

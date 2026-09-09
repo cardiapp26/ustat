@@ -107,6 +107,16 @@ the import and preparation steps.
 jamovi's R syntax mode is the model; its docs also note the data-import step
 must be reproduced separately, which is exactly the gap to close here.
 
+Status (2026-09-10): the core landed, see
+[DESIGN_project_file.md](DESIGN_project_file.md). Every data-mutating
+request is recorded as a replayable step including the import
+(`prep/steps.json`); whole-project replay scripts export in Python and R
+and drive uSTAT's own API, so GUI and script output are identical by
+construction; a syntax view shows covered analyses as Python/R code with
+an explicit "no translation yet" for the rest. Remaining: widening the
+syntax-template allow-list, and a clean-environment CI job that runs a
+generated replay script against a fresh server.
+
 ## P1 Modeling depth before new methods
 
 Mixed models, SEM and MICE already exist. Next step is a coverage matrix,

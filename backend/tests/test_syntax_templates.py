@@ -34,6 +34,8 @@ def test_every_covered_combo_generates_valid_code():
         ("hypothesis", {"test": "anova", "col": "age", "groupCol": "arm"}),
         ("hypothesis", {"test": "mannwhitney", "col": "age", "groupCol": "arm"}),
         ("hypothesis", {"test": "kruskal", "col": "age", "groupCol": "arm"}),
+        ("hypothesis", {"test": "ancova", "col": "sbp", "groupCol": "arm", "covariates": ["age", "bmi"]}),
+        ("hypothesis", {"test": "two_way", "col": "sbp", "groupCol": "arm", "factor2": "sex"}),
         ("hypothesis", {"test": "chisquare", "col": "smoker", "col2": "arm"}),
         ("hypothesis", {"test": "fisher", "col": "smoker", "col2": "arm"}),
         ("models", {"model": "linear", "outcome": "sbp", "predictors": ["age", "bmi"]}),

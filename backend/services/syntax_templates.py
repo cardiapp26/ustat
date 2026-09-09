@@ -99,6 +99,42 @@ def _hypothesis(params: dict) -> Optional[dict]:
             ),
             "r": f"kruskal.test({col} ~ factor({group}), data = df)",
         }
+    if test == "ancova":
+        covariates = list(params.get("covariates") or [])
+        rhs = f"C({group})" + "".join(f" + {c}" for c in covariates)
+        r_rhs = f"factor({group})" + "".join(f" + {c}" for c in covariates)
+        return {
+            "title": f"ANCOVA: {col} by {group}, adjusted for {', '.join(covariates) or 'nothing'}",
+            "python": (
+                "from statsmodels.formula.api import ols\n"
+                "from statsmodels.stats.anova import anova_lm\n\n"
+                "# Same model uSTAT fits: group + covariates, Type II SS.\n"
+                f'fit = ols("{col} ~ {rhs}", data=df).fit()\n'
+                "anova_lm(fit, typ=2)"
+            ),
+            "r": (
+                "library(car)\n"
+                f"fit <- lm({col} ~ {r_rhs}, data = df)\n"
+                "Anova(fit, type = 2)"
+            ),
+        }
+    if test == "two_way":
+        factor2 = params.get("factor2") or "factor2"
+        return {
+            "title": f"Two-way ANOVA: {col} by {group} x {factor2}",
+            "python": (
+                "from statsmodels.formula.api import ols\n"
+                "from statsmodels.stats.anova import anova_lm\n\n"
+                "# Full factorial, as uSTAT fits it: main effects + interaction.\n"
+                f'fit = ols("{col} ~ C({group}) * C({factor2})", data=df).fit()\n'
+                "anova_lm(fit, typ=2)"
+            ),
+            "r": (
+                "library(car)\n"
+                f"fit <- lm({col} ~ factor({group}) * factor({factor2}), data = df)\n"
+                "Anova(fit, type = 2)"
+            ),
+        }
     if test in ("chisquare", "fisher"):
         col2 = params.get("col2") or params.get("groupCol") or "group"
         fn_py = "chi2_contingency(tab)" if test == "chisquare" else "fisher_exact(tab)"
