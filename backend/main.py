@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from middleware.security_headers import SecurityHeadersMiddleware
+from middleware.prep_steps import PrepStepsMiddleware
 from middleware.provenance_headers import ProvenanceHeadersMiddleware
 
 try:
@@ -72,6 +73,10 @@ app.add_middleware(SecurityHeadersMiddleware)
 # field in each body, and why "R-based statistics" in the header bar was not an
 # answer to the question.
 app.add_middleware(ProvenanceHeadersMiddleware)
+
+# Every successful data-mutating request is appended to the session's prep
+# recipe (prep/steps.json in a saved project). See middleware/prep_steps.py.
+app.add_middleware(PrepStepsMiddleware)
 
 # CORS: env-driven origin allow-list. Wildcard ("*") rejected by the OWASP
 # semgrep gate, and dangerous in production anyway because it disables

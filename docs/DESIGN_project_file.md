@@ -37,9 +37,21 @@ the restored number is still current. In the `.ustat`, analyses are
 first-class parts (`analyses/index.json`, `analyses/{id}.json`,
 `results/{id}.json`, ids sanitised against path escape) lifted out of
 `ui/state.json` on save and merged back on load, so they also ride the
-v1.3 autosave and both survive close/reopen. Still open for later phases:
-`plots/` as separate parts, one-click re-run from stored params, the prep
-recipe, script export, seeds.
+v1.3 autosave and both survive close/reopen.
+
+The prep recipe landed 2026-09-10: `middleware/prep_steps.py` records
+every successful data-mutating request (an explicit allow-list of route
+shapes: `compute/*`, cell/structure edits, the case filter, merge) into a
+per-session step list with the FULL request body, kept beside the audit
+trail (`store.log_step`); `prep/steps.json` is now that list, the
+synthetic filter step remains only as a fallback for filters set outside
+HTTP, and a restored project seeds the new session's recipe so history
+appends rather than restarts. Ops are route slugs (`compute/formula`,
+`sessions/select_cases`); that is the op vocabulary. Honest limitation:
+undo/redo are recorded as steps because they happened, but a replayer or
+script generator must surface them as warnings, not code. Still open:
+script export generated from the recipe + saved analyses, `plots/` as
+separate parts, one-click re-run from stored params, seeds.
 
 ## Goal
 

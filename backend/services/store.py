@@ -34,6 +34,7 @@ _kinds: Dict[str, Dict[str, str]] = {}  # {session_id: {col: "numeric"|"categori
 _decimals: Dict[str, Dict[str, int]] = {}  # {session_id: {col: decimal_places}} for cell-format overrides
 _filenames: Dict[str, str] = {}  # {session_id: user-chosen display name}
 _ingest: Dict[str, dict] = {}  # {session_id: {"report": {...}, "preserved": {col: {row: raw}}}}
+_steps: Dict[str, list] = {}  # {session_id: [{op, params, t}]} — the prep recipe
 _undo: Dict[str, list] = {}   # {session_id: [data + dependent-state snapshots]}
 _redo: Dict[str, list] = {}
 _lock = Lock()
@@ -45,7 +46,7 @@ VALID_FILTER_OPERATORS = _select.VALID_FILTER_OPERATORS
 
 # Every per-session map, so cleanup/delete can drop a session completely
 # (a partial pop leaks the user's kinds/decimals/filename/filters after TTL).
-_SESSION_MAPS: tuple = (_store, _filters, _audit, _metadata, _kinds, _decimals, _filenames, _ingest, _undo, _redo)
+_SESSION_MAPS: tuple = (_store, _filters, _audit, _metadata, _kinds, _decimals, _filenames, _ingest, _steps, _undo, _redo)
 
 
 def _purge_locked(session_id: str) -> None:
@@ -554,6 +555,36 @@ def log_action(session_id: str, action: str, params: Optional[dict] = None) -> N
 def get_audit(session_id: str) -> list:
     """Return the audit trail for a session."""
     return _audit.get(session_id, [])
+
+
+# ── Prep recipe ──────────────────────────────────────────────────────────────
+# The normative counterpart of the audit trail (docs/DESIGN_project_file.md).
+# The audit says what happened, in whatever detail each endpoint bothered to
+# summarise; a step carries the FULL request that changed the data, so the
+# sequence can be replayed or translated to a script. Written centrally by
+# middleware/prep_steps.py rather than by 40 endpoints individually.
+
+def log_step(session_id: str, op: str, params: Optional[dict] = None) -> None:
+    """Append one replayable preparation step."""
+    with _lock:
+        _steps.setdefault(session_id, []).append(
+            {"op": op, "params": params or {}, "t": time.time()}
+        )
+        _dirty.add(session_id)
+
+
+def get_steps(session_id: str) -> list:
+    """The session's prep recipe, oldest first."""
+    with _lock:
+        return deepcopy(_steps.get(session_id, []))
+
+
+def set_steps(session_id: str, steps: list) -> None:
+    """Replace the recipe wholesale — used when a project file is restored,
+    so the history it carries keeps growing instead of starting over."""
+    with _lock:
+        _steps[session_id] = deepcopy(steps or [])
+        _dirty.add(session_id)
 
 
 # ── Column metadata ──────────────────────────────────────────────────────────
