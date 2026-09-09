@@ -10,10 +10,15 @@ Parts written today:
     data/originals.json  ingest coercion report + verbatim blanked cells
     dictionary.json      per-column semantics (kind, labels, decimals, ...)
     prep/steps.json      replayable recipe (Phase 1: the case filter only)
+    ui/state.json        the frontend's panel state: per-panel settings and
+                         stamped results (Phase 2). Opaque here -- the backend
+                         carries it, hashes it, and hands it back; only the
+                         frontend interprets it.
     audit.json           informational audit trail
 
-Deliberately not yet: analyses/results/plots (Phase 2), notes UI (Phase 2),
-unknown-part preservation on re-save (Phase 2), seeds (Phase 4).
+Deliberately not yet: named analyses as first-class parts (Phase 3), notes
+UI (Phase 3), unknown-part preservation on re-save (Phase 3), seeds
+(Phase 4).
 """
 from __future__ import annotations
 
@@ -60,8 +65,13 @@ def _dataset_records(df: pd.DataFrame) -> list:
 
 # ── Build ────────────────────────────────────────────────────────────────────
 
-def build_project(session_id: str) -> bytes:
-    """Serialize a live session into .ustat bytes. Raises KeyError if absent."""
+def build_project(session_id: str, ui_state: Optional[dict] = None) -> bytes:
+    """Serialize a live session into .ustat bytes. Raises KeyError if absent.
+
+    ``ui_state`` is the frontend's panel state (settings + stamped results),
+    passed through verbatim: the backend does not read it, but the file must
+    carry it or reopening a project loses every result on screen.
+    """
     df = store.get(session_id)
     if df is None:
         raise KeyError(session_id)
@@ -106,6 +116,9 @@ def build_project(session_id: str) -> bytes:
     }
     if steps:
         parts["prep/steps.json"] = _canonical_json(steps)
+
+    if ui_state:
+        parts["ui/state.json"] = _canonical_json(ui_state)
 
     ingest_report = store.get_ingest_report(session_id)
     preserved = store.get_preserved_cells(session_id)
@@ -199,6 +212,7 @@ def parse_project(content: bytes) -> dict:
         "steps": _read_json("prep/steps.json", []),
         "audit": _read_json("audit.json", []),
         "originals": _read_json("data/originals.json", {}),
+        "ui_state": _read_json("ui/state.json", None),
     }
 
 

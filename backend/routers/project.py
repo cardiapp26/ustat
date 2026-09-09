@@ -8,10 +8,12 @@ v1.x path; /api/project/load also accepts those old JSON files directly.
 from __future__ import annotations
 
 import json
+from typing import Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from services import store
 from services.project_file import (
@@ -26,10 +28,26 @@ router = APIRouter()
 
 
 @router.get("/{session_id}/save")
-async def save_project(session_id: str):
-    """Download the session as a .ustat project file."""
+async def save_project_get(session_id: str):
+    """Download the session as a .ustat project file (no frontend state)."""
+    return _save(session_id, None)
+
+
+class SaveProjectRequest(BaseModel):
+    # Opaque to the backend: per-panel settings and stamped results, written
+    # into ui/state.json and handed back verbatim on load.
+    ui_state: Optional[dict] = None
+
+
+@router.post("/{session_id}/save")
+async def save_project(session_id: str, body: SaveProjectRequest):
+    """Download the session as .ustat, carrying the frontend's panel state."""
+    return _save(session_id, body.ui_state)
+
+
+def _save(session_id: str, ui_state: Optional[dict]):
     try:
-        content = build_project(session_id)
+        content = build_project(session_id, ui_state)
     except KeyError:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -54,11 +72,14 @@ async def load_project(file: UploadFile = File(...)):
     """Open a .ustat file, or a legacy v1.x save_session JSON, as a session."""
     raw = await file.read()
 
+    ui_state = None
     if raw[:2] == b"PK":
         try:
-            session_id = restore_project(parse_project(raw))
+            parsed = parse_project(raw)
+            session_id = restore_project(parsed)
         except ProjectFileError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+        ui_state = parsed.get("ui_state")
     else:
         try:
             payload = json.loads(raw)
@@ -72,6 +93,10 @@ async def load_project(file: UploadFile = File(...)):
             raise HTTPException(
                 status_code=400, detail="Missing 'data' key in session file"
             )
+        # v1.3 autosave snapshots piggyback the frontend's panel state on the
+        # legacy JSON; older files simply lack the key.
+        candidate = payload.get("ui_state")
+        ui_state = candidate if isinstance(candidate, dict) else None
 
     df = store.get(session_id)
 
@@ -99,6 +124,7 @@ async def load_project(file: UploadFile = File(...)):
     )
     return {
         "session_id": session_id,
+        "ui_state": ui_state,
         "filename": store.get_filename(session_id) or file.filename,
         "rows": len(df),
         "columns": columns,

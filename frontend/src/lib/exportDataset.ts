@@ -70,7 +70,14 @@ export async function exportDataset(
  *  manifest records engine identity and a dataset hash. */
 export async function downloadProjectFile(session: MinimalSession): Promise<void> {
   try {
-    const res = await api.get(`/api/project/${session.session_id}/save`, { responseType: "blob" });
+    // Panel settings and stamped results ride along in ui/state.json, so
+    // reopening the file restores the analyses, not just the data.
+    const { collectUiState } = await import("./projectUiState");
+    const res = await api.post(
+      `/api/project/${session.session_id}/save`,
+      { ui_state: collectUiState() },
+      { responseType: "blob" },
+    );
     const blob = new Blob([res.data], { type: "application/zip" });
     const url = URL.createObjectURL(blob);
     const base = (session.filename ?? "project").replace(/\.[^.]+$/, "");

@@ -12,8 +12,21 @@ recovery) goes through `/api/project/load`, which reads legacy JSON and
 the v1.2 JSON, because `.ustat` bytes are not deterministic (zip entry
 timestamps, `manifest.modified`) and the autosave dedupe hashes the whole
 payload; switching it lands with Phase 2 alongside a content-stable hash
-over the parts that matter. Phases 2-4 remain. Implements the P0 "Project
-file" row of [ROADMAP_product_maturity.md](ROADMAP_product_maturity.md).
+over the parts that matter. Implements the P0 "Project file" row of
+[ROADMAP_product_maturity.md](ROADMAP_product_maturity.md).
+
+Phase 2 landed 2026-09-10, re-scoped to "results survive close/reopen":
+the file gains a `ui/state.json` part carrying the frontend's panel state
+(per-panel selections plus stamped results); `POST /api/project/{sid}/save`
+accepts it and `/api/project/load` hands it back; every restore path
+hydrates the store from it, rebasing each `ResultStamp.dataVersion` so
+results current at save stay current and results already stale stay stale
+(`frontend/src/lib/projectUiState.ts`). Autosave now writes v1.3 JSON: the
+server's v1.2 snapshot plus the `ui_state` key, staying JSON (not .ustat)
+because the dedupe hash needs deterministic bytes and a zip does not give
+them; `/api/project/load` reads v1.3 too. Named analyses as first-class
+parts (`analyses/`, `results/`, `plots/`), the project tree UI and re-run
+move to Phase 3.
 
 ## Goal
 

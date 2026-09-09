@@ -64,6 +64,14 @@ export async function recoverSession(deadId: string, api: AxiosInstance): Promis
       if (current.session?.session_id === deadId || !current.session) {
         current.setSession(restored as never);
         useStore.getState().setLocalSessionId(rec.id);
+        // Panel settings + stamped results from a v1.3 snapshot. Only when
+        // this recovery installed the session: hydrating panel state over a
+        // session the user has since opened would cross the streams.
+        const ui = (res.data as { ui_state?: unknown }).ui_state;
+        if (ui) {
+          const { applyUiState } = await import("./projectUiState");
+          applyUiState(ui);
+        }
       }
       // The restore is a rollback to the snapshot's moment: work done between
       // that snapshot and the crash is gone, and the request that triggered

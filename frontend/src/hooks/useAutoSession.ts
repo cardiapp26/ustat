@@ -14,15 +14,17 @@
  *      so this is a `keepalive: true` request — small risk of data
  *      loss vs. zero, by design.
  *
- *   The snapshot itself is the same blob the manual "Save Session JSON"
- *   button has always produced. Resume = re-upload it via
- *   POST /api/sessions/load_session.
+ *   The snapshot is the server's save_session JSON plus a `ui_state` key
+ *   with the frontend's panel state (v1.3). Resume = re-upload it via
+ *   POST /api/project/load, which restores the data server-side and hands
+ *   ui_state back for the store.
  */
 
 import { useEffect, useRef } from "react";
 import api from "../api";
 import { useStore } from "../store";
 import { upsertRecentSession, notifySessionsChanged } from "../lib/sessionDb";
+import { collectUiState } from "../lib/projectUiState";
 import { cloudSync } from "../lib/cloudSync";
 
 const DEBOUNCE_MS = 5_000;
@@ -130,9 +132,14 @@ export function useAutoSession({ onStatus }: AutoSaveDeps = {}): void {
         // Server already knows how to serialise; we just need the JSON.
         const res = await api.get(`/api/sessions/${sessionId}/save_session`);
         if (cancelled) return;
-        const payload = typeof res.data === "string"
-          ? res.data
-          : JSON.stringify(res.data);
+        // v1.3: the server's v1.2 snapshot plus the frontend's panel state
+        // (selections + stamped results), so a resume restores the analyses
+        // and not just the data. /api/project/load hands ui_state back;
+        // the legacy load_session endpoint ignores the extra key. Kept as
+        // JSON rather than a .ustat blob on purpose: the dedupe hash below
+        // needs deterministic bytes, which a zip does not give.
+        const body = typeof res.data === "string" ? JSON.parse(res.data) : res.data;
+        const payload = JSON.stringify({ ...body, version: "1.3", ui_state: collectUiState() });
         // Skip the write if the blob hasn't changed since the last
         // snapshot — cuts down on IndexedDB churn for read-only sessions.
         // djb2 over the whole payload (not just length + prefix, which was

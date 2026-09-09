@@ -3,10 +3,11 @@ import { downloadProjectFile, downloadSessionJson, exportDataset } from './expor
 import api from '../api'
 
 vi.mock('../api', () => ({
-  default: { get: vi.fn() },
+  default: { get: vi.fn(), post: vi.fn() },
 }))
 
 const mockedGet = vi.mocked(api.get)
+const mockedPost = vi.mocked(api.post)
 
 function blobResponse(data: unknown, contentType: string) {
   return {
@@ -189,10 +190,11 @@ describe('downloadProjectFile', () => {
     vi.useRealTimers()
     vi.restoreAllMocks()
     mockedGet.mockReset()
+    mockedPost.mockReset()
   })
 
-  it('requests the project save endpoint and downloads a .ustat named after the session', async () => {
-    mockedGet.mockResolvedValue({ data: new Blob(['PK']), headers: {} })
+  it('POSTs the panel state to the save endpoint and downloads a .ustat named after the session', async () => {
+    mockedPost.mockResolvedValue({ data: new Blob(['PK']), headers: {} })
     let downloadName = ''
     const origCreateElement = document.createElement.bind(document)
     vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
@@ -209,12 +211,15 @@ describe('downloadProjectFile', () => {
 
     await downloadProjectFile({ session_id: 'sess1', filename: 'trial.csv' })
 
-    expect(mockedGet).toHaveBeenCalledWith('/api/project/sess1/save', { responseType: 'blob' })
+    const [url, body, opts] = mockedPost.mock.calls[0]
+    expect(url).toBe('/api/project/sess1/save')
+    expect((body as { ui_state: { panelCache: unknown } }).ui_state.panelCache).toBeDefined()
+    expect(opts).toEqual({ responseType: 'blob' })
     expect(downloadName).toBe('trial.ustat')
   })
 
   it('alerts on failure', async () => {
-    mockedGet.mockRejectedValue(new Error('boom'))
+    mockedPost.mockRejectedValue(new Error('boom'))
     const alertSpy = vi.fn()
     window.alert = alertSpy
     await downloadProjectFile({ session_id: 'sess1' })

@@ -91,6 +91,12 @@ export default function UploadZone() {
         form.append("file", file);
         const res = await api.post("/api/project/load", form);
         setSession(res.data);
+        // Panel settings + stamped results from the project's ui/state.json.
+        // After setSession: it clears panelCache for the new session id.
+        if (res.data.ui_state) {
+          const { applyUiState } = await import("../lib/projectUiState");
+          applyUiState(res.data.ui_state);
+        }
         // Restored sessions carry server-side decimal overrides — pull them
         // into the store so the table renders with the user's formatting.
         // The setSession call above reset columnDecimals because session_id

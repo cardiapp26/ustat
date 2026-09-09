@@ -136,6 +136,53 @@ def test_save_load_round_trip_preserves_meaning():
     assert preserved["age"][2] == "<0.1"
 
 
+def test_ui_state_round_trip_via_post_save():
+    sid = _make_session("proj_ui")
+    ui_state = {
+        "dataVersion": 7,
+        "panelCache": {
+            "models": {
+                "result": {"or": 1.4},
+                "stamp": {"dataVersion": 7, "filterKey": "none", "paramsKey": "{}", "engine": "python"},
+            }
+        },
+    }
+    r = client.post(f"/api/project/{sid}/save", json={"ui_state": ui_state})
+    assert r.status_code == 200
+    parts = _zip_parts(r.content)
+    assert "ui/state.json" in parts
+    manifest = json.loads(parts["manifest.json"])
+    assert "ui/state.json" in manifest["parts"]
+
+    r2 = client.post(
+        "/api/project/load",
+        files={"file": ("trial.ustat", r.content, "application/zip")},
+    )
+    assert r2.status_code == 200
+    assert r2.json()["ui_state"] == ui_state
+
+
+def test_get_save_has_no_ui_state_part():
+    sid = _make_session("proj_no_ui")
+    parts = _zip_parts(client.get(f"/api/project/{sid}/save").content)
+    assert "ui/state.json" not in parts
+
+
+def test_legacy_v13_json_returns_ui_state():
+    payload = {
+        "version": "1.3",
+        "filename": "with ui",
+        "data": [{"x": 1}, {"x": 2}],
+        "ui_state": {"dataVersion": 3, "panelCache": {"roc": {"result": {"auc": 0.8}}}},
+    }
+    r = client.post(
+        "/api/project/load",
+        files={"file": ("s.json", json.dumps(payload).encode(), "application/json")},
+    )
+    assert r.status_code == 200
+    assert r.json()["ui_state"]["panelCache"]["roc"]["result"]["auc"] == 0.8
+
+
 # ── Integrity and version gates ──────────────────────────────────────────────
 
 def _tampered(content: bytes, part: str, new_bytes: bytes) -> bytes:

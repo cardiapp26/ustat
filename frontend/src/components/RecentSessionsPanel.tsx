@@ -157,6 +157,13 @@ export default function RecentSessionsPanel() {
       setLocalSessionId(rec.id);
       // Restore the user's last tab, falling back to Data.
       if (rec.activeTab) setActiveTab(rec.activeTab);
+      // Panel settings + stamped results, when the snapshot carries them
+      // (v1.3 autosaves and .ustat blobs). Wins over rec.activeTab: the
+      // ui_state was written at the same moment as the rest of the state.
+      if (res.data.ui_state) {
+        const { applyUiState } = await import("../lib/projectUiState");
+        applyUiState(res.data.ui_state);
+      }
       // ...and the engine the work was done in. A resume never passes through
       // the welcome gate, so without this the session would silently continue
       // in whatever engine this visit happened to start on. Rows saved before
