@@ -22,7 +22,15 @@ directory of your choosing — without modifying anything inside the repo.
 
 ## The pin
 
-`Dockerfile` currently pins `FROM r-base:4.6.0`.
+Two things are pinned, and both must be for the environment to be
+reproducible:
+
+- **R itself**: `Dockerfile` pins `FROM r-base:4.6.0`.
+- **CRAN packages**: `install_packages.R` installs from a dated Posit
+  Package Manager snapshot (`SNAPSHOT_REPO`), not from live CRAN. Printing
+  installed versions records them; only the snapshot pins them. Without it,
+  two builds on different days can produce different reference numbers with
+  no change in this repo.
 
 **This pin should track whatever R version webR ships**, not the version
 on any given contributor's laptop or CI runner. uSTAT is starting to run
@@ -35,7 +43,8 @@ ships, would any number move?" — see `qa/models_audit/reference.json`'s
 against, and compare against a run of this image.
 
 When webR moves to a new R release, bump the `FROM` line here to match (or
-to whatever release is closest to it that `r-base` publishes) and re-run.
+to whatever release is closest to it that `r-base` publishes), bump the
+snapshot date in `install_packages.R` alongside it, and re-run.
 
 ## Usage
 
