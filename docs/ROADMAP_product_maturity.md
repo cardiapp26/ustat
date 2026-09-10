@@ -135,9 +135,13 @@ request is recorded as a replayable step including the import
 (`prep/steps.json`); whole-project replay scripts export in Python and R
 and drive uSTAT's own API, so GUI and script output are identical by
 construction; a syntax view shows covered analyses as Python/R code with
-an explicit "no translation yet" for the rest. Remaining: widening the
-syntax-template allow-list, and a clean-environment CI job that runs a
-generated replay script against a fresh server.
+an explicit "no translation yet" for the rest. The clean-environment
+replay check landed 2026-09-10 (`qa/replay_e2e/run.py`, last step of the
+backend CI job): a GUI-driven session's generated script, run by its own
+process against a second fresh server, must rebuild the identical prepared
+dataset, which closes the "compare GUI output and script output in a clean
+environment" item above. Remaining: widening the syntax-template
+allow-list.
 
 ## P1 Modeling depth before new methods
 

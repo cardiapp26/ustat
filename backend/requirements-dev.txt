@@ -9,3 +9,4 @@ pytest-cov==7.1.0
 httpx
 pytest-httpx>=0.30.0
 
+requests>=2.31  # the generated replay script (services/script_export.py) runs on it; qa/replay_e2e exercises it in CI

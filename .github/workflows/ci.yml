@@ -55,6 +55,11 @@ jobs:
         # locations would show the ratchet rising purely because the untested
         # part had been renamed out of view.
         run: python -m pytest --cov=routers --cov=services --cov=ustat_engine --cov-report=term-missing --cov-fail-under=75 -q
+      # The generated replay script, run by its own process against a fresh
+      # server, must rebuild the exact prepared dataset a GUI-driven session
+      # produced. Unit tests parse the script; this is the only place it runs.
+      - name: Clean-environment replay check
+        run: python ../qa/replay_e2e/run.py
 
   frontend:
     name: Frontend (typecheck + lint + test + build)
