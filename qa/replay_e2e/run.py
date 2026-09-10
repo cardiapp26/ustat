@@ -21,6 +21,7 @@ RAM-only store applies and "fresh" means fresh.
 """
 from __future__ import annotations
 
+import io
 import os
 import pathlib
 import re
@@ -114,8 +115,10 @@ def run_replay(script: str, base: str, workdir: pathlib.Path) -> bytes:
 
 
 def compare(gui: bytes, replay: bytes) -> None:
-    a = pd.read_csv(pd.io.common.BytesIO(gui))
-    b = pd.read_csv(pd.io.common.BytesIO(replay))
+    # io.BytesIO, not pd.io.common.BytesIO: the latter is a re-export pandas
+    # does not promise, and this runner has to survive a pandas bump.
+    a = pd.read_csv(io.BytesIO(gui))
+    b = pd.read_csv(io.BytesIO(replay))
     if a.shape != b.shape:
         raise SystemExit(f"MISMATCH shape: gui {a.shape} vs replay {b.shape}")
     if list(a.columns) != list(b.columns):
