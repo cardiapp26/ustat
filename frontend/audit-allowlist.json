@@ -1,0 +1,39 @@
+{
+  "$comment": [
+    "Advisories the npm audit gate accepts, by GHSA id, each with the reason it",
+    "is accepted and a date by which it must be re-argued. Read by",
+    "scripts/audit-gate.mjs.",
+    "",
+    "This file can only ever shrink the gate for the exact ids listed. Anything",
+    "else at high or critical still fails. An entry whose advisory has stopped",
+    "appearing fails too, so a stale exception cannot quietly outlive its cause,",
+    "and so does an entry past its reviewBy date."
+  ],
+  "allow": [
+    {
+      "id": "GHSA-jrc7-96c5-q579",
+      "package": "maplibre-gl",
+      "severity": "critical",
+      "title": "MapLibre GL JS: XSS Sanitizer Bypass in DOM.sanitize() via Live NamedNodeMap Removal Skip",
+      "reachedVia": "plotly.js bundles maplibre-gl for its map trace types",
+      "reviewBy": "2026-12-10",
+      "why": [
+        "No fixed version exists to upgrade to: the advisory range is <=6.4.0,",
+        "which covers every maplibre-gl release, so this cannot be patched by",
+        "moving forward. npm's suggested 'fix' is a downgrade of plotly.js from",
+        "3.4.0 to 2.34.0, which does not patch anything; it removes maplibre-gl",
+        "because plotly 2.x bundled mapbox-gl instead, at the cost of a major",
+        "version regression across every chart in the app.",
+        "",
+        "The vulnerable code is unreachable here. The advisory is an XSS bypass",
+        "in maplibre's DOM.sanitize(), which only runs once a map is",
+        "instantiated. uSTAT renders no map traces at all: there is no",
+        "scattermapbox, choroplethmapbox, scattermap, densitymap or choroplethmap",
+        "anywhere in frontend/src, so maplibre is bundled but never constructed.",
+        "",
+        "Revisit when plotly.js ships a maplibre-gl above the advisory range, or",
+        "if a map trace is ever added to the app, whichever comes first."
+      ]
+    }
+  ]
+}

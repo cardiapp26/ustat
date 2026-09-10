@@ -64,30 +64,20 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - name: Install deps
         run: npm ci --legacy-peer-deps
+      # The gate must be a gate: this proves it still rejects an undocumented
+      # advisory, a stale exception and an expired one before it is trusted to
+      # pass the real report.
+      - name: Audit gate self-test
+        run: node scripts/audit-gate.test.mjs
       - name: npm audit — high+ severity gate
-        # The registry's audit endpoint 503s often enough to redden a clean
-        # build, and npm has announced it is being retired. Retry a transient
-        # endpoint error; a real advisory still fails the job on the first
-        # try, because that failure prints findings rather than an endpoint
-        # error and the loop stops on it.
-        run: |
-          for attempt in 1 2 3; do
-            set +e
-            output=$(npm audit --audit-level=high 2>&1)
-            status=$?
-            set -e
-            echo "$output"
-            if [ $status -eq 0 ]; then
-              exit 0
-            fi
-            if ! echo "$output" | grep -q "audit endpoint returned an error"; then
-              exit $status
-            fi
-            echo "::warning::npm audit endpoint error on attempt $attempt; retrying"
-            sleep $((attempt * 20))
-          done
-          echo "::error::npm audit could not reach the registry after 3 attempts"
-          exit 1
+        # Fails on every high/critical advisory except the ids argued for in
+        # frontend/audit-allowlist.json, each of which carries a reason and a
+        # review date. Replaces a plain `npm audit --audit-level=high`, which
+        # could only be satisfied by downgrading plotly.js a major version to
+        # shed a maplibre-gl advisory that has no fixed release and no
+        # reachable code path here. Retrying the registry's frequent transient
+        # endpoint errors is handled inside the script.
+        run: node scripts/audit-gate.mjs
 
   secrets-scan:
     name: Secret scan (gitleaks)
