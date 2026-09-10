@@ -74,7 +74,11 @@ edge cases and findings with explicit statuses.
 `backend/tests/test_validation_cards.py` enforces them in CI: malformed
 cards, dangling artifact pointers, unserved endpoints, unclaimed
 reference entries, covered edge cases without a named test, and findings
-without a status are all red builds. Initial coverage: every entry in
+without a status are all red builds. One exception, recorded in the cards
+README: `qa/models_audit/reference.json` is a regenerated, gitignored
+artifact absent from a plain checkout, so its pointers are enforced
+wherever the file exists rather than in CI; the tracked inventories are
+enforced unconditionally. Initial coverage: every entry in
 `qa/models_audit` (23 methods), `qa/tests_audit` and `qa/parity`.
 Edge cases marked `open` in the cards are the worked inventory of what
 still needs a regression test.

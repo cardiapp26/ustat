@@ -37,9 +37,33 @@ def _cards():
     return [(f, yaml.safe_load(f.read_text())) for f in files]
 
 
+# Reference inventories that are build products, not sources: qa/models_audit
+# regenerates reference.json from the pinned R image on every run and
+# .gitignores it, so a plain checkout (CI) does not have it. Cards may point
+# into it, and those pointers are fully checked wherever the file exists --
+# locally after `qa/r_reference/run.sh`, and in any job that regenerates it.
+# What must never happen is the check silently degrading to nothing, so the
+# tracked inventories below are required unconditionally.
+REGENERATED = {"qa/models_audit/reference.json", "qa/models_audit/endpoints.json"}
+TRACKED_INVENTORIES = ("qa/tests_audit/reference.json",)
+
+
+def _available(rel_path: str) -> bool:
+    """Is this reference inventory readable in the current checkout?"""
+    path = REPO / rel_path
+    if path.exists():
+        return True
+    assert rel_path in REGENERATED, (
+        f"reference inventory {rel_path} is missing and is not a known "
+        "regenerated artifact; it should be tracked in git"
+    )
+    return False
+
+
 def _resolve(artifact: dict):
     path = REPO / artifact["file"]
-    assert path.exists(), f"artifact file missing: {artifact['file']}"
+    if not _available(artifact["file"]):
+        return None
     data = json.loads(path.read_text())
     key = artifact.get("key")
     if key is None:
@@ -91,11 +115,18 @@ def test_endpoints_exist():
 
 def test_every_reference_entry_is_claimed_by_exactly_one_card():
     required = set()
-    models = json.loads((REPO / "qa/models_audit/reference.json").read_text())["models"]
-    required |= {f"models:{k}" for k in models}
+    # models_audit is regenerated (see REGENERATED); enforce it whenever the
+    # checkout has it, and let a plain checkout enforce the rest.
+    if _available("qa/models_audit/reference.json"):
+        models = json.loads((REPO / "qa/models_audit/reference.json").read_text())["models"]
+        required |= {f"models:{k}" for k in models}
+    for rel in TRACKED_INVENTORIES:
+        assert _available(rel), f"tracked reference inventory {rel} is missing"
     tests_ref = json.loads((REPO / "qa/tests_audit/reference.json").read_text())
     required |= {f"tests:{k}" for k in tests_ref if k != "meta"}
-    required |= {f"parity:{p.name}" for p in (REPO / "qa/parity").glob("*.json")}
+    parity = sorted((REPO / "qa/parity").glob("*.json"))
+    assert parity, "qa/parity holds no fixtures; the inventory check would be vacuous"
+    required |= {f"parity:{p.name}" for p in parity}
 
     claimed: dict = {}
     for path, card in _cards():
@@ -111,6 +142,10 @@ def test_every_reference_entry_is_claimed_by_exactly_one_card():
         f"retire the entry): {sorted(unclaimed)}"
     )
     phantom = set(claimed) - required
+    if not _available("qa/models_audit/reference.json"):
+        # Its inventory is unknown in this checkout, so a models: claim cannot
+        # be called phantom here. It is checked wherever the file exists.
+        phantom = {key for key in phantom if not key.startswith("models:")}
     assert not phantom, f"cards claim reference entries that do not exist: {sorted(phantom)}"
 
 
