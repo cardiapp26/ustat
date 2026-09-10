@@ -21,7 +21,7 @@
  * Without --audit-json it runs `npm audit --json` itself, retrying the
  * registry's frequent transient endpoint errors. Both flags exist so the
  * gate's own failure modes can be exercised offline, which is what
- * scripts/audit-gate.test.mjs does.
+ * scripts/audit-gate.selftest.mjs does.
  */
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";

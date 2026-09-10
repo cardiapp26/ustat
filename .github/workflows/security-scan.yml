@@ -68,7 +68,7 @@ jobs:
       # advisory, a stale exception and an expired one before it is trusted to
       # pass the real report.
       - name: Audit gate self-test
-        run: node scripts/audit-gate.test.mjs
+        run: node scripts/audit-gate.selftest.mjs
       - name: npm audit — high+ severity gate
         # Fails on every high/critical advisory except the ids argued for in
         # frontend/audit-allowlist.json, each of which carries a reason and a

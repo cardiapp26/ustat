@@ -8,7 +8,7 @@
  * advisory, reject an exception whose advisory has gone, reject an expired
  * exception.
  *
- * Run: node scripts/audit-gate.test.mjs
+ * Run: node scripts/audit-gate.selftest.mjs
  */
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
