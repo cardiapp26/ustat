@@ -8,6 +8,7 @@ never grows unbounded; the same TTL/MAX_SESSIONS eviction that prunes memory
 also deletes the matching disk files.
 """
 import json
+import logging
 import os
 import tempfile
 import threading
@@ -38,6 +39,7 @@ _steps: Dict[str, list] = {}  # {session_id: [{op, params, t}]} — the prep rec
 _undo: Dict[str, list] = {}   # {session_id: [data + dependent-state snapshots]}
 _redo: Dict[str, list] = {}
 _lock = Lock()
+_logger = logging.getLogger(__name__)
 MAX_UNDO = 30
 # Re-exported: the operator set now lives beside the code that implements it,
 # inside the engine, so the browser and the server cannot disagree about what
@@ -112,6 +114,17 @@ def _atomic_write_pickle(df: pd.DataFrame, path: str) -> None:
     os.replace(tmp, path)
 
 
+def _requeue_dirty(session_ids) -> None:
+    """Put sessions whose snapshot write failed back on the dirty set so the
+    next autosave tick retries them, instead of silently dropping the retry.
+    Sessions purged in the meantime are skipped — _purge_locked already removed
+    their disk files, so resurrecting them in _dirty would be a stale entry."""
+    with _lock:
+        for sid in session_ids:
+            if sid in _store:
+                _dirty.add(sid)
+
+
 def _flush_dirty_to_disk() -> None:
     """Snapshot every session touched since the last flush. Called from the
     autosave thread — overwrites each session's single file pair in place so
@@ -139,9 +152,16 @@ def _flush_dirty_to_disk() -> None:
         return
     try:
         os.makedirs(SESSION_CACHE_DIR, exist_ok=True)
-    except OSError:
-        return  # No writable/mounted cache dir — degrade to memory-only silently.
+    except OSError as exc:
+        _requeue_dirty(snapshot.keys())
+        _logger.warning(
+            "Session autosave: cache dir %s not writable (%s); "
+            "%d session(s) re-queued for the next flush.",
+            SESSION_CACHE_DIR, exc, len(snapshot),
+        )
+        return
 
+    failed: list = []
     for sid, state in snapshot.items():
         df_path, meta_path = _cache_paths(sid)
         try:
@@ -157,8 +177,15 @@ def _flush_dirty_to_disk() -> None:
             with open(meta_path + ".tmp", "w") as f:
                 json.dump(meta, f)
             os.replace(meta_path + ".tmp", meta_path)
-        except OSError:
-            continue  # Best-effort — a write failure just skips this session's snapshot.
+        except OSError as exc:
+            failed.append(sid)
+            _logger.warning(
+                "Session autosave: snapshot write failed for session %s (%s); "
+                "re-queued for the next flush.", sid, exc,
+            )
+
+    if failed:
+        _requeue_dirty(failed)
 
 
 def _autosave_worker() -> None:
