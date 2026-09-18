@@ -33,4 +33,7 @@ RUN groupadd -r app --gid 10001 \
 USER app
 
 EXPOSE 8000
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--limit-max-requests", "1000", "--timeout-keep-alive", "30"]
+# No --limit-max-requests: sessions live in process RAM, so a worker restart
+# silently drops every active session. Memory pressure is bounded instead by
+# the session TTL and max-session cap enforced in backend/services/store.py.
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--timeout-keep-alive", "30"]
