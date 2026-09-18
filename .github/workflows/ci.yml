@@ -23,8 +23,16 @@ jobs:
           fi
           echo "No oversized tracked files."
   backend:
-    name: Backend (pytest)
+    name: Backend (pytest, py${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 matches local development (.python-version); 3.11 matches the
+        # production image (Dockerfile: python:3.11-slim). Both must pass —
+        # without 3.11 here, the interpreter that actually serves users was
+        # never tested.
+        python-version: ["3.10", "3.11"]
     defaults:
       run:
         working-directory: backend
@@ -32,7 +40,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
-          python-version: "3.10"
+          python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: |
             backend/requirements.txt
