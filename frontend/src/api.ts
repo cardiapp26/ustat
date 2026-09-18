@@ -1,4 +1,6 @@
 import axios from "axios";
+// Type-only, so the api ⇄ store cycle is erased at compile time.
+import type { ColKind } from "./store";
 import { runColumnStructureMutation } from "./lib/columnStructureLock";
 import { fromResponseHeaders, record as recordProvenance } from "./lib/engine/provenance";
 
@@ -89,11 +91,66 @@ export const getIngestReport = (sessionId: string) =>
     preserved_cells: Record<string, { row: number; value: string }[]>;
   }>(`/api/upload/${sessionId}/ingest_report`);
 
+/**
+ * Response contracts for the core session endpoints. The backend returns
+ * plain dicts, so these interfaces are the only compile-time record of the
+ * field names; backend/tests/test_api_contracts.py pins the same key sets on
+ * the server side. Change a field in both places or in neither.
+ */
+export interface DescriptiveStats {
+  n: number;
+  missing: number;
+  mean: number;
+  std: number;
+  se: number;
+  min: number;
+  max: number;
+  median: number;
+  q1: number;
+  q3: number;
+  iqr: number;
+  skewness: number;
+  kurtosis: number;
+  normality_p: number;
+  normality_test: string;
+  normal: boolean;
+  warnings: string[];
+  /** Suggested decimal places for sample-valued stats (mean, median, quartiles). */
+  display_decimals: number;
+}
+
+export interface FrequencyCategory {
+  value: string;
+  count: number;
+  pct: number;
+}
+
+export interface FrequencyTable {
+  n: number;
+  missing: number;
+  categories: FrequencyCategory[];
+}
+
+export interface SessionColumnInfo {
+  name: string;
+  dtype: string;
+  kind: ColKind;
+  value_labels?: Record<string, string>;
+}
+
+export interface SessionInfo {
+  session_id: string;
+  filename: string;
+  rows: number;
+  columns: SessionColumnInfo[];
+  preview: Record<string, unknown>[];
+}
+
 export const getDescriptive = (sessionId: string, column?: string) =>
-  api.get(`/api/stats/${sessionId}/descriptive`, { params: column ? { column } : {} });
+  api.get<Record<string, DescriptiveStats>>(`/api/stats/${sessionId}/descriptive`, { params: column ? { column } : {} });
 
 export const getFrequency = (sessionId: string, column: string) =>
-  api.get(`/api/stats/${sessionId}/frequency`, { params: { column } });
+  api.get<Record<string, FrequencyTable>>(`/api/stats/${sessionId}/frequency`, { params: { column } });
 
 export const getCorrelation = (sessionId: string, method = "pearson") =>
   api.get(`/api/stats/${sessionId}/correlation`, { params: { method } });
@@ -634,7 +691,7 @@ export const getNameSuggestions = (sessionId: string) =>
 
 // Session management
 export const saveSession   = (sessionId: string) => api.get(`/api/sessions/${sessionId}/save_session`, { responseType: "blob" });
-export const getSessionInfo = (sessionId: string) => api.get(`/api/sessions/${sessionId}`);
+export const getSessionInfo = (sessionId: string) => api.get<SessionInfo>(`/api/sessions/${sessionId}`);
 export const createBlankSession = () => api.post("/api/sessions/blank");
 export const loadSession   = (file: File) => { const fd = new FormData(); fd.append("file", file); return api.post("/api/sessions/load_session", fd); };
 export const getAuditTrail = (sessionId: string) => api.get(`/api/sessions/${sessionId}/audit`);
