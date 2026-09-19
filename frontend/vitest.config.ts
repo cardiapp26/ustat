@@ -15,8 +15,11 @@ export default mergeConfig(
       // kind of red: it trains people to re-run rather than to read. This is
       // the machine's budget, not the product's latency, and no assertion
       // changes by raising it.
-      testTimeout: 20000,
-      hookTimeout: 20000,
+      // 40/40: must stay ABOVE the 30 s asyncUtilTimeout in src/test/setup.ts,
+      // or a stuck findBy* would hit this ceiling first and report a bare
+      // test timeout instead of which query was waiting.
+      testTimeout: 40000,
+      hookTimeout: 40000,
       globals: true,
       setupFiles: ['./src/test/setup.ts'],
       css: false,

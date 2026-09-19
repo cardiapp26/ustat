@@ -11,15 +11,16 @@ import { server } from './server'
 // 1055 ms on a two-core runner, green on every local run and green in
 // isolation there too.
 //
-// Raised twice since, because the number was always the machine's budget
-// rather than the product's and the machine kept asking for more: a run
-// under the full suite landed its mocked response 8.05 s after the click,
-// against a wait of 8 s, and failed by fifty milliseconds. Fifteen is the
-// same kind of number as the testTimeout above, with five seconds still in
-// hand, and it is set in one place so the next slow runner does not need a
-// third per-test override. A query that will never match still reports where
-// it was waiting rather than running out the whole test.
-configure({ asyncUtilTimeout: 15000 })
+// Raised three times since, because the number was always the machine's
+// budget rather than the product's and the machine kept asking for more:
+// first a mocked response landed 8.05 s after the click against a wait of
+// 8 s; then the same ROCPanel status query ran out its full 15 s on a
+// two-core runner while the suite held all cores. Thirty here, with the
+// vitest testTimeout raised to forty alongside it, keeps the ordering
+// (query budget < test budget) and is set in one place so the next slow
+// runner does not need a per-test override. A query that will never match
+// still reports where it was waiting rather than running out the whole test.
+configure({ asyncUtilTimeout: 30000 })
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
 afterEach(() => {
