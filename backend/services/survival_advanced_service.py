@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 from fastapi import HTTPException
+from loguru import logger
 
 from services import store
 
@@ -1029,22 +1030,38 @@ def fit_fine_gray(req):
             "cif_at_max": _safe(round(probs[-1], 4)) if probs else None,
         }
 
-    # Gray's test (K-sample comparison) — approximate using log-rank on sub-events
-    gray_p = None
-    if req.group_col and len(groups) == 2:
+    # Group comparison. This is a cause-specific log-rank test: competing
+    # events are treated as censored, so it asks whether the cause-specific
+    # HAZARD of the event of interest differs between groups. It is not
+    # Gray's test, which compares the cumulative incidence functions and can
+    # disagree with it whenever the groups differ in their competing-event
+    # rates. It was labelled "Gray's test" until 2026-09; no Python library
+    # uSTAT depends on implements Gray's test, so the R code below carries
+    # cmprsk::cuminc for readers who need it.
+    cause_specific_logrank = None
+    if req.group_col and len(groups) >= 2:
         try:
-            from lifelines.statistics import logrank_test
-            g1_mask = work[req.group_col] == groups[0]
-            g2_mask = work[req.group_col] == groups[1]
-            # Create binary event: 1 if event of interest, 0 otherwise
+            from lifelines.statistics import multivariate_logrank_test
             ev_binary = (events == req.event_of_interest).astype(int)
-            lr = logrank_test(
-                durations[g1_mask], durations[g2_mask],
-                ev_binary[g1_mask], ev_binary[g2_mask],
-            )
-            gray_p = _safe(round(float(lr.p_value), 6))
+            lr = multivariate_logrank_test(durations, work[req.group_col].values, ev_binary)
+            cause_specific_logrank = {
+                "test": "Cause-specific log-rank (competing events censored)",
+                "statistic": _safe(float(lr.test_statistic)),
+                "df": int(lr.degrees_of_freedom),
+                "p": _safe(float(lr.p_value)),
+                "hypothesis": (
+                    f"Equal cause-specific hazards of event {req.event_of_interest} "
+                    f"across {req.group_col} groups"
+                ),
+                "not_grays_test": (
+                    "Compares cause-specific hazards, not cumulative incidence. "
+                    "Gray's test (R cmprsk::cuminc) compares the CIFs and can give "
+                    "a different answer when competing-event rates differ by group."
+                ),
+            }
         except Exception:
-            gray_p = None
+            logger.exception("Cause-specific log-rank failed")
+            cause_specific_logrank = None
 
     plot = {
         "data": traces,
@@ -1080,8 +1097,16 @@ def fit_fine_gray(req):
         f"The cumulative incidence function (CIF) was estimated using the Aalen-Johansen estimator "
         f"for event type {req.event_of_interest}."
     )
-    if gray_p is not None:
-        result_text += f" Gray's test p = {gray_p}."
+    if cause_specific_logrank is not None and cause_specific_logrank["p"] is not None:
+        csl = cause_specific_logrank
+        p_txt = "< 0.001" if csl["p"] < 0.001 else f"= {csl['p']:.3f}"
+        result_text += (
+            f" Cause-specific hazards of event {req.event_of_interest} were compared "
+            f"across {req.group_col} with a log-rank test treating competing events as "
+            f"censored (χ² = {csl['statistic']:.3f}, df = {csl['df']}, p {p_txt}). "
+            "This tests the cause-specific hazard, not the cumulative incidence; "
+            "it is not Gray's test."
+        )
     if warnings:
         result_text += " " + " ".join(warnings)
 
@@ -1098,9 +1123,14 @@ def fit_fine_gray(req):
         f"cif <- cuminc(ftime = data${req.duration_col},\n"
         f"              fstatus = data${req.event_col}"
         + (f",\n              group = data${req.group_col}" if req.group_col else "")
-        + f")\n"
-        f"plot(cif)\n\n"
-        f"# Fine-Gray regression\n"
+        + ")\n"
+        "plot(cif)\n"
+        + ("cif$Tests  # Gray's K-sample test of equal cumulative incidence\n\n"
+           "# What uSTAT reports: cause-specific log-rank, competing events censored\n"
+           "library(survival)\n"
+           f"survdiff(Surv(data${req.duration_col}, data${req.event_col} == {req.event_of_interest})"
+           f" ~ data${req.group_col})\n\n" if req.group_col else "\n")
+        + f"# Fine-Gray regression\n"
         f"fg <- crr(ftime = data${req.duration_col},\n"
         f"          fstatus = data${req.event_col},\n"
         f"          failcode = {req.event_of_interest},\n"
@@ -1163,7 +1193,7 @@ def fit_fine_gray(req):
         "event_of_interest": req.event_of_interest,
         "event_counts": event_counts,
         "cif_data": cif_data,
-        "gray_p": gray_p,
+        "cause_specific_logrank": cause_specific_logrank,
         "plot": plot,
         "assumptions": assumptions,
         "warnings": warnings,

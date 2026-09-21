@@ -157,19 +157,69 @@ def test_fine_gray_cif_only(client, sid):
     assert d["event_counts"]["All"]["competing_events"] > 0
 
 
-def test_fine_gray_with_group_grays_test(client, sid):
+def _competing_df_where_tests_disagree(seed: int = 20260922, n: int = 160) -> pd.DataFrame:
+    """Equal cause-1 hazard in both groups, but group B has a far higher
+    competing-event hazard, so its cause-1 cumulative incidence is lower.
+    The cause-specific log-rank sees no difference; Gray's test does."""
+    rng = np.random.default_rng(seed)
+    grp = np.repeat(["A", "B"], n // 2)
+    t1 = rng.exponential(1 / np.full(n, 0.10))
+    t2 = rng.exponential(1 / np.where(grp == "A", 0.02, 0.30))
+    c = rng.uniform(2, 15, n)
+    t = np.minimum.reduce([t1, t2, c])
+    ev = np.where(t == t1, 1, np.where(t == t2, 2, 0))
+    return pd.DataFrame({"time": np.round(t, 3), "status": ev, "grp": grp})
+
+
+def test_fine_gray_group_comparison_is_cause_specific_logrank_not_gray(client):
+    """The group p is a cause-specific log-rank, and says so.
+
+    It used to be served as "Gray's test p". On this data R gives:
+      survival::survdiff(Surv(time, status == 1) ~ grp)
+        chisq = 2.4859758897, p = 0.1148650814   <- what uSTAT computes
+      cmprsk::cuminc(time, status, grp)$Tests["1", ]
+        stat = 15.21106,      p = 9.613853e-05   <- Gray's test
+    so calling the first number Gray's test reported p = 0.11 for a CIF
+    difference Gray's test puts at p < 0.001.
+    """
+    sid = make_session(_competing_df_where_tests_disagree(), "tsadv_gray_vs_cs")
     r = client.post(f"{PREFIX}/fine_gray", json={
         "session_id": sid,
-        "duration_col": "duration",
-        "event_col": "comp_event",
+        "duration_col": "time",
+        "event_col": "status",
         "event_of_interest": 1,
-        "group_col": "DM",
+        "group_col": "grp",
     })
     assert r.status_code == 200, r.text
     d = r.json()
-    assert d["gray_p"] is not None
-    assert 0.0 <= d["gray_p"] <= 1.0
-    assert len(d["event_counts"]) == 2
+    assert "gray_p" not in d
+    csl = d["cause_specific_logrank"]
+    assert csl["df"] == 1
+    assert csl["statistic"] == pytest.approx(2.4859758897, rel=1e-8)
+    assert csl["p"] == pytest.approx(0.1148650814, rel=1e-8)
+    assert "not Gray's test" in d["result_text"]
+    assert "Gray's test p" not in d["result_text"]
+    # The R snippet hands the reader the real Gray's test.
+    assert "cif$Tests" in d["r_code"]
+
+
+def test_fine_gray_group_comparison_handles_more_than_two_groups(client, surv_df):
+    from lifelines.statistics import multivariate_logrank_test
+
+    df = surv_df.assign(G3=np.arange(len(surv_df)) % 3)
+    sid3 = make_session(df, "tsadv_three_groups")
+    r = client.post(f"{PREFIX}/fine_gray", json={
+        "session_id": sid3,
+        "duration_col": "duration",
+        "event_col": "comp_event",
+        "event_of_interest": 1,
+        "group_col": "G3",
+    })
+    assert r.status_code == 200, r.text
+    csl = r.json()["cause_specific_logrank"]
+    ref = multivariate_logrank_test(df.duration, df.G3, (df.comp_event == 1).astype(int))
+    assert csl["df"] == 2
+    assert csl["p"] == pytest.approx(ref.p_value, rel=1e-10)
 
 
 def test_fine_gray_bad_event_of_interest_422(client, sid):
