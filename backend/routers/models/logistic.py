@@ -387,6 +387,24 @@ class FirthLogisticRequest(BaseModel):
     interactions: Optional[List[List[str]]] = None
 
 
+# Firth CIs and p-values here are Wald. R's logistf, the usual reference,
+# defaults to penalised PROFILE likelihood, so the two agree on coefficients
+# yet part on intervals, most near separation, which is the method's reason
+# to exist. Every Firth response says so next to its numbers and in the
+# paragraph that gets pasted into a manuscript.
+FIRTH_CI_METHOD = "Wald"
+FIRTH_WALD_NOTE = (
+    "Confidence intervals and p-values are Wald (estimate ± 1.96·SE), not the "
+    "penalised profile-likelihood intervals R's logistf reports by default. "
+    "Coefficients agree with logistf; the intervals can differ noticeably near "
+    "separation, where Wald intervals are the less reliable of the two."
+)
+FIRTH_WALD_SENTENCE = (
+    " 95% confidence intervals and p-values are Wald-based, not penalised "
+    "profile likelihood."
+)
+
+
 def _firth_fit(X: np.ndarray, y: np.ndarray, max_iter: int = 50, tol: float = 1e-6):
     n, p = X.shape
     beta = np.zeros(p, dtype=float)
@@ -576,12 +594,11 @@ def firth_logistic_regression(req: FirthLogisticRequest):
         "auc": round(auc, 4) if auc is not None else None,
         "classification": classification,
         "coefficients": coefs,
+        "ci_method": FIRTH_CI_METHOD,
         "method_note": (
             "Firth (1993) bias-corrected logistic regression with Jeffreys-prior "
-            "penalty; recommended for rare events or (quasi-)separated data. "
-            "Wald p-values and CIs are reported; the penalised PROFILE "
-            "likelihood p-values and CIs that R's logistf gives are not "
-            "computed in this version. Reference: Heinze & Schemper, Stat Med 2002."
+            "penalty, for rare events or (quasi-)separated data (Heinze & "
+            "Schemper, Stat Med 2002). " + FIRTH_WALD_NOTE
         ),
         "result_text": (
             f"Firth penalized logistic regression was used to model {req.outcome} "
@@ -592,6 +609,7 @@ def firth_logistic_regression(req: FirthLogisticRequest):
             f"{'<0.001' if omnibus_p < 0.001 else f'{omnibus_p:.3f}'}. "
             f"Nagelkerke R² = {nagelkerke_r2:.3f}"
             + (f", AUC = {auc:.3f}." if auc is not None else ".")
+            + FIRTH_WALD_SENTENCE
         ),
     }
 
@@ -835,9 +853,11 @@ def logistic_or_table(req: LogisticRequest):
             "multi_p": m.get("p"),
         })
 
+    result_text = _ortable_results_text(req.outcome, table, model_stats, selection_label)
     return {
         "model": ("Firth Penalised Logistic OR Table" if use_firth else "Logistic OR Table"),
         "use_firth": bool(use_firth),
+        **({"ci_method": FIRTH_CI_METHOD, "method_note": FIRTH_WALD_NOTE} if use_firth else {}),
         "outcome": req.outcome,
         "n": len(df),
         "n_excluded": n_excluded,
@@ -848,7 +868,7 @@ def logistic_or_table(req: LogisticRequest):
         "n_predictors": len(pred_list),
         "table": table,
         "model_stats": model_stats,
-        "result_text": _ortable_results_text(req.outcome, table, model_stats, selection_label),
+        "result_text": result_text + (FIRTH_WALD_SENTENCE if use_firth else ""),
         "warnings": (skipped if skipped else []) + ([f"Multivariate: {multi_error}"] if multi_error else []),
     }
 

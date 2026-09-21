@@ -10,7 +10,7 @@ implementation:
 assumptions:
   - Same as logistic regression; intended for small samples and separation
 unsupported:
-  - Firth-corrected confidence intervals by penalised profile likelihood (Wald intervals are reported; logistf uses profile by default)
+  - Firth-corrected confidence intervals and p-values by penalised profile likelihood (Wald intervals are reported and labelled as such in the panel and result text; logistf uses profile by default)
 behavior:
   missing_data: Listwise deletion over outcome + predictors
   weights: Not supported
@@ -31,5 +31,10 @@ edge_cases:
 findings:
   - id: wald-vs-profile-ci
     summary: CIs are Wald; R logistf defaults to penalised profile likelihood, so intervals differ near separation even when coefficients agree
-    status: open
-    evidence: unsupported list above; needs either profile CIs or an explicit UI note
+    status: fixed
+    evidence: >-
+      Resolved by disclosure, not by profile intervals (still listed under unsupported).
+      /firth_logistic and /logistic_table with use_firth return ci_method "Wald" plus a
+      method_note, ModelsPanel renders that note directly above the coefficient and OR
+      tables (CiMethodNote), and result_text states the intervals are Wald-based;
+      backend/tests/test_models_logistic.py::_assert_firth_wald_disclosed

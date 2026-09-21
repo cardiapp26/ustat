@@ -14,7 +14,7 @@ import CoxHRTable from "./models/CoxHRTable";
 import { useModelData } from "./models/useModelData";
 import type { ModelResult } from "./models/shared";
 import { MODEL_GUIDANCE, MODEL_FOREST_TITLE } from "./models/guidance";
-import { ForestBuilderButton, SparklineMini } from "./models/widgets";
+import { CiMethodNote, ForestBuilderButton, SparklineMini } from "./models/widgets";
 import MultiOutcomeResult from "./models/MultiOutcomeResult";
 
 export default function ModelsPanel() {
@@ -946,6 +946,7 @@ export default function ModelsPanel() {
                     ))}
                   </div>
                 </div>
+                {model === "firth" && <CiMethodNote method={result.ci_method} note={result.method_note} />}
                 <CoefTable
                   coefs={result.coefficients}
                   hrMode={model === "cox"}
@@ -990,6 +991,7 @@ export default function ModelsPanel() {
                   Univariate &amp; Multivariate OR Table
                   <Tip text="Univariate: each predictor tested alone against the outcome. Multivariate: all selected predictors tested together, adjusting for each other. Compare both columns — a variable that is significant univariately but not multivariately may be confounded by another predictor." wide />
                 </h4>
+                {result.use_firth && <CiMethodNote method={result.ci_method} note={result.method_note} />}
                 <ORTable
                   rows={result.table}
                   outcome={result.outcome ?? ""}

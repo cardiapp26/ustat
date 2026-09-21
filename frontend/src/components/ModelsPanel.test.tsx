@@ -169,6 +169,37 @@ describe('ModelsPanel', () => {
     )
   })
 
+  it('Firth logistic: states beside the coefficient table that its intervals are Wald', async () => {
+    // logistf defaults to profile-likelihood intervals; a reader comparing the
+    // two needs to see which one this table holds without opening the API.
+    stubBackgroundEndpoints()
+    installSession(regressionSession())
+    server.use(
+      http.post('/api/models/firth_logistic', () =>
+        HttpResponse.json({
+          model: 'Firth Penalized Logistic Regression',
+          outcome: 'DEATH',
+          ci_method: 'Wald',
+          method_note: 'Confidence intervals and p-values are Wald, not penalised profile likelihood.',
+          coefficients: [
+            { variable: 'AGE', p: 0.014, odds_ratio: 1.07, or_ci_low: 1.01, or_ci_high: 1.14 },
+          ],
+        }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<ModelsPanel />)
+    await user.click(screen.getByText('Firth Logistic (penalized)'))
+    await user.selectOptions(selectAfterLabel(/^Outcome/), 'DEATH')
+    await user.click(checkPredictor('AGE'))
+    await user.click(screen.getByRole('button', { name: 'Fit Model' }))
+
+    const note = await screen.findByRole('note')
+    expect(note).toHaveTextContent('Wald intervals.')
+    expect(note).toHaveTextContent('not penalised profile likelihood')
+  })
+
   it('OR Table: runs univariate + multivariate logistic table and renders both columns', async () => {
     stubBackgroundEndpoints()
     installSession(regressionSession())

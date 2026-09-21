@@ -165,6 +165,9 @@ export interface ModelResult {
   model_stats?: ModelSummary;
   omnibus?: ChiSquareTest;
   brant_proportional_odds?: BrantTest;
+  use_firth?: boolean;
+  ci_method?: string;
+  method_note?: string;
 }
 
 export interface BrantTest {

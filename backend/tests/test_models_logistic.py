@@ -141,6 +141,16 @@ def test_firth_logistic_happy_path(client, sid):
     assert 0.0 <= body["nagelkerke_r2"] <= 1.0
     if body["auc"] is not None:
         assert 0.0 <= body["auc"] <= 1.0
+    _assert_firth_wald_disclosed(body)
+
+
+def _assert_firth_wald_disclosed(body):
+    """Firth intervals are Wald while logistf defaults to profile likelihood.
+    The method has to travel with the numbers: in the field the panel renders
+    beside the table, and in the paragraph that gets pasted into a paper."""
+    assert body["ci_method"] == "Wald"
+    assert "profile" in body["method_note"]
+    assert "Wald-based, not penalised profile likelihood" in body["result_text"]
 
 
 def test_firth_logistic_non_binary_422(client, sid):
@@ -217,6 +227,8 @@ def test_logistic_table_all(client, sid):
     body = r.json()
     assert body["model"] == "Logistic OR Table"
     assert body["use_firth"] is False
+    assert "ci_method" not in body
+    assert "profile likelihood" not in body["result_text"]
     assert body["n_total"] == 300
     assert isinstance(body["table"], list) and len(body["table"]) >= 3
     for row in body["table"]:
@@ -249,6 +261,7 @@ def test_logistic_table_firth(client, sid):
     assert body["use_firth"] is True
     assert "Firth" in body["model"]
     assert isinstance(body["table"], list) and len(body["table"]) >= 3
+    _assert_firth_wald_disclosed(body)
 
 
 def test_logistic_table_non_binary_422(client, sid):

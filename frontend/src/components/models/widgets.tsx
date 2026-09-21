@@ -52,3 +52,17 @@ export function SparklineMini({ data, type }: { data: number[]; type: string }) 
     </svg>
   );
 }
+
+/** How a model's intervals were computed, stated beside the table that shows
+ *  them. Firth fits report Wald intervals where R's logistf defaults to
+ *  penalised profile likelihood; a note that only lived in the API response
+ *  never reached the reader. */
+export function CiMethodNote({ method, note }: { method?: string; note?: string }) {
+  if (!note) return null;
+  return (
+    <div role="note" className="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-snug text-amber-800">
+      {method && <span className="font-semibold">{method} intervals. </span>}
+      {note}
+    </div>
+  );
+}
