@@ -3,14 +3,9 @@ import axios from "axios";
 import type { ColKind } from "./store";
 import { runColumnStructureMutation } from "./lib/columnStructureLock";
 import { fromResponseHeaders, record as recordProvenance } from "./lib/engine/provenance";
+import { installSessionRecovery } from "./lib/sessionRecovery";
 
 const api = axios.create({ baseURL: "" });  // Vite proxy: /api → localhost:8000
-
-// Datasets live in the backend's memory and are never written to disk, so a
-// restart or a redeploy leaves the open session id pointing at nothing. The
-// browser still has the autosaved copy, so a 404 on the live session restores
-// it and retries rather than surfacing "Session not found".
-void import("./lib/sessionRecovery").then((m) => m.installSessionRecovery(api));
 
 // Every server answer records what produced it, read off the response's own
 // `X-uStat-*` headers. Here and not in the panels: an endpoint that forgot to
@@ -27,6 +22,19 @@ api.interceptors.response.use((response) => {
   }
   return response;
 });
+
+// Datasets live in the backend's memory and are never written to disk, so a
+// restart or a redeploy leaves the open session id pointing at nothing. The
+// browser still has the autosaved copy, so a 404 on the live session restores
+// it and retries rather than surfacing "Session not found".
+//
+// Installed synchronously, after the provenance interceptor as before. It
+// used to be a fire-and-forget dynamic import: requests made before it
+// resolved had no recovery, and a test file that finished first had the
+// import (and the store behind it) land after its environment was torn
+// down, an intermittent EnvironmentTeardownError under load. There is no
+// cycle to avoid: store imports this module for types only.
+installSessionRecovery(api);
 
 export default api;
 
