@@ -60,6 +60,8 @@ def parse_one(raw, threshold: int = 50) -> Optional[dict]:
 
     `ambig` marks a numeric date that is valid under both DMY and MDY; `alt`
     carries the MDY interpretation so a whole-column scan can disambiguate.
+    `order` is set on a numeric date that is valid only one way ("dmy" or
+    "mdy"): those rows are the evidence the scan decides by.
     """
     if raw is None:
         return None
@@ -93,9 +95,9 @@ def parse_one(raw, threshold: int = 50) -> Optional[dict]:
         if dmy_ok and mdy_ok:
             return {"y": y, "mo": b, "d": a, "ambig": True, "alt": {"y": y, "mo": a, "d": b}}
         if dmy_ok:
-            return {"y": y, "mo": b, "d": a, "ambig": False}
+            return {"y": y, "mo": b, "d": a, "ambig": False, "order": "dmy"}
         if mdy_ok:
-            return {"y": y, "mo": a, "d": b, "ambig": False}
+            return {"y": y, "mo": a, "d": b, "ambig": False, "order": "mdy"}
         return None
 
     low = s.lower()
@@ -145,9 +147,12 @@ def parse_series(
             for p in parsed
         ]
     else:
-        # auto: any ambiguous row whose DMY day > 12 forces DMY; whose month > 12 forces MDY.
-        dmy_sig = sum(1 for p in parsed if p and p["ambig"] and p["d"] > 12)
-        mdy_sig = sum(1 for p in parsed if p and p["ambig"] and p["mo"] > 12)
+        # auto: rows that read only one way decide it (13/04/2024 can only be
+        # day-first, 04/13/2024 only month-first); a tie goes to DMY. The
+        # ambiguous rows cannot be the evidence: both of their numbers are 12
+        # or less, which is what makes them ambiguous.
+        dmy_sig = sum(1 for p in parsed if p and p.get("order") == "dmy")
+        mdy_sig = sum(1 for p in parsed if p and p.get("order") == "mdy")
         use_dmy = dmy_sig >= mdy_sig
         order_used = "dmy" if use_dmy else "mdy"
         resolved = []

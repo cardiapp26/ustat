@@ -37,6 +37,17 @@ def test_parse_series_dmy_mdy_auto():
     assert stats["n_ok"] == 2
 
 
+def test_parse_series_auto_detects_a_month_first_column():
+    # 03/15/2024 can only be month-first, so the column is, and 04/02/2024
+    # (valid both ways) must read as 2 April. The auto scan used to look for a
+    # day above 12 among the ambiguous rows, where there can never be one, so
+    # it always chose DMY and read this row as 4 February.
+    s = pd.Series(["03/15/2024", "04/02/2024", "12/31/2023"])
+    out, stats = parse_series(s, order="auto")
+    assert stats["order_used"] == "mdy"
+    assert out.iloc[1] == pd.Timestamp(2024, 4, 2)
+
+
 def test_parse_series_mixed_and_blanks():
     s = pd.Series(["2024-12-31", "5 Ocak 2024", "", None, "garbage"])
     out, stats = parse_series(s, order="auto")
