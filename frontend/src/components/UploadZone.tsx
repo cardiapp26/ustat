@@ -10,6 +10,7 @@ import RecentSessionsPanel from "./RecentSessionsPanel";
 import PowerPanel from "./PowerPanel";
 import RefreshAppButton from "./RefreshAppButton";
 import { cloudSync, type CloudStatusInfo } from "../lib/cloudSync";
+import { consumeLaunchedFiles } from "../lib/fileLaunch";
 
 export default function UploadZone() {
   const setSession = useStore((s) => s.setSession);
@@ -130,6 +131,13 @@ export default function UploadZone() {
       setLoading(false);
     }
   }, [setSession, setIngestReport]);
+
+  // A file opened from Finder/Explorer "Open With" on the installed PWA. The
+  // manifest gives every launch a fresh window, which has no session yet, so
+  // this screen is always what receives it.
+  useEffect(() => {
+    consumeLaunchedFiles(handle, () => setError("Could not read the file the app was opened with."));
+  }, [handle]);
 
   const startBlankWorkspace = useCallback(async () => {
     setLoading(true);

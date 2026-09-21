@@ -30,6 +30,32 @@ function emitVersionJson(): Plugin {
   }
 }
 
+// OS file associations for the installed PWA (Chrome/Edge on macOS and
+// Windows): uSTAT appears in Finder's "Open With" and Explorer's "Open with"
+// menus for these types. The opened file reaches the app through
+// window.launchQueue, consumed in src/lib/fileLaunch.ts.
+//
+// `launch_type: "multiple-clients"` opens one window per selected file, since
+// a session holds one dataset. vite-plugin-pwa's type predates the member, so
+// the list is built against a widened type rather than as an inline literal.
+interface FileHandler {
+  action: string
+  accept: Record<string, string[]>
+  launch_type?: 'single-client' | 'multiple-clients'
+}
+const FILE_HANDLERS: FileHandler[] = [
+  {
+    action: '/',
+    accept: {
+      'application/x-spss-sav': ['.sav'],
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
+      'application/vnd.ms-excel': ['.xls'],
+      'text/csv': ['.csv'],
+    },
+    launch_type: 'multiple-clients',
+  },
+]
+
 function nodePolyfills(): Plugin {
   const V_BUFFER = '\0node-polyfill:buffer'
   const V_STREAM = '\0node-polyfill:stream'
@@ -110,6 +136,11 @@ export default defineConfig({
         orientation: 'any',
         start_url: '/',
         scope: '/',
+        file_handlers: FILE_HANDLERS,
+        // A file launch must never take over a window that already holds a
+        // session: sessions live in memory, so navigating that window would
+        // discard the analysis in progress. Every launch gets its own window.
+        launch_handler: { client_mode: 'navigate-new' },
         icons: [
           { src: '/pwa-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
           { src: '/pwa-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
