@@ -61,6 +61,19 @@ describe('UploadZone file launch', () => {
     expect(uploadFile).toHaveBeenCalledExactlyOnceWith(sav)
   })
 
+  it('shows which file is being opened while the upload runs', async () => {
+    let finish: (value: Awaited<ReturnType<typeof uploadFile>>) => void = () => {}
+    vi.mocked(uploadFile).mockImplementation(
+      () => new Promise((resolve) => { finish = resolve }),
+    )
+    render(<UploadZone />)
+    consumer!({ files: [fileHandle(() => Promise.resolve(new File(['x'], 'Baypas_veriseti.xlsx')))] })
+
+    expect(await screen.findByRole('status')).toHaveTextContent('Opening Baypas_veriseti.xlsx')
+    finish({ data: makeSession({ session_id: 'slow' }) } as Awaited<ReturnType<typeof uploadFile>>)
+    await waitFor(() => expect(useStore.getState().session?.session_id).toBe('slow'))
+  })
+
   it('says so when the launched file cannot be read', async () => {
     vi.mocked(uploadFile).mockClear()
     render(<UploadZone />)

@@ -9,6 +9,7 @@ import HelpModal from "./HelpModal";
 import RecentSessionsPanel from "./RecentSessionsPanel";
 import PowerPanel from "./PowerPanel";
 import RefreshAppButton from "./RefreshAppButton";
+import UploadStatus from "./UploadStatus";
 import { cloudSync, type CloudStatusInfo } from "../lib/cloudSync";
 import { consumeLaunchedFiles } from "../lib/fileLaunch";
 
@@ -26,6 +27,7 @@ export default function UploadZone() {
   const setEngine = useStore((s) => s.setEngine);
   const [dragging, setDragging] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [openingName, setOpeningName] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showAbout, setShowAbout] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -87,6 +89,7 @@ export default function UploadZone() {
   const exitPower = () => window.history.back();
 
   const handle = useCallback(async (file: File) => {
+    setOpeningName(file.name);
     setLoading(true);
     setError(null);
     try {
@@ -147,6 +150,7 @@ export default function UploadZone() {
   }, [handle]);
 
   const startBlankWorkspace = useCallback(async () => {
+    setOpeningName(null);
     setLoading(true);
     setError(null);
     try {
@@ -243,6 +247,12 @@ export default function UploadZone() {
   // ── Home / Upload Mode ──
   return (
     <div className="flex flex-col items-center justify-center min-h-screen gap-8 p-8 bg-page">
+      <UploadStatus
+        loading={loading}
+        fileName={openingName}
+        error={error}
+        onDismissError={() => setError(null)}
+      />
       {showAbout && <AboutModal onClose={() => setShowAbout(false)} />}
       {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
       <div className="flex flex-col items-center gap-3">
@@ -529,8 +539,6 @@ export default function UploadZone() {
         </div>
       </div>
 
-      {loading && <p className="text-indigo-600 animate-pulse">Opening and parsing your data…</p>}
-      {error && <p className="text-red-500 text-sm">{error}</p>}
 
       <div className="flex items-center gap-4 flex-wrap justify-center">
         {!isDesktopApp && (
