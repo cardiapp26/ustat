@@ -322,7 +322,7 @@ export default function AboutModal({ onClose }: { onClose: () => void }) {
             <span className="text-indigo-300">·</span>
             <a href="/.well-known/security.txt" target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline">security.txt</a>
             <span className="text-indigo-300">·</span>
-            <a href="https://github.com/afstudy20-gif/ustat" target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline">Source (GitHub)</a>
+            <a href="https://github.com/cardiapp26/ustat" target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline">Source (GitHub)</a>
           </div>
 
           {/* ── How to cite ─────────────────────────────────────────────────── */}
@@ -421,7 +421,7 @@ export default function AboutModal({ onClose }: { onClose: () => void }) {
           {/* ── Privacy & Data Handling ────────────────────────────────────── */}
           <Section title="Privacy & data handling">
             <p className="text-xs text-gray-700 leading-relaxed">
-              uSTAT is a <strong>server-side</strong> application: your file is sent to our backend, parsed in RAM, and bound to a session ID. It is <strong>never written to disk</strong> and is automatically discarded 30 minutes after your last activity (<code>SESSION_TTL_SECONDS = 1800</code> in <code>backend/services/store.py</code>). No account, no persistent identifiers, no logs of your data. Stack and code are <a href="https://github.com/afstudy20-gif/ustat" className="text-indigo-600 hover:underline" target="_blank" rel="noreferrer">public on GitHub</a> for independent review.
+              uSTAT is a <strong>server-side</strong> application: your file is sent to our backend, parsed in RAM, and bound to a session ID. It is <strong>never written to disk</strong> and is automatically discarded 30 minutes after your last activity (<code>SESSION_TTL_SECONDS = 1800</code> in <code>backend/services/store.py</code>). No account, no persistent identifiers, no logs of your data. Stack and code are <a href="https://github.com/cardiapp26/ustat" className="text-indigo-600 hover:underline" target="_blank" rel="noreferrer">public on GitHub</a> for independent review.
             </p>
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mt-2 space-y-1.5">
               <p className="text-xs font-semibold text-amber-900 flex items-center gap-1.5">
@@ -439,7 +439,7 @@ export default function AboutModal({ onClose }: { onClose: () => void }) {
               <a href="/terms.html" target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline">Terms of Use →</a>
               <a href="/security.html" target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline">Security Overview →</a>
               <a href="/.well-known/security.txt" target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline">security.txt →</a>
-              <a href="https://github.com/afstudy20-gif/ustat" target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline">Source (GitHub) →</a>
+              <a href="https://github.com/cardiapp26/ustat" target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline">Source (GitHub) →</a>
             </div>
             <p className="text-[10px] text-gray-500 mt-2">
               Vulnerability disclosure: <a href="mailto:security@drtr.uk?subject=%5BuSTAT-security%5D" className="text-indigo-600 hover:underline">security@drtr.uk</a> (use the <code>[uSTAT-security]</code> subject prefix). We acknowledge within 5 business days. General contact: <a href="mailto:contact@drtr.uk" className="text-indigo-600 hover:underline">contact@drtr.uk</a>.

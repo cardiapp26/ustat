@@ -9,7 +9,7 @@ authors:
     affiliation: Private Koru Sincan Hospital
   - given-names: Ayşe
     family-names: Hoşoğlu
-repository-code: "https://github.com/afstudy20-gif/ustat"
+repository-code: "https://github.com/cardiapp26/ustat"
 url: "https://ustat.drtr.uk"
 doi: 10.5281/zenodo.21610852
 identifiers:
@@ -90,4 +90,4 @@ preferred-citation:
   version: "3.7.0"
   doi: 10.5281/zenodo.21610852
   url: "https://ustat.drtr.uk"
-  repository-code: "https://github.com/afstudy20-gif/ustat"
+  repository-code: "https://github.com/cardiapp26/ustat"
