@@ -210,6 +210,35 @@ describe('DataTable row virtualisation', () => {
     expect(screen.getByText(/Sort: b ▼/)).not.toHaveTextContent('then')
   })
 
+  it('sorts a date column chronologically, not by the text of its values', async () => {
+    // Imported text dates keep their text; compared as strings, 14.09.2022
+    // sorted before 23.09.2013 because 14 < 23.
+    installSession(makeSession({
+      columns: [{ name: 'bypass', dtype: 'object', kind: 'date' }],
+      preview: [
+        { bypass: '14.09.2022' }, { bypass: '23.09.2013' }, { bypass: null },
+        { bypass: '01.03.2017' }, { bypass: '04.09.2013' },
+      ],
+      rows: 5,
+    }))
+    const user = userEvent.setup()
+    render(<DataTable />)
+    const dates = () =>
+      [...document.querySelectorAll('tbody tr[class*="group"]')].map(
+        (r) => r.querySelectorAll('td')[1].textContent,
+      )
+
+    await user.click(screen.getAllByTitle('Sort ascending')[0])
+    await waitFor(() =>
+      expect(dates().slice(0, 4)).toEqual(['04.09.2013', '23.09.2013', '01.03.2017', '14.09.2022']),
+    )
+
+    await user.click(screen.getAllByTitle('Sort descending')[0])
+    await waitFor(() =>
+      expect(dates().slice(0, 4)).toEqual(['14.09.2022', '01.03.2017', '23.09.2013', '04.09.2013']),
+    )
+  })
+
   /** A 6-row sheet with rows 1 and 2 excluded by an active Select Cases. */
   function excludedSession() {
     installSession(bigSession(6))

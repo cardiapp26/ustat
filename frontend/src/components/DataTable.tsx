@@ -60,19 +60,10 @@ import { ValueLabelsModal } from "./datatable/ValueLabelsModal";
 import { FormulaFillModal } from "./datatable/FormulaFillModal";
 import { FindReplaceModal } from "./datatable/FindReplaceModal";
 import { ParseDatesModal } from "./datatable/ParseDatesModal";
-type SortDir = "asc" | "desc";
+import { compareCells, type SortDir } from "../lib/cellSort";
+import { dateSortKeys } from "../lib/dateSortKeys";
 /** One sort key; the sheet is ordered by `sortKeys[0]`, its ties by `[1]`, and so on. */
 type SortKey = { col: string; dir: SortDir };
-
-/** Missing values sink to the end whichever way the column is sorted. */
-function compareCells(av: unknown, bv: unknown): number {
-  if (av == null && bv == null) return 0;
-  if (av == null) return 1;
-  if (bv == null) return -1;
-  return typeof av === "number" && typeof bv === "number"
-    ? av - bv
-    : String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: "base" });
-}
 
 type ContextMenuAnchor = { x: number; y: number };
 
@@ -566,6 +557,19 @@ function DataTableBody({ session }: { session: Session }) {
     );
   }, [indexedRows, filters, columns, showMissingOnly, hideUnselected, excludedRows]);
 
+  // Date columns sort chronologically. Keys come from the whole preview, not
+  // the filtered rows, so day-first versus month-first is decided on the
+  // column and cannot flip when a filter changes which rows are left.
+  const dateKeysByCol = useMemo(() => {
+    const out = new Map<string, Map<string, number>>();
+    for (const { col } of sortKeys) {
+      if (columns.find((c) => c.name === col)?.kind === "date") {
+        out.set(col, dateSortKeys(indexedRows.map((r) => r[col])));
+      }
+    }
+    return out;
+  }, [sortKeys, columns, indexedRows]);
+
   const displayRows = useMemo(() => {
     if (sortKeys.length === 0) return filtered;
     return [...filtered].sort((a, b) => {
@@ -579,12 +583,12 @@ function DataTableBody({ session }: { session: Session }) {
       if (aOut !== bOut) return aOut ? 1 : -1;
       if (aOut && bOut) return a._idx - b._idx;
       for (const { col, dir } of sortKeys) {
-        const cmp = compareCells(a[col], b[col]);
-        if (cmp !== 0) return dir === "asc" ? cmp : -cmp;
+        const cmp = compareCells(a[col], b[col], dir, dateKeysByCol.get(col));
+        if (cmp !== 0) return cmp;
       }
       return 0;
     });
-  }, [filtered, sortKeys, excludedRows]);
+  }, [filtered, sortKeys, excludedRows, dateKeysByCol]);
 
   // ── Row virtualisation ──────────────────────────────────────────────────
   // A 1000 x 125 sheet is 126,000 <td>s and ~256k DOM nodes; rendering them
