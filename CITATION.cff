@@ -76,7 +76,7 @@ keywords:
   - fastapi
   - react
 license: "MIT"
-version: "3.7.0"
+version: "3.7.1"
 date-released: "2026-09-21"
 preferred-citation:
   type: software
@@ -87,7 +87,7 @@ preferred-citation:
     - given-names: Ayşe
       family-names: Hoşoğlu
   year: 2026
-  version: "3.7.0"
+  version: "3.7.1"
   doi: 10.5281/zenodo.21610852
   url: "https://ustat.drtr.uk"
   repository-code: "https://github.com/cardiapp26/ustat"
