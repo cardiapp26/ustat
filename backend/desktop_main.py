@@ -52,6 +52,11 @@ def main() -> None:
         default=18731,
         help="Port to listen on (default: 18731)",
     )
+    parser.add_argument(
+        "--self-check",
+        action="store_true",
+        help="Import every module the backend's source names, report failures, and exit",
+    )
     args = parser.parse_args()
 
     root = _resource_root()
@@ -60,6 +65,11 @@ def main() -> None:
 
     # Add backend to Python path so imports work
     sys.path.insert(0, str(backend_dir))
+
+    if args.self_check:
+        from frozen_self_check import run  # noqa: E402
+
+        sys.exit(run(backend_dir))
 
     # Tell the FastAPI app where to find the frontend static files
     os.environ["USTAT_FRONTEND_DIST"] = str(frontend_dist)

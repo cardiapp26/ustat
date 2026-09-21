@@ -14,6 +14,8 @@ Build with:
 import os
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_submodules
+
 ROOT = Path(SPECPATH).resolve().parent  # project root (scripts/../)
 BACKEND = ROOT / "backend"
 FRONTEND_DIST = ROOT / "frontend" / "dist"
@@ -21,10 +23,11 @@ FRONTEND_DIST = ROOT / "frontend" / "dist"
 # Collect all backend Python source files
 backend_datas = []
 for dirpath, dirnames, filenames in os.walk(BACKEND):
-    # Skip __pycache__, .pytest_cache, tests, .hypothesis
+    # Skip tests, caches and hidden directories. The last matters locally:
+    # a checkout's backend/.venv would otherwise be copied in whole (~180 MB).
     dirnames[:] = [
         d for d in dirnames
-        if d not in ("__pycache__", ".pytest_cache", ".hypothesis", "tests", "node_modules")
+        if d not in ("__pycache__", "tests", "node_modules", "venv") and not d.startswith(".")
     ]
     for fn in filenames:
         # .R for backend/ustat_engine_r: those sources are not imported, they
@@ -96,7 +99,12 @@ a = Analysis(
         "psutil",
         "loguru",
         "simpleeval",
-    ],
+    ]
+    # Compiled code importing its own siblings is invisible to PyInstaller's
+    # bytecode scan. pyreadstat's extension imports _readstat_writer at load
+    # time; without this every build died on startup (v3.7.0). The release
+    # workflow's `--self-check` step is what finds the next one.
+    + collect_submodules("pyreadstat"),
     excludes=[
         "tkinter",
         "matplotlib",

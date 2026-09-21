@@ -60,7 +60,7 @@ async fn check_once(
     // installer cannot overwrite an executable that is still running. The
     // installer also exits this process there without running window
     // handlers, which would leave the backend orphaned.
-    crate::stop_backend(app);
+    crate::backend::stop(app);
     if let Err(e) = update.install(bytes) {
         // The backend is already gone, so restarting is the only way back to
         // a working app; the current version is still installed.

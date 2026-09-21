@@ -39,7 +39,8 @@
       "binaries"
     ],
     "macOS": {
-      "minimumSystemVersion": "10.15"
+      "minimumSystemVersion": "10.15",
+      "signingIdentity": "-"
     },
     "windows": {
       "webviewInstallMode": {
@@ -58,15 +59,7 @@
       }
     },
     "shell": {
-      "open": true,
-      "scope": [
-        {
-          "name": "ustat-backend",
-          "cmd": "",
-          "sidecar": true,
-          "args": true
-        }
-      ]
+      "open": true
     }
   }
 }

@@ -65,6 +65,19 @@ jobs:
       - name: Build backend binary with PyInstaller
         run: pyinstaller scripts/ustat-backend.spec --noconfirm
 
+      # v3.7.0 shipped a backend that died on startup on every platform: a
+      # module imported from compiled code was missing from the build, and
+      # nothing ran the frozen binary before it was packaged. Both steps run
+      # it: --self-check performs every import the backend's source contains,
+      # the smoke test starts it and uploads a CSV, a .sav and an .xlsx.
+      - name: Self-check the frozen backend
+        shell: bash
+        run: ./dist/ustat-backend/${{ matrix.backend-name }} --self-check
+
+      - name: Smoke-test the frozen backend
+        shell: bash
+        run: python scripts/smoke_backend.py ./dist/ustat-backend/${{ matrix.backend-name }}
+
       - name: Upload backend artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -199,7 +212,7 @@ jobs:
 
             ### First launch
             The installers are not signed with an Apple or Microsoft developer certificate yet, so the system asks once:
-            - **macOS**: if uSTAT "cannot be opened", open System Settings > Privacy & Security and click **Open Anyway**.
+            - **macOS**: if macOS says it cannot verify uSTAT, click **Done**, open System Settings > Privacy & Security, click **Open Anyway** next to uSTAT, then open uSTAT again. If that button does not appear, run `xattr -dr com.apple.quarantine /Applications/uSTAT.app` in Terminal once.
             - **Windows**: if SmartScreen appears, click **More info** > **Run anyway**.
 
             Updates are signed separately, and the app only installs updates carrying uSTAT's signature.
@@ -208,6 +221,37 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+      # The only check that covers the desktop shell itself. v3.7.0 panicked
+      # at launch on every platform over a Tauri v1 config key that v2
+      # rejects, and a backend check cannot see that. The app starts its
+      # backend on 18731 (the first free port from there on a fresh runner),
+      # so a healthy backend means the shell got through setup. A failure
+      # here fails the job, which keeps the release a private draft.
+      - name: Launch the app and wait for its backend (macOS)
+        if: startsWith(matrix.platform, 'macos')
+        shell: bash
+        run: |
+          APP=$(ls -d src-tauri/target/*/release/bundle/macos/uSTAT.app | head -1)
+          "$APP/Contents/MacOS/ustat-desktop" > app.log 2>&1 &
+          PID=$!
+          for i in $(seq 1 180); do
+            if curl -sf http://127.0.0.1:18731/api/health > /dev/null; then
+              echo "backend healthy ${i}s after launch"
+              kill "$PID"
+              exit 0
+            fi
+            if ! kill -0 "$PID" 2> /dev/null; then
+              echo "the app exited during startup"
+              cat app.log
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "backend not healthy 180s after launch"
+          cat app.log
+          kill "$PID"
+          exit 1
 
   # ─────────────────────────────────────────────────────
   # Step 3: Publish the release once every platform built
