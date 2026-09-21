@@ -89,8 +89,11 @@ jobs:
           - platform: macos-15-intel
             args: '--target x86_64-apple-darwin'
             backend-artifact: backend-x86_64-apple-darwin
+          # No AppImage: linuxdeploy fails on the bundled PyInstaller backend
+          # ("failed to run linuxdeploy" in the first v3.7.0 run), and the
+          # updater installs .deb and .rpm updates itself.
           - platform: ubuntu-22.04
-            args: ''
+            args: '--bundles deb,rpm'
             backend-artifact: backend-x86_64-unknown-linux-gnu
           - platform: windows-latest
             args: ''
@@ -110,9 +113,7 @@ jobs:
             libappindicator3-dev \
             librsvg2-dev \
             patchelf \
-            xdg-utils \
-            libfuse2 \
-            zsync
+            xdg-utils
 
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -176,8 +177,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPIMAGE_EXTRACT_AND_RUN: 1
-          NO_STRIP: true
         with:
           tagName: v__VERSION__
           releaseName: 'uSTAT v__VERSION__'
@@ -196,7 +195,7 @@ jobs:
             - **macOS (Apple silicon, M1 and later)**: `uSTAT_*_aarch64.dmg`, drag uSTAT to Applications
             - **macOS (Intel)**: `uSTAT_*_x64.dmg`, drag uSTAT to Applications
             - **Windows**: `uSTAT_*_x64-setup.exe` (or the `.msi`)
-            - **Linux**: `.AppImage` (updates itself) or `.deb`
+            - **Linux**: `.deb` (Debian, Ubuntu) or `.rpm` (Fedora, openSUSE)
 
             ### First launch
             The installers are not signed with an Apple or Microsoft developer certificate yet, so the system asks once:
