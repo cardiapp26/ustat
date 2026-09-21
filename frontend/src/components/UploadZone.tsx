@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Upload, Info, Zap, BarChart2, ShieldAlert, ListChecks, Sparkles, NotebookPen, FileText, HeartPulse, Workflow, Layers, HelpCircle, Newspaper, Cloud, CloudDownload, LogOut, RefreshCw, Check } from "lucide-react";
+import { Upload, Info, Zap, BarChart2, ShieldAlert, ListChecks, Sparkles, NotebookPen, FileText, HeartPulse, Workflow, Layers, HelpCircle, Newspaper, Cloud, CloudDownload, LogOut, RefreshCw, Check, Download } from "lucide-react";
 import { createBlankSession, uploadFile } from "../api";
 import api from "../api";
 import { useStore } from "../store";
@@ -11,6 +11,13 @@ import PowerPanel from "./PowerPanel";
 import RefreshAppButton from "./RefreshAppButton";
 import { cloudSync, type CloudStatusInfo } from "../lib/cloudSync";
 import { consumeLaunchedFiles } from "../lib/fileLaunch";
+
+// Installers for macOS, Windows and Linux, built by .github/workflows/release.yml.
+// /latest redirects to the newest published release.
+const DESKTOP_RELEASES_URL = "https://github.com/cardiapp26/ustat/releases/latest";
+
+// Inside the desktop app the download link would only offer what is running.
+const isDesktopApp = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 export default function UploadZone() {
   const setSession = useStore((s) => s.setSession);
@@ -526,6 +533,19 @@ export default function UploadZone() {
       {error && <p className="text-red-500 text-sm">{error}</p>}
 
       <div className="flex items-center gap-4 flex-wrap justify-center">
+        {!isDesktopApp && (
+          <a
+            href={DESKTOP_RELEASES_URL}
+            target="_blank"
+            rel="noreferrer"
+            className="flex items-center gap-1.5 text-emerald-700 hover:text-emerald-800 text-xs font-semibold transition-colors border border-emerald-200 hover:border-emerald-400 bg-emerald-50/60 hover:bg-emerald-100 rounded-full px-3 py-1.5"
+            title="Install uSTAT as a program on your computer. It updates itself when a new version is released."
+          >
+            <Download size={14} />
+            Download desktop app
+            <span className="font-normal text-emerald-600">macOS · Windows · Linux</span>
+          </a>
+        )}
         <button
           onClick={() => setShowHelp(true)}
           className="flex items-center gap-1.5 text-indigo-600 hover:text-indigo-800 text-xs font-semibold transition-colors border border-indigo-200 hover:border-indigo-400 bg-indigo-50/60 hover:bg-indigo-100 rounded-full px-3 py-1.5"

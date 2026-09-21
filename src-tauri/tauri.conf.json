@@ -27,7 +27,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "createUpdaterArtifacts": false,
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -50,9 +50,12 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/afstudy20-gif/ustat/releases/latest/download/latest.json"
+        "https://github.com/cardiapp26/ustat/releases/latest/download/latest.json"
       ],
-      "pubkey": "dW51c2VkX3BsYWNlaG9sZGVyX2Zvcl90YXVyaV91cGRhdGVyX2tleQ=="
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU0NENDMEY2OUZFN0ZBNjAKUldSZyt1ZWY5c0JNVkxGYWFtcEVIRWVQRi9wNW1MVHFyQXg1WmdqOGcrNlFJWXI2a0dIZDMxQmgK",
+      "windows": {
+        "installMode": "passive"
+      }
     },
     "shell": {
       "open": true,

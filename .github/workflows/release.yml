@@ -21,7 +21,11 @@ jobs:
           - platform: macos-latest
             target: aarch64-apple-darwin
             backend-name: ustat-backend
-          - platform: macos-latest
+          # PyInstaller bundles the interpreter it runs under, so the Intel
+          # backend has to be built on an Intel runner. Built on macos-latest
+          # (Apple silicon) it came out arm64 and the Intel app could not
+          # start its own backend.
+          - platform: macos-15-intel
             target: x86_64-apple-darwin
             backend-name: ustat-backend
           - platform: ubuntu-22.04
@@ -82,7 +86,7 @@ jobs:
           - platform: macos-latest
             args: '--target aarch64-apple-darwin'
             backend-artifact: backend-aarch64-apple-darwin
-          - platform: macos-latest
+          - platform: macos-15-intel
             args: '--target x86_64-apple-darwin'
             backend-artifact: backend-x86_64-apple-darwin
           - platform: ubuntu-22.04
@@ -122,7 +126,7 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ startsWith(matrix.platform, 'macos') && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - name: Rust cache
         uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
@@ -162,6 +166,9 @@ jobs:
       - name: Generate Tauri icons from logo
         run: npx -y @tauri-apps/cli icon frontend/public/pwa-512.png
 
+      # With createUpdaterArtifacts on, the build signs each update bundle and
+      # fails without TAURI_SIGNING_PRIVATE_KEY. That is deliberate: an
+      # unsigned update is one every installed copy would refuse.
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         id: tauri-build
@@ -181,33 +188,49 @@ jobs:
 
             **What's included:**
             - Full statistical analysis engine (90+ methods)
-            - Works completely offline — no internet required
+            - Works offline: analyses run on your own computer
             - All data stays on your computer
+            - Automatic updates: the app checks for new versions and asks before installing
 
             ### Installation
-            - **macOS**: Download `.dmg`, drag to Applications
-            - **Windows**: Download `.msi` installer or `.exe` portable
-            - **Linux**: Download `.deb` or `.AppImage`
+            - **macOS (Apple silicon, M1 and later)**: `uSTAT_*_aarch64.dmg`, drag uSTAT to Applications
+            - **macOS (Intel)**: `uSTAT_*_x64.dmg`, drag uSTAT to Applications
+            - **Windows**: `uSTAT_*_x64-setup.exe` (or the `.msi`)
+            - **Linux**: `.AppImage` (updates itself) or `.deb`
+
+            ### First launch
+            The installers are not signed with an Apple or Microsoft developer certificate yet, so the system asks once:
+            - **macOS**: if uSTAT "cannot be opened", open System Settings > Privacy & Security and click **Open Anyway**.
+            - **Windows**: if SmartScreen appears, click **More info** > **Run anyway**.
+
+            Updates are signed separately, and the app only installs updates carrying uSTAT's signature.
+          # Created as a draft so a half-built release is never visible; the
+          # publish-release job below makes it public once every platform built.
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
 
-      - name: Upload Windows portable binary
-        if: matrix.platform == 'windows-latest'
+  # ─────────────────────────────────────────────────────
+  # Step 3: Publish the release once every platform built
+  # ─────────────────────────────────────────────────────
+  # Installed apps read releases/latest/download/latest.json, which only
+  # resolves to a published release. Publishing last means an update is
+  # offered only when installers for every platform are attached; if any
+  # build fails, this job is skipped and the draft stays private.
+  #
+  # There is no Windows "portable" .exe on purpose. The bare ustat-desktop.exe
+  # it used to upload had no bundled backend next to it and exited at start.
+  publish-release:
+    needs: build-tauri
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the draft release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # `github` context data reaches the runner as untrusted input and
-          # interpolating it straight into a run: block splices it into the
-          # script. Passed through the environment it stays a value.
+          # Passed through the environment, never interpolated into the
+          # script: see the version step above.
           REF_NAME: ${{ github.ref_name }}
           REPOSITORY: ${{ github.repository }}
-        run: |
-          $TAG = "$env:REF_NAME"
-          $VERSION = $TAG -replace '^v', ''
-          $EXE = "src-tauri/target/release/ustat-desktop.exe"
-          $DEST = "uSTAT_${VERSION}_x64-portable.exe"
-          if (Test-Path $EXE) {
-            Copy-Item $EXE $DEST
-            gh release upload $TAG $DEST --repo "$env:REPOSITORY" --clobber
-          }
-        shell: pwsh
+        run: gh release edit "$REF_NAME" --repo "$REPOSITORY" --draft=false --latest

@@ -5,10 +5,19 @@
 // 2. Poll until the backend is ready via TCP connection
 // 3. Navigate the webview to http://127.0.0.1:<port>
 // 4. On close, kill the backend process
+// 5. In release builds, check GitHub Releases for signed updates (updater.rs)
 
-use tauri::Manager;
+mod updater;
 
-struct BackendProcess(std::sync::Mutex<Option<u32>>);
+use std::process::Child;
+use std::time::{Duration, Instant};
+
+use tauri::{AppHandle, Manager};
+
+/// How long the backend gets to shut down after SIGTERM before it is killed.
+const BACKEND_STOP_GRACE: Duration = Duration::from_secs(3);
+
+struct BackendProcess(std::sync::Mutex<Option<Child>>);
 
 /// Find a free TCP port starting from `preferred`.
 fn find_free_port(preferred: u16) -> u16 {
@@ -24,18 +33,41 @@ fn find_free_port(preferred: u16) -> u16 {
         .port()
 }
 
-fn kill_process(pid: u32) {
+/// Ask the backend to exit, kill it if it has not within the grace period,
+/// and reap it either way so it does not linger as a zombie.
+fn stop_child(mut child: Child) {
     #[cfg(unix)]
     {
+        // SAFETY: kill(2) takes no pointers; the pid is our own child, which
+        // has not been reaped yet, so it cannot have been reused.
         unsafe {
-            libc::kill(pid as i32, libc::SIGTERM);
+            libc::kill(child.id() as i32, libc::SIGTERM);
         }
     }
     #[cfg(windows)]
     {
-        let _ = std::process::Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/F"])
-            .output();
+        let _ = child.kill();
+    }
+    let deadline = Instant::now() + BACKEND_STOP_GRACE;
+    while Instant::now() < deadline {
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Stop the bundled backend, if it is still running. Safe to call twice: the
+/// child is taken out of the state, so a second call finds nothing to stop.
+pub(crate) fn stop_backend(app: &AppHandle) {
+    let Some(state) = app.try_state::<BackendProcess>() else {
+        return;
+    };
+    let child = state.0.lock().ok().and_then(|mut guard| guard.take());
+    if let Some(child) = child {
+        stop_child(child);
     }
 }
 
@@ -45,6 +77,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
         .setup(move |app| {
@@ -68,16 +101,26 @@ pub fn run() {
                 .args(["--port", &port_str])
                 .env("USTAT_NO_BROWSER", "1")
                 .env("USTAT_DESKTOP_MODE", "1")
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
+                // Nothing reads these. Piped, the backend would block on its
+                // first write past the OS pipe buffer and hang the app.
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
                 .spawn()
                 .unwrap_or_else(|e| {
-                    eprintln!("Failed to start uSTAT backend at {:?}: {}", backend_binary, e);
+                    eprintln!(
+                        "Failed to start uSTAT backend at {:?}: {}",
+                        backend_binary, e
+                    );
                     std::process::exit(1);
                 });
 
-            let child_id = child.id();
-            app.manage(BackendProcess(std::sync::Mutex::new(Some(child_id))));
+            app.manage(BackendProcess(std::sync::Mutex::new(Some(child))));
+
+            // A debug build has the placeholder version 0.1.0 and would be
+            // offered every release; only shipped builds check.
+            if !cfg!(debug_assertions) {
+                updater::spawn_update_checks(handle.clone());
+            }
 
             // Spawn a thread to wait for the backend, then navigate
             std::thread::spawn(move || {
@@ -110,13 +153,7 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
-                if let Some(state) = window.try_state::<BackendProcess>() {
-                    if let Ok(mut guard) = state.0.lock() {
-                        if let Some(pid) = guard.take() {
-                            kill_process(pid);
-                        }
-                    }
-                }
+                stop_backend(window.app_handle());
             }
         })
         .run(tauri::generate_context!())
