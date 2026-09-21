@@ -118,6 +118,12 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
+# No strip and no UPX, on any platform. On the Windows runner PyInstaller
+# finds GNU strip (it ships with Git) and runs it over python311.dll and the
+# MSVC runtime, which then fail to load ("LoadLibrary: Invalid access to
+# memory location"); on Linux, stripping numpy's bundled OpenBLAS left numpy
+# unimportable. Both surfaced in the v3.7.1 run's --self-check. The bytes
+# saved are not worth a binary that does not start.
 exe = EXE(
     pyz,
     a.scripts,
@@ -125,8 +131,8 @@ exe = EXE(
     exclude_binaries=True,
     name="ustat-backend",
     debug=False,
-    strip=True,
-    upx=True,
+    strip=False,
+    upx=False,
     console=True,
 )
 
@@ -134,7 +140,7 @@ coll = COLLECT(
     exe,
     a.binaries,
     a.datas,
-    strip=True,
-    upx=True,
+    strip=False,
+    upx=False,
     name="ustat-backend",
 )

@@ -11,13 +11,16 @@ This starts the binary, waits for /api/health, checks the frontend is served,
 uploads a CSV, an SPSS .sav and an Excel .xlsx, and runs a t-test. Any failure
 exits non-zero with the tail of the backend's own output.
 
-Usage:
-    python scripts/smoke_backend.py dist/ustat-backend/ustat-backend
+Usage, after `pyinstaller scripts/ustat-backend.spec` from the repository root:
+    python scripts/smoke_backend.py
+
+The binary is always dist/ustat-backend/ustat-backend[.exe] under the
+repository root rather than a path taken from the command line, so nothing
+outside this file decides what gets executed.
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import socket
@@ -32,6 +35,12 @@ from pathlib import Path
 
 STARTUP_TIMEOUT_S = 180  # first start of a cold runner can be slow
 REQUEST_TIMEOUT_S = 60
+BINARY = (
+    Path(__file__).resolve().parents[1]
+    / "dist"
+    / "ustat-backend"
+    / ("ustat-backend.exe" if os.name == "nt" else "ustat-backend")
+)
 
 
 def free_port() -> int:
@@ -131,10 +140,9 @@ def run_checks(base: str, fixtures: list[Path]) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
-    parser.add_argument("binary", type=Path, help="path to the built ustat-backend executable")
-    args = parser.parse_args()
-
+    if not BINARY.is_file():
+        print(f"FAIL no backend build at {BINARY}", file=sys.stderr)
+        return 1
     port = free_port()
     base = f"http://127.0.0.1:{port}"
     with tempfile.TemporaryDirectory() as tmp:
@@ -143,7 +151,7 @@ def main() -> int:
         log_path = folder / "backend.log"
         with open(log_path, "wb") as log:
             proc = subprocess.Popen(
-                [str(args.binary), "--port", str(port)],
+                [str(BINARY), "--port", str(port)],
                 stdout=log,
                 stderr=subprocess.STDOUT,
                 env={**os.environ, "USTAT_NO_BROWSER": "1", "USTAT_DESKTOP_MODE": "1"},

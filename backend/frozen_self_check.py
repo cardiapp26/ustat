@@ -91,6 +91,19 @@ def _collect(backend_dir: Path) -> set[tuple[str, tuple[str, ...]]]:
     return {(m, names) for m, names in collector.imports if m.split(".")[0] not in stdlib}
 
 
+def _describe(error: BaseException) -> str:
+    """The error and, if it wraps another, the innermost cause. numpy turns
+    any failure to load its C core into one generic "do not import numpy from
+    its source directory" message; the cause is the part that says why."""
+    root = error
+    while root.__cause__ is not None or root.__context__ is not None:
+        root = root.__cause__ or root.__context__
+    text = f"{type(error).__name__}: {error}"
+    if root is not error:
+        text += f" (caused by {type(root).__name__}: {root})"
+    return text
+
+
 def _check(module: str, names: tuple[str, ...]) -> str | None:
     """Import `module`, and each of `names` that is a submodule rather than an
     attribute. Return why it failed, or None."""
@@ -100,7 +113,7 @@ def _check(module: str, names: tuple[str, ...]) -> str | None:
             if not hasattr(mod, name):
                 importlib.import_module(f"{module}.{name}")
     except Exception as e:  # noqa: BLE001 -- any failure here is the finding
-        return f"{type(e).__name__}: {e}"
+        return _describe(e)
     return None
 
 

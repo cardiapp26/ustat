@@ -59,3 +59,24 @@ def test_ignores_tests_and_hidden_directories(tmp_path):
     _write(tmp_path, "tests/test_x.py", "import ustat_test_only_xyz\n")
     _write(tmp_path, ".venv/lib/site.py", "import ustat_venv_only_xyz\n")
     assert frozen_self_check.run(tmp_path) == 0
+
+
+def test_reports_the_root_cause_behind_a_generic_import_error(tmp_path, monkeypatch, capsys):
+    # numpy reports any failure to load its C core as one generic message;
+    # the self-check has to surface what is underneath it.
+    lib = tmp_path / "lib"
+    _write(
+        lib,
+        "ustat_wrapped_xyz.py",
+        "try:\n"
+        "    raise OSError('libopenblas.so: ELF load command misaligned')\n"
+        "except OSError as e:\n"
+        "    raise ImportError('generic message') from e\n",
+    )
+    monkeypatch.syspath_prepend(str(lib))
+    src = tmp_path / "src"
+    _write(src, "uses.py", "import ustat_wrapped_xyz\n")
+    assert frozen_self_check.run(src) == 1
+    out = capsys.readouterr().out
+    assert "generic message" in out
+    assert "caused by OSError: libopenblas.so: ELF load command misaligned" in out

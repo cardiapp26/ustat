@@ -4,6 +4,11 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  # A dry run: builds and checks the frozen backend on every platform, and
+  # stops there. Nothing is packaged, tagged or published. Run it before
+  # tagging whenever the spec, the requirements or the backend's imports
+  # change, so a platform-specific break is found without a failed release.
+  workflow_dispatch:
 
 env:
   PYTHON_VERSION: '3.11'
@@ -76,7 +81,7 @@ jobs:
 
       - name: Smoke-test the frozen backend
         shell: bash
-        run: python scripts/smoke_backend.py ./dist/ustat-backend/${{ matrix.backend-name }}
+        run: python scripts/smoke_backend.py
 
       - name: Upload backend artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -90,6 +95,7 @@ jobs:
   # ─────────────────────────────────────────────────────
   build-tauri:
     needs: build-backend
+    if: github.event_name == 'push'
     permissions:
       contents: write
     strategy:
