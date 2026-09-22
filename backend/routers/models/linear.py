@@ -10,7 +10,7 @@ from loguru import logger
 
 from services import store
 from services.category_health import clean_two_level, rare_level_warnings
-from services.regression import constant_column_warnings, design_with_constant
+from services.regression import constant_column_warnings, design_with_constant, require_full_rank_design
 from services.impute import apply_imputation
 from services.missing_data import (
     mice_multiple,
@@ -182,6 +182,7 @@ def linear_regression(req: LinearRequest):
             X_enc = pd.get_dummies(df_imp[req.predictors], drop_first=True).astype(float)
             X_enc, _ = _add_pairwise_interactions(X_enc, req.interactions, req.predictors)
             X, _dropped_const = design_with_constant(X_enc)
+            require_full_rank_design(X)
             y_imp = df_imp[req.outcome].astype(float)
             # use_t=True on every branch. statsmodels keeps the t on residual
             # df for an ordinary OLS fit but silently switches to a normal the
@@ -206,6 +207,7 @@ def linear_regression(req: LinearRequest):
         X_enc = pd.get_dummies(df[req.predictors], drop_first=True).astype(float)
         X_enc, ix_added = _add_pairwise_interactions(X_enc, req.interactions, req.predictors)
         X, dropped_const = design_with_constant(X_enc)
+        require_full_rank_design(X)
         y = df[req.outcome].astype(float)
         model = sm.OLS(y, X).fit(cov_type="HC3" if req.robust_se else "nonrobust", use_t=True)
     else:
@@ -214,6 +216,7 @@ def linear_regression(req: LinearRequest):
         X_enc = pd.get_dummies(df[req.predictors], drop_first=True).astype(float)
         X_enc, ix_added = _add_pairwise_interactions(X_enc, req.interactions, req.predictors)
         X, dropped_const = design_with_constant(X_enc)
+        require_full_rank_design(X)
         y = df[req.outcome].astype(float)
         model = sm.OLS(y, X).fit(cov_type="HC3" if req.robust_se else "nonrobust", use_t=True)
 

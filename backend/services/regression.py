@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 import numpy as np
+from fastapi import HTTPException
 
 
 def design_with_constant(X: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
@@ -42,6 +43,45 @@ def drop_constant_columns(X: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
         if float(np.nanstd(X[c].astype(float).values)) == 0.0
     ]
     return (X.drop(columns=dropped) if dropped else X), dropped
+
+
+def require_full_rank_design(X: pd.DataFrame) -> None:
+    """Refuse a rank-deficient design matrix before it reaches `.fit()`.
+
+    A design with more parameters than complete cases -- or with predictors
+    that are an exact linear combination of one another -- has no unique
+    least-squares solution. statsmodels does not raise for this; it fits
+    anyway via a pseudo-inverse and comes back with some standard errors and
+    t-statistics as NaN/Inf. That NaN/Inf then fails JSON serialization, and
+    main.py's generic handler for that failure blames "a very small subgroup
+    or a degenerate stratum" -- a diagnosis about tiny groups that has
+    nothing to do with a model that simply had too many predictors. R's
+    lm() instead drops the excess columns and reports their coefficients as
+    NA; this app does not silently drop coefficients, so it refuses up
+    front with the actual reason instead.
+    """
+    n, p = X.shape
+    if n < p:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"The model has {p} parameters (including the intercept) but only "
+                f"{n} complete cases after removing missing data -- there are more "
+                "predictors than observations, so the design matrix cannot be "
+                "inverted. Reduce the number of predictors or provide more data."
+            ),
+        )
+    rank = int(np.linalg.matrix_rank(X.to_numpy(dtype=float)))
+    if rank < p:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "The design matrix is rank-deficient: one or more predictors (or "
+                "encoded category levels) are an exact linear combination of the "
+                "others, so their coefficients cannot be estimated separately. "
+                "Check for duplicated, derived, or redundant predictor columns."
+            ),
+        )
 
 
 def constant_column_warnings(dropped: list[str]) -> list[str]:

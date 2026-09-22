@@ -94,6 +94,63 @@ def test_linear_diag(client, sid):
     assert r.status_code == 200, r.text
 
 
+# ── Rank-deficient design matrix ─────────────────────────────────────────────
+# Before `require_full_rank_design`, a design with more parameters than
+# complete cases (or with collinear predictors) still reached .fit() and came
+# back with NaN/Inf coefficients, which then failed JSON serialization and
+# surfaced as main.py's generic "small subgroup or degenerate stratum"
+# handler — a diagnosis that has nothing to do with the actual cause.
+
+def test_more_predictors_than_observations_gives_the_real_reason(client):
+    rng = np.random.default_rng(20260922)
+    n, p = 100, 120
+    df = pd.DataFrame(rng.normal(size=(n, p)), columns=[f"x{i}" for i in range(p)])
+    df["y"] = rng.normal(size=n)
+    sid = make_session(df, "tlin_p_gt_n")
+    r = client.post("/api/models/linear", json={
+        "session_id": sid, "outcome": "y", "predictors": [f"x{i}" for i in range(p)],
+    })
+    assert r.status_code == 400, r.text
+    detail = r.json()["detail"]
+    assert "more predictors than observations" in detail
+    assert "121" in detail and "100" in detail
+    # The old, wrong diagnosis must not resurface under a different cause.
+    assert "subgroup" not in detail and "stratum" not in detail
+
+
+def test_a_predictor_that_is_a_linear_combination_of_others_gives_the_real_reason(client, sid):
+    rng = np.random.default_rng(5)
+    df = pd.DataFrame({"AGE": np.linspace(20, 90, 50)})
+    df["AGE2"] = df["AGE"] * 2.0  # exact linear combination of AGE — n > p, still rank-deficient
+    df["y"] = 1.0 + 0.1 * df["AGE"] + rng.normal(0, 1, 50)
+    ldsid = make_session(df, "tlin_collinear")
+    r = client.post("/api/models/linear", json={
+        "session_id": ldsid, "outcome": "y", "predictors": ["AGE", "AGE2"],
+    })
+    assert r.status_code == 400, r.text
+    detail = r.json()["detail"]
+    assert "linear combination" in detail
+    assert "subgroup" not in detail and "stratum" not in detail
+
+
+def test_a_well_specified_model_with_many_predictors_still_fits(client):
+    # Regression guard: the rank check must not false-positive on a design
+    # that is merely wide, as opposed to actually rank-deficient.
+    rng = np.random.default_rng(6)
+    n, p = 100, 40
+    X = rng.normal(size=(n, p))
+    beta = rng.normal(size=p)
+    y = X @ beta + rng.normal(0, 1, n)
+    df = pd.DataFrame(X, columns=[f"x{i}" for i in range(p)])
+    df["y"] = y
+    sid = make_session(df, "tlin_wide_full_rank")
+    r = client.post("/api/models/linear", json={
+        "session_id": sid, "outcome": "y", "predictors": [f"x{i}" for i in range(p)],
+    })
+    assert r.status_code == 200, r.text
+    assert len(r.json()["coefficients"]) == p + 1  # + the intercept
+
+
 def test_melt(client):
     # Separate session — /melt overwrites the stored frame with the long format.
     rng = np.random.default_rng(3)
