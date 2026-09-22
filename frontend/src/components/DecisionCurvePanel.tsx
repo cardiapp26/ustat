@@ -20,6 +20,11 @@ import { runDCA, runIntegratedExtValDCA } from "../api";
 import { Tip } from "./Tip";
 import TitledPlot from "./TitledPlot";
 import ThreeCol from "./ThreeCol";
+import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
+import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
+import { useStampedResult } from "../hooks/useStampedResult";
+import { describeStale } from "../lib/resultStamp";
 import type { PlotCaptureHandle, PlotData } from "../lib/plotTypes";
 
 interface DcaCurveSeries { thresholds?: number[]; net_benefit?: number[] }
@@ -86,6 +91,14 @@ interface IntegratedResult {
 // Plotly request payload — accepts arbitrary extra keys.
 type DcaPayload = Record<string, unknown>;
 
+/** Calibration time points as the integrated request carries them. */
+function parseTimePoints(raw: string): number[] {
+  return raw
+    .split(",")
+    .map((s) => Number(s.trim()))
+    .filter((v) => Number.isFinite(v));
+}
+
 export default function DecisionCurvePanel() {
   const session = useStore((s) => s.session);
   // The figure used to hard-code its background, font and colours, so the
@@ -97,29 +110,50 @@ export default function DecisionCurvePanel() {
   const columns = session?.columns ?? [];
   const sid = session?.session_id;
 
-  const [mode, setMode] = useState<"binary" | "survival" | "integrated">("survival");
+  // The selections persist beside their results. A result kept across a tab
+  // switch while its inputs reset to blank could only ever come back as "the
+  // settings changed", with nothing on screen to recompute it from.
+  const [mode, setMode] = usePersistedPanelState<"binary" | "survival" | "integrated">("dca", "mode", "survival");
 
   // Binary mode
-  const [probCol, setProbCol] = useState("");
-  const [outcomeCol, setOutcomeCol] = useState("");
+  const [probCol, setProbCol] = usePersistedPanelState("dca_curve", "probCol", "");
+  const [outcomeCol, setOutcomeCol] = usePersistedPanelState("dca_curve", "outcomeCol", "");
 
   // Survival mode (recommended for Phase 12/13 workflows)
-  const [durationCol, setDurationCol] = useState("");
-  const [eventCol, setEventCol] = useState("");
-  const [riskCol, setRiskCol] = useState("");
-  const [timeHorizon, setTimeHorizon] = useState<number | "">("");
+  const [durationCol, setDurationCol] = usePersistedPanelState("dca_curve", "durationCol", "");
+  const [eventCol, setEventCol] = usePersistedPanelState("dca_curve", "eventCol", "");
+  const [riskCol, setRiskCol] = usePersistedPanelState("dca_curve", "riskCol", "");
+  const [timeHorizon, setTimeHorizon] = usePersistedPanelState<number | "">("dca_curve", "timeHorizon", "");
 
   // Integrated external validation + DCA mode
-  const [ivDurationCol, setIvDurationCol] = useState("");
-  const [ivEventCol, setIvEventCol] = useState("");
-  const [ivPredictionCol, setIvPredictionCol] = useState("");
-  const [ivTimeHorizon, setIvTimeHorizon] = useState<number | "">("");
-  const [ivTimePoints, setIvTimePoints] = useState("");
-  const [ivBootstrap, setIvBootstrap] = useState(true);
-  const [ivNBoot, setIvNBoot] = useState<number | "">(200);
+  const [ivDurationCol, setIvDurationCol] = usePersistedPanelState("dca_integrated", "ivDurationCol", "");
+  const [ivEventCol, setIvEventCol] = usePersistedPanelState("dca_integrated", "ivEventCol", "");
+  const [ivPredictionCol, setIvPredictionCol] = usePersistedPanelState("dca_integrated", "ivPredictionCol", "");
+  const [ivTimeHorizon, setIvTimeHorizon] = usePersistedPanelState<number | "">("dca_integrated", "ivTimeHorizon", "");
+  const [ivTimePoints, setIvTimePoints] = usePersistedPanelState("dca_integrated", "ivTimePoints", "");
+  const [ivBootstrap, setIvBootstrap] = usePersistedPanelState("dca_integrated", "ivBootstrap", true);
+  const [ivNBoot, setIvNBoot] = usePersistedPanelState<number | "">("dca_integrated", "ivNBoot", 200);
 
-  const [result, setResult] = useState<DcaResult | null>(null);
-  const [integrated, setIntegrated] = useState<IntegratedResult | null>(null);
+  // Only what the active mode sends: a survival curve does not depend on the
+  // binary pickers, nor the reverse.
+  const curveParams = mode === "binary"
+    ? { mode, probCol, outcomeCol }
+    : { mode: "survival", durationCol, eventCol, riskCol, timeHorizon: timeHorizon || null };
+  const {
+    result, setResult, stale: curveStale, staleReasons: curveWhy,
+  } = useStampedResult<DcaResult>("dca_curve", curveParams);
+
+  const ivTimePointList = parseTimePoints(ivTimePoints);
+  const integratedParams = {
+    ivDurationCol, ivEventCol, ivPredictionCol,
+    timeHorizon: ivTimeHorizon || null,
+    timePoints: ivTimePointList,
+    bootstrap: ivBootstrap,
+    nBoot: ivBootstrap && ivNBoot ? Number(ivNBoot) : null,
+  };
+  const {
+    result: integrated, setResult: setIntegrated, stale: integratedStale, staleReasons: integratedWhy,
+  } = useStampedResult<IntegratedResult>("dca_integrated", integratedParams);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -189,11 +223,7 @@ export default function DecisionCurvePanel() {
       };
       if (ivTimeHorizon) payload.time_horizon = Number(ivTimeHorizon);
       if (ivBootstrap && ivNBoot) payload.n_boot = Number(ivNBoot);
-      const timePoints = ivTimePoints
-        .split(",")
-        .map((s) => Number(s.trim()))
-        .filter((v) => Number.isFinite(v));
-      if (timePoints.length > 0) payload.time_points = timePoints;
+      if (ivTimePointList.length > 0) payload.time_points = ivTimePointList;
 
       const res = await runIntegratedExtValDCA(payload);
       setIntegrated(res.data);
@@ -208,6 +238,8 @@ export default function DecisionCurvePanel() {
   // The DCA block the middle/right columns should render for the active mode.
   const activeDca: DcaResult | null =
     mode === "integrated" ? integrated?.decision_curve ?? null : result;
+  const activeStale = mode === "integrated" ? integratedStale : curveStale;
+  const activeWhy = mode === "integrated" ? integratedWhy : curveWhy;
 
   // Build improved Plotly data with shaded benefit region + harm threshold
   function buildPlotData(dca: DcaResult | null) {
@@ -625,26 +657,41 @@ export default function DecisionCurvePanel() {
           </div>
         }
         middle={
-          activeDca && plotData.length > 0 ? (
-            <TitledPlot
-              plotRefOut={dcaPlotRef}
-              storageKey="dca:netbenefit"
-              data={plotData}
-              layout={buildLayout(activeDca)}
-              defaultTitle="Net Benefit Curves"
-              defaultSubtitle="Green = model provides clinical value over alternatives"
-              defaultXAxis="Threshold Probability (pt)"
-              defaultYAxis="Net Benefit"
-            />
-          ) : (
-            <div className="h-[420px] flex items-center justify-center text-gray-400 border border-dashed rounded-2xl">
-              Select columns and run DCA to see the net benefit curves
-            </div>
-          )
+          <div className="space-y-2">
+            {/* Switching mode can leave the new mode's pickers empty, and a
+                Recompute that silently does nothing is worse than none. */}
+            {activeStale && (
+              <StaleResultNotice
+                reasons={activeWhy}
+                onRecompute={canRun ? (mode === "integrated" ? handleIntegratedRun : handleRun) : undefined}
+                busy={loading}
+                what={mode === "integrated" ? "This validation and decision curve" : "This decision curve"}
+              />
+            )}
+            {activeDca && plotData.length > 0 ? (
+              <StaleGuard stale={activeStale} reason={describeStale(activeWhy)}>
+                <TitledPlot
+                  plotRefOut={dcaPlotRef}
+                  storageKey="dca:netbenefit"
+                  data={plotData}
+                  layout={buildLayout(activeDca)}
+                  defaultTitle="Net Benefit Curves"
+                  defaultSubtitle="Green = model provides clinical value over alternatives"
+                  defaultXAxis="Threshold Probability (pt)"
+                  defaultYAxis="Net Benefit"
+                />
+              </StaleGuard>
+            ) : (
+              <div className="h-[420px] flex items-center justify-center text-gray-400 border border-dashed rounded-2xl">
+                Select columns and run DCA to see the net benefit curves
+              </div>
+            )}
+          </div>
         }
         right={
           mode === "integrated" ? (
             integrated ? (
+              <StaleGuard stale={integratedStale} reason={describeStale(integratedWhy)}>
               <div className="space-y-4 text-sm">
                 <div className="bg-white border border-gray-200 rounded-2xl p-4 shadow-sm">
                   <div className="uppercase text-[10px] tracking-[1px] font-semibold text-gray-500 mb-3">External Validation</div>
@@ -713,12 +760,14 @@ export default function DecisionCurvePanel() {
                   </div>
                 )}
               </div>
+              </StaleGuard>
             ) : (
               <div className="h-full flex items-center justify-center text-center text-gray-400 border border-dashed border-gray-200 rounded-2xl p-6 text-sm">
                 Run external validation + DCA to see discrimination,<br />calibration, and net benefit.
               </div>
             )
           ) : result ? (
+            <StaleGuard stale={curveStale} reason={describeStale(curveWhy)}>
             <div className="space-y-4 text-sm">
               {renderDcaSummaryCard(result)}
 
@@ -748,6 +797,7 @@ export default function DecisionCurvePanel() {
                 </div>
               )}
             </div>
+            </StaleGuard>
           ) : (
             <div className="h-full flex items-center justify-center text-center text-gray-400 border border-dashed border-gray-200 rounded-2xl p-6 text-sm">
               Run DCA to see net benefit curves,<br />clinical utility metrics, and interpretation.

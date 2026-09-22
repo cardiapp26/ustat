@@ -1,9 +1,10 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
 import { server } from '../test/server'
 import { clearSession, installSession } from '../test/testUtils'
+import { useStore } from '../store'
 import GatekeepingPanel from './GatekeepingPanel'
 
 afterEach(() => clearSession())
@@ -81,5 +82,47 @@ describe('GatekeepingPanel', () => {
     await user.click(screen.getByRole('button', { name: /run gatekeeping/i }))
 
     await waitFor(() => expect(screen.getByText('Invalid gamma value')).toBeInTheDocument())
+  })
+
+  it('ignores a data change but closes export once a typed p-value changes', async () => {
+    // Gatekeeping adjusts p-values typed into the panel and reads no dataset:
+    // a cell edit must not flag it, while editing one of its own inputs must.
+    installSession()
+    server.use(
+      http.post('/api/multiplicity/gatekeeping', () =>
+        HttpResponse.json({
+          method: 'hochberg',
+          logic: 'serial',
+          alpha: 0.05,
+          families: [
+            {
+              name: 'Primary',
+              gamma: 1,
+              n_rejected: 1,
+              n: 1,
+              hypotheses: [{ label: 'All-cause death', p_raw: 0.012, p_adjusted: 0.012, reject: true }],
+            },
+          ],
+          export_rows: [['Family', 'Label', 'p_raw', 'p_adj'], ['Primary', 'All-cause death', '0.012', '0.012']],
+        }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<GatekeepingPanel />)
+    await user.click(screen.getByRole('button', { name: /run gatekeeping/i }))
+    const csv = await screen.findByRole('button', { name: 'CSV' })
+    expect(csv).toBeEnabled()
+
+    act(() => useStore.getState().bumpDataVersion())
+    expect(screen.queryByText(/Out of date\./)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'CSV' })).toBeEnabled()
+
+    const p = screen.getByDisplayValue('0.012')
+    await user.clear(p)
+    await user.type(p, '0.03')
+
+    expect(await screen.findByText(/Out of date\./)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'CSV' })).toBeDisabled()
   })
 })

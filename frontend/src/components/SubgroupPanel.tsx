@@ -17,10 +17,15 @@ import Plot from "../PlotComponent";
 import { usePlotLayout, usePalette } from "../plotStyle";
 import { analysisCols, isNumericKind, isCategoricalKind, useStore, type Session } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
+import { useStampedResult } from "../hooks/useStampedResult";
 import { runSubgroup } from "../api";
 import { Tip } from "./Tip";
 import ResultExporter from "./ResultExporter";
+import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
 import { fmtP, pCellTitle } from "../lib/format";
+import { describeStale } from "../lib/resultStamp";
+import { staleExportTitle } from "../lib/staleGuard";
 import type { Data, Layout } from "plotly.js";
 import type { PlotData, PlotLayout, PlotCaptureHandle } from "../lib/plotTypes";
 
@@ -63,7 +68,15 @@ function SubgroupPanelBody({ session }: { session: Session }) {
   const [subgroups, setSubgroups] = usePersistedPanelState<string[]>("subgroup", "subgroups", []);
   const [covariates, setCovariates] = usePersistedPanelState<string[]>("subgroup", "covs", []);
 
-  const [result, setResult] = useState<SubgroupResult | null>(null);
+  const categorical = covariates.filter((c) => catCols.includes(c));
+  const runParams = {
+    kind, outcome, exposure, subgroups, covariates, categorical,
+    timeCol: kind === "survival" ? timeCol : undefined,
+  };
+  const {
+    result, setResult, stale, staleReasons: staleWhy,
+  } = useStampedResult<SubgroupResult>("subgroup", runParams);
+  const staleWhyText = describeStale(staleWhy);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const plotRef = useRef<PlotCaptureHandle | null>(null);
@@ -83,7 +96,7 @@ function SubgroupPanelBody({ session }: { session: Session }) {
       const res = await runSubgroup({
         session_id: session.session_id, outcome, exposure, subgroups, covariates,
         outcome_kind: kind, time_col: kind === "survival" ? timeCol : undefined,
-        categorical: covariates.filter((c) => catCols.includes(c)),
+        categorical,
       });
       setResult(res.data as SubgroupResult);
     } catch (e: unknown) {
@@ -151,7 +164,9 @@ function SubgroupPanelBody({ session }: { session: Session }) {
   } as PlotLayout), [themedBase, forestRows, result, ratio]);
 
   const sendToBuilder = () => {
-    if (!result) return;
+    // The hand-off copies the numbers out of this panel, so an out-of-date
+    // result would reach the figure with nothing to say what it predates.
+    if (!result || stale) return;
     const rows = forestRows
       .filter((r) => !r.header && est(r.row) != null)
       .map((r) => ({
@@ -258,17 +273,22 @@ function SubgroupPanelBody({ session }: { session: Session }) {
       </div>
 
       <div className="flex-1 min-w-0 space-y-3">
+        {result && stale && (
+          <StaleResultNotice reasons={staleWhy} onRecompute={run} busy={loading} what="This subgroup analysis" />
+        )}
         {result ? (
-          <>
+          <StaleGuard stale={stale} reason={staleWhyText}>
             <div className="panel">
               <div className="mb-2 flex items-center justify-between gap-2">
                 <h4 className="text-sm font-semibold text-gray-700">
                   {result.effect_label} for {result.exposure} — {result.outcome}
                 </h4>
                 <div className="flex items-center gap-2">
-                  <button onClick={sendToBuilder}
-                    title="Add these rows to the Forest Builder, where the figure can be titled and styled for a journal."
-                    className="flex-shrink-0 whitespace-nowrap rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-100">
+                  <button onClick={sendToBuilder} disabled={stale}
+                    title={stale
+                      ? staleExportTitle(staleWhyText)
+                      : "Add these rows to the Forest Builder, where the figure can be titled and styled for a journal."}
+                    className="flex-shrink-0 whitespace-nowrap rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-100 disabled:opacity-40 disabled:hover:bg-indigo-50">
                     → Forest Builder
                   </button>
                   <ResultExporter title="Subgroup_analysis"
@@ -353,7 +373,7 @@ function SubgroupPanelBody({ session }: { session: Session }) {
                 {result.result_text}
               </p>
             </div>
-          </>
+          </StaleGuard>
         ) : (
           <div className="panel py-16 text-center text-gray-400">
             <p className="mb-2 text-lg">🌲</p>

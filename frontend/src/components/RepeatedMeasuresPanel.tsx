@@ -1,7 +1,12 @@
 import { useState } from "react";
 import { useStore, isNumericKind, type Session } from "../store";
 import { runPairedTTest, runWilcoxonSR, runFriedman, runRMAnova, runMixedAnova } from "../api";
+import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
+import { useStampedResult } from "../hooks/useStampedResult";
+import { describeStale } from "../lib/resultStamp";
 import ResultExporter from "./ResultExporter";
+import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
 import { fmtP, warningText } from "../lib/format";
 
 const RM_TESTS = [
@@ -255,15 +260,17 @@ function RepeatedMeasuresPanelBody({ session }: { session: Session }) {
   const numCols = session.columns.filter((c) => isNumericKind(c.kind)).map((c) => c.name);
   const allCols = session.columns.map((c) => c.name);
 
-  const [test, setTest] = useState<string>("paired_ttest");
-  const [col1, setCol1] = useState(numCols[0] ?? "");
-  const [col2, setCol2] = useState(numCols[1] ?? numCols[0] ?? "");
-  const [friedmanCols, setFriedmanCols] = useState<string[]>([]);
-  const [subjectCol, setSubjectCol] = useState(allCols[0] ?? "");
-  const [withinCol, setWithinCol] = useState(allCols[1] ?? "");
-  const [betweenCol, setBetweenCol] = useState(allCols[2] ?? "");
-  const [valueCol, setValueCol] = useState(numCols[0] ?? "");
-  const [result, setResult] = useState<RMResult | null>(null);
+  // Persisted with the result, so a test restored after a tab switch comes
+  // back with the variables it was run on instead of reading stale against
+  // the defaults (and recomputing a different test).
+  const [test, setTest] = usePersistedPanelState<string>("repeated_measures", "test", "paired_ttest");
+  const [col1, setCol1] = usePersistedPanelState("repeated_measures", "col1", numCols[0] ?? "");
+  const [col2, setCol2] = usePersistedPanelState("repeated_measures", "col2", numCols[1] ?? numCols[0] ?? "");
+  const [friedmanCols, setFriedmanCols] = usePersistedPanelState<string[]>("repeated_measures", "friedmanCols", []);
+  const [subjectCol, setSubjectCol] = usePersistedPanelState("repeated_measures", "subjectCol", allCols[0] ?? "");
+  const [withinCol, setWithinCol] = usePersistedPanelState("repeated_measures", "withinCol", allCols[1] ?? "");
+  const [betweenCol, setBetweenCol] = usePersistedPanelState("repeated_measures", "betweenCol", allCols[2] ?? "");
+  const [valueCol, setValueCol] = usePersistedPanelState("repeated_measures", "valueCol", numCols[0] ?? "");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -271,6 +278,15 @@ function RepeatedMeasuresPanelBody({ session }: { session: Session }) {
   const isFriedman = test === "friedman";
   const isLong = test === "rm_anova" || test === "mixed_anova";
   const isMixed = test === "mixed_anova";
+
+  // Only the fields the chosen test sends: the other tests' selectors keep
+  // their values, and moving one of them cannot change this result.
+  const runParams = isPaired ? { test, col1, col2 }
+    : isFriedman ? { test, columns: friedmanCols }
+    : { test, subjectCol, withinCol, valueCol, betweenCol: isMixed ? betweenCol : null };
+  const {
+    result, setResult, stale, staleReasons: staleWhy,
+  } = useStampedResult<RMResult>("repeated_measures", runParams);
 
   const run = async () => {
     setLoading(true); setError(null); setResult(null);
@@ -397,7 +413,19 @@ function RepeatedMeasuresPanelBody({ session }: { session: Session }) {
             <p className="text-xs text-indigo-800 leading-relaxed">{guidance.reading}</p>
           </div>
         )}
-        {result ? <ResultCard result={result} /> : (
+        {result && stale && (
+          <StaleResultNotice
+            reasons={staleWhy}
+            onRecompute={run}
+            busy={loading}
+            what={`This ${result.test ?? "test"}`}
+          />
+        )}
+        {result ? (
+          <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
+            <ResultCard result={result} />
+          </StaleGuard>
+        ) : (
           <div className="panel text-center text-gray-400 py-12">
             Select a test and configure variables to begin
           </div>

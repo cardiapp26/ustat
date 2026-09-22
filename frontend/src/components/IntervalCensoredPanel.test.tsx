@@ -1,8 +1,9 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
 import { server } from '../test/server'
+import { useStore } from '../store'
 import { clearSession, installSession, makeSession } from '../test/testUtils'
 import IntervalCensoredPanel from './IntervalCensoredPanel'
 
@@ -92,5 +93,41 @@ describe('IntervalCensoredPanel', () => {
     await user.click(screen.getByRole('button', { name: /run analysis/i }))
 
     await waitFor(() => expect(screen.getByText('Upper bound must be >= lower bound')).toBeInTheDocument())
+  })
+})
+
+describe('IntervalCensoredPanel staleness', () => {
+  it('closes the curve export once the data changes under it', async () => {
+    installSession()
+    server.use(
+      http.post('/api/survival_advanced/interval_censored', () =>
+        HttpResponse.json({
+          n: 3, n_exact: 0, n_interval_censored: 2, n_right_censored: 1,
+          median_survival_time: 42,
+          npmle_curve: [
+            { time: 0, survival: 1, lower: 1, upper: 1 },
+            { time: 42, survival: 0.5, lower: 0.3, upper: 0.7 },
+          ],
+          groups: null,
+          regression: null,
+          result_text: 'Turnbull NPMLE estimated.',
+        }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<IntervalCensoredPanel session={makeSession()} />)
+    const selects = screen.getAllByRole('combobox')
+    await user.selectOptions(selects[0], 'AGE')
+    await user.selectOptions(selects[1], 'LDL')
+    await user.click(screen.getByRole('button', { name: /run analysis/i }))
+
+    const png = await screen.findByRole('button', { name: 'PNG 300dpi' })
+    expect(png).toBeEnabled()
+
+    act(() => useStore.getState().bumpDataVersion())
+
+    expect(await screen.findByText(/Out of date\./)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'PNG 300dpi' })).toBeDisabled()
   })
 })

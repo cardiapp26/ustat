@@ -1,12 +1,18 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
 import { server } from '../test/server'
 import { clearSession, installSession, makeSession } from '../test/testUtils'
+import { useStore } from '../store'
 import CausalPanel from './CausalPanel'
 
-afterEach(() => clearSession())
+// The tabs keep their inputs and results in panelCache, and clearSession
+// leaves it alone: without this a no-session test inherits the last one's.
+afterEach(() => {
+  clearSession()
+  useStore.setState({ panelCache: {} })
+})
 
 const fourColSession = () =>
   makeSession({
@@ -79,6 +85,73 @@ describe('CausalPanel', () => {
     expect(screen.getByText('adequate (≥10)')).toBeInTheDocument()
   })
 
+  it('IV tab: marks the 2SLS estimate out of date once the data changes, and recomputes it in place', async () => {
+    installSession(fourColSession())
+    let calls = 0
+    server.use(
+      http.post('/api/causal/iv_2sls', () => {
+        calls += 1
+        return HttpResponse.json({
+          result_text: 'The IV estimate differs from OLS.',
+          n: 3,
+          iv_estimate: { estimate: 0.842, ci_low: 0.2, ci_high: 1.5, p: 0.01 },
+          ols_estimate: { estimate: 0.5, p: 0.02 },
+          first_stage: { f_stat: 25.4, weak_instruments: false },
+          wu_hausman: { p: 0.03, endogenous: true },
+          sargan: null,
+        })
+      }),
+    )
+
+    const user = userEvent.setup()
+    render(<CausalPanel />)
+    await user.selectOptions(selectAfterLabel('Outcome (continuous)'), 'Y')
+    await user.selectOptions(selectAfterLabel('Endogenous exposure'), 'X')
+    await user.click(checkboxInGroup('Instrument(s)', 'Z'))
+    await user.click(screen.getByRole('button', { name: 'Run 2SLS' }))
+    await screen.findByText('0.8420')
+    expect(screen.queryByText(/Out of date\./)).not.toBeInTheDocument()
+
+    act(() => useStore.getState().bumpDataVersion())
+
+    expect(await screen.findByText(/Out of date\./)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Recompute' }))
+    await waitFor(() => expect(screen.queryByText(/Out of date\./)).not.toBeInTheDocument())
+    expect(calls).toBe(2)
+    expect(screen.getByText('0.8420')).toBeInTheDocument()
+  })
+
+  it('keeps each tab\'s result and inputs across a switch to another method and back', async () => {
+    installSession(fourColSession())
+    server.use(
+      http.post('/api/causal/did', () =>
+        HttpResponse.json({
+          result_text: 'The DiD estimate is 1.5.', significant: true,
+          did_estimate: 1.5, ci_low: 0.5, ci_high: 2.5, p: 0.01,
+          treated_change: 2, control_change: 0.5,
+          cell_means: { control_pre: 1, control_post: 1.5, treated_pre: 1, treated_post: 3 },
+        }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<CausalPanel />)
+    await user.click(screen.getByRole('button', { name: 'Difference-in-Differences' }))
+    await user.selectOptions(selectAfterLabel('Outcome (continuous)'), 'Y')
+    await user.selectOptions(selectAfterLabel('Group (0=control, 1=treated)'), 'X')
+    await user.selectOptions(selectAfterLabel('Time (0=pre, 1=post)'), 'Z')
+    await user.click(screen.getByRole('button', { name: 'Run DiD' }))
+    await screen.findByText('The DiD estimate is 1.5.')
+
+    await user.click(screen.getByRole('button', { name: 'Regression Discontinuity' }))
+    await user.click(screen.getByRole('button', { name: 'Difference-in-Differences' }))
+
+    // Restored with the settings it was computed under, so not out of date.
+    expect(screen.getByText('The DiD estimate is 1.5.')).toBeInTheDocument()
+    expect(selectAfterLabel('Outcome (continuous)').value).toBe('Y')
+    expect(screen.queryByText(/Out of date\./)).not.toBeInTheDocument()
+  })
+
   it('Mediation tab: runs and renders ACME/ADE decomposition; shows backend error on failure', async () => {
     installSession(fourColSession())
     server.use(
@@ -143,6 +216,33 @@ describe('CausalPanel', () => {
     await user.click(screen.getByRole('button', { name: 'Analyse DAG' }))
 
     await waitFor(() => expect(screen.getByText('Graph contains a cycle')).toBeInTheDocument())
+  })
+
+  it('DAG Backdoor tab: a data edit leaves the adjustment set current, an edit to the graph does not', async () => {
+    clearSession()
+    server.use(
+      http.post('/api/causal/dag_adjustment', () =>
+        HttpResponse.json({
+          result_text: 'Adjust for Z to close the backdoor path.',
+          adjustment_set: ['Z'], do_not_adjust: ['C'], roles: { Z: 'confounder' },
+        }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<CausalPanel />)
+    await user.click(screen.getByRole('button', { name: 'DAG Backdoor' }))
+    await user.click(screen.getByRole('button', { name: 'Analyse DAG' }))
+    await screen.findByText('Adjust for (minimal set)')
+
+    // The graph is typed in; no dataset goes into it.
+    act(() => useStore.getState().bumpDataVersion())
+    expect(screen.queryByText(/Out of date\./)).not.toBeInTheDocument()
+
+    const edges = within(screen.getByText('Edges (one per line, A -> B)').parentElement as HTMLElement).getByRole('textbox')
+    await user.type(edges, '{Enter}Z -> M')
+    expect(await screen.findByText(/Out of date\./)).toBeInTheDocument()
+    expect(screen.getByText(/the analysis settings changed/)).toBeInTheDocument()
   })
 
   describe('Unmeasured Confounding tab', () => {
@@ -313,6 +413,32 @@ describe('CausalPanel', () => {
       expect(
         screen.getByText(/Low E-value \(<2\); result is sensitive to weak unmeasured confounding\./),
       ).toBeInTheDocument()
+    })
+
+    it('a bare-estimate suite ignores data edits; one that read the dataset goes out of date', async () => {
+      installSession()
+      server.use(
+        http.post('/api/models/causal_sensitivity', () => HttpResponse.json(baseResponse)),
+      )
+
+      const user = userEvent.setup()
+      await openTab(user)
+      await user.click(screen.getByRole('button', { name: 'Run sensitivity suite' }))
+      await screen.findByText('3.11')
+
+      act(() => useStore.getState().bumpDataVersion())
+      expect(screen.queryByText(/Out of date\./)).not.toBeInTheDocument()
+
+      await user.click(screen.getByRole('button', { name: /Advanced: SMD & data-driven bounds/ }))
+      await user.selectOptions(selectAfterLabel('Treatment (binary 0/1)'), 'DM')
+      await user.selectOptions(selectAfterLabel('Outcome (binary 0/1)'), 'GROUP')
+      await user.click(screen.getByRole('button', { name: 'Run sensitivity suite' }))
+      await waitFor(() => expect(screen.queryByText(/Out of date\./)).not.toBeInTheDocument())
+      await screen.findByText('3.11')
+
+      act(() => useStore.getState().bumpDataVersion())
+      expect(await screen.findByText(/Out of date\./)).toBeInTheDocument()
+      expect(screen.getByText(/the data changed/)).toBeInTheDocument()
     })
 
     it('shows the backend error detail when the endpoint fails', async () => {

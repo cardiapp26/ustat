@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse, delay } from 'msw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -605,6 +605,82 @@ describe('DescriptivePanel', () => {
 
     await waitFor(() => expect(scatterCalls).toBe(2))
     expect(screen.getByDisplayValue('LDL')).toBeInTheDocument()
+  })
+
+  it('closes every export of a column summary once the data changes under it, and recomputes', async () => {
+    // The summary loads when a column is picked, not when the data moves: an
+    // edit left the old numbers exportable under the current column's name.
+    installSession()
+    mockCommonEndpoints()
+    let calls = 0
+    server.use(
+      http.get('/api/stats/test-session/column_summary', () => {
+        calls += 1
+        return HttpResponse.json(numericSummary)
+      }),
+    )
+
+    const user = userEvent.setup()
+    render(<DescriptivePanel />)
+    await waitFor(() =>
+      expect(screen.getByText((_, el) => el?.textContent === 'Continuous · n=3')).toBeInTheDocument(),
+    )
+
+    const exports = () => [
+      screen.getByRole('button', { name: 'CSV' }),
+      screen.getByRole('button', { name: 'XLSX' }),
+      ...screen.getAllByRole('button', { name: '↓' }),
+    ]
+    for (const b of exports()) expect(b).toBeEnabled()
+
+    act(() => useStore.getState().bumpDataVersion())
+
+    expect(await screen.findByText(/Out of date\./)).toBeInTheDocument()
+    for (const b of exports()) expect(b).toBeDisabled()
+
+    await user.click(screen.getByRole('button', { name: 'Recompute' }))
+    await waitFor(() => expect(screen.queryByText(/Out of date\./)).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'CSV' })).toBeEnabled())
+    expect(calls).toBe(2)
+  })
+
+  it('closes the scatter plot export once the data changes under it, and recomputes', async () => {
+    installSession()
+    useStore.setState({
+      panelCache: {
+        descriptive: { view: 'scatter' },
+        descriptive_numeric: { xCol: 'AGE', yCol: 'LDL', color: '', shape: '' },
+      },
+    })
+    mockCommonEndpoints()
+    let scatterCalls = 0
+    server.use(
+      http.get('/api/stats/test-session/column_summary', () => HttpResponse.json(numericSummary)),
+      http.post('/api/charts/scatter', () => {
+        scatterCalls += 1
+        return HttpResponse.json({
+          points: [{ AGE: 55, LDL: 120 }, { AGE: 62, LDL: 140 }, { AGE: 48, LDL: 110 }],
+          regression: { r: 0.99, r2: 0.98, p: 0.04, slope: 2.1, intercept: 4, line_x: [48, 62], line_y: [110, 140] },
+        })
+      }),
+    )
+
+    const user = userEvent.setup()
+    render(<DescriptivePanel />)
+    await screen.findByText(/Strong/)
+    const plotExports = () => screen.getAllByRole('button', { name: '↓' })
+    for (const b of plotExports()) expect(b).toBeEnabled()
+
+    act(() => useStore.getState().bumpDataVersion())
+
+    expect(await screen.findByText(/Out of date\./)).toBeInTheDocument()
+    for (const b of plotExports()) expect(b).toBeDisabled()
+
+    await user.click(screen.getByRole('button', { name: 'Recompute' }))
+    await waitFor(() => expect(scatterCalls).toBe(2))
+    await screen.findByText(/Strong/)
+    expect(screen.queryByText(/Out of date\./)).not.toBeInTheDocument()
+    for (const b of plotExports()) expect(b).toBeEnabled()
   })
 
   it('numeric column: loads and displays summary stats, normality test, and n', async () => {

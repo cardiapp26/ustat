@@ -1,9 +1,10 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
 import { server } from '../test/server'
 import { clearSession, installSession } from '../test/testUtils'
+import { useStore } from '../store'
 import CategoricalTestsPanel from './CategoricalTestsPanel'
 
 afterEach(() => clearSession())
@@ -125,5 +126,55 @@ describe('CategoricalTestsPanel', () => {
     await user.click(screen.getByRole('button', { name: /run test/i }))
     await waitFor(() => expect(bodies).toHaveLength(2))
     expect(bodies[1].level_order).toEqual(['Low', 'Medium', 'High'])
+  })
+
+  it('marks a test out of date once the data changes, and Recompute reruns it', async () => {
+    installSession()
+    let calls = 0
+    server.use(
+      http.post('/api/categorical/binomial', () => {
+        calls += 1
+        return HttpResponse.json({ test: 'Binomial test', significant: true, n: 3, p_value: 0.03 })
+      }),
+    )
+
+    const user = userEvent.setup()
+    render(<CategoricalTestsPanel />)
+    await user.click(screen.getByRole('button', { name: /run test/i }))
+    await screen.findByRole('heading', { name: 'Binomial test' })
+    expect(screen.queryByText(/Out of date\./)).not.toBeInTheDocument()
+
+    act(() => useStore.getState().bumpDataVersion())
+
+    expect(await screen.findByText(/Out of date\./)).toBeInTheDocument()
+    expect(screen.getByText(/This Binomial test was computed before the data changed/)).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Recompute' }))
+    await waitFor(() => expect(calls).toBe(2))
+    await waitFor(() => expect(screen.queryByText(/Out of date\./)).not.toBeInTheDocument())
+  })
+
+  it('flags a test stale for an input it read, not for one it ignores', async () => {
+    // Cochran's Q reads only its column list; the "Binary column" picker stays
+    // on screen for it but never reaches the request.
+    installSession()
+    server.use(
+      http.post('/api/categorical/cochran_q', () =>
+        HttpResponse.json({ test: "Cochran's Q", significant: false, q: 1.2, p: 0.55 }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<CategoricalTestsPanel />)
+    await user.click(screen.getByRole('radio', { name: "Cochran's Q" }))
+    await user.selectOptions(screen.getByRole('listbox'), ['AGE', 'LDL', 'DM'])
+    await user.click(screen.getByRole('button', { name: /run test/i }))
+    await screen.findByRole('heading', { name: "Cochran's Q" })
+
+    await user.selectOptions(screen.getByRole('combobox'), 'LDL')
+    expect(screen.queryByText(/Out of date\./)).not.toBeInTheDocument()
+
+    await user.deselectOptions(screen.getByRole('listbox'), 'DM')
+    expect(await screen.findByText(/the analysis settings changed/)).toBeInTheDocument()
   })
 })

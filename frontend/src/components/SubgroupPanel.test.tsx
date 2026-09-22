@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -199,5 +199,28 @@ describe('SubgroupPanel', () => {
     await run(user)
 
     await waitFor(() => expect(screen.getByText(/cannot also be a subgroup/)).toBeInTheDocument())
+  })
+
+  it('closes the exports and the Forest Builder hand-off once the data changes under it', async () => {
+    // The hand-off is a plain button calling the store, so nothing guarded it.
+    installSession(session())
+    mockRun()
+    const user = userEvent.setup()
+    render(<SubgroupPanel />)
+    await run(user)
+
+    const builder = () => screen.getByRole('button', { name: '→ Forest Builder' })
+    const csv = () => screen.getByRole('button', { name: 'CSV' })
+    await waitFor(() => expect(builder()).toBeEnabled())
+    expect(csv()).toBeEnabled()
+
+    act(() => useStore.getState().bumpDataVersion())
+
+    expect(await screen.findByText(/Out of date\./)).toBeInTheDocument()
+    expect(builder()).toBeDisabled()
+    expect(builder()).toHaveAttribute('title', expect.stringMatching(/Recompute first/))
+    expect(csv()).toBeDisabled()
+    await user.click(builder())
+    expect(useStore.getState().forestHandoff).toBeNull()
   })
 })

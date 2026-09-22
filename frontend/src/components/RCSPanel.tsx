@@ -3,10 +3,15 @@ import Plot from "../PlotComponent";
 import TitledPlot from "./TitledPlot";
 import { useStore, paletteOf, isNumericKind } from "../store";
 import { runRCS, runCoxRCS } from "../api";
+import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
+import { useStampedResult } from "../hooks/useStampedResult";
 import { Tip, InfoBanner } from "./Tip";
 import ResultExporter from "./ResultExporter";
+import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
 import { MissingGuard, type ImputationStrategy } from "./MissingGuard";
 import { fmtP } from "../lib/format";
+import { describeStale } from "../lib/resultStamp";
 import type { PlotData, PlotLayout, PlotCaptureHandle } from "../lib/plotTypes";
 
 // Geometry only — background, font and colourway come from the global chart
@@ -342,39 +347,66 @@ export default function RCSPanel() {
   );
   const allCols = useMemo(() => (session?.columns ?? []).filter((c) => !c.analysis_excluded).map((c) => c.name), [session?.columns]);
 
+  // The settings are persisted beside the result so that a fit restored on
+  // remount is still described by the pickers on screen; plain state reset
+  // them to the defaults and the restored curve read as out of date.
+
   // ── Mode: "rcs" (univariate) or "cox_rcs" (multivariable) ─────────────────
-  const [mode, setMode] = useState<"rcs" | "cox_rcs">("rcs");
+  const [mode, setMode] = usePersistedPanelState<"rcs" | "cox_rcs">("rcs", "mode", "rcs");
 
   // ── Shared state ──────────────────────────────────────────────────────────
-  const [result, setResult] = useState<RCSResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [imputation, setImputation] = useState<ImputationStrategy>("listwise");
+  const [imputation, setImputation] = usePersistedPanelState<ImputationStrategy>("rcs", "imputation", "listwise");
   const rcsPlotRef = useRef<PlotCaptureHandle | null>(null);
 
   // ── RCS univariate state ──────────────────────────────────────────────────
-  const [rcsPredictor, setRcsPredictor] = useState(numCols[0] ?? "");
-  const [rcsOutcome, setRcsOutcome] = useState(numCols[1] ?? numCols[0] ?? "");
-  const [rcsNKnots, setRcsNKnots] = useState(4);
-  const [rcsRefValue, setRcsRefValue] = useState("");
-  const [rcsCovariates, setRcsCovariates] = useState<string[]>([]);
-  const [rcsInteractionCov, setRcsInteractionCov] = useState<string[]>([]);
+  const [rcsPredictor, setRcsPredictor] = usePersistedPanelState("rcs", "predictor", numCols[0] ?? "");
+  const [rcsOutcome, setRcsOutcome] = usePersistedPanelState("rcs", "outcome", numCols[1] ?? numCols[0] ?? "");
+  const [rcsNKnots, setRcsNKnots] = usePersistedPanelState("rcs", "nKnots", 4);
+  const [rcsRefValue, setRcsRefValue] = usePersistedPanelState("rcs", "refValue", "");
+  const [rcsCovariates, setRcsCovariates] = usePersistedPanelState<string[]>("rcs", "covariates", []);
+  const [rcsInteractionCov, setRcsInteractionCov] = usePersistedPanelState<string[]>("rcs", "interactionCov", []);
   const [rcsLogScale, setRcsLogScale] = useState(true);
   const [rcsShowData, setRcsShowData] = useState(true);
-  const [rcsOutcomeType, setRcsOutcomeType] = useState<"logistic" | "linear" | "cox">("cox");
-  const [rcsCoxDuration, setRcsCoxDuration] = useState(numCols[0] ?? "");
-  const [rcsCoxEvent, setRcsCoxEvent] = useState(binaryCols[0] ?? numCols[1] ?? "");
-  const [rcsKnotMode, setRcsKnotMode] = useState<"harrell" | "custom">("harrell");
-  const [rcsCustomKnots, setRcsCustomKnots] = useState("");
+  const [rcsOutcomeType, setRcsOutcomeType] = usePersistedPanelState<"logistic" | "linear" | "cox">("rcs", "outcomeType", "cox");
+  const [rcsCoxDuration, setRcsCoxDuration] = usePersistedPanelState("rcs", "coxDuration", numCols[0] ?? "");
+  const [rcsCoxEvent, setRcsCoxEvent] = usePersistedPanelState("rcs", "coxEvent", binaryCols[0] ?? numCols[1] ?? "");
+  const [rcsKnotMode, setRcsKnotMode] = usePersistedPanelState<"harrell" | "custom">("rcs", "knotMode", "harrell");
+  const [rcsCustomKnots, setRcsCustomKnots] = usePersistedPanelState("rcs", "customKnots", "");
 
   // ── Cox-RCS multivariable state ───────────────────────────────────────────
-  const [crxDuration, setCrxDuration] = useState(numCols[0] ?? "");
-  const [crxEvent, setCrxEvent] = useState(binaryCols[0] ?? numCols[1] ?? "");
-  const [crxTerm1, setCrxTerm1] = useState<SplineTermState>({ column: numCols[0] ?? "", n_knots: 4, knot_positions: "", ref_value: "" });
-  const [crxTerm2, setCrxTerm2] = useState<SplineTermState>({ column: numCols[1] ?? "", n_knots: 4, knot_positions: "", ref_value: "" });
-  const [crxUseTerm2, setCrxUseTerm2] = useState(false);
-  const [crxInteraction, setCrxInteraction] = useState(false);
-  const [crxCovariates, setCrxCovariates] = useState<string[]>([]);
+  const [crxDuration, setCrxDuration] = usePersistedPanelState("rcs", "crxDuration", numCols[0] ?? "");
+  const [crxEvent, setCrxEvent] = usePersistedPanelState("rcs", "crxEvent", binaryCols[0] ?? numCols[1] ?? "");
+  const [crxTerm1, setCrxTerm1] = usePersistedPanelState<SplineTermState>("rcs", "crxTerm1", { column: numCols[0] ?? "", n_knots: 4, knot_positions: "", ref_value: "" });
+  const [crxTerm2, setCrxTerm2] = usePersistedPanelState<SplineTermState>("rcs", "crxTerm2", { column: numCols[1] ?? "", n_knots: 4, knot_positions: "", ref_value: "" });
+  const [crxUseTerm2, setCrxUseTerm2] = usePersistedPanelState("rcs", "crxUseTerm2", false);
+  const [crxInteraction, setCrxInteraction] = usePersistedPanelState("rcs", "crxInteraction", false);
+  const [crxCovariates, setCrxCovariates] = usePersistedPanelState<string[]>("rcs", "crxCovariates", []);
+
+  // What each mode sends, as typed. The log-scale and data-point toggles only
+  // redraw the curve, and univariate RCS does not send the imputation choice,
+  // so none of those can make a fit out of date.
+  const runParams = mode === "rcs"
+    ? {
+        mode, predictor: rcsPredictor, covariates: rcsCovariates, nKnots: rcsNKnots,
+        refValue: rcsRefValue, outcomeType: rcsOutcomeType,
+        customKnots: rcsKnotMode === "custom" ? rcsCustomKnots : null,
+        interaction: rcsInteractionCov.filter((c) => rcsCovariates.includes(c)),
+        ...(rcsOutcomeType === "cox"
+          ? { duration: rcsCoxDuration, event: rcsCoxEvent }
+          : { outcome: rcsOutcome }),
+      }
+    : {
+        mode, duration: crxDuration, event: crxEvent,
+        terms: crxUseTerm2 ? [crxTerm1, crxTerm2] : [crxTerm1],
+        covariates: crxCovariates,
+        interaction: crxInteraction && crxUseTerm2,
+        imputation,
+      };
+  const {
+    result, setResult, stale, staleReasons: staleWhy,
+  } = useStampedResult<RCSResult>("rcs", runParams);
 
   const sid = session?.session_id ?? "";
 
@@ -728,6 +760,18 @@ export default function RCSPanel() {
           <div className="bg-red-50 text-red-700 p-4 rounded-xl text-sm">{error}</div>
         )}
 
+        {result && stale && (
+          <StaleResultNotice
+            reasons={staleWhy}
+            onRecompute={run}
+            busy={loading}
+            what={mode === "rcs" ? "This spline curve" : "This Cox-RCS model"}
+          />
+        )}
+
+        {/* Covers the table exporter, both TitledPlot exporters and the
+            modebar camera on the Cox-RCS curves. */}
+        <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
         {result && mode === "cox_rcs" && (
           <CoxRCSResultPanel result={result as unknown as CoxRCSResult} />
         )}
@@ -988,6 +1032,7 @@ export default function RCSPanel() {
             </div>
           );
         })()}
+        </StaleGuard>
 
         {!result && !error && !loading && (
           <div className="panel h-64 flex items-center justify-center text-gray-400">

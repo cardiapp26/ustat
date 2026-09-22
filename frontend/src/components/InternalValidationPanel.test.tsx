@@ -1,12 +1,31 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
 import { server } from '../test/server'
 import { clearSession, installSession } from '../test/testUtils'
+import { useStore } from '../store'
 import InternalValidationPanel from './InternalValidationPanel'
 
 afterEach(() => clearSession())
+
+const internalResult = () => ({
+  interpretation: 'Modest overfitting detected',
+  n: 100, n_predictors: 2, n_boot: 200,
+  apparent: { auc: 0.82, calibration_slope: 1.0, brier: 0.15 },
+  optimism: { auc: 0.05 },
+  corrected: { auc: 0.77, calibration_slope: 0.9 },
+  cv: { auc: 0.76, calibration_slope: 0.88, brier: 0.16, folds: 5 },
+  overfit_gap: 0.05,
+})
+
+async function runInternal(user: ReturnType<typeof userEvent.setup>) {
+  const outcomeSelect = screen.getByText('Outcome (binary 0/1)').closest('div')!.querySelector('select')!
+  await user.selectOptions(outcomeSelect, 'DM')
+  await user.click(screen.getByRole('checkbox', { name: 'AGE' }))
+  await user.click(screen.getByRole('button', { name: /run internal validation/i }))
+  await screen.findByText('Modest overfitting detected')
+}
 
 describe('InternalValidationPanel', () => {
   it('renders the tab bar even without an active session', () => {
@@ -291,5 +310,71 @@ describe('InternalValidationPanel', () => {
     await waitFor(() =>
       expect(screen.getByText('At least 100 observations recommended for stable NRI/IDI estimates.'))
         .toBeInTheDocument())
+  })
+
+  it('closes the internal validation export once the data changes under it', async () => {
+    installSession()
+    server.use(http.post('/api/model_diagnostics/model_validation', () => HttpResponse.json(internalResult())))
+    const user = userEvent.setup()
+    render(<InternalValidationPanel />)
+    await runInternal(user)
+
+    const exports = () => [screen.getByRole('button', { name: 'CSV' }), screen.getByRole('button', { name: 'XLSX' })]
+    for (const b of exports()) expect(b).toBeEnabled()
+
+    act(() => useStore.getState().bumpDataVersion())
+
+    expect(await screen.findByText(/Out of date\./)).toBeInTheDocument()
+    for (const b of exports()) expect(b).toBeDisabled()
+  })
+
+  it('closes the NRI / IDI export once the cutoff it was run with changes', async () => {
+    installSession()
+    server.use(
+      http.post('/api/model_diagnostics/nri_idi', () =>
+        HttpResponse.json({
+          n: 400, cutoff_used: 0.5,
+          nri: { estimate: 0.0862, ci_low: 0.0156, ci_high: 0.1615, contribution_events: 0.0525, contribution_non_events: 0.0337 },
+          idi: { estimate: 0.0517, ci_low: 0.0288, ci_high: 0.0761 },
+          reclassification_counts: { up_in_events: 21, down_in_events: 0, up_in_non_events: 18, down_in_non_events: 0 },
+          test: 'NRI + IDI (with bootstrap CI)',
+        }),
+      ),
+    )
+    const user = userEvent.setup()
+    render(<InternalValidationPanel />)
+    await user.click(screen.getByRole('button', { name: /reclassification \(nri \/ idi\)/i }))
+    await user.selectOptions(screen.getByText('Outcome (binary 0/1)').closest('div')!.querySelector('select')!, 'DM')
+    await user.selectOptions(screen.getByText('Old model probability (0–1)').closest('div')!.querySelector('select')!, 'AGE')
+    await user.selectOptions(screen.getByText('New model probability (0–1)').closest('div')!.querySelector('select')!, 'LDL')
+    await user.click(screen.getByRole('button', { name: /run nri \/ idi/i }))
+    await screen.findByText('+0.086')
+    expect(screen.getByRole('button', { name: 'CSV' })).toBeEnabled()
+
+    // Typing a new cutoff is a different analysis, not a display tweak.
+    await user.clear(screen.getByPlaceholderText('0.5'))
+    await user.type(screen.getByPlaceholderText('0.5'), '0.3')
+
+    expect(await screen.findByText(/analysis settings changed/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'CSV' })).toBeDisabled()
+  })
+
+  it('brings a result back current, with its inputs, after a tab switch', async () => {
+    // The result is cached across the switch; inputs that were not would bring
+    // it back stale, and Recompute would send an empty outcome.
+    installSession()
+    server.use(http.post('/api/model_diagnostics/model_validation', () => HttpResponse.json(internalResult())))
+    const user = userEvent.setup()
+    render(<InternalValidationPanel />)
+    await runInternal(user)
+
+    await user.click(screen.getByRole('button', { name: /external \(logistic\)/i }))
+    await user.click(screen.getByRole('button', { name: /internal \(bootstrap \+ cv\)/i }))
+
+    expect(screen.getByText('Modest overfitting detected')).toBeInTheDocument()
+    expect(screen.getByText('Outcome (binary 0/1)').closest('div')!.querySelector('select')!).toHaveValue('DM')
+    expect(screen.getByRole('checkbox', { name: 'AGE' })).toBeChecked()
+    expect(screen.queryByText(/Out of date\./)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'CSV' })).toBeEnabled()
   })
 })

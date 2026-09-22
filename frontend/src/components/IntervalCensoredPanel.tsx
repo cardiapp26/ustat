@@ -3,9 +3,13 @@ import { usePlotLayout } from "../plotStyle";
 import Plot from "../PlotComponent";
 import { analysisCols, isNumericKind, isCategoricalKind, type Session } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
+import { useStampedResult } from "../hooks/useStampedResult";
+import { describeStale } from "../lib/resultStamp";
 import { runIntervalCensored } from "../api";
 import { Tip } from "./Tip";
 import ResultExporter from "./ResultExporter";
+import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
 import { fmtPubP } from "../lib/format";
 import type { Data, Layout } from "plotly.js";
 import type { PlotData, PlotLayout, PlotCaptureHandle } from "../lib/plotTypes";
@@ -40,7 +44,12 @@ export default function IntervalCensoredPanel({ session }: { session: Session })
   const [groupCol, setGroupCol] = usePersistedPanelState<string>("survival", "icGroup", "");
   const [covariates, setCovariates] = usePersistedPanelState<string[]>("survival", "icCovs", []);
 
-  const [result, setResult] = useState<ICResult | null>(null);
+  // Its own cache entry: "survival" holds the settings of every Survival
+  // Advanced sub-panel, and a result stored there would be theirs to overwrite.
+  const runParams = { lowerCol, upperCol, groupCol, covariates };
+  const {
+    result, setResult, stale, staleReasons: staleWhy,
+  } = useStampedResult<ICResult>("interval_censored", runParams);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const plotRef = useRef<PlotCaptureHandle | null>(null);
@@ -150,8 +159,16 @@ export default function IntervalCensoredPanel({ session }: { session: Session })
         {error && <div className="mt-3 rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700">{error}</div>}
       </div>
 
+      {result && stale && (
+        <StaleResultNotice
+          reasons={staleWhy}
+          onRecompute={run}
+          busy={loading}
+          what="This interval-censored analysis"
+        />
+      )}
       {result && (
-        <>
+        <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             {([
               ["N", result.n],
@@ -224,7 +241,7 @@ export default function IntervalCensoredPanel({ session }: { session: Session })
               <p className="text-sm text-gray-700 leading-relaxed">{result.result_text}</p>
             </div>
           )}
-        </>
+        </StaleGuard>
       )}
     </div>
   );

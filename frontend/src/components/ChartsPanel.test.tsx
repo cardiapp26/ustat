@@ -1,9 +1,10 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
 import { server } from '../test/server'
 import { clearSession, installSession, makeSession } from '../test/testUtils'
+import { useStore } from '../store'
 import ChartsPanel from './ChartsPanel'
 
 afterEach(() => clearSession())
@@ -611,6 +612,72 @@ describe('ChartsPanel', () => {
 
     await waitFor(() => expect(screen.getByTestId('plotly-mock')).toBeInTheDocument())
     expect(screen.getByText(/Chart drawn, but the comparisons failed/)).toBeInTheDocument()
+  })
+
+  const chartExports = () => [
+    screen.getByRole('button', { name: '⧉' }),
+    screen.getByRole('button', { name: '↓' }),
+  ]
+
+  it('closes every export of a chart once the data changes under it', async () => {
+    installSession()
+    server.use(
+      http.post('/api/charts/histogram', () =>
+        HttpResponse.json({
+          type: 'histogram', x: 'AGE',
+          bins: [{ x0: 40, x1: 50, count: 1 }, { x0: 50, x1: 60, count: 2 }],
+          kde: [{ x: 45, y: 0.01 }, { x: 55, y: 0.02 }],
+        }),
+      ),
+    )
+    const user = userEvent.setup()
+    render(<ChartsPanel />)
+    await user.click(screen.getByRole('button', { name: /generate chart/i }))
+    await waitFor(() => expect(screen.getByTestId('plotly-mock')).toBeInTheDocument())
+    for (const b of chartExports()) expect(b).toBeEnabled()
+
+    // Restyling the returned figure is not a new request and dates nothing.
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Histogram y axis' }), 'density')
+    expect(screen.queryByText(/Out of date\./)).not.toBeInTheDocument()
+
+    act(() => useStore.getState().bumpDataVersion())
+
+    expect(await screen.findByText(/Out of date\./)).toBeInTheDocument()
+    for (const b of chartExports()) expect(b).toBeDisabled()
+  })
+
+  it('dates the figure with the comparisons drawn on it, not with a redraw of the same request', async () => {
+    installSession()
+    server.use(
+      http.post('/api/charts/boxplot', () => HttpResponse.json(boxplotResponse)),
+      http.post('/api/charts/compare_means', () => HttpResponse.json(compareResponse)),
+    )
+    const user = userEvent.setup()
+    render(<ChartsPanel />)
+    await user.click(screen.getByRole('radio', { name: /boxplot/i }))
+    await user.click(screen.getByRole('checkbox', { name: /significance brackets/i }))
+    const colorSelect = screen.getAllByRole('combobox').find(
+      (el) => el.previousElementSibling?.textContent?.match(/color \/ group/i),
+    )
+    await user.selectOptions(colorSelect!, 'GROUP')
+    await user.click(screen.getByRole('button', { name: /generate chart/i }))
+    await screen.findByText(/adjusted for 1 comparisons/)
+    for (const b of chartExports()) expect(b).toBeEnabled()
+
+    // A violin is the box plot's request drawn another way: still current.
+    await user.click(screen.getByRole('radio', { name: /violin/i }))
+    expect(screen.queryByText(/Out of date\./)).not.toBeInTheDocument()
+    for (const b of chartExports()) expect(b).toBeEnabled()
+
+    // A different test makes the brackets on the figure an old answer.
+    const testSelect = screen.getAllByRole('combobox').find(
+      (el) => el.previousElementSibling?.textContent === 'Test',
+    )
+    await user.selectOptions(testSelect!, 'wilcoxon')
+
+    expect(await screen.findByText(/This set of comparisons was computed before/)).toBeInTheDocument()
+    expect(screen.getByText(/This chart was computed before/)).toBeInTheDocument()
+    for (const b of chartExports()) expect(b).toBeDisabled()
   })
 
   it('renders an error plot and names the whisker', async () => {

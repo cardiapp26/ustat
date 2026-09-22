@@ -1,9 +1,10 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
 import { server } from '../test/server'
 import { clearSession, installSession, makeSession } from '../test/testUtils'
+import { useStore } from '../store'
 import MultiModelPanel from './MultiModelPanel'
 
 afterEach(() => {
@@ -186,6 +187,42 @@ describe('MultiModelPanel', () => {
     await build(user)
 
     await waitFor(() => expect(screen.getByText(/6\.53 \(1\.43–29\.70\)/)).toBeInTheDocument())
+  })
+
+  it('closes the export of the table once the data changes under it', async () => {
+    installSession(session())
+    mockRun()
+    const user = userEvent.setup()
+    render(<MultiModelPanel />)
+    await build(user)
+
+    const csv = await screen.findByRole('button', { name: 'CSV' })
+    expect(csv).toBeEnabled()
+
+    act(() => useStore.getState().bumpDataVersion())
+
+    expect(await screen.findByText(/Out of date\./)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'CSV' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /Copy$/ })).toBeDisabled()
+  })
+
+  it('renaming a model keeps the table current; changing its adjustment set does not', async () => {
+    installSession(session())
+    mockRun()
+    const user = userEvent.setup()
+    render(<MultiModelPanel />)
+    await build(user)
+    await screen.findByRole('button', { name: 'CSV' })
+
+    // A label names the column; it changes no estimate.
+    await user.type(screen.getByRole('textbox', { name: 'Model 2 label' }), ' (full)')
+    expect(screen.queryByText(/Out of date\./)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'CSV' })).toBeEnabled()
+
+    const model2 = screen.getByRole('textbox', { name: 'Model 2 label' }).closest('div')?.parentElement as HTMLElement
+    await user.click(within(model2).getByRole('checkbox', { name: 'age' }))
+    expect(await screen.findByText(/Out of date\./)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'CSV' })).toBeDisabled()
   })
 
   it('shows the backend error rather than an empty table', async () => {

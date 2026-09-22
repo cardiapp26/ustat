@@ -1,8 +1,12 @@
 import { useState } from "react";
 import { useStore, isNumericKind, isCategoricalKind, type Session } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
+import { useStampedResult } from "../hooks/useStampedResult";
 import { runBinomial, runOneProportion, runTwoProportions, runMcNemar, runCochranQ, runMantelHaenszel, runCochranArmitage } from "../api";
 import { fmtP, warningText } from "../lib/format";
+import { describeStale } from "../lib/resultStamp";
+import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
 // ResultExporter available via ResultCard pattern
 
 /** True when a stat-grid key holds a p-value (route through the canonical fmtP). */
@@ -29,6 +33,40 @@ const GUIDANCE: Record<string, { when: string; reading: string }> = {
   mantel_haenszel: { when: "Test association between two binary variables while controlling for a stratifying variable (e.g. hospital site).", reading: "Common OR summarises the overall effect across strata. Homogeneity test checks whether the OR is consistent." },
   cochran_armitage: { when: "Test for a monotone linear trend in the proportion of a binary outcome across 3+ ordered groups (e.g. dose levels 0/1/2/3 vs adverse event).", reading: "Significant Z = the proportion changes linearly across the ordered groups. Sign of Z indicates direction (positive = increasing, negative = decreasing)." },
 };
+
+/** "Low, Medium, High" -> ["Low", "Medium", "High"]; blanks dropped. */
+function parseLevelOrder(raw: string): string[] {
+  return raw.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+interface RunFields {
+  col: string;
+  col2: string;
+  groupCol: string;
+  strataCol: string;
+  nullProp: string;
+  friedmanCols: string[];
+  levelOrder: string;
+}
+
+/**
+ * The inputs the selected test's request is built from, and only those. Every
+ * picker persists across tests, so stamping them all would flag a binomial
+ * result stale for a stratifying variable it never read. Mirrors the branches
+ * in `run`. `nullProp` is stamped as typed, as HypothesisPanel does with `mu`.
+ */
+function runParamsFor(test: string, f: RunFields): Record<string, unknown> {
+  switch (test) {
+    case "binomial":
+    case "one_prop": return { test, col: f.col, nullProp: f.nullProp };
+    case "two_prop": return { test, col: f.col, groupCol: f.groupCol };
+    case "mcnemar": return { test, col: f.col, col2: f.col2 };
+    case "cochran_q": return { test, friedmanCols: f.friedmanCols };
+    case "mantel_haenszel": return { test, col: f.col, col2: f.col2, strataCol: f.strataCol };
+    case "cochran_armitage": return { test, groupCol: f.groupCol, col: f.col, levelOrder: parseLevelOrder(f.levelOrder) };
+    default: return { test };
+  }
+}
 
 interface EffectSize {
   name?: string;
@@ -153,7 +191,10 @@ function CategoricalTestsPanelBody({ session }: { session: Session }) {
   // alphabetically, which reverses e.g. Low/Medium/High and flips the trend.
   const [levelOrder, setLevelOrder] = usePersistedPanelState<string>("categorical_tests", "levelOrder", "");
   const [friedmanCols, setFriedmanCols] = usePersistedPanelState<string[]>("categorical_tests", "friedmanCols", []);
-  const [result, setResult] = useState<CategoricalResult | null>(null);
+  const runParams = runParamsFor(test, { col, col2, groupCol, strataCol, nullProp, friedmanCols, levelOrder });
+  const {
+    result, setResult, stale, staleReasons: staleWhy,
+  } = useStampedResult<CategoricalResult>("categorical_tests", runParams);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -180,7 +221,7 @@ function CategoricalTestsPanelBody({ session }: { session: Session }) {
       else if (test === "cochran_q") res = await runCochranQ({ session_id: sid, columns: friedmanCols });
       else if (test === "mantel_haenszel") res = await runMantelHaenszel({ session_id: sid, row_col: col, col_col: col2, strata_col: strataCol });
       else if (test === "cochran_armitage") {
-        const order = levelOrder.split(",").map((s) => s.trim()).filter(Boolean);
+        const order = parseLevelOrder(levelOrder);
         res = await runCochranArmitage({
           session_id: sid, ordinal_col: groupCol, event_col: col,
           ...(order.length > 0 ? { level_order: order } : {}),
@@ -305,7 +346,19 @@ function CategoricalTestsPanelBody({ session }: { session: Session }) {
             <p className="text-xs text-indigo-800">{g.reading}</p>
           </div>
         )}
-        {result ? <ResultCard result={result} /> : (
+        {result && stale && (
+          <StaleResultNotice
+            reasons={staleWhy}
+            onRecompute={run}
+            busy={loading}
+            what={`This ${result.test ?? "test"}`}
+          />
+        )}
+        {result ? (
+          <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
+            <ResultCard result={result} />
+          </StaleGuard>
+        ) : (
           <div className="panel text-center text-gray-400 py-12">Select a test and configure variables</div>
         )}
       </div>

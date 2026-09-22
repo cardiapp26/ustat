@@ -1,8 +1,9 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
 import { server } from '../test/server'
+import { useStore } from '../store'
 import { clearSession, installSession } from '../test/testUtils'
 import NormalityPanel from './NormalityPanel'
 
@@ -206,5 +207,28 @@ describe('NormalityPanel', () => {
     await user.click(screen.getByRole('button', { name: /assess normality/i }))
 
     await waitFor(() => expect(screen.getByText('No valid variables selected')).toBeInTheDocument())
+  })
+})
+
+describe('NormalityPanel staleness', () => {
+  it('closes the table and plot exports once the data changes under them', async () => {
+    installSession()
+    mockRun()
+    const user = userEvent.setup()
+    render(<NormalityPanel />)
+    await user.click(screen.getByRole('checkbox', { name: 'AGE' }))
+    await user.click(screen.getByRole('button', { name: /assess normality/i }))
+
+    await screen.findByRole('button', { name: 'CSV' })
+    const exports = () => [
+      screen.getByRole('button', { name: 'CSV' }),
+      ...screen.getAllByRole('button', { name: 'PNG 300dpi' }),
+    ]
+    for (const b of exports()) expect(b).toBeEnabled()
+
+    act(() => useStore.getState().bumpDataVersion())
+
+    expect(await screen.findByText(/Out of date\./)).toBeInTheDocument()
+    for (const b of exports()) expect(b).toBeDisabled()
   })
 })

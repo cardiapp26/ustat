@@ -3,11 +3,16 @@ import type { Data, Annotations } from "plotly.js";
 import Plot from "../PlotComponent";
 import { useStore, analysisCols, isCategoricalKind, type Session } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
+import { useStampedResult } from "../hooks/useStampedResult";
 import { runFineGray, runEValue, runLandmark, runKM, runCox, runRMST, runRecurrentLWYY, runCoxHorizons, runCoxUniMulti, runCoxModelSpecs, runFrailty, runMultistate, runDynamicPrediction } from "../api";
 import { usePlotLayout, usePalette, useTraceDefaults } from "../plotStyle";
 import ResultExporter from "./ResultExporter";
 import PlotExporter from "./PlotExporter";
 import TitledPlot from "./TitledPlot";
+import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
+import { describeStale, filterKey } from "../lib/resultStamp";
+import { staleExportTitle } from "../lib/staleGuard";
 import IntervalCensoredPanel from "./IntervalCensoredPanel";
 import { Tip } from "./Tip";
 import ThreeCol from "./ThreeCol";
@@ -292,6 +297,30 @@ function errorDetail(e: unknown): unknown {
 function errorMessage(e: unknown, fallback: string): string {
   const detail = errorDetail(e);
   return typeof detail === "string" ? detail : fallback;
+}
+
+/** Comma-separated positive times ("365, 1825") as numbers. */
+function parseTimes(text: string): number[] {
+  return text.split(",").map((s) => parseFloat(s.trim())).filter((x) => !Number.isNaN(x) && x > 0);
+}
+
+/**
+ * Runs `clear` when `deps` change, and not on mount.
+ *
+ * The results here outlive the panel (they are cached with their stamp), so a
+ * plain `useEffect` that cleared them would throw every one away on each tab
+ * switch: effects run on mount, and on mount nothing has changed.
+ */
+function useClearOnChange(clear: () => void, deps: unknown[]) {
+  const key = JSON.stringify(deps);
+  const prev = useRef(key);
+  useEffect(() => {
+    if (prev.current === key) return;
+    prev.current = key;
+    clear();
+  // `clear` is a fresh closure every render; only `deps` decide when it runs.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
 }
 
 // In the 2-grid layout only the selected method renders, so the Section is
@@ -907,6 +936,17 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
   const fgPlotRef = useRef<PlotCaptureHandle | null>(null);
   const lmPlotRef = useRef<PlotCaptureHandle | null>(null);
 
+  // Missing-data strategy shared by the regression-style survival analyses
+  // (Fine-Gray sHR, landmark Cox, RMST). 'mice' → m datasets pooled (Rubin).
+  const [survImputation, setSurvImputation] = usePersistedPanelState<"listwise" | "mice">("survival", "imputation", "listwise");
+
+  // Every result below is stamped with the settings it was run under, under
+  // its own cache key. Each `*Params` object lists what goes into that
+  // request and nothing that only changes how it is drawn. The imputation
+  // strategy is listed only where it takes effect, which is where the panel
+  // shows its toggle: the backend imputes covariates, so a Fine-Gray without
+  // predictors is the same analysis under either strategy.
+
   // Fine-Gray state
   const [fgDuration, setFgDuration] = usePersistedPanelState("survival", "fgDuration", "");
   const [fgEvent, setFgEvent] = usePersistedPanelState("survival", "fgEvent", "");
@@ -914,17 +954,28 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
   const [fgGroup, setFgGroup] = usePersistedPanelState("survival", "fgGroup", "");
   const [fgPredictors, setFgPredictors] = usePersistedPanelState<string[]>("survival", "fgPredictors", []);
   const [fgPredFilter, setFgPredFilter] = useState("");
-  const [fgResult, setFgResult] = useState<FineGrayResult | null>(null);
+  const fgParams = {
+    fgDuration, fgEvent, fgInterest, fgGroup, fgPredictors,
+    imputation: fgPredictors.length > 0 ? survImputation : null,
+  };
+  const {
+    result: fgResult, setResult: setFgResult, stale: fgStale, staleReasons: fgWhy,
+  } = useStampedResult<FineGrayResult>("survival_fg", fgParams);
   const [fgLoading, setFgLoading] = useState(false);
   const [fgError, setFgError] = useState<string | null>(null);
 
-  // E-value state
-  const [evEst, setEvEst] = useState("");
-  const [evLo, setEvLo] = useState("");
-  const [evHi, setEvHi] = useState("");
+  // E-value state. The inputs are persisted like every other selection here:
+  // the result outlives a tab switch, and inputs that reset to blank would
+  // mark it out of date against settings nobody changed.
+  const [evEst, setEvEst] = usePersistedPanelState("survival", "evEst", "");
+  const [evLo, setEvLo] = usePersistedPanelState("survival", "evLo", "");
+  const [evHi, setEvHi] = usePersistedPanelState("survival", "evHi", "");
   const [evType, setEvType] = usePersistedPanelState("survival", "evType", "OR");
-  const [evP0, setEvP0] = useState("0.1");
-  const [evResult, setEvResult] = useState<EValueResult | null>(null);
+  const [evP0, setEvP0] = usePersistedPanelState("survival", "evP0", "0.1");
+  // Computed from the typed estimate and CI alone: no dataset is read.
+  const {
+    result: evResult, setResult: setEvResult, stale: evStale, staleReasons: evWhy,
+  } = useStampedResult<EValueResult>("survival_evalue", { evEst, evLo, evHi, evType, evP0 }, { dependsOnData: false });
   const [evLoading, setEvLoading] = useState(false);
   const [evError, setEvError] = useState<string | null>(null);
 
@@ -936,12 +987,28 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
   const [kmSurvTimes, setKmSurvTimes] = usePersistedPanelState("survival", "kmSurvTimes", "");          // e.g. "365, 1825"
   const [kmPairwise, setKmPairwise] = usePersistedPanelState("survival", "kmPairwise", false);
   const [kmCorrection, setKmCorrection] = usePersistedPanelState("survival", "kmCorrection", "holm");    // none|bonferroni|holm|bh
-  const [kmResult, setKmResult] = useState<KMResult | null>(null);
+  const kmSurvTimeList = parseTimes(kmSurvTimes);
+  const kmPairwiseOn = kmPairwise && !!kmGroup;
+  // The censor-mark and number-at-risk toggles are left out: they add
+  // drawing extras to the same estimates (fetched lazily, below).
+  const kmParams = {
+    kmDuration, kmEvent, kmGroup, kmStratify,
+    survivalTimes: kmSurvTimeList,
+    pairwise: kmPairwiseOn,
+    correction: kmPairwiseOn ? kmCorrection : null,
+  };
+  const {
+    result: kmResult, setResult: setKmResult, stale: kmStale, staleReasons: kmWhy,
+  } = useStampedResult<KMResult>("survival_km", kmParams);
   const [kmLoading, setKmLoading] = useState(false);
   const [kmError, setKmError] = useState<string | null>(null);
   const kmPlotRef = useRef<HTMLDivElement | null>(null);
-  // KM screening state
-  const [kmScanResult, setKmScanResult] = useState<KMScanRow[]>([]);
+  // KM screening state: one log-rank per categorical column.
+  const kmScanCols = pickCols.filter((c) => isCategoricalKind(c.kind)).map((c) => c.name);
+  const {
+    result: kmScanRows, setResult: setKmScanResult, stale: kmScanStale, staleReasons: kmScanWhy,
+  } = useStampedResult<KMScanRow[]>("survival_km_scan", { kmDuration, kmEvent, kmScanCols });
+  const kmScanResult = kmScanRows ?? [];
   const [kmScanLoading, setKmScanLoading] = useState(false);
   // Group rename state
   const [kmGroupLabels, setKmGroupLabels] = useState<Record<string, string>>({});
@@ -974,11 +1041,21 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
   // Lazily augment the current KM result when the risk-table or censor-mark
   // toggles are switched on after the run: derive tick times from the
   // curves' x-max and re-fetch with risk_times / include_censors so the
-  // extras render without forcing the user to re-run.
+  // extras render without forcing the user to re-run. Not for an out-of-date
+  // result: the re-fetch would compute on the current data and be stamped as
+  // current, while carrying the old run's survival times and pairwise choice.
+  //
+  // Each extra is asked for once per result. A response can come back without
+  // it (no tick times when every curve ends at t=0), and asking the result
+  // that answered for it again would re-fetch forever.
+  const kmExtrasAsked = useRef<{ result: KMResult | null; risk: boolean; censors: boolean }>(
+    { result: null, risk: false, censors: false },
+  );
   useEffect(() => {
-    if (!kmResult?.groups?.length) return;
-    const needRisk = kmRiskTable && !kmResult.groups.some((g) => Array.isArray(g.at_risk));
-    const needCens = kmShowCensors && !kmResult.groups.some((g) => Array.isArray(g.censors));
+    if (kmStale || !kmResult?.groups?.length) return;
+    const asked = kmExtrasAsked.current.result === kmResult ? kmExtrasAsked.current : { risk: false, censors: false };
+    const needRisk = kmRiskTable && !asked.risk && !kmResult.groups.some((g) => Array.isArray(g.at_risk));
+    const needCens = kmShowCensors && !asked.censors && !kmResult.groups.some((g) => Array.isArray(g.censors));
     if (!needRisk && !needCens) return;
     let xmax = 0;
     for (const g of kmResult.groups) {
@@ -997,12 +1074,15 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
           risk_times: kmRiskTable && times.length ? times : undefined,
           include_censors: kmShowCensors,
         });
-        if (!cancelled) setKmResult(res.data);
+        if (cancelled) return;
+        kmExtrasAsked.current = { result: res.data, risk: kmRiskTable, censors: kmShowCensors };
+        setKmResult(res.data);
       } catch { /* non-fatal — extras just won't show */ }
     })();
     return () => { cancelled = true; };
+  // `kmStale` also cancels a re-fetch that is in flight when the data moves.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [kmRiskTable, kmShowCensors, kmResult]);
+  }, [kmRiskTable, kmShowCensors, kmResult, kmStale]);
 
   // Cox state
   const [coxDuration, setCoxDuration] = usePersistedPanelState("survival", "coxDuration", "");
@@ -1011,16 +1091,25 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
   const [coxInteractions, setCoxInteractions] = usePersistedPanelState<Array<[string, string]>>("survival", "coxInteractions", []);
   const [coxIxA, setCoxIxA] = useState<string>("");
   const [coxIxB, setCoxIxB] = useState<string>("");
-  const [coxResult, setCoxResult] = useState<CoxResult | null>(null);
+  // The interaction pickers (coxIxA/B) are not in here: only the added pairs are sent.
+  const {
+    result: coxResult, setResult: setCoxResult, stale: coxStale, staleReasons: coxWhy,
+  } = useStampedResult<CoxResult>("survival_cox", { coxDuration, coxEvent, coxPreds, coxInteractions });
   const [coxLoading, setCoxLoading] = useState(false);
   const [coxError, setCoxError] = useState<string | null>(null);
   // Cox univariable screening state
-  const [coxScanResult, setCoxScanResult] = useState<CoxScanRow[]>([]);
+  const {
+    result: coxScanRows, setResult: setCoxScanResult, stale: coxScanStale, staleReasons: coxScanWhy,
+  } = useStampedResult<CoxScanRow[]>("survival_cox_scan", { coxDuration, coxEvent, coxPreds });
+  const coxScanResult = coxScanRows ?? [];
   const [coxScanLoading, setCoxScanLoading] = useState(false);
-  // Unadjusted-vs-adjusted paired forest (publication "Figure 4")
-  const [coxUMResult, setCoxUMResult] = useState<CoxUniMultiResult | null>(null);
+  // Unadjusted-vs-adjusted paired forest (publication "Figure 4"). The
+  // reference levels are persisted with it: the forest is fitted against them.
+  const [coxUMRefs, setCoxUMRefs] = usePersistedPanelState<Record<string, string>>("survival", "coxUMRefs", {});  // per-predictor reference level
+  const {
+    result: coxUMResult, setResult: setCoxUMResult, stale: coxUMStale, staleReasons: coxUMWhy,
+  } = useStampedResult<CoxUniMultiResult>("survival_cox_um", { coxDuration, coxEvent, coxPreds, references: coxUMRefs });
   const [coxUMLoading, setCoxUMLoading] = useState(false);
-  const [coxUMRefs, setCoxUMRefs] = useState<Record<string, string>>({});  // per-predictor reference level
   const coxUMRef = useRef<HTMLDivElement | null>(null);
 
   const runCoxUMForest = async (refs: Record<string, string>) => {
@@ -1034,6 +1123,18 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
     } catch (e: unknown) { setCoxError(errorMessage(e, "Forest failed")); }
     finally { setCoxUMLoading(false); }
   };
+
+  // A new reference level refits at once, but from here rather than from the
+  // picker's handler: that handler belongs to the render before the level
+  // changed, so a refit launched there would be stamped with the old level
+  // and read as out of date the moment it landed.
+  const coxUMRefitQueued = useRef(false);
+  useEffect(() => {
+    if (!coxUMRefitQueued.current) return;
+    coxUMRefitQueued.current = false;
+    void runCoxUMForest(coxUMRefs);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coxUMRefs]);
 
   // Model-specification (sensitivity) forest: one exposure across adjustment sets.
   type SpecRow = { label: string; covariates: string[] };
@@ -1052,6 +1153,11 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
   const runSpecForest = async () => {
     if (!coxDuration || !coxEvent || !specExposure) { setCoxError("Select duration, event, and an exposure."); return; }
     setSpecLoading(true); setCoxError(null);
+    // Fitted and handed off in one step, so nothing is kept to go stale; but
+    // an edit or filter change while the fit runs would send rows computed
+    // on data that is no longer on screen.
+    const before = useStore.getState();
+    const beforeFilter = filterKey(before.caseFilter);
     try {
       const meta = columns.find((c) => c.name === specExposure);
       const vlab = (code: string | null) => (code == null ? "" : labelFor(meta?.value_labels, code, String(code)));
@@ -1099,6 +1205,11 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
         }
       }
       if (!rows.length) { setCoxError("No model fit — check exposure / covariates."); return; }
+      const now = useStore.getState();
+      if (now.dataVersion !== before.dataVersion || filterKey(now.caseFilter) !== beforeFilter) {
+        setCoxError("The data changed while the models were fitting. Build the forest again.");
+        return;
+      }
       const focusTerm = focusLevel ? terms.find((t) => String(t.category) === String(focusLevel)) : null;
       const exposureLine = focusTerm
         ? `Exposure: ${specExposure} (${vlab(focusTerm.category)} vs ${vlab(focusTerm.reference)})`
@@ -1127,20 +1238,31 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
   const [chCovariates, setChCovariates] = usePersistedPanelState<string[]>("survival", "chCovariates", []);
   const [chHorizons, setChHorizons] = usePersistedPanelState("survival", "chHorizons", "365, 730");
   const [chLabels, setChLabels] = usePersistedPanelState("survival", "chLabels", "1 year, 2 years");
-  const [chResult, setChResult] = useState<CoxHorizonsResult | null>(null);
+  const chHorizonList = parseTimes(chHorizons);
+  const chLabelList = chLabels.split(",").map((s) => s.trim()).filter(Boolean);
+  // Labels are sent only when they pair up with the cut-points; they name the
+  // returned rows, so they belong to the result.
+  const chSentLabels = chLabelList.length === chHorizonList.length ? chLabelList : null;
+  const {
+    result: chResult, setResult: setChResult, stale: chStale, staleReasons: chWhy,
+  } = useStampedResult<CoxHorizonsResult>("survival_horizons", {
+    chDuration, chEvent, chPredictor, chCovariates, horizons: chHorizonList, labels: chSentLabels,
+  });
   const [chLoading, setChLoading] = useState(false);
   const [chError, setChError] = useState<string | null>(null);
-
-  // Missing-data strategy shared by the regression-style survival analyses
-  // (Fine-Gray sHR, landmark Cox, RMST). 'mice' → m datasets pooled (Rubin).
-  const [survImputation, setSurvImputation] = usePersistedPanelState<"listwise" | "mice">("survival", "imputation", "listwise");
 
   // RMST state — Restricted Mean Survival Time (PH-free alternative)
   const [rmstDuration, setRmstDuration] = usePersistedPanelState("survival", "rmstDuration", "");
   const [rmstEvent, setRmstEvent] = usePersistedPanelState("survival", "rmstEvent", "");
   const [rmstGroup, setRmstGroup] = usePersistedPanelState("survival", "rmstGroup", "");
   const [rmstTau, setRmstTau] = usePersistedPanelState<string>("survival", "rmstTau", "");
-  const [rmstResult, setRmstResult] = useState<RmstResult | null>(null);
+  // τ is stamped as typed, as the hypothesis panel does with its μ.
+  const {
+    result: rmstResult, setResult: setRmstResult, stale: rmstStale, staleReasons: rmstWhy,
+  } = useStampedResult<RmstResult>("survival_rmst", {
+    rmstDuration, rmstEvent, rmstGroup, rmstTau,
+    imputation: rmstGroup ? survImputation : null,
+  });
   const [rmstLoading, setRmstLoading] = useState(false);
   const [rmstError, setRmstError] = useState<string | null>(null);
   const rmstPlotRef = useRef<PlotCaptureHandle | null>(null);
@@ -1153,7 +1275,11 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
   const [frCluster, setFrCluster] = usePersistedPanelState("survival", "frailtyCluster", "");
   const [frPredictors, setFrPredictors] = usePersistedPanelState<string[]>("survival", "frailtyPredictors", []);
   const [frDist, setFrDist] = usePersistedPanelState("survival", "frailtyDistribution", "gamma");
-  const [frailtyResult, setFrailtyResult] = useState<FrailtyResult | null>(null);
+  const {
+    result: frailtyResult, setResult: setFrailtyResult, stale: frStale, staleReasons: frWhy,
+  } = useStampedResult<FrailtyResult>("survival_frailty", {
+    frDuration, frEvent, frCluster, frPredictors, frDist, imputation: survImputation,
+  });
   const [frLoading, setFrLoading] = useState(false);
   const [frError, setFrError] = useState<string | null>(null);
   const frPlotRef = useRef<PlotCaptureHandle | null>(null);
@@ -1173,8 +1299,16 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
   const [msHorizon, setMsHorizon] = usePersistedPanelState("survival", "msHorizon", "5");
   const [msState, setMsState] = usePersistedPanelState("survival", "msCurrentState", "0");
   const [msBootstrap, setMsBootstrap] = usePersistedPanelState<boolean>("survival", "msBootstrap", false);
-  const [msResult, setMsResult] = useState<MultistateResult | null>(null);
-  const [dpResult, setDpResult] = useState<DynamicPredictionResult | null>(null);
+  const msColumns = { msId, msFrom, msTo, msEntry, msExit, msEvent, msPredictors };
+  const {
+    result: msResult, setResult: setMsResult, stale: msStale, staleReasons: msWhy,
+  } = useStampedResult<MultistateResult>("survival_multistate", { ...msColumns, imputation: survImputation });
+  // The prediction request carries no imputation strategy.
+  const {
+    result: dpResult, setResult: setDpResult, stale: dpStale, staleReasons: dpWhy,
+  } = useStampedResult<DynamicPredictionResult>("survival_dynamic_prediction", {
+    ...msColumns, msLandmark, msHorizon, msState, msBootstrap,
+  });
   const [msLoading, setMsLoading] = useState(false);
   const [dpLoading, setDpLoading] = useState(false);
   const [msError, setMsError] = useState<string | null>(null);
@@ -1187,7 +1321,9 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
   const [lwEvent, setLwEvent] = usePersistedPanelState("survival", "lwEvent", "");
   const [lwPreds, setLwPreds] = usePersistedPanelState<string[]>("survival", "lwPreds", []);
   const [lwGroup, setLwGroup] = usePersistedPanelState("survival", "lwGroup", "");
-  const [lwResult, setLwResult] = useState<LwyyResult | null>(null);
+  const {
+    result: lwResult, setResult: setLwResult, stale: lwStale, staleReasons: lwWhy,
+  } = useStampedResult<LwyyResult>("survival_lwyy", { lwId, lwStart, lwStop, lwEvent, lwPreds, lwGroup });
   const [lwLoading, setLwLoading] = useState(false);
   const [lwError, setLwError] = useState<string | null>(null);
   const lwPlotRef = useRef<PlotCaptureHandle | null>(null);
@@ -1198,7 +1334,12 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
   const [lmTime, setLmTime] = usePersistedPanelState("survival", "lmTime", "");
   const [lmGroup, setLmGroup] = usePersistedPanelState("survival", "lmGroup", "");
   const [lmPreds, setLmPreds] = usePersistedPanelState<string[]>("survival", "lmPreds", []);
-  const [lmResult, setLmResult] = useState<LandmarkResult | null>(null);
+  const {
+    result: lmResult, setResult: setLmResult, stale: lmStale, staleReasons: lmWhy,
+  } = useStampedResult<LandmarkResult>("survival_landmark", {
+    lmDuration, lmEvent, lmTime, lmGroup, lmPreds,
+    imputation: lmPreds.length > 0 ? survImputation : null,
+  });
   const [lmLoading, setLmLoading] = useState(false);
   const [lmError, setLmError] = useState<string | null>(null);
 
@@ -1287,11 +1428,11 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
   // ── Auto-clear stale results when their inputs change. Without this the
   // user perceives a re-Run as 'nothing happened' because the previous
   // result panel stays on screen even when the new fetch fails or returns
-  // a near-identical table.
-  useEffect(() => { setFgResult(null); setFgError(null); }, [fgDuration, fgEvent, fgInterest, fgGroup, fgPredictors]);
-  useEffect(() => { setRmstResult(null); setRmstError(null); }, [rmstDuration, rmstEvent, rmstGroup, rmstTau]);
-  useEffect(() => { setLwResult(null); setLwError(null); }, [lwId, lwStart, lwStop, lwEvent, lwPreds, lwGroup]);
-  useEffect(() => { setFrailtyResult(null); setFrError(null); }, [frDuration, frEvent, frCluster, frPredictors, frDist]);
+  // a near-identical table. Not on mount: see useClearOnChange.
+  useClearOnChange(() => { setFgResult(null); setFgError(null); }, [fgDuration, fgEvent, fgInterest, fgGroup, fgPredictors]);
+  useClearOnChange(() => { setRmstResult(null); setRmstError(null); }, [rmstDuration, rmstEvent, rmstGroup, rmstTau]);
+  useClearOnChange(() => { setLwResult(null); setLwError(null); }, [lwId, lwStart, lwStop, lwEvent, lwPreds, lwGroup]);
+  useClearOnChange(() => { setFrailtyResult(null); setFrError(null); }, [frDuration, frEvent, frCluster, frPredictors, frDist]);
 
   // ── Multi-state handlers. Both endpoints share the same long-format columns.
   const msColumnsPayload = () => ({
@@ -1335,7 +1476,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
     finally { setDpLoading(false); }
   };
 
-  useEffect(() => {
+  useClearOnChange(() => {
     setMsResult(null); setDpResult(null); setMsError(null);
   }, [msId, msFrom, msTo, msEntry, msExit, msEvent, msPredictors]);
 
@@ -1358,10 +1499,116 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
         : (typeof detail === "string" ? detail : msg));
     } finally { setLwLoading(false); }
   };
-  useEffect(() => { setEvResult(null); setEvError(null); }, [evEst, evLo, evHi, evType, evP0]);
-  useEffect(() => { setLmResult(null); setLmError(null); }, [lmDuration, lmEvent, lmTime, lmGroup, lmPreds]);
-  useEffect(() => { setKmResult(null); setKmError(null); }, [kmDuration, kmEvent, kmGroup, kmStratify]);
-  useEffect(() => { setCoxResult(null); setCoxError(null); }, [coxDuration, coxEvent, coxPreds, coxInteractions]);
+  useClearOnChange(() => { setEvResult(null); setEvError(null); }, [evEst, evLo, evHi, evType, evP0]);
+  useClearOnChange(() => { setLmResult(null); setLmError(null); }, [lmDuration, lmEvent, lmTime, lmGroup, lmPreds]);
+  useClearOnChange(() => { setKmResult(null); setKmError(null); }, [kmDuration, kmEvent, kmGroup, kmStratify]);
+  useClearOnChange(() => { setCoxResult(null); setCoxError(null); }, [coxDuration, coxEvent, coxPreds, coxInteractions]);
+
+  // ── Kaplan-Meier, Cox and time-horizon handlers. Named so the out-of-date
+  // notice can offer the same run as its Recompute button.
+  const handleKM = async () => {
+    if (!kmDuration || !kmEvent) { setKmError("Select duration and event columns"); return; }
+    setKmResult(null); setKmError(null); setKmLoading(true);
+    try {
+      const res = await runKM({
+        session_id: sid, duration_col: kmDuration, event_col: kmEvent,
+        group_col: kmGroup || undefined, stratify_col: kmStratify || undefined,
+        survival_times: kmSurvTimeList.length ? kmSurvTimeList : undefined,
+        pairwise: kmPairwiseOn,
+        pairwise_correction: kmCorrection,
+        include_censors: kmShowCensors,
+      });
+      setKmResult(res.data);
+    } catch (e: unknown) { setKmError(errorMessage(e, "KM failed")); }
+    finally { setKmLoading(false); }
+  };
+
+  const handleKmScan = async () => {
+    if (kmScanCols.length === 0) return;
+    setKmScanLoading(true);
+    const results: KMScanRow[] = [];
+    for (const col of kmScanCols) {
+      try {
+        const res = await runKM({ session_id: sid, duration_col: kmDuration, event_col: kmEvent, group_col: col });
+        results.push({
+          variable: col,
+          groups: res.data.groups?.length ?? 0,
+          logrank_p: res.data.logrank?.p ?? null,
+          chi2: res.data.logrank?.chi2 ?? null,
+        });
+      } catch { results.push({ variable: col, groups: null, logrank_p: null, chi2: null }); }
+    }
+    results.sort((a, b) => (a.logrank_p ?? 1) - (b.logrank_p ?? 1));
+    setKmScanResult(results);
+    setKmScanLoading(false);
+  };
+
+  const handleCox = async () => {
+    if (!coxDuration || !coxEvent || coxPreds.length === 0) { setCoxError("Select duration, event, and at least one predictor"); return; }
+    setCoxResult(null); setCoxError(null); setCoxLoading(true);
+    try {
+      const res = await runCox({
+        session_id: sid,
+        duration_col: coxDuration,
+        event_col: coxEvent,
+        predictors: coxPreds,
+        interactions: coxInteractions.length > 0 ? coxInteractions : undefined,
+      });
+      setCoxResult(res.data);
+    } catch (e: unknown) { setCoxError(errorMessage(e, "Cox failed")); }
+    finally { setCoxLoading(false); }
+  };
+
+  const handleCoxScan = async () => {
+    setCoxScanLoading(true);
+    const results: CoxScanRow[] = [];
+    for (const pred of coxPreds) {
+      try {
+        const res = await runCox({ session_id: sid, duration_col: coxDuration, event_col: coxEvent, predictors: [pred] });
+        const coef = res.data.coefficients?.[0];
+        results.push({
+          variable: pred,
+          hr: coef?.hr ?? null,
+          hr_ci_low: coef?.hr_ci_low ?? null,
+          hr_ci_high: coef?.hr_ci_high ?? null,
+          p: coef?.p ?? null,
+          n: res.data.n ?? null,
+        });
+      } catch { results.push({ variable: pred, hr: null, hr_ci_low: null, hr_ci_high: null, p: null, n: null }); }
+    }
+    results.sort((a, b) => (a.p ?? 1) - (b.p ?? 1));
+    setCoxScanResult(results);
+    setCoxScanLoading(false);
+  };
+
+  const handleHorizons = async () => {
+    if (!chDuration || !chEvent || !chPredictor) {
+      setChError("Select duration, event, and a predictor.");
+      return;
+    }
+    if (chHorizonList.length === 0) {
+      setChError("Enter at least one positive horizon cut-point.");
+      return;
+    }
+    setChResult(null); setChError(null); setChLoading(true);
+    try {
+      const res = await runCoxHorizons({
+        session_id: sid,
+        duration_col: chDuration,
+        event_col: chEvent,
+        predictor: chPredictor,
+        covariates: chCovariates.length ? chCovariates : undefined,
+        horizons: chHorizonList,
+        horizon_labels: chSentLabels ?? undefined,
+        include_full: true,
+      });
+      setChResult(res.data);
+    } catch (e: unknown) {
+      setChError(errorMessage(e, "Time-horizon analysis failed"));
+    } finally {
+      setChLoading(false);
+    }
+  };
 
   const coxUMReady = (coxUMResult?.rows?.length ?? 0) > 0 ? coxUMResult : null;
   const chForestRows = chResult?.forest_rows ?? [];
@@ -1389,6 +1636,11 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
       {/* ── Fine-Gray ── */}
       {activeMethod === "finegray" && (
       <Section title="Fine-Gray Competing Risks" description="Cumulative incidence function with competing events (Aalen-Johansen)">
+        {fgResult && fgStale && (
+          <StaleResultNotice reasons={fgWhy} onRecompute={handleFineGray} busy={fgLoading} what="This Fine-Gray analysis" />
+        )}
+        {/* The guard spans the inputs too; they hold no export control. */}
+        <StaleGuard stale={fgStale} reason={describeStale(fgWhy)}>
         <ThreeCol
           storageKey="SurvivalAdvanced.FineGray"
           left={
@@ -1525,6 +1777,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
             </>
           }
         />
+        </StaleGuard>
       </Section>
       )}
 
@@ -1532,6 +1785,10 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
       {activeMethod === "rmst" && (
       <Section title="Restricted Mean Survival Time (RMST)"
         description="Average event-free time over a fixed horizon τ — PH-free alternative to the hazard ratio. Robust when curves cross or the proportional-hazards assumption fails.">
+        {rmstResult && rmstStale && (
+          <StaleResultNotice reasons={rmstWhy} onRecompute={handleRMST} busy={rmstLoading} what="This RMST analysis" />
+        )}
+        <StaleGuard stale={rmstStale} reason={describeStale(rmstWhy)}>
         <ThreeCol
           storageKey="SurvivalAdvanced.RMST"
           left={
@@ -1635,6 +1892,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
             </>
           }
         />
+        </StaleGuard>
       </Section>
       )}
 
@@ -1642,6 +1900,10 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
       {activeMethod === "frailty" && (
       <Section title="Shared Frailty Model"
         description="Cox model with a shared random effect (frailty) per cluster — for multi-centre trials, repeated measures within families, or any design where subjects are nested. θ quantifies the within-cluster dependence remaining after the fixed effects.">
+        {frailtyResult && frStale && (
+          <StaleResultNotice reasons={frWhy} onRecompute={handleFrailty} busy={frLoading} what="This frailty model" />
+        )}
+        <StaleGuard stale={frStale} reason={describeStale(frWhy)}>
         <ThreeCol
           storageKey="SurvivalAdvanced.Frailty"
           left={
@@ -1779,6 +2041,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
             </>
           }
         />
+        </StaleGuard>
       </Section>
       )}
 
@@ -1796,6 +2059,12 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
           and died at t=5 contributes two rows — <code>0→1</code> (entry 0, exit 2, event 1)
           and <code>1→2</code> (entry 2, exit 5, event 1).
         </div>
+        {msResult && msStale && (
+          <StaleResultNotice reasons={msWhy} onRecompute={handleMultistate} busy={msLoading} what="This multi-state fit" />
+        )}
+        {dpResult && dpStale && (
+          <StaleResultNotice reasons={dpWhy} onRecompute={handleDynamicPrediction} busy={dpLoading} what="This landmark prediction" />
+        )}
         <ThreeCol
           storageKey="SurvivalAdvanced.Multistate"
           left={
@@ -1841,6 +2110,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
           }
           middle={
             dpResult?.state_probabilities && dpResult.times ? (
+              <StaleGuard stale={dpStale} reason={describeStale(dpWhy)}>
               <TitledPlot
                 plotRefOut={dpPlotRef}
                 storageKey="surv:multistate"
@@ -1862,6 +2132,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
                 defaultXAxis="Time"
                 defaultYAxis="Probability"
               />
+              </StaleGuard>
             ) : (
               <div className="h-full min-h-[300px] flex items-center justify-center border-2 border-dashed border-gray-200 rounded-xl">
                 <p className="text-xs text-gray-400 text-center px-6">
@@ -1872,6 +2143,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
           }
           right={
             <>
+              <StaleGuard stale={msStale} reason={describeStale(msWhy)}>
               {msResult?.results && (
                 <div className="space-y-3">
                   <p className="text-xs font-semibold text-gray-600">
@@ -1925,8 +2197,10 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
                 </div>
               )}
               <ResultBlock result={msResult} />
+              </StaleGuard>
 
               {dpResult && (
+                <StaleGuard stale={dpStale} reason={describeStale(dpWhy)}>
                 <div className="space-y-2 pt-2 border-t border-gray-200">
                   <p className="text-xs font-semibold text-gray-600">
                     Landmark prediction — {dpResult.n_at_risk ?? "—"} at risk in state {dpResult.current_state}
@@ -1952,6 +2226,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
                   )}
                   <ResultBlock result={dpResult} />
                 </div>
+                </StaleGuard>
               )}
             </>
           }
@@ -1963,6 +2238,10 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
       {activeMethod === "lwyy" && (
       <Section title="Recurrent Events (LWYY)"
         description="Modified Andersen-Gill model with Lin-Wei-Yang-Ying cluster-robust SE for recurrent events (e.g. repeat hospitalisations). Counting-process (start, stop, event] intervals; exp(β) = rate ratio.">
+        {lwResult && lwStale && (
+          <StaleResultNotice reasons={lwWhy} onRecompute={handleLWYY} busy={lwLoading} what="This LWYY model" />
+        )}
+        <StaleGuard stale={lwStale} reason={describeStale(lwWhy)}>
         <ThreeCol
           storageKey="SurvivalAdvanced.LWYY"
           left={
@@ -2050,6 +2329,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
             </>
           }
         />
+        </StaleGuard>
       </Section>
       )}
 
@@ -2096,6 +2376,10 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
           <RunButton onClick={handleEValue} loading={evLoading} label="Calculate E-value" />
           {evError && <p className="text-xs text-red-500">{evError}</p>}
         </div>
+        {evResult && evStale && (
+          <StaleResultNotice reasons={evWhy} onRecompute={handleEValue} busy={evLoading} what="This E-value" />
+        )}
+        <StaleGuard stale={evStale} reason={describeStale(evWhy)}>
         {evResult && (
           <div className="grid grid-cols-2 gap-3">
             <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-4 py-3 text-center">
@@ -2114,12 +2398,17 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
           </div>
         )}
         <ResultBlock result={evResult} />
+        </StaleGuard>
       </Section>
       )}
 
       {/* ── Landmark ── */}
       {activeMethod === "landmark" && (
       <Section title="Landmark Survival Analysis" description="Survival analysis conditional on surviving beyond a landmark time point">
+        {lmResult && lmStale && (
+          <StaleResultNotice reasons={lmWhy} onRecompute={handleLandmark} busy={lmLoading} what="This landmark analysis" />
+        )}
+        <StaleGuard stale={lmStale} reason={describeStale(lmWhy)}>
         <ThreeCol
           storageKey="SurvivalAdvanced.Landmark"
           left={
@@ -2198,6 +2487,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
             </>
           }
         />
+        </StaleGuard>
       </Section>
       )}
 
@@ -2244,48 +2534,13 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
         </div>
 
         <div className="flex items-center gap-3 flex-wrap">
-          <RunButton onClick={async () => {
-            if (!kmDuration || !kmEvent) { setKmError("Select duration and event columns"); return; }
-            setKmResult(null); setKmError(null); setKmLoading(true);
-            try {
-              const survTimes = kmSurvTimes.split(",").map((s) => parseFloat(s.trim())).filter((x) => !Number.isNaN(x) && x > 0);
-              const res = await runKM({
-                session_id: sid, duration_col: kmDuration, event_col: kmEvent,
-                group_col: kmGroup || undefined, stratify_col: kmStratify || undefined,
-                survival_times: survTimes.length ? survTimes : undefined,
-                pairwise: kmPairwise && !!kmGroup,
-                pairwise_correction: kmCorrection,
-                include_censors: kmShowCensors,
-              });
-              setKmResult(res.data);
-            } catch (e: unknown) { setKmError(errorMessage(e, "KM failed")); }
-            finally { setKmLoading(false); }
-          }} loading={kmLoading} label="Run Kaplan-Meier" />
+          <RunButton onClick={handleKM} loading={kmLoading} label="Run Kaplan-Meier" />
 
           {/* Log-rank screening button */}
           {kmDuration && kmEvent && (
             <button
               disabled={kmScanLoading}
-              onClick={async () => {
-                const catCols = pickCols.filter((c) => isCategoricalKind(c.kind)).map((c) => c.name);
-                if (catCols.length === 0) return;
-                setKmScanLoading(true);
-                const results: KMScanRow[] = [];
-                for (const col of catCols) {
-                  try {
-                    const res = await runKM({ session_id: sid, duration_col: kmDuration, event_col: kmEvent, group_col: col });
-                    results.push({
-                      variable: col,
-                      groups: res.data.groups?.length ?? 0,
-                      logrank_p: res.data.logrank?.p ?? null,
-                      chi2: res.data.logrank?.chi2 ?? null,
-                    });
-                  } catch { results.push({ variable: col, groups: null, logrank_p: null, chi2: null }); }
-                }
-                results.sort((a, b) => (a.logrank_p ?? 1) - (b.logrank_p ?? 1));
-                setKmScanResult(results);
-                setKmScanLoading(false);
-              }}
+              onClick={handleKmScan}
               className="px-3 py-1.5 text-xs font-medium border border-indigo-300 text-indigo-600 rounded-lg hover:bg-indigo-50 disabled:opacity-50 transition-colors"
             >
               {kmScanLoading ? "Scanning…" : "🔍 Log-rank Scan"}
@@ -2295,11 +2550,15 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
         </div>
 
         {/* KM scan results */}
+        {kmScanResult.length > 0 && kmScanStale && (
+          <StaleResultNotice reasons={kmScanWhy} onRecompute={handleKmScan} busy={kmScanLoading} what="This log-rank scan" />
+        )}
         {kmScanResult.length > 0 && (
+          <StaleGuard stale={kmScanStale} reason={describeStale(kmScanWhy)}>
           <div className="rounded-lg border border-gray-200 overflow-auto">
             <div className="bg-gray-50 px-3 py-2 border-b border-gray-200 flex items-center justify-between">
               <p className="text-xs font-semibold text-gray-600">Log-rank Scan — All Categorical Variables</p>
-              <button onClick={() => setKmScanResult([])} className="text-[10px] text-gray-400 hover:text-red-500">✕ Close</button>
+              <button onClick={() => setKmScanResult(null)} className="text-[10px] text-gray-400 hover:text-red-500">✕ Close</button>
             </div>
             <table className="text-xs w-full">
               <thead><tr className="bg-gray-50">
@@ -2320,7 +2579,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
                     </td>
                     <td className="px-3 py-1">
                       {r.logrank_p !== null && r.logrank_p < 0.05 && (
-                        <button onClick={() => { setKmGroup(r.variable); setKmScanResult([]); }}
+                        <button onClick={() => { setKmGroup(r.variable); setKmScanResult(null); }}
                           className="text-[10px] text-indigo-500 hover:text-indigo-700 underline">
                           Add to chart
                         </button>
@@ -2331,7 +2590,13 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
               </tbody>
             </table>
           </div>
+          </StaleGuard>
         )}
+        {kmResult && kmStale && (
+          <StaleResultNotice reasons={kmWhy} onRecompute={handleKM} busy={kmLoading} what="This Kaplan-Meier analysis" />
+        )}
+        {/* The curves, their exporter and the stratified grid below. */}
+        <StaleGuard stale={kmStale} reason={describeStale(kmWhy)}>
         {kmResult?.groups && (() => {
           // Resolve group display name: custom rename > value_labels > raw value
           const groupColMeta = columns.find((c) => c.name === kmGroup);
@@ -2944,6 +3209,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
             </div>
           );
         })()}
+        </StaleGuard>
       </Section>
       )}
 
@@ -3059,47 +3325,13 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
         )}
 
         <div className="flex items-center gap-3 flex-wrap">
-          <RunButton onClick={async () => {
-            if (!coxDuration || !coxEvent || coxPreds.length === 0) { setCoxError("Select duration, event, and at least one predictor"); return; }
-            setCoxResult(null); setCoxError(null); setCoxLoading(true);
-            try {
-              const res = await runCox({
-                session_id: sid,
-                duration_col: coxDuration,
-                event_col: coxEvent,
-                predictors: coxPreds,
-                interactions: coxInteractions.length > 0 ? coxInteractions : undefined,
-              });
-              setCoxResult(res.data);
-            } catch (e: unknown) { setCoxError(errorMessage(e, "Cox failed")); }
-            finally { setCoxLoading(false); }
-          }} loading={coxLoading} label="Run Cox Regression" />
+          <RunButton onClick={handleCox} loading={coxLoading} label="Run Cox Regression" />
 
           {/* Univariable screening button */}
           {coxDuration && coxEvent && coxPreds.length > 0 && (
             <button
               disabled={coxScanLoading}
-              onClick={async () => {
-                setCoxScanLoading(true);
-                const results: CoxScanRow[] = [];
-                for (const pred of coxPreds) {
-                  try {
-                    const res = await runCox({ session_id: sid, duration_col: coxDuration, event_col: coxEvent, predictors: [pred] });
-                    const coef = res.data.coefficients?.[0];
-                    results.push({
-                      variable: pred,
-                      hr: coef?.hr ?? null,
-                      hr_ci_low: coef?.hr_ci_low ?? null,
-                      hr_ci_high: coef?.hr_ci_high ?? null,
-                      p: coef?.p ?? null,
-                      n: res.data.n ?? null,
-                    });
-                  } catch { results.push({ variable: pred, hr: null, hr_ci_low: null, hr_ci_high: null, p: null, n: null }); }
-                }
-                results.sort((a, b) => (a.p ?? 1) - (b.p ?? 1));
-                setCoxScanResult(results);
-                setCoxScanLoading(false);
-              }}
+              onClick={handleCoxScan}
               className="px-3 py-1.5 text-xs font-medium border border-indigo-300 text-indigo-600 rounded-lg hover:bg-indigo-50 disabled:opacity-50 transition-colors"
             >
               {coxScanLoading ? "Scanning…" : "🔍 Univariable Scan"}
@@ -3121,7 +3353,11 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
           {coxError && <p className="text-xs text-red-500">{coxError}</p>}
         </div>
 
+        {coxUMReady && coxUMStale && (
+          <StaleResultNotice reasons={coxUMWhy} onRecompute={() => runCoxUMForest(coxUMRefs)} busy={coxUMLoading} what="This paired forest" />
+        )}
         {coxUMReady && (
+          <StaleGuard stale={coxUMStale} reason={describeStale(coxUMWhy)}>
           <CoxUniMultiForest
             result={coxUMReady}
             /* full column list — used only to resolve value_labels for the saved result */
@@ -3132,11 +3368,12 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
             onChangeRef={(predictor, level) => {
               const next = { ...coxUMRefs };
               if (level) next[predictor] = level; else delete next[predictor];
+              coxUMRefitQueued.current = true;
               setCoxUMRefs(next);
-              runCoxUMForest(next);
             }}
             onClose={() => setCoxUMResult(null)}
           />
+          </StaleGuard>
         )}
 
         {/* Model-specification (sensitivity) forest builder — always visible so
@@ -3214,11 +3451,15 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
         )}
 
         {/* Cox univariable scan results */}
+        {coxScanResult.length > 0 && coxScanStale && (
+          <StaleResultNotice reasons={coxScanWhy} onRecompute={handleCoxScan} busy={coxScanLoading} what="This univariable scan" />
+        )}
         {coxScanResult.length > 0 && (
+          <StaleGuard stale={coxScanStale} reason={describeStale(coxScanWhy)}>
           <div className="rounded-lg border border-gray-200 overflow-auto">
             <div className="bg-gray-50 px-3 py-2 border-b border-gray-200 flex items-center justify-between">
               <p className="text-xs font-semibold text-gray-600">Univariable Cox Scan — One Predictor at a Time</p>
-              <button onClick={() => setCoxScanResult([])} className="text-[10px] text-gray-400 hover:text-red-500">✕ Close</button>
+              <button onClick={() => setCoxScanResult(null)} className="text-[10px] text-gray-400 hover:text-red-500">✕ Close</button>
             </div>
             <table className="text-xs w-full">
               <thead><tr className="bg-gray-50">
@@ -3252,9 +3493,14 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
               </tfoot>
             </table>
           </div>
+          </StaleGuard>
         )}
 
+        {coxResult && coxStale && (
+          <StaleResultNotice reasons={coxWhy} onRecompute={handleCox} busy={coxLoading} what="This Cox model" />
+        )}
         {coxResult?.coefficients && (
+          <StaleGuard stale={coxStale} reason={describeStale(coxWhy)}>
           <div className="overflow-auto rounded-lg border border-gray-200">
             <table className="text-xs w-full">
               <thead>
@@ -3295,6 +3541,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
               </tbody>
             </table>
           </div>
+          </StaleGuard>
         )}
       </Section>
       )}
@@ -3352,43 +3599,14 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
         </div>
 
         <div className="flex items-center gap-3 flex-wrap mt-2">
-          <RunButton
-            loading={chLoading}
-            label="Run horizons"
-            onClick={async () => {
-              if (!chDuration || !chEvent || !chPredictor) {
-                setChError("Select duration, event, and a predictor.");
-                return;
-              }
-              const horizons = chHorizons.split(",").map((s) => parseFloat(s.trim())).filter((x) => !Number.isNaN(x) && x > 0);
-              if (horizons.length === 0) {
-                setChError("Enter at least one positive horizon cut-point.");
-                return;
-              }
-              const labels = chLabels.split(",").map((s) => s.trim()).filter(Boolean);
-              setChResult(null); setChError(null); setChLoading(true);
-              try {
-                const res = await runCoxHorizons({
-                  session_id: sid,
-                  duration_col: chDuration,
-                  event_col: chEvent,
-                  predictor: chPredictor,
-                  covariates: chCovariates.length ? chCovariates : undefined,
-                  horizons,
-                  horizon_labels: labels.length === horizons.length ? labels : undefined,
-                  include_full: true,
-                });
-                setChResult(res.data);
-              } catch (e: unknown) {
-                setChError(errorMessage(e, "Time-horizon analysis failed"));
-              } finally {
-                setChLoading(false);
-              }
-            }}
-          />
+          <RunButton loading={chLoading} label="Run horizons" onClick={handleHorizons} />
           {chResult && chForestRows.length > 0 && (
+            // A direct hand-off, outside any <StaleGuard>: close it by hand.
             <button
+              disabled={chStale}
+              title={chStale ? staleExportTitle(describeStale(chWhy)) : undefined}
               onClick={() => {
+                if (chStale) return;
                 const cov = (chResult.covariates ?? []) as string[];
                 // Keep p + event counts in the figure — richer than the
                 // bare reference look. Right header reflects that content.
@@ -3402,7 +3620,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
                 setVisualSubTab("forest");
                 setActiveTab("visual");
               }}
-              className="px-4 py-2 text-sm font-medium bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
+              className="px-4 py-2 text-sm font-medium bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-40 disabled:hover:bg-emerald-600 transition-colors"
             >
               → Send to Forest Builder
             </button>
@@ -3411,7 +3629,11 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
 
         {chError && <p className="text-sm text-red-500 mt-2">{chError}</p>}
 
+        {chResult && chStale && (
+          <StaleResultNotice reasons={chWhy} onRecompute={handleHorizons} busy={chLoading} what="This time-horizon analysis" />
+        )}
         {chResult && (
+          <StaleGuard stale={chStale} reason={describeStale(chWhy)}>
           <div className="mt-3 space-y-3">
             <div className="overflow-x-auto rounded-xl border border-gray-200">
               <table className="w-full text-xs">
@@ -3445,6 +3667,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
               </div>
             )}
           </div>
+          </StaleGuard>
         )}
       </Section>
       )}

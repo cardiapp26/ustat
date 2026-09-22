@@ -2,9 +2,14 @@ import { useState, useRef, type ReactNode } from "react";
 import { useStore } from "../store";
 import { usePlotLayout, usePalette } from "../plotStyle";
 import { runMetaAnalyze, runMetaSubgroup, runMetaRegression, runMetaBias } from "../api";
+import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
+import { useStampedResult } from "../hooks/useStampedResult";
+import { describeStale } from "../lib/resultStamp";
 import { Tip } from "./Tip";
 import TitledPlot from "./TitledPlot";
 import ResultExporter from "./ResultExporter";
+import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
 import { fmtP } from "../lib/format";
 import type { PlotData, PlotCaptureHandle } from "../lib/plotTypes";
 
@@ -82,12 +87,14 @@ export default function MetaPanel() {
   const bubbleRef = useRef<PlotCaptureHandle | null>(null);
   const funnelRef = useRef<PlotCaptureHandle | null>(null);
 
-  const [measure, setMeasure] = useState("OR");
-  const [tau2Method, setTau2Method] = useState("DL");
-  const [inputType, setInputType] = useState<InputType>("ci");
-  const [rows, setRows] = useState<Row[]>(SAMPLE);
-  const [mode, setMode] = useState<Mode>("analyze");
-  const [result, setResult] = useState<MetaResult | null>(null);
+  // Persisted with the result. The study table is the whole input here, and
+  // `mode` decides how the result is drawn: a restored bias result read under
+  // the default "analyze" layout would throw, as it carries no pooled estimate.
+  const [measure, setMeasure] = usePersistedPanelState("meta", "measure", "OR");
+  const [tau2Method, setTau2Method] = usePersistedPanelState("meta", "tau2Method", "DL");
+  const [inputType, setInputType] = usePersistedPanelState<InputType>("meta", "inputType", "ci");
+  const [rows, setRows] = usePersistedPanelState<Row[]>("meta", "rows", SAMPLE);
+  const [mode, setMode] = usePersistedPanelState<Mode>("meta", "mode", "analyze");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pasteOpen, setPasteOpen] = useState(false);
@@ -129,10 +136,23 @@ export default function MetaPanel() {
       });
   };
 
+  // Exactly the request body. `mode` picks the endpoint but is left out: it
+  // only changes here in run(), together with a new result, and the setter
+  // this render hands out would stamp the mode that was on screen before the
+  // click, flagging every fresh result stale.
+  const runParams = { studies: buildStudies(), measure, tau2Method };
+  // Pooling reads only the typed studies, never the dataset, so a cell edit
+  // or case filter cannot make it out of date.
+  const {
+    result, setResult, stale, staleReasons: staleWhy,
+  } = useStampedResult<MetaResult>("meta", runParams, { dependsOnData: false });
+
   const run = async (m: Mode) => {
-    setMode(m);
     const studies = buildStudies();
     if (studies.length < 2) { setError("Enter at least 2 studies."); return; }
+    // After the check, so a refused run cannot switch the layout under the
+    // previous mode's result.
+    setMode(m);
     setLoading(true); setError(null); setResult(null);
     try {
       const payload = { studies, measure, tau2_method: tau2Method };
@@ -342,7 +362,16 @@ export default function MetaPanel() {
       {error && <p className="text-xs text-red-500">{error}</p>}
 
       {/* Results */}
+      {result && stale && (
+        <StaleResultNotice
+          reasons={staleWhy}
+          onRecompute={() => run(mode)}
+          busy={loading}
+          what="This meta-analysis"
+        />
+      )}
       {result && (
+        <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
         <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_400px] gap-3 items-start">
           <div>
             {mode === "analyze" && forestPlot()}
@@ -448,6 +477,7 @@ export default function MetaPanel() {
             )}
           </div>
         </div>
+        </StaleGuard>
       )}
     </div>
   );

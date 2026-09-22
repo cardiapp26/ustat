@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -279,6 +279,10 @@ describe('MissingDataPanel', () => {
     expect(screen.getByRole('button', { name: /transfer data/i })).toBeEnabled()
     await user.click(screen.getByRole('button', { name: /transfer data/i }))
     await waitFor(() => expect(screen.getByText(/1 value\(s\) transferred into LDL/)).toBeInTheDocument())
+    // The transfer bumps the data version; the preview is now the record of
+    // that transfer and must not flag itself out of date because of it.
+    expect(screen.getByRole('button', { name: /transferred/i })).toBeDisabled()
+    expect(screen.queryByText(/Out of date\./)).not.toBeInTheDocument()
   })
 
   it('sends stratify_by when a stratification column is selected', async () => {
@@ -696,5 +700,132 @@ describe('MissingDataPanel', () => {
       .querySelector('select')!
     await user.selectOptions(outcomeSelect, 'GROUP')
     expect(screen.getByText(/or the outcome model is ignored/i)).toBeInTheDocument()
+  })
+})
+
+const miceDiagnosticsHandlers = () => [
+  http.post('/api/compute/test-session/missing_diagnostics', () =>
+    HttpResponse.json({
+      columns: [
+        { name: 'AGE', n_missing: 1, pct: 33.3, kind: 'numeric', is_numeric: true, depends_on: ['LDL'], likely: 'MAR' },
+        { name: 'LDL', n_missing: 1, pct: 33.3, kind: 'numeric', is_numeric: true, depends_on: [], likely: 'MCAR' },
+      ],
+      overall_hint: 'Some dependence detected.',
+      recommendation: 'Use MICE.',
+      any_mar: true,
+    }),
+  ),
+  http.post('/api/missing_data/mcar_test', () =>
+    HttpResponse.json({ statistic: 4.21, df: 2, p: 0.12, significant: false }),
+  ),
+  http.post('/api/survival_advanced/mice_preview', () =>
+    HttpResponse.json({
+      preview_rows: [
+        { row_index: 1, column: 'AGE', imputed_value: 58 },
+        { row_index: 0, column: 'LDL', imputed_value: 125 },
+      ],
+      total_imputed: 2,
+      result_text: 'Preview: 2 missing values will be imputed.',
+      methods_text: 'PMM preview.',
+      export_rows: [['Column', 'Method', 'N Imputed'], ['AGE', 'PMM', 1]],
+      preview_only: true,
+    }),
+  ),
+  http.post('/api/survival_advanced/mice_transfer', () =>
+    HttpResponse.json({ n_imputed: { AGE: 1, LDL: 1 }, total_imputed: 2, columns: ['AGE', 'LDL'] }),
+  ),
+  http.get('/api/stats/test-session/refresh', () =>
+    HttpResponse.json({
+      columns: columnsWithMissing,
+      preview: [
+        { AGE: 55, LDL: 125, GROUP: 'A' },
+        { AGE: 58, LDL: 140, GROUP: 'B' },
+        { AGE: 48, LDL: 110, GROUP: '' },
+      ],
+    }),
+  ),
+]
+
+async function selectAgeAndLdl(user: ReturnType<typeof userEvent.setup>) {
+  const table = screen.getAllByRole('table')[0]
+  await user.click(within(within(table).getByText('AGE').closest('tr')!).getByRole('checkbox'))
+  await user.click(within(within(table).getByText('LDL').closest('tr')!).getByRole('checkbox'))
+}
+
+describe('MissingDataPanel: out-of-date results', () => {
+  it('closes every export of a PMM preview once the data changes under it', async () => {
+    installMissingSession()
+    server.use(...miceDiagnosticsHandlers())
+
+    const user = userEvent.setup()
+    render(<MissingDataPanel />)
+    await selectAgeAndLdl(user)
+    await user.click(screen.getByRole('button', { name: /preview pmm/i }))
+    await screen.findByText(/preview: 2 missing values/i)
+
+    const exports = () => [
+      screen.getByRole('button', { name: 'CSV' }),
+      screen.getByRole('button', { name: 'Copy' }),
+      screen.getByRole('button', { name: /transfer to original columns/i }),
+    ]
+    for (const b of exports()) expect(b).toBeEnabled()
+
+    act(() => useStore.getState().bumpDataVersion())
+
+    expect(await screen.findByText(/This PMM preview was computed before the data changed/)).toBeInTheDocument()
+    for (const b of exports()) expect(b).toBeDisabled()
+  })
+
+  it('keeps the record of a PMM transfer current while diagnostics from before it go stale', async () => {
+    installMissingSession()
+    server.use(...miceDiagnosticsHandlers())
+
+    const user = userEvent.setup()
+    render(<MissingDataPanel />)
+    await selectAgeAndLdl(user)
+    await user.click(screen.getByRole('button', { name: /analyze missingness/i }))
+    await screen.findByText(/Some dependence detected\./)
+    await user.click(screen.getByRole('button', { name: /preview pmm/i }))
+    await screen.findByText(/preview: 2 missing values/i)
+    expect(screen.queryByText(/Out of date\./)).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: /transfer to original columns/i }))
+    await screen.findByText(/2 value\(s\) transferred into original columns/i)
+
+    // The analysis of the data before the imputation no longer describes it...
+    expect(await screen.findByText(/This missingness analysis was computed before the data changed/)).toBeInTheDocument()
+    // ...while the preview is now the record of what was written, not a stale result.
+    expect(screen.queryByText(/This PMM preview was computed/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'CSV' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Transferred' })).toBeDisabled()
+  })
+
+  it('blocks copying the MNAR R code once the data changes under it', async () => {
+    installMissingSession()
+    server.use(
+      http.post('/api/models/mnar_sensitivity', () =>
+        HttpResponse.json({
+          test: 'MNAR Missing Data Sensitivity Analysis',
+          n: 3,
+          columns: ['AGE'],
+          result_text: 'MNAR sensitivity analysis ran for 1 variable(s).',
+          r_code: 'library(mice)',
+        }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<MissingDataPanel />)
+    await user.click(screen.getByRole('tab', { name: /mnar sensitivity/i }))
+    const varList = screen.getByRole('group', { name: /variables to analyse/i })
+    await user.click(within(varList).getByLabelText(/^AGE/))
+    await user.click(screen.getByRole('button', { name: /run mnar sensitivity/i }))
+    await screen.findByText('library(mice)')
+    expect(screen.getByRole('button', { name: 'Copy' })).toBeEnabled()
+
+    act(() => useStore.getState().bumpDataVersion())
+
+    expect(await screen.findByText(/This MNAR sensitivity analysis was computed before the data changed/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Copy' })).toBeDisabled()
   })
 })

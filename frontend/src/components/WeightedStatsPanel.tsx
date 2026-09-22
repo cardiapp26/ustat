@@ -1,8 +1,13 @@
 import { useState, type ReactNode } from "react";
 import { useStore, isNumericKind, isCategoricalKind } from "../store";
 import { runWeightedDescriptive } from "../api";
+import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
+import { useStampedResult } from "../hooks/useStampedResult";
+import { describeStale } from "../lib/resultStamp";
 import { Tip } from "./Tip";
 import ResultExporter from "./ResultExporter";
+import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
 import { fmtP } from "../lib/format";
 
 interface WeightedRow {
@@ -59,10 +64,15 @@ export default function WeightedStatsPanel() {
   const numCols = columns.filter((c) => isNumericKind(c.kind)).map((c) => c.name);
   const catCols = columns.filter((c) => isCategoricalKind(c.kind)).map((c) => c.name);
 
-  const [weightCol, setWeightCol] = useState("");
-  const [valueCols, setValueCols] = useState<string[]>([]);
-  const [groupCol, setGroupCol] = useState("");
-  const [result, setResult] = useState<WeightedStatsResult | null>(null);
+  // Persisted with the result, so a table restored after a tab switch comes
+  // back with the columns it was computed from rather than blank selectors.
+  const [weightCol, setWeightCol] = usePersistedPanelState("weighted_stats", "weightCol", "");
+  const [valueCols, setValueCols] = usePersistedPanelState<string[]>("weighted_stats", "valueCols", []);
+  const [groupCol, setGroupCol] = usePersistedPanelState("weighted_stats", "groupCol", "");
+  const runParams = { weightCol, valueCols, groupCol };
+  const {
+    result, setResult, stale, staleReasons: staleWhy,
+  } = useStampedResult<WeightedStatsResult>("weighted_stats", runParams);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -141,8 +151,16 @@ export default function WeightedStatsPanel() {
             Pick a weight column + value variables, then compute
           </div>
         )}
+        {result && stale && (
+          <StaleResultNotice
+            reasons={staleWhy}
+            onRecompute={run}
+            busy={loading}
+            what="This weighted summary"
+          />
+        )}
         {result && (
-          <>
+          <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
             <div className="panel space-y-2">
               <div className="flex items-center justify-between">
                 <h4 className="text-sm font-semibold text-gray-800">
@@ -221,7 +239,7 @@ export default function WeightedStatsPanel() {
                 {result.result_text}
               </div>
             )}
-          </>
+          </StaleGuard>
         )}
       </div>
     </div>

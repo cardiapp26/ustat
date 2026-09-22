@@ -1,9 +1,10 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
 import { server } from '../test/server'
 import { clearSession, installSession } from '../test/testUtils'
+import { useStore } from '../store'
 import IPTWPanel from './IPTWPanel'
 
 afterEach(() => clearSession())
@@ -117,5 +118,60 @@ describe('IPTWPanel', () => {
     await waitFor(() =>
       expect(screen.getByText('Treatment column must be binary')).toBeInTheDocument(),
     )
+  })
+
+  it('closes every export of the weighting, the cohort included, once the data changes under it', async () => {
+    installSession()
+    server.use(
+      http.post('/api/models/iptw', () => HttpResponse.json({ ...IPTW_RESULT, matched_session_id: 'weighted-1' })),
+    )
+
+    const user = userEvent.setup()
+    render(<IPTWPanel />)
+    await user.click(screen.getByRole('checkbox', { name: 'AGE' }))
+    await user.click(screen.getByRole('button', { name: /run iptw/i }))
+    await screen.findByText(/Balance achieved/i)
+
+    const exports = () => [
+      screen.getByRole('button', { name: 'CSV' }),
+      ...screen.getAllByRole('button', { name: '↓' }),
+      screen.getByRole('button', { name: /View & Analyze Weighted Cohort/ }),
+      screen.getByRole('button', { name: /Export as CSV/ }),
+      screen.getByRole('button', { name: /Export as Excel/ }),
+      screen.getByRole('button', { name: /Export as SPSS/ }),
+    ]
+    // Weight distribution, Love plot and PS overlap each carry a plot exporter.
+    expect(screen.getAllByRole('button', { name: '↓' })).toHaveLength(3)
+    for (const b of exports()) expect(b).toBeEnabled()
+
+    act(() => useStore.getState().bumpDataVersion())
+
+    expect(await screen.findByText(/Out of date\./)).toBeInTheDocument()
+    for (const b of exports()) expect(b).toBeDisabled()
+  })
+
+  it('flags the weighting stale when the estimand changes, and Recompute clears it', async () => {
+    installSession()
+    let calls = 0
+    server.use(
+      http.post('/api/models/iptw', () => {
+        calls += 1
+        return HttpResponse.json(IPTW_RESULT)
+      }),
+    )
+
+    const user = userEvent.setup()
+    render(<IPTWPanel />)
+    await user.click(screen.getByRole('checkbox', { name: 'AGE' }))
+    await user.click(screen.getByRole('button', { name: /run iptw/i }))
+    await screen.findByText(/Balance achieved/i)
+
+    await user.click(screen.getByRole('button', { name: 'ATT' }))
+    expect(await screen.findByText(/the analysis settings changed/)).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Recompute' }))
+    await waitFor(() => expect(calls).toBe(2))
+    await waitFor(() => expect(screen.queryByText(/Out of date\./)).not.toBeInTheDocument())
+    expect(screen.getByText(/Balance achieved/i)).toBeInTheDocument()
   })
 })

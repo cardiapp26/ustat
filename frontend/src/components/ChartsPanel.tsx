@@ -1,6 +1,10 @@
 import { useState, useRef } from "react";
 import { useStore, isNumericKind, isCategoricalKind, type Session } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
+import { useStampedResult } from "../hooks/useStampedResult";
+import { describeStale, STALE_LABELS, type StaleReason } from "../lib/resultStamp";
+import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
 import {
   usePlotLayout, usePalette, useTraceDefaults, applySeriesPins, applyHighlight, ordinalLadder,
 } from "../plotStyle";
@@ -24,6 +28,16 @@ const REF_LINE_CHARTS = new Set([
 
 /** A reference line as typed: the value stays text until it parses. */
 interface RefLineDraft { axis: "x" | "y"; value: string; label: string }
+
+/** What a chart asks the backend for: the endpoint, and the body less the
+ *  session id. */
+interface PlotRequest {
+  endpoint: string;
+  fetch: (data: object) => Promise<{ data: Record<string, unknown> }>;
+  body: Record<string, unknown>;
+}
+
+type ChartResult = Record<string, unknown>;
 
 /** Charts whose request actually carries the Color / Group column. */
 const COLOUR_AWARE_CHARTS = new Set([
@@ -147,16 +161,106 @@ function ChartsPanelBody({ session }: { session: Session }) {
   const [fillCol, setFillCol] = usePersistedPanelState<string>("charts", "fillCol", "");
   const [stackNormalize, setStackNormalize] = usePersistedPanelState<boolean>("charts", "stackNormalize", false);
   const [setCols, setSetCols] = usePersistedPanelState<string[]>("charts", "setCols", []);
-  const [summary, setSummary] = useState<Record<string, unknown> | null>(null);
-  const [comparisons, setComparisons] = useState<Record<string, unknown> | null>(null);
-  const [plotData, setPlotData] = useState<Record<string, unknown> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // States for custom labels
-  const [customTitle, setCustomTitle] = useState("");
-  const [customXLabel, setCustomXLabel] = useState("");
-  const [customYLabel, setCustomYLabel] = useState("");
+  // Custom labels. Persisted because the chart they caption now survives a
+  // tab switch, and inputs reset to blank beside it would misdescribe it.
+  const [customTitle, setCustomTitle] = usePersistedPanelState<string>("charts", "customTitle", "");
+  const [customXLabel, setCustomXLabel] = usePersistedPanelState<string>("charts", "customXLabel", "");
+  const [customYLabel, setCustomYLabel] = usePersistedPanelState<string>("charts", "customYLabel", "");
+
+  // The request the chart sends, built in one place so the run and the stamp
+  // cannot disagree: a chart is out of date for exactly the settings its
+  // request carried, and not for the styling drawn over the returned figure.
+  // Keyed by endpoint rather than chart type, because a box, violin, raincloud
+  // and strip are one request drawn four ways: switching between them redraws
+  // the same answer. `bins` goes only to the histogram, the one endpoint that
+  // reads it; on the others it would date a chart for a slider it ignores.
+  const plotRequest = (): PlotRequest => {
+    switch (chartType) {
+      case "histogram": {
+        const bw = parseRefValue(binwidth);
+        return { endpoint: "histogram", fetch: getHistogram, body: {
+          x, bins, color: color || undefined, rug: histRug,
+          ...(bw !== null && bw > 0 ? { binwidth: bw } : {}),
+        } };
+      }
+      case "scatter": return { endpoint: "scatter", fetch: getScatter, body: {
+        x, y, color: color || undefined,
+        log_x: logX, log_y: logY, identity_line: identityLine,
+        label: labelCol || undefined, shape: shapeCol || undefined,
+        ellipse, marginal,
+        fit: fitMethod, fit_per_group: fitPerGroup && Boolean(color), loess_span: loessSpan,
+        ...(gradientCol && !color && !bin2d ? { gradient: gradientCol } : {}),
+        ...(bin2d ? { bin2d: true, bin2d_bins: bin2dBins } : {}),
+      } };
+      case "boxplot": case "violin": case "raincloud": case "strip":
+        return { endpoint: "boxplot", fetch: getBoxplot, body: { x, color: color || undefined } };
+      case "paired": return { endpoint: "paired", fetch: getPairedBox, body: { y: x, group: color, pair_id: pairId } };
+      case "dumbbell": return { endpoint: "dumbbell", fetch: getDumbbell, body: {
+        category: x, start: dbStart, end: dbEnd, group: color || undefined, sort: dbSort,
+      } };
+      case "errorplot": return { endpoint: "errorplot", fetch: getErrorPlot, body: {
+        y: x, group: color || undefined, centre: errCentre, spread: errSpread,
+      } };
+      case "ecdf": return { endpoint: "ecdf", fetch: getEcdf, body: { x, group: color || undefined } };
+      case "pie": return { endpoint: "pie", fetch: getPie, body: { category: x, value: pieValue || undefined } };
+      case "balloon": return { endpoint: "balloon", fetch: getBalloon, body: { row: x, col: balloonCol } };
+      case "lineplot": return { endpoint: "lineplot", fetch: getLinePlot, body: {
+        x, y: lineY, group: color || undefined,
+        centre: errCentre, spread: errSpread === "iqr" && errCentre === "mean" ? "ci" : errSpread,
+      } };
+      case "slopeplot": return { endpoint: "slopeplot", fetch: getSlopePlot, body: {
+        before: slopeBefore, after: slopeAfter, group: color || undefined,
+      } };
+      case "sankey": return { endpoint: "sankey", fetch: getSankey, body: {
+        stages: [x, stage2, ...(stage3 ? [stage3] : [])],
+      } };
+      case "stackplot": return { endpoint: "stackplot", fetch: getStackPlot, body: {
+        x, fill: fillCol, value: pieValue || undefined, normalize: stackNormalize,
+      } };
+      case "ridgeplot": return { endpoint: "ridgeplot", fetch: getRidgePlot, body: { x, group: color } };
+      case "waffle": return { endpoint: "waffle", fetch: getWaffle, body: { category: x } };
+      case "waterfall": return { endpoint: "waterfall", fetch: getWaterfall, body: {
+        y: x, group: color || undefined, label: labelCol || undefined,
+        ...(wfRecist ? { thresholds: [20, -30] } : {}),
+      } };
+      case "sets": return { endpoint: "sets", fetch: getSets, body: { columns: setCols } };
+      case "facet": {
+        const grid = {
+          scales: facetScales,
+          ...(facetNcol !== "auto" ? { ncol: Number(facetNcol) } : {}),
+        };
+        return { endpoint: "facet", fetch: getFacet, body: facetMode === "variable" && facetKind === "boxplot"
+          ? { kind: "boxplot", variables: facetVars, color: color || undefined, ...grid }
+          : {
+            kind: facetKind, x, y: facetKind === "scatter" ? y : undefined,
+            facet: facetCol, color: color || undefined, ...grid,
+          } };
+      }
+      default: return { endpoint: "bar", fetch: getBar, body: {
+        x, y: y || undefined, color: color || undefined,
+        y_mode: barMode,
+        ...(barMode === "percentage" && barTarget.trim() ? { target_value: barTarget.trim() } : {}),
+        ...(barMode === "mean" && y && barError !== "none" ? { error: barError } : {}),
+      } };
+    }
+  };
+  const request = plotRequest();
+  // The summary table and the comparisons are results of their own, fetched
+  // after the chart; each is stamped with the request that produced it.
+  const summaryParams = { y: x, group: color || undefined };
+  const compareParams = { y: x, group: color, method: cmpMethod, p_adjust: cmpAdjust, label: cmpLabel };
+  const {
+    result: plotData, setResult: setPlotData, staleReasons: plotWhy,
+  } = useStampedResult<ChartResult>("charts_plot", { endpoint: request.endpoint, body: request.body });
+  const {
+    result: summary, setResult: setSummary, stale: summaryStale, staleReasons: summaryWhy,
+  } = useStampedResult<ChartResult>("charts_summary", summaryParams);
+  const {
+    result: comparisons, setResult: setComparisons, stale: cmpStale, staleReasons: cmpWhy,
+  } = useStampedResult<ChartResult>("charts_compare", compareParams);
 
   const run = async () => {
     if (chartType === "paired") {
@@ -212,105 +316,14 @@ function ChartsPanelBody({ session }: { session: Session }) {
     setComparisons(null);
     setSummary(null);
     try {
-      const base = { session_id: session.session_id, x, bins };
-      let res;
-      if (chartType === "histogram") {
-        const bw = parseRefValue(binwidth);
-        res = await getHistogram({
-          ...base, color: color || undefined, rug: histRug,
-          ...(bw !== null && bw > 0 ? { binwidth: bw } : {}),
-        });
-      }
-      else if (chartType === "scatter") res = await getScatter({
-        ...base, y, color: color || undefined,
-        log_x: logX, log_y: logY, identity_line: identityLine,
-        label: labelCol || undefined, shape: shapeCol || undefined,
-        ellipse, marginal,
-        fit: fitMethod, fit_per_group: fitPerGroup && Boolean(color), loess_span: loessSpan,
-        ...(gradientCol && !color && !bin2d ? { gradient: gradientCol } : {}),
-        ...(bin2d ? { bin2d: true, bin2d_bins: bin2dBins } : {}),
-      });
-      else if (chartType === "boxplot" || chartType === "violin" || chartType === "raincloud" || chartType === "strip") res = await getBoxplot({ ...base, color: color || undefined });
-      else if (chartType === "paired") res = await getPairedBox({ session_id: session.session_id, y: x, group: color, pair_id: pairId });
-      else if (chartType === "dumbbell") res = await getDumbbell({
-        session_id: session.session_id, category: x,
-        start: dbStart, end: dbEnd, group: color || undefined, sort: dbSort,
-      });
-      else if (chartType === "errorplot") res = await getErrorPlot({
-        session_id: session.session_id, y: x, group: color || undefined,
-        centre: errCentre, spread: errSpread,
-      });
-      else if (chartType === "ecdf") res = await getEcdf({
-        session_id: session.session_id, x, group: color || undefined,
-      });
-      else if (chartType === "pie") res = await getPie({
-        session_id: session.session_id, category: x, value: pieValue || undefined,
-      });
-      else if (chartType === "balloon") res = await getBalloon({
-        session_id: session.session_id, row: x, col: balloonCol,
-      });
-      else if (chartType === "lineplot") res = await getLinePlot({
-        session_id: session.session_id, x, y: lineY, group: color || undefined,
-        centre: errCentre, spread: errSpread === "iqr" && errCentre === "mean" ? "ci" : errSpread,
-      });
-      else if (chartType === "slopeplot") res = await getSlopePlot({
-        session_id: session.session_id, before: slopeBefore, after: slopeAfter,
-        group: color || undefined,
-      });
-      else if (chartType === "sankey") res = await getSankey({
-        session_id: session.session_id,
-        stages: [x, stage2, ...(stage3 ? [stage3] : [])],
-      });
-      else if (chartType === "stackplot") res = await getStackPlot({
-        session_id: session.session_id, x, fill: fillCol,
-        value: pieValue || undefined, normalize: stackNormalize,
-      });
-      else if (chartType === "ridgeplot") res = await getRidgePlot({
-        session_id: session.session_id, x, group: color,
-      });
-      else if (chartType === "waffle") res = await getWaffle({
-        session_id: session.session_id, category: x,
-      });
-      else if (chartType === "waterfall") res = await getWaterfall({
-        session_id: session.session_id, y: x, group: color || undefined,
-        label: labelCol || undefined,
-        ...(wfRecist ? { thresholds: [20, -30] } : {}),
-      });
-      else if (chartType === "sets") res = await getSets({
-        session_id: session.session_id, columns: setCols,
-      });
-      else if (chartType === "facet") {
-        const grid = {
-          scales: facetScales,
-          ...(facetNcol !== "auto" ? { ncol: Number(facetNcol) } : {}),
-        };
-        res = await getFacet(
-          facetMode === "variable" && facetKind === "boxplot"
-            ? {
-              session_id: session.session_id, kind: "boxplot",
-              variables: facetVars, color: color || undefined, ...grid,
-            }
-            : {
-              session_id: session.session_id, kind: facetKind, x,
-              y: facetKind === "scatter" ? y : undefined,
-              facet: facetCol, color: color || undefined, ...grid,
-            });
-      }
-      else res = await getBar({
-        ...base, y: y || undefined, color: color || undefined,
-        y_mode: barMode,
-        ...(barMode === "percentage" && barTarget.trim() ? { target_value: barTarget.trim() } : {}),
-        ...(barMode === "mean" && y && barError !== "none" ? { error: barError } : {}),
-      });
+      const res = await request.fetch({ session_id: session.session_id, ...request.body });
       setPlotData(res.data);
 
       // The summary table is a separate result printed under the plot, so a
       // failure there must not cost the user the chart.
       if (showSummary && ["boxplot", "violin", "raincloud", "errorplot", "ecdf"].includes(chartType)) {
         try {
-          const s = await getSummaryStats({
-            session_id: session.session_id, y: x, group: color || undefined,
-          });
+          const s = await getSummaryStats({ session_id: session.session_id, ...summaryParams });
           setSummary(s.data);
         } catch { /* the chart stands on its own */ }
       }
@@ -320,10 +333,7 @@ function ChartsPanelBody({ session }: { session: Session }) {
       // already has.
       if (showBrackets && color && (chartType === "boxplot" || chartType === "violin" || chartType === "raincloud" || chartType === "strip")) {
         try {
-          const cmp = await getCompareMeans({
-            session_id: session.session_id, y: x, group: color,
-            method: cmpMethod, p_adjust: cmpAdjust, label: cmpLabel,
-          });
+          const cmp = await getCompareMeans({ session_id: session.session_id, ...compareParams });
           setComparisons(cmp.data);
         } catch (e: unknown) {
           const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
@@ -443,6 +453,14 @@ function ChartsPanelBody({ session }: { session: Session }) {
     highlightColor,
   );
   const brackets = buildBrackets(plotData, comparisons);
+  // The brackets are the comparisons drawn onto the figure, so a figure
+  // carrying out-of-date ones is out of date too, even when its own request
+  // still matches.
+  const bracketsDrawn = brackets.shapes.length > 0;
+  const figureWhy = (Object.keys(STALE_LABELS) as StaleReason[]).filter(
+    (r) => plotWhy.includes(r) || (bracketsDrawn && cmpWhy.includes(r)),
+  );
+  const figureStale = figureWhy.length > 0;
   const groupedChart = chartType === "boxplot" || chartType === "violin"
     || chartType === "raincloud" || chartType === "strip";
   const valueAxisIsLog = groupedChart && logValue;
@@ -1430,7 +1448,11 @@ function ChartsPanelBody({ session }: { session: Session }) {
         )}
 
         {/* Summary table under the plot — ggsummarystats */}
+        {summary && summaryStale && (
+          <StaleResultNotice reasons={summaryWhy} onRecompute={run} busy={loading} what="This summary table" />
+        )}
         {summary && (
+          <StaleGuard stale={summaryStale} reason={describeStale(summaryWhy)}>
           <div className="panel bg-white border border-gray-200 p-3 rounded-2xl overflow-x-auto">
             <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Summary</p>
             <table className="text-[11px] w-full">
@@ -1458,10 +1480,15 @@ function ChartsPanelBody({ session }: { session: Session }) {
               </tbody>
             </table>
           </div>
+          </StaleGuard>
         )}
 
         {/* What the stars actually mean — a figure legend the user can copy */}
+        {comparisons && cmpStale && (
+          <StaleResultNotice reasons={cmpWhy} onRecompute={run} busy={loading} what="This set of comparisons" />
+        )}
         {comparisons && (
+          <StaleGuard stale={cmpStale} reason={describeStale(cmpWhy)}>
           <div className="panel bg-gray-50 border-gray-200 p-4 rounded-2xl">
             <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Comparisons</p>
             <p className="text-xs text-gray-600 leading-relaxed">
@@ -1478,6 +1505,7 @@ function ChartsPanelBody({ session }: { session: Session }) {
               **** ≤ 0.0001 · *** ≤ 0.001 · ** ≤ 0.01 · * ≤ 0.05 · ns otherwise.
             </p>
           </div>
+          </StaleGuard>
         )}
 
         {/* Waffle: what a hundred squares stand for */}
@@ -1528,6 +1556,14 @@ function ChartsPanelBody({ session }: { session: Session }) {
 
       {/* Plot area */}
       <div className="flex-1 panel min-h-0 relative bg-white border border-gray-200 shadow-sm rounded-2xl p-4 overflow-y-auto">
+        {plotData && figureStale && (
+          <div className="mb-3">
+            <StaleResultNotice reasons={figureWhy} onRecompute={run} busy={loading} what="This chart" />
+          </div>
+        )}
+        {/* The exporter, its copy button and the modebar camera all close
+            while the figure is out of date. */}
+        <StaleGuard stale={figureStale} reason={describeStale(figureWhy)}>
         {traces ? (
           <TitledPlot
             // Remount when the chart type changes so the height below is
@@ -1638,6 +1674,7 @@ function ChartsPanelBody({ session }: { session: Session }) {
             </p>
           );
         })()}
+        </StaleGuard>
       </div>
     </div>
   );

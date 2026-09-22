@@ -1,8 +1,9 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
 import { server } from '../test/server'
+import { useStore } from '../store'
 import { clearSession, installSession } from '../test/testUtils'
 import RepeatedMeasuresPanel from './RepeatedMeasuresPanel'
 
@@ -138,5 +139,28 @@ describe('RepeatedMeasuresPanel', () => {
     await user.click(screen.getByRole('button', { name: /run test/i }))
 
     await waitFor(() => expect(screen.getByText('Columns must be numeric')).toBeInTheDocument())
+  })
+})
+
+describe('RepeatedMeasuresPanel staleness', () => {
+  it('closes the export of a test once the data changes under it', async () => {
+    installSession()
+    server.use(
+      http.post('/api/repeated/paired_ttest', () =>
+        HttpResponse.json({ test: 'Paired t-test', interpretation: 'Significant mean difference', t: 3.21, df: 2, p: 0.041 }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<RepeatedMeasuresPanel />)
+    await user.click(screen.getByRole('button', { name: /run test/i }))
+
+    const csv = await screen.findByRole('button', { name: 'CSV' })
+    expect(csv).toBeEnabled()
+
+    act(() => useStore.getState().bumpDataVersion())
+
+    expect(await screen.findByText(/Out of date\./)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'CSV' })).toBeDisabled()
   })
 })

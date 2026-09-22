@@ -1,8 +1,12 @@
 import { useState, useEffect, type ReactNode } from "react";
 import { useStore, isNumericKind } from "../store";
 import { runNonInferiority, getUniqueValues } from "../api";
+import { useStampedResult } from "../hooks/useStampedResult";
+import { describeStale } from "../lib/resultStamp";
 import { Tip } from "./Tip";
 import ResultExporter from "./ResultExporter";
+import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
 
 interface Assumption {
   name: string;
@@ -57,7 +61,12 @@ export default function NonInferiorityPanel() {
   const [margin, setMargin] = useState("1.20");
   const [bound, setBound] = useState<"upper" | "lower">("upper");
   const [alpha, setAlpha] = useState("0.05");
-  const [result, setResult] = useState<NonInferiorityResult | null>(null);
+  // The test reads the session's rows (session_id is in the request), so it
+  // depends on the data as well as on these settings.
+  const runParams = { outcomeType, outcomeCol, groupCol, testGroup, refGroup, effect, margin, bound, alpha };
+  const {
+    result, setResult, stale, staleReasons: staleWhy,
+  } = useStampedResult<NonInferiorityResult>("noninferiority", runParams);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -69,6 +78,10 @@ export default function NonInferiorityPanel() {
       setLevels(vals);
       if (vals.length === 2) { setTestGroup(vals[1]); setRefGroup(vals[0]); }
     }).catch(() => setLevels([]));
+    // setResult is rebuilt every render (it closes over that render's
+    // settings); listing it would refetch the levels and clear the result on
+    // each one.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupCol, sid]);
 
   const ciLevel = (() => { const a = Number(alpha) || 0.05; return ((1 - 2 * a) * 100).toFixed(0); })();
@@ -198,8 +211,16 @@ export default function NonInferiorityPanel() {
             Configure the margin test, then run
           </div>
         )}
+        {result && stale && (
+          <StaleResultNotice
+            reasons={staleWhy}
+            onRecompute={run}
+            busy={loading}
+            what="This non-inferiority test"
+          />
+        )}
         {result && (
-          <>
+          <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
             <div className={`panel border-2 ${result.non_inferior ? "border-emerald-300 bg-emerald-50" : "border-amber-300 bg-amber-50"}`}>
               <div className="flex items-center gap-3">
                 <span className="text-2xl">{result.non_inferior ? "✅" : "⚠️"}</span>
@@ -257,7 +278,7 @@ export default function NonInferiorityPanel() {
                 {result.interpretation}
               </div>
             )}
-          </>
+          </StaleGuard>
         )}
       </div>
     </div>

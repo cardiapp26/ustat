@@ -1,12 +1,17 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 import { server } from '../test/server'
+import { useStore } from '../store'
 import MetaPanel from './MetaPanel'
 
 // MetaPanel is session-independent — studies are entered manually in a table,
 // so no store session installation is needed.
+
+// The study table and the result persist in panelCache across remounts, so
+// each test starts from an empty cache rather than the last test's studies.
+beforeEach(() => useStore.setState({ panelCache: {} }))
 
 describe('MetaPanel', () => {
   it('renders with sample studies preloaded and four mode buttons', () => {
@@ -181,5 +186,42 @@ describe('MetaPanel', () => {
     await user.click(screen.getByRole('button', { name: /forest \+ pool/i }))
 
     await waitFor(() => expect(screen.getByText('Effect sizes must be positive for OR')).toBeInTheDocument())
+  })
+})
+
+describe('MetaPanel staleness', () => {
+  it('ignores dataset edits but closes the export once a study changes', async () => {
+    server.use(
+      http.post('/api/meta/analyze', () =>
+        HttpResponse.json({
+          studies: [
+            { label: 'Trial A', effect: 0.75, ci_low: 0.55, ci_high: 1.02, weight_pct: 50 },
+            { label: 'Trial B', effect: 0.82, ci_low: 0.6, ci_high: 1.12, weight_pct: 50 },
+          ],
+          random: { effect: 0.78, ci_low: 0.6, ci_high: 1.0 },
+          fixed: { effect: 0.79, ci_low: 0.62, ci_high: 0.99 },
+          measure: 'OR', null_line: 1, I2_pct: 12.5, tau2: 0.02, Q: 3.1, Q_p: 0.45,
+          export_rows: [['Study', 'OR'], ['Trial A', '0.75']],
+        }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<MetaPanel />)
+    await user.click(screen.getByRole('button', { name: /forest \+ pool/i }))
+
+    const csv = await screen.findByRole('button', { name: 'CSV' })
+    expect(csv).toBeEnabled()
+
+    // The pool is computed from the typed studies alone: an edit to the
+    // loaded dataset says nothing about it.
+    act(() => useStore.getState().bumpDataVersion())
+    expect(screen.queryByText(/Out of date\./)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'CSV' })).toBeEnabled()
+
+    await user.type(screen.getByDisplayValue('0.75'), '1')
+
+    expect(await screen.findByText(/Out of date\./)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'CSV' })).toBeDisabled()
   })
 })

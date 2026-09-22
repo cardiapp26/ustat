@@ -1,10 +1,14 @@
 import { useMemo, useRef, useState } from "react";
 import { runScoreComposite } from "../api";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
+import { useStampedResult } from "../hooks/useStampedResult";
+import { describeStale } from "../lib/resultStamp";
 import type { PlotCaptureHandle, PlotData, PlotLayout } from "../lib/plotTypes";
 import { usePlotLayout, usePalette } from "../plotStyle";
 import { useStore, isCategoricalKind, isNumericKind, type ColMeta, type Session } from "../store";
 import TitledPlot from "./TitledPlot";
+import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
 
 interface ScoreSummary {
   score_col: string;
@@ -53,7 +57,6 @@ function ScoreCompositePanelBody({ session }: { session: Session }) {
   const [componentsA, setComponentsA] = usePersistedPanelState<string[]>("score_composite", "componentsA", []);
   const [componentsB, setComponentsB] = usePersistedPanelState<string[]>("score_composite", "componentsB", []);
   const [bins, setBins] = usePersistedPanelState("score_composite", "bins", 8);
-  const [result, setResult] = useState<ScoreCompositeResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -65,6 +68,17 @@ function ScoreCompositePanelBody({ session }: { session: Session }) {
   );
   const activeComponentsA = componentsA.filter((name) => componentOptions.includes(name));
   const activeComponentsB = componentsB.filter((name) => componentOptions.includes(name));
+
+  // The components actually sent, not the raw picks: a pick that has become
+  // the group or a score column is dropped from the request. The display
+  // labels only name the panels, so retyping one leaves the figure current.
+  const runParams = {
+    groupCol, bins, scoreA, scoreB,
+    componentsA: activeComponentsA, componentsB: activeComponentsB,
+  };
+  const {
+    result, setResult, stale, staleReasons: staleWhy,
+  } = useStampedResult<ScoreCompositeResult>("score_composite", runParams);
 
   const labelMap = (names: string[]) => Object.fromEntries(names.map((name) => [
     name,
@@ -189,6 +203,10 @@ function ScoreCompositePanelBody({ session }: { session: Session }) {
       <div className="flex-1 panel min-h-0 bg-white border border-gray-200 shadow-sm rounded-2xl p-4 overflow-y-auto">
         {result && mergedLayout ? (
           <div className="space-y-4">
+            {stale && (
+              <StaleResultNotice reasons={staleWhy} onRecompute={run} busy={loading} what="This score figure" />
+            )}
+            <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
             <TitledPlot
               plotRefOut={plotRef}
               storageKey={`score-composite:${groupCol}:${scoreA}:${scoreB}`}
@@ -220,6 +238,7 @@ function ScoreCompositePanelBody({ session }: { session: Session }) {
                 </div>
               ))}
             </div>
+            </StaleGuard>
           </div>
         ) : (
           <div className="h-full min-h-[420px] flex items-center justify-center text-gray-400">

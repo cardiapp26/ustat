@@ -2,7 +2,12 @@ import { useState } from "react";
 import { runGatekeeping } from "../api";
 import { Tip } from "./Tip";
 import ResultExporter from "./ResultExporter";
+import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
 import { fmtP } from "../lib/format";
+import { describeStale } from "../lib/resultStamp";
+import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
+import { useStampedResult } from "../hooks/useStampedResult";
 
 interface Hyp { label: string; p: string }
 interface Family { name: string; gamma: string; hyps: Hyp[] }
@@ -39,11 +44,12 @@ const SAMPLE: Family[] = [
 ];
 
 export default function GatekeepingPanel() {
-  const [families, setFamilies] = useState<Family[]>(SAMPLE);
-  const [method, setMethod] = useState<"hochberg" | "holm">("hochberg");
-  const [logic, setLogic] = useState<"serial" | "parallel">("serial");
-  const [alpha, setAlpha] = useState("0.05");
-  const [result, setResult] = useState<GatekeepingResult | null>(null);
+  // Persisted alongside the result: a result restored on remount next to
+  // inputs reset to the sample would read as computed from different settings.
+  const [families, setFamilies] = usePersistedPanelState<Family[]>("gatekeeping", "families", SAMPLE);
+  const [method, setMethod] = usePersistedPanelState<"hochberg" | "holm">("gatekeeping", "method", "hochberg");
+  const [logic, setLogic] = usePersistedPanelState<"serial" | "parallel">("gatekeeping", "logic", "serial");
+  const [alpha, setAlpha] = usePersistedPanelState<string>("gatekeeping", "alpha", "0.05");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -56,16 +62,24 @@ export default function GatekeepingPanel() {
   const addFamily = () => setFamilies((fs) => [...fs, { name: `Family ${fs.length + 1}`, gamma: "", hyps: [{ label: "", p: "" }] }]);
   const delFamily = (fi: number) => setFamilies((fs) => fs.filter((_, j) => j !== fi));
 
+  // The request body is the whole input: gatekeeping adjusts the p-values
+  // typed in here and reads no dataset, so a cell edit cannot invalidate it.
+  // Stamping the body rather than the raw rows also means an added blank row,
+  // which is filtered out before sending, does not mark the result stale.
+  const payload = {
+    method, logic, alpha: Number(alpha) || 0.05,
+    families: families.map((f) => ({
+      name: f.name,
+      gamma: f.gamma.trim() === "" ? undefined : Number(f.gamma),
+      hypotheses: f.hyps.filter((h) => h.label.trim() !== "" && h.p.trim() !== "")
+        .map((h) => ({ label: h.label, p: Number(h.p) })),
+    })).filter((f) => f.hypotheses.length > 0),
+  };
+  const {
+    result, setResult, stale, staleReasons: staleWhy,
+  } = useStampedResult<GatekeepingResult>("gatekeeping", payload, { dependsOnData: false });
+
   const run = async () => {
-    const payload = {
-      method, logic, alpha: Number(alpha) || 0.05,
-      families: families.map((f) => ({
-        name: f.name,
-        gamma: f.gamma.trim() === "" ? undefined : Number(f.gamma),
-        hypotheses: f.hyps.filter((h) => h.label.trim() !== "" && h.p.trim() !== "")
-          .map((h) => ({ label: h.label, p: Number(h.p) })),
-      })).filter((f) => f.hypotheses.length > 0),
-    };
     if (payload.families.length === 0) { setError("Enter at least one family with a hypothesis + p-value."); return; }
     setLoading(true); setError(null); setResult(null);
     try {
@@ -157,8 +171,16 @@ export default function GatekeepingPanel() {
             Build ordered families of hypotheses, then run
           </div>
         )}
+        {result && stale && (
+          <StaleResultNotice
+            reasons={staleWhy}
+            onRecompute={run}
+            busy={loading}
+            what="This gatekeeping result"
+          />
+        )}
         {result && (
-          <>
+          <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
             <div className="panel space-y-2">
               <div className="flex items-center justify-between">
                 <h4 className="text-sm font-semibold text-gray-800">
@@ -211,7 +233,7 @@ export default function GatekeepingPanel() {
                 {result.interpretation}
               </div>
             )}
-          </>
+          </StaleGuard>
         )}
       </div>
     </div>

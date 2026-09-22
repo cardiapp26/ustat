@@ -18,11 +18,15 @@ import Plot from "../PlotComponent";
 import { usePlotLayout, usePalette } from "../plotStyle";
 import { analysisCols, isNumericKind, isCategoricalKind, useStore, type Session } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
+import { useStampedResult } from "../hooks/useStampedResult";
 import { runThreshold } from "../api";
 import { Tip } from "./Tip";
 import ThreeCol from "./ThreeCol";
 import ResultExporter from "./ResultExporter";
+import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
 import { fmtP, pCellTitle } from "../lib/format";
+import { describeStale } from "../lib/resultStamp";
 import type { Data, Layout } from "plotly.js";
 import type { PlotData, PlotLayout, PlotCaptureHandle } from "../lib/plotTypes";
 
@@ -74,7 +78,16 @@ function ThresholdPanelBody({ session }: { session: Session }) {
   const [timeCol, setTimeCol] = usePersistedPanelState<string>("threshold", "time", "");
   const [covariates, setCovariates] = usePersistedPanelState<string[]>("threshold", "covs", []);
 
-  const [result, setResult] = useState<ThresholdResult | null>(null);
+  const categorical = covariates.filter((c) => catCols.includes(c));
+  // Exactly what the request carries: a covariate turning categorical changes
+  // the model even though nothing the user ticked did.
+  const runParams = {
+    kind, outcome, exposure, covariates, categorical,
+    timeCol: kind === "survival" ? timeCol : undefined,
+  };
+  const {
+    result, setResult, stale, staleReasons: staleWhy,
+  } = useStampedResult<ThresholdResult>("threshold", runParams);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const curveRef = useRef<PlotCaptureHandle | null>(null);
@@ -91,7 +104,7 @@ function ThresholdPanelBody({ session }: { session: Session }) {
         session_id: session.session_id, outcome, exposure, outcome_kind: kind,
         time_col: kind === "survival" ? timeCol : undefined,
         covariates,
-        categorical: covariates.filter((c) => catCols.includes(c)),
+        categorical,
       });
       setResult(res.data as ThresholdResult);
     } catch (e: unknown) {
@@ -248,6 +261,10 @@ function ThresholdPanelBody({ session }: { session: Session }) {
       middle={
         result ? (
           <div className="space-y-3">
+            {stale && (
+              <StaleResultNotice reasons={staleWhy} onRecompute={run} busy={loading} what="This threshold analysis" />
+            )}
+            <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
             <div className="panel">
               <div className="flex items-center justify-between mb-2">
                 <h4 className="text-sm font-semibold text-gray-700">Fitted relationship</h4>
@@ -273,6 +290,7 @@ function ThresholdPanelBody({ session }: { session: Session }) {
                 config={{ responsive: true, displaylogo: false, displayModeBar: false }}
                 style={{ width: "100%" }} useResizeHandler />
             </div>
+            </StaleGuard>
           </div>
         ) : (
           <div className="panel py-12 text-center text-gray-400">
@@ -287,6 +305,7 @@ function ThresholdPanelBody({ session }: { session: Session }) {
       }
       right={
         result ? (
+          <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
           <div className="space-y-3">
             <div className="panel space-y-2">
               <div className="flex items-center justify-between">
@@ -359,6 +378,7 @@ function ThresholdPanelBody({ session }: { session: Session }) {
               </p>
             </div>
           </div>
+          </StaleGuard>
         ) : (
           <div className="panel text-xs text-gray-400">
             The inflection point, the slope on each side and a paste-ready sentence appear here.

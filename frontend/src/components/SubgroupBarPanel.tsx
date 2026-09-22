@@ -6,7 +6,15 @@ import type { Data, Layout } from "plotly.js";
 import { runSubgroupBar, getUniqueValues } from "../api";
 import type { PlotData, PlotLayout, PlotCaptureHandle } from "../lib/plotTypes";
 import { labelFor } from "../lib/valueLabels";
+import { describeStale } from "../lib/resultStamp";
+import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
+import { useStampedResult } from "../hooks/useStampedResult";
 import PlotExporter from "./PlotExporter";
+import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
+
+/** panelCache key: the chart and the settings it was drawn with live together. */
+const PANEL = "subgroup_bar";
 
 export default function SubgroupBarPanel() {
   const session = useStore((s) => s.session);
@@ -22,25 +30,36 @@ function SubgroupBarPanelBody({ session }: { session: Session }) {
   const catCols = session.columns.filter((c) => isCategoricalKind(c.kind)).map((c) => c.name);
   const allCols = session.columns.map((c) => c.name);
 
-  // States
-  const [yCol, setYCol] = useState(allCols[0] ?? "");
-  const [yMode, setYMode] = useState("mean"); // "mean" | "percentage"
-  const [targetValue, setTargetValue] = useState("");
-  const [subgroupCol, setSubgroupCol] = useState(catCols[0] ?? "");
-  const [xaxisCol, setXaxisCol] = useState(catCols[1] ?? catCols[0] ?? "");
-  const [colorCol, setColorCol] = useState("");
-  const [errorType, setErrorType] = useState("ci"); // "ci" | "se" | "sd" | "none"
+  // Run settings are persisted with the chart: the chart survives a tab
+  // switch, and settings that did not would bring it back looking stale, with
+  // a Recompute that draws something else.
+  const [yCol, setYCol] = usePersistedPanelState(PANEL, "yCol", allCols[0] ?? "");
+  const [yMode, setYMode] = usePersistedPanelState(PANEL, "yMode", "mean"); // "mean" | "percentage"
+  const [targetValue, setTargetValue] = usePersistedPanelState(PANEL, "targetValue", "");
+  const [subgroupCol, setSubgroupCol] = usePersistedPanelState(PANEL, "subgroupCol", catCols[0] ?? "");
+  const [xaxisCol, setXaxisCol] = usePersistedPanelState(PANEL, "xaxisCol", catCols[1] ?? catCols[0] ?? "");
+  const [colorCol, setColorCol] = usePersistedPanelState(PANEL, "colorCol", "");
+  const [errorType, setErrorType] = usePersistedPanelState(PANEL, "errorType", "ci"); // "ci" | "se" | "sd" | "none"
+
+  const runParams = {
+    yCol, subgroupCol, xaxisCol, yMode, errorType,
+    colorCol: colorCol || undefined,
+    targetValue: yMode === "percentage" ? targetValue : undefined,
+  };
+  const {
+    result: plotData, setResult: setPlotData, stale, staleReasons: staleWhy,
+  } = useStampedResult<Record<string, unknown>>(PANEL, runParams);
 
   const [uniqueValues, setUniqueValues] = useState<string[]>([]);
-  const [plotData, setPlotData] = useState<Record<string, unknown> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [chartTitle, setChartTitle] = useState("");
+  // Written by the run, so kept with the chart it describes.
+  const [chartTitle, setChartTitle] = usePersistedPanelState(PANEL, "chartTitle", "");
 
   // States for custom labels
-  const [customTitle, setCustomTitle] = useState("");
-  const [customYLabel, setCustomYLabel] = useState("");
-  const [customXLabel, setCustomXLabel] = useState("");
+  const [customTitle, setCustomTitle] = usePersistedPanelState(PANEL, "customTitle", "");
+  const [customYLabel, setCustomYLabel] = usePersistedPanelState(PANEL, "customYLabel", "");
+  const [customXLabel, setCustomXLabel] = usePersistedPanelState(PANEL, "customXLabel", "");
 
   // States for legend
   const [showLegend, setShowLegend] = useState<boolean>(true);
@@ -94,13 +113,20 @@ function SubgroupBarPanelBody({ session }: { session: Session }) {
   };
   const resetChartWidth = () => { setChartWidth(800); setIsAutoWidth(true); };
 
+  // The Y column the mode and target were chosen for. It starts at the
+  // restored column, so a remount keeps the persisted mode and target (the
+  // chart on screen was drawn with them); only picking another column resets.
+  const modeForCol = useRef(yCol);
+
   // Auto-switch mode or fetch unique values when Y column changes
   useEffect(() => {
     if (!yCol) return;
+    const fresh = modeForCol.current !== yCol;
+    modeForCol.current = yCol;
     const colMeta = session.columns.find((c) => c.name === yCol);
     if (colMeta?.kind === "categorical") {
       setYMode("percentage");
-    } else {
+    } else if (fresh) {
       setYMode("mean");
     }
     
@@ -109,13 +135,13 @@ function SubgroupBarPanelBody({ session }: { session: Session }) {
       .then((res) => {
         const vals = (res.data as unknown[]).map((v) => String(v));
         setUniqueValues(vals);
-        setTargetValue(vals[0] ?? "");
+        setTargetValue((prev) => (!fresh && vals.includes(prev) ? prev : vals[0] ?? ""));
       })
       .catch(() => {
         setUniqueValues([]);
-        setTargetValue("");
+        setTargetValue((prev) => (fresh ? "" : prev));
       });
-  }, [yCol, session.session_id, session.columns]);
+  }, [yCol, session.session_id, session.columns, setYMode, setTargetValue]);
 
   // Fetch unique values if mode changes to percentage
   useEffect(() => {
@@ -124,11 +150,11 @@ function SubgroupBarPanelBody({ session }: { session: Session }) {
         .then((res) => {
           const vals = (res.data as unknown[]).map((v) => String(v));
           setUniqueValues(vals);
-          setTargetValue(vals[0] ?? "");
+          setTargetValue((prev) => (vals.includes(prev) ? prev : vals[0] ?? ""));
         })
         .catch(() => {});
     }
-  }, [yMode, yCol, session.session_id, uniqueValues.length]);
+  }, [yMode, yCol, session.session_id, uniqueValues.length, setTargetValue]);
 
   // ResizeObserver to sync manual drag-resize with states and exporter
   useEffect(() => {
@@ -684,8 +710,14 @@ function SubgroupBarPanelBody({ session }: { session: Session }) {
       </div>
 
       {/* Plot area with custom sizing and resizing handle */}
-      <div className="flex-1 min-w-0" style={{ maxWidth: "100%" }}>
+      <div className="flex-1 min-w-0 space-y-3" style={{ maxWidth: "100%" }}>
+        {plotData && stale && (
+          <StaleResultNotice reasons={staleWhy} onRecompute={run} busy={loading} what="This chart" />
+        )}
         {traces ? (
+          // The PNG/TIFF exporter and the modebar camera both close while the
+          // chart is out of date.
+          <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
           <div 
             ref={plotContainerRef}
             className="panel relative flex flex-col justify-between bg-white border border-gray-200 shadow-sm"
@@ -724,6 +756,7 @@ function SubgroupBarPanelBody({ session }: { session: Session }) {
               title="Drag the red line to resize the chart width • Double-click to reset"
             />
           </div>
+          </StaleGuard>
         ) : (
           <div className="panel min-h-[480px] flex flex-col items-center justify-center text-slate-400 p-8 text-center bg-white border border-gray-200 shadow-sm rounded-2xl relative overflow-hidden">
             {/* High-Fidelity SVG Preview Illustration */}

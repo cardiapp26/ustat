@@ -1,9 +1,10 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
 import { server } from '../test/server'
 import { clearSession, installSession } from '../test/testUtils'
+import { useStore } from '../store'
 import DecisionCurvePanel from './DecisionCurvePanel'
 
 afterEach(() => clearSession())
@@ -200,5 +201,91 @@ describe('DecisionCurvePanel', () => {
     await waitFor(() =>
       expect(screen.getByText('Need at least 20 complete validation observations.')).toBeInTheDocument(),
     )
+  })
+
+  it('closes the net benefit chart exports once the data changes under the curve', async () => {
+    installSession()
+    server.use(http.post('/api/decision_curve/dca', () => HttpResponse.json(baseResult)))
+
+    const user = userEvent.setup()
+    render(<DecisionCurvePanel />)
+    const selects = screen.getAllByRole('combobox')
+    await user.selectOptions(selects[0], 'AGE')
+    await user.selectOptions(selects[1], 'GROUP')
+    await user.selectOptions(selects[2], 'LDL')
+    await user.click(screen.getByRole('button', { name: /run decision curve analysis/i }))
+    await screen.findByText('Clinical Utility Summary')
+
+    const exports = () => [
+      screen.getByRole('button', { name: '↓' }),
+      screen.getByRole('button', { name: '⧉' }),
+    ]
+    for (const b of exports()) expect(b).toBeEnabled()
+
+    act(() => useStore.getState().bumpDataVersion())
+
+    expect(await screen.findByText(/This decision curve was computed before the data changed/)).toBeInTheDocument()
+    for (const b of exports()) expect(b).toBeDisabled()
+  })
+
+  it('keeps a curve and its inputs across a remount, and flags it once they are edited', async () => {
+    installSession()
+    server.use(http.post('/api/decision_curve/dca', () => HttpResponse.json(baseResult)))
+
+    const user = userEvent.setup()
+    const { unmount } = render(<DecisionCurvePanel />)
+    const selects = screen.getAllByRole('combobox')
+    await user.selectOptions(selects[0], 'AGE')
+    await user.selectOptions(selects[1], 'GROUP')
+    await user.selectOptions(selects[2], 'LDL')
+    await user.click(screen.getByRole('button', { name: /run decision curve analysis/i }))
+    await screen.findByText('Clinical Utility Summary')
+    unmount()
+
+    render(<DecisionCurvePanel />)
+    expect(screen.getByText('Clinical Utility Summary')).toBeInTheDocument()
+    expect(screen.queryByText(/Out of date\./)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '↓' })).toBeEnabled()
+
+    await user.selectOptions(screen.getAllByRole('combobox')[2], 'DM')
+    expect(await screen.findByText(/before the analysis settings changed/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '↓' })).toBeDisabled()
+  })
+
+  it('closes the integrated validation chart exports once the data changes', async () => {
+    installSession()
+    server.use(
+      http.post('/api/decision_curve/integrated_extval_dca', () =>
+        HttpResponse.json({
+          n_validation: 42,
+          external_validation: { n_validation: 42, validation_c_index: 0.71 },
+          decision_curve: {
+            curves: {
+              thresholds: [0.1, 0.2, 0.3],
+              model_net_benefit: [0.3, 0.25, 0.1],
+              treat_all_net_benefit: [0.2, 0.1, 0.0],
+              treat_none_net_benefit: [0, 0, 0],
+            },
+            summary: { max_net_benefit: 0.3, max_net_benefit_threshold: 0.1 },
+          },
+        }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<DecisionCurvePanel />)
+    await user.click(screen.getByRole('button', { name: /ext-val \+ dca/i }))
+    const selects = screen.getAllByRole('combobox')
+    await user.selectOptions(selects[0], 'AGE')
+    await user.selectOptions(selects[1], 'GROUP')
+    await user.selectOptions(selects[2], 'LDL')
+    await user.click(screen.getByRole('button', { name: /run external validation \+ dca/i }))
+    await screen.findByText('External Validation')
+    expect(screen.getByRole('button', { name: '↓' })).toBeEnabled()
+
+    act(() => useStore.getState().bumpDataVersion())
+
+    expect(await screen.findByText(/This validation and decision curve was computed before the data changed/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '↓' })).toBeDisabled()
   })
 })

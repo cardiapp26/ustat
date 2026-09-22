@@ -2,12 +2,17 @@ import { useState, useRef, type ReactNode } from "react";
 import { useStore, isNumericKind } from "../store";
 import { usePlotLayout, usePalette } from "../plotStyle";
 import { runArima, runDecompose, runStationarity } from "../api";
+import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
+import { useStampedResult } from "../hooks/useStampedResult";
+import { describeStale } from "../lib/resultStamp";
 import { Tip } from "./Tip";
 import TitledPlot from "./TitledPlot";
 import { fmtP } from "../lib/format";
 import type { PlotCaptureHandle } from "../lib/plotTypes";
 import ResultExporter from "./ResultExporter";
 import ThreeCol from "./ThreeCol";
+import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
 
 type Mode = "arima" | "decompose" | "stationarity";
 
@@ -44,21 +49,37 @@ export default function TimeSeriesPanel() {
   const sid = session?.session_id ?? "";
   const numCols = columns.filter((c) => isNumericKind(c.kind)).map((c) => c.name);
 
-  const [mode, setMode] = useState<Mode>("arima");
-  const [valueCol, setValueCol] = useState(numCols[0] ?? "");
-  const [timeCol, setTimeCol] = useState("");
+  // Persisted with the result. `mode` above all: it picks how the result is
+  // drawn, and a restored decomposition read under the default ARIMA layout
+  // would throw on its missing coefficient table.
+  const [mode, setMode] = usePersistedPanelState<Mode>("timeseries", "mode", "arima");
+  const [valueCol, setValueCol] = usePersistedPanelState("timeseries", "valueCol", numCols[0] ?? "");
+  const [timeCol, setTimeCol] = usePersistedPanelState("timeseries", "timeCol", "");
   // ARIMA params
-  const [p, setP] = useState(1); const [d, setD] = useState(1); const [q, setQ] = useState(1);
-  const [P, setPP] = useState(0); const [D, setDD] = useState(0); const [Q, setQQ] = useState(0); const [s, setS] = useState(0);
-  const [auto, setAuto] = useState(false);
-  const [steps, setSteps] = useState(12);
+  const [p, setP] = usePersistedPanelState("timeseries", "p", 1);
+  const [d, setD] = usePersistedPanelState("timeseries", "d", 1);
+  const [q, setQ] = usePersistedPanelState("timeseries", "q", 1);
+  const [P, setPP] = usePersistedPanelState("timeseries", "P", 0);
+  const [D, setDD] = usePersistedPanelState("timeseries", "D", 0);
+  const [Q, setQQ] = usePersistedPanelState("timeseries", "Q", 0);
+  const [s, setS] = usePersistedPanelState("timeseries", "s", 0);
+  const [auto, setAuto] = usePersistedPanelState("timeseries", "auto", false);
+  const [steps, setSteps] = usePersistedPanelState("timeseries", "steps", 12);
   // decompose
-  const [period, setPeriod] = useState(12);
-  const [method, setMethod] = useState<"stl" | "classical">("stl");
+  const [period, setPeriod] = usePersistedPanelState("timeseries", "period", 12);
+  const [method, setMethod] = usePersistedPanelState<"stl" | "classical">("timeseries", "method", "stl");
   // stationarity
-  const [nLags, setNLags] = useState(24);
+  const [nLags, setNLags] = usePersistedPanelState("timeseries", "nLags", 24);
 
-  const [result, setResult] = useState<Record<string, unknown> | null>(null);
+  // One result slot shared by the three analyses (switching mode clears it),
+  // so the stamp carries the mode and only the options that mode sends.
+  const series = { mode, valueCol, timeCol };
+  const runParams = mode === "arima" ? { ...series, p, d, q, P, D, Q, s, auto, steps }
+    : mode === "decompose" ? { ...series, period, method }
+    : { ...series, nLags };
+  const {
+    result, setResult, stale, staleReasons: staleWhy,
+  } = useStampedResult<Record<string, unknown>>("timeseries", runParams);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -295,6 +316,15 @@ export default function TimeSeriesPanel() {
         middle={
           result ? (
             <div className="space-y-3">
+              {stale && (
+                <StaleResultNotice
+                  reasons={staleWhy}
+                  onRecompute={run}
+                  busy={loading}
+                  what="This time-series analysis"
+                />
+              )}
+              <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
               {mode === "arima" && arimaPlot()}
               {mode === "decompose" && decompPlot()}
               {mode === "stationarity" && (
@@ -303,6 +333,7 @@ export default function TimeSeriesPanel() {
                   {stem((result.pacf as StemPoint[]) ?? [], "PACF (partial autocorrelation)", pacfRef, "PACF")}
                 </>
               )}
+              </StaleGuard>
             </div>
           ) : (
             <div className="flex items-center justify-center h-[360px] border border-dashed border-gray-200 rounded-lg text-xs text-gray-400">
@@ -312,7 +343,7 @@ export default function TimeSeriesPanel() {
         }
         right={
           result ? (
-            <>
+            <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
               {mode === "arima" && (
                 <>
                   <div className="panel space-y-2">
@@ -395,7 +426,7 @@ export default function TimeSeriesPanel() {
                   {result.interpretation}
                 </div>
               )}
-            </>
+            </StaleGuard>
           ) : null
         }
       />

@@ -7,7 +7,12 @@ import {
   runExternalValidationSurvival,
 } from "../api";
 import ResultExporter from "./ResultExporter";
+import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
 import { fmtP } from "../lib/format";
+import { describeStale } from "../lib/resultStamp";
+import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
+import { useStampedResult } from "../hooks/useStampedResult";
 
 /**
  * Internal & external validation for a user-fitted prediction model.
@@ -77,6 +82,12 @@ const Tile = ({ label, value, sub, tone }: { label: string; value: string; sub?:
 const fmt = (x: unknown, d = 3) => (typeof x === "number" && isFinite(x) ? x.toFixed(d) : "—");
 const signed = (x: unknown, d = 3) => (typeof x === "number" && isFinite(x) ? (x >= 0 ? "+" : "") + x.toFixed(d) : "—");
 
+/** An optional numeric field as the request sends it: absent when blank. */
+const optNum = (raw: string): number | undefined => (raw.trim() === "" ? undefined : parseFloat(raw));
+
+type ExportRow = (string | number)[];
+const EXPORT_HEADERS = ["Measure", "Value"];
+
 function errDetail(e: unknown, fallback: string): string {
   if (e && typeof e === "object") {
     const detail = (e as { response?: { data?: { detail?: unknown } } }).response?.data?.detail;
@@ -140,19 +151,29 @@ function InternalTab() {
   const allCols = (session?.columns ?? []).map((c) => c.name);
   const sid = session?.session_id ?? "";
 
-  const [modelType, setModelType] = useState<"logistic" | "cox">("logistic");
-  const [outcome, setOutcome] = useState("");
-  const [durationCol, setDurationCol] = useState("");
-  const [eventCol, setEventCol] = useState("");
-  const [preds, setPreds] = useState<string[]>([]);
-  const [nBoot, setNBoot] = useState(200);
-  const [cv, setCv] = useState(true);
-  const [folds, setFolds] = useState(5);
-  const [result, setResult] = useState<InternalResult | null>(null);
+  // Every tab's result survives a tab switch, so its inputs are kept with it:
+  // blank inputs would bring the result back stale, and Recompute would send
+  // an empty request.
+  const P = "validation_internal";
+  const [modelType, setModelType] = usePersistedPanelState<"logistic" | "cox">(P, "modelType", "logistic");
+  const [outcome, setOutcome] = usePersistedPanelState(P, "outcome", "");
+  const [durationCol, setDurationCol] = usePersistedPanelState(P, "durationCol", "");
+  const [eventCol, setEventCol] = usePersistedPanelState(P, "eventCol", "");
+  const [preds, setPreds] = usePersistedPanelState<string[]>(P, "preds", []);
+  const [nBoot, setNBoot] = usePersistedPanelState(P, "nBoot", 200);
+  const [cv, setCv] = usePersistedPanelState(P, "cv", true);
+  const [folds, setFolds] = usePersistedPanelState(P, "folds", 5);
+  const isCox = modelType === "cox";
+  const runParams = {
+    modelType, preds, nBoot, cvFolds: cv ? folds : 0,
+    outcome: isCox ? undefined : outcome,
+    durationCol: isCox ? durationCol : undefined,
+    eventCol: isCox ? eventCol : undefined,
+  };
+  const { result, setResult, stale, staleReasons: staleWhy } = useStampedResult<InternalResult>(P, runParams);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const isCox = modelType === "cox";
   const reserved = isCox ? [durationCol, eventCol] : [outcome];
   const togglePred = (c: string) =>
     setPreds(preds.includes(c) ? preds.filter((x) => x !== c) : [...preds, c]);
@@ -173,8 +194,8 @@ function InternalTab() {
     } finally { setLoading(false); }
   };
 
-  const canRun = !!sid && preds.length > 0 && !loading &&
-    (isCox ? !!durationCol && !!eventCol : !!outcome);
+  const ready = !!sid && preds.length > 0 && (isCox ? !!durationCol && !!eventCol : !!outcome);
+  const canRun = ready && !loading;
 
   const metric: MetricKey = isCox ? "c_index" : "auc";
   const metricLabel = isCox ? "C-index" : "AUC";
@@ -278,12 +299,15 @@ function InternalTab() {
       </div>
 
       <div className="flex-1 min-w-0 space-y-4">
+        {result && stale && (
+          <StaleResultNotice reasons={staleWhy} onRecompute={ready ? run : undefined} busy={loading} what="This validation" />
+        )}
         {!result ? (
           <div className="panel h-64 flex items-center justify-center text-gray-400 text-sm text-center">
             Pick a model type, outcome/predictors, and run bootstrap + CV to get optimism-corrected performance.
           </div>
         ) : (
-          <>
+          <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
             <div className={`panel border ${heavy ? "border-amber-300 bg-amber-50" : "border-emerald-300 bg-emerald-50"}`}>
               <p className={`text-sm leading-relaxed ${heavy ? "text-amber-900" : "text-emerald-900"}`}>
                 {result.interpretation}
@@ -326,8 +350,9 @@ function InternalTab() {
               <div className={`text-lg font-semibold ${heavy ? "text-amber-600" : "text-emerald-600"}`}>{signed(gap)}</div>
             </div>
 
-            <ResultExporter title="internal_validation" />
-          </>
+            <ResultExporter title="internal_validation" headers={EXPORT_HEADERS}
+              rows={internalRows(result, isCox, metric, metricLabel)} />
+          </StaleGuard>
         )}
       </div>
     </div>
@@ -364,11 +389,13 @@ function ExternalTab() {
   const allCols = (session?.columns ?? []).map((c) => c.name);
   const sid = session?.session_id ?? "";
 
-  const [outcome, setOutcome] = useState("");
-  const [probColumn, setProbColumn] = useState("");
-  const [devAuc, setDevAuc] = useState("");
-  const [devSlope, setDevSlope] = useState("");
-  const [result, setResult] = useState<ExternalResult | null>(null);
+  const P = "validation_external";
+  const [outcome, setOutcome] = usePersistedPanelState(P, "outcome", "");
+  const [probColumn, setProbColumn] = usePersistedPanelState(P, "probColumn", "");
+  const [devAuc, setDevAuc] = usePersistedPanelState(P, "devAuc", "");
+  const [devSlope, setDevSlope] = usePersistedPanelState(P, "devSlope", "");
+  const runParams = { outcome, probColumn, devAuc: optNum(devAuc), devSlope: optNum(devSlope) };
+  const { result, setResult, stale, staleReasons: staleWhy } = useStampedResult<ExternalResult>(P, runParams);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -385,7 +412,8 @@ function ExternalTab() {
     } finally { setLoading(false); }
   };
 
-  const canRun = !!sid && !!outcome && !!probColumn && probColumn !== outcome && !loading;
+  const ready = !!sid && !!outcome && !!probColumn && probColumn !== outcome;
+  const canRun = ready && !loading;
   const ok = result?.calibration?.acceptable;
   const hl = result?.calibration?.hosmer_lemeshow;
 
@@ -442,12 +470,15 @@ function ExternalTab() {
       </div>
 
       <div className="flex-1 min-w-0 space-y-4">
+        {result && stale && (
+          <StaleResultNotice reasons={staleWhy} onRecompute={ready ? run : undefined} busy={loading} what="This external validation" />
+        )}
         {!result ? (
           <div className="panel h-64 flex items-center justify-center text-gray-400 text-sm text-center">
             Select the outcome and predicted-probability column from the validation cohort, then run.
           </div>
         ) : (
-          <>
+          <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
             <div className={`panel border ${ok ? "border-emerald-300 bg-emerald-50" : "border-amber-300 bg-amber-50"}`}>
               <p className={`text-sm leading-relaxed ${ok ? "text-emerald-900" : "text-amber-900"}`}>
                 {result.result_text}
@@ -491,8 +522,8 @@ function ExternalTab() {
               </div>
             )}
 
-            <ResultExporter title="external_validation_logistic" />
-          </>
+            <ResultExporter title="external_validation_logistic" headers={EXPORT_HEADERS} rows={externalRows(result)} />
+          </StaleGuard>
         )}
       </div>
     </div>
@@ -508,11 +539,13 @@ function ReclassificationTab() {
   const allCols = (session?.columns ?? []).map((c) => c.name);
   const sid = session?.session_id ?? "";
 
-  const [outcome, setOutcome] = useState("");
-  const [probOld, setProbOld] = useState("");
-  const [probNew, setProbNew] = useState("");
-  const [cutoff, setCutoff] = useState("0.5");
-  const [result, setResult] = useState<NriIdiResult | null>(null);
+  const P = "validation_nri";
+  const [outcome, setOutcome] = usePersistedPanelState(P, "outcome", "");
+  const [probOld, setProbOld] = usePersistedPanelState(P, "probOld", "");
+  const [probNew, setProbNew] = usePersistedPanelState(P, "probNew", "");
+  const [cutoff, setCutoff] = usePersistedPanelState(P, "cutoff", "0.5");
+  const runParams = { outcome, probOld, probNew, cutoff: optNum(cutoff) };
+  const { result, setResult, stale, staleReasons: staleWhy } = useStampedResult<NriIdiResult>(P, runParams);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -530,8 +563,9 @@ function ReclassificationTab() {
     } finally { setLoading(false); }
   };
 
-  const canRun = !!sid && !!outcome && !!probOld && !!probNew &&
-    probOld !== probNew && probOld !== outcome && probNew !== outcome && !loading;
+  const ready = !!sid && !!outcome && !!probOld && !!probNew &&
+    probOld !== probNew && probOld !== outcome && probNew !== outcome;
+  const canRun = ready && !loading;
 
   const counts = result?.reclassification_counts;
   const nriPositive = (result?.nri?.estimate ?? 0) > 0;
@@ -591,12 +625,15 @@ function ReclassificationTab() {
       </div>
 
       <div className="flex-1 min-w-0 space-y-4">
+        {result && stale && (
+          <StaleResultNotice reasons={staleWhy} onRecompute={ready ? run : undefined} busy={loading} what="This NRI / IDI comparison" />
+        )}
         {!result ? (
           <div className="panel h-64 flex items-center justify-center text-gray-400 text-sm text-center">
             Select the outcome and the two predicted-probability columns (old vs new model), then run.
           </div>
         ) : (
-          <>
+          <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
             <div className={`panel border ${nriPositive ? "border-emerald-300 bg-emerald-50" : "border-amber-300 bg-amber-50"}`}>
               <p className={`text-sm leading-relaxed ${nriPositive ? "text-emerald-900" : "text-amber-900"}`}>
                 {nriPositive
@@ -642,8 +679,8 @@ function ReclassificationTab() {
               </div>
             )}
 
-            <ResultExporter title="nri_idi" />
-          </>
+            <ResultExporter title="nri_idi" headers={EXPORT_HEADERS} rows={nriRows(result)} />
+          </StaleGuard>
         )}
       </div>
     </div>
@@ -664,13 +701,21 @@ function ExternalSurvivalTab() {
   const allCols = (session?.columns ?? []).map((c) => c.name);
   const sid = session?.session_id ?? "";
 
-  const [durationCol, setDurationCol] = useState("");
-  const [eventCol, setEventCol] = useState("");
-  const [lpCol, setLpCol] = useState("");
-  const [timePoints, setTimePoints] = useState("");
-  const [devC, setDevC] = useState("");
-  const [devSlope, setDevSlope] = useState("");
-  const [result, setResult] = useState<ExternalSurvivalResult | null>(null);
+  const P = "validation_external_survival";
+  const [durationCol, setDurationCol] = usePersistedPanelState(P, "durationCol", "");
+  const [eventCol, setEventCol] = usePersistedPanelState(P, "eventCol", "");
+  const [lpCol, setLpCol] = usePersistedPanelState(P, "lpCol", "");
+  const [timePoints, setTimePoints] = usePersistedPanelState(P, "timePoints", "");
+  const [devC, setDevC] = usePersistedPanelState(P, "devC", "");
+  const [devSlope, setDevSlope] = usePersistedPanelState(P, "devSlope", "");
+  // Parsed as the request sends them, so "12, 24" and "12 24" are one setting.
+  const runParams = {
+    durationCol, eventCol, lpCol, timePoints: parseTimePoints(timePoints),
+    devC: optNum(devC), devSlope: optNum(devSlope),
+  };
+  const {
+    result, setResult, stale, staleReasons: staleWhy,
+  } = useStampedResult<ExternalSurvivalResult>(P, runParams);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -693,8 +738,9 @@ function ExternalSurvivalTab() {
     } finally { setLoading(false); }
   };
 
-  const canRun = !!sid && !!durationCol && !!eventCol && !!lpCol &&
-    lpCol !== durationCol && lpCol !== eventCol && durationCol !== eventCol && !loading;
+  const ready = !!sid && !!durationCol && !!eventCol && !!lpCol &&
+    lpCol !== durationCol && lpCol !== eventCol && durationCol !== eventCol;
+  const canRun = ready && !loading;
 
   // The service short-circuits with `{ error }` only — never render tiles then.
   const serviceError = result?.error;
@@ -769,6 +815,9 @@ function ExternalSurvivalTab() {
       </div>
 
       <div className="flex-1 min-w-0 space-y-4">
+        {result && stale && (
+          <StaleResultNotice reasons={staleWhy} onRecompute={ready ? run : undefined} busy={loading} what="This survival validation" />
+        )}
         {!result ? (
           <div className="panel h-64 flex items-center justify-center text-gray-400 text-sm text-center">
             Select duration, event, and the linear-predictor column from the validation cohort, then run.
@@ -778,7 +827,7 @@ function ExternalSurvivalTab() {
             <p className="text-sm text-amber-900 leading-relaxed">{serviceError}</p>
           </div>
         ) : (
-          <>
+          <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
             <div className="panel border border-emerald-300 bg-emerald-50">
               <p className="text-sm text-emerald-900 leading-relaxed">
                 {result.note ?? "External validation complete."}
@@ -823,10 +872,88 @@ function ExternalSurvivalTab() {
               </div>
             )}
 
-            <ResultExporter title="external_validation_survival" />
-          </>
+            <ResultExporter title="external_validation_survival" headers={EXPORT_HEADERS} rows={survivalRows(result)} />
+          </StaleGuard>
         )}
       </div>
     </div>
   );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Table exports: the tiles on screen, one measure per row
+// ─────────────────────────────────────────────────────────────────────────────
+
+function internalRows(r: InternalResult, isCox: boolean, metric: MetricKey, label: string): ExportRow[] {
+  return [
+    [`Apparent ${label}`, fmt(r.apparent?.[metric])],
+    [`Optimism (${label})`, signed(r.optimism?.[metric])],
+    [`Optimism-corrected ${label}`, fmt(r.corrected?.[metric])],
+    ...(r.cv ? [[`${r.cv.folds}-fold CV ${label}`, fmt(r.cv[metric])]] : []),
+    ...(isCox ? [] : [
+      ["Apparent calibration slope", fmt(r.apparent?.calibration_slope, 2)],
+      ["Optimism-corrected calibration slope", fmt(r.corrected?.calibration_slope, 2)],
+      ["Apparent Brier", fmt(r.apparent?.brier)],
+      ...(r.cv ? [["CV Brier", fmt(r.cv.brier)]] : []),
+    ]),
+    [`Overfitting gap (apparent - corrected ${label})`, signed(r.overfit_gap ?? 0)],
+    ["n", r.n],
+    ["Predictor terms", r.n_predictors],
+    ["Usable bootstraps", r.n_boot],
+  ];
+}
+
+function externalRows(r: ExternalResult): ExportRow[] {
+  const ci = r.discrimination?.auc_ci;
+  const hl = r.calibration?.hosmer_lemeshow;
+  return [
+    ["AUC", fmt(r.discrimination?.auc)],
+    ...(ci ? [["AUC 95% CI", `${fmt(ci[0])}–${fmt(ci[1])}`]] : []),
+    ...(r.dev_vs_val?.auc_drop != null ? [["Dev to validation AUC change", signed(-r.dev_vs_val.auc_drop)]] : []),
+    ...(r.dev_vs_val?.slope_shift != null ? [["Calibration slope shift vs dev", signed(r.dev_vs_val.slope_shift, 2)]] : []),
+    ["Calibration slope", fmt(r.calibration?.slope, 2)],
+    ["Calibration intercept", fmt(r.calibration?.intercept, 2)],
+    ["O / E ratio", fmt(r.calibration?.oe_ratio, 2)],
+    ["Brier", fmt(r.calibration?.brier)],
+    ...(hl ? [
+      [`Hosmer-Lemeshow chi-square (df ${hl.df})`, fmt(hl.chi2, 1)],
+      ["Hosmer-Lemeshow p", fmtP(hl.p)],
+    ] : []),
+    ["n", r.n],
+  ];
+}
+
+function nriRows(r: NriIdiResult): ExportRow[] {
+  const c = r.reclassification_counts;
+  return [
+    ["NRI", signed(r.nri?.estimate)],
+    ["NRI 95% CI", `${signed(r.nri?.ci_low)} to ${signed(r.nri?.ci_high)}`],
+    ["NRI in events", signed(r.nri?.contribution_events)],
+    ["NRI in non-events", signed(r.nri?.contribution_non_events)],
+    ["IDI", signed(r.idi?.estimate, 4)],
+    ["IDI 95% CI", `${signed(r.idi?.ci_low, 4)} to ${signed(r.idi?.ci_high, 4)}`],
+    ...(c ? [
+      ["Up in events", c.up_in_events],
+      ["Down in events", c.down_in_events],
+      ["Up in non-events", c.up_in_non_events],
+      ["Down in non-events", c.down_in_non_events],
+    ] : []),
+    ["Risk cutoff", fmt(r.cutoff_used, 2)],
+    ["n", r.n],
+    ["Test", r.test],
+  ];
+}
+
+function survivalRows(r: ExternalSurvivalResult): ExportRow[] {
+  const drop = r.performance_vs_dev;
+  return [
+    ["C-index", fmt(r.validation_c_index)],
+    ["Calibration slope", fmt(r.validation_calibration_slope, 2)],
+    ["Calibration intercept", fmt(r.validation_calibration_intercept, 2)],
+    ...(r.integrated_brier_score?.ibs != null ? [["Integrated Brier score", fmt(r.integrated_brier_score.ibs)]] : []),
+    ...(drop?.c_index_drop != null ? [["Dev to validation C-index change", signed(-drop.c_index_drop)]] : []),
+    ...(drop?.calibration_slope_shift != null ? [["Calibration slope shift vs dev", signed(drop.calibration_slope_shift, 2)]] : []),
+    ...(r.time_dependent_auc ?? []).map((p) => [`AUC at t = ${fmt(p.time, 2)}`, fmt(p.auc)]),
+    ["n", r.n_validation ?? ""],
+  ];
 }

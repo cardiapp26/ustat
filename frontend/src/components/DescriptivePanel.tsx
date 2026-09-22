@@ -8,11 +8,15 @@ import {
   type DescriptiveTab,
 } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
+import { useStampedResult } from "../hooks/useStampedResult";
 import { usePalette, usePlotLayout } from "../plotStyle";
 import api, { deleteColumn, renameColumn } from "../api";
 import ResultExporter from "./ResultExporter";
 import TitledPlot from "./TitledPlot";
+import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
 import { fmtP } from "../lib/format";
+import { describeStale } from "../lib/resultStamp";
 import { labelFor } from "../lib/valueLabels";
 import { categoryColors } from "../lib/categoryColors";
 import { waffleTraces, waterfallTraces, type WaffleLevel } from "../lib/unitTraces";
@@ -742,9 +746,16 @@ function ScatterView({
   const scatterCache = useStore((s) => s.panelCache.descriptive_numeric) as
     | Record<string, unknown>
     | undefined;
-  const [data,    setData]    = useState<ScatterResult | null>(null);
+  // Everything the /charts/scatter request is built from.
+  const scatterParams = { x: xCol, y: yCol, color, shape };
+  const {
+    result: data, setResult: setData, stale, staleReasons: staleWhy,
+  } = useStampedResult<ScatterResult>("descriptive_scatter", scatterParams);
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState<string | null>(null);
+  // The fetch below follows the selectors, not the data: an edit leaves the
+  // plot in place and stamped stale, and Recompute bumps this to refetch.
+  const [reloadTick, setReloadTick] = useState(0);
   const prevKey = useRef("");
   const scatterRequestIdRef = useRef(0);
   const scatterRef = useRef<PlotCaptureHandle | null>(null);
@@ -770,12 +781,11 @@ function ScatterView({
     if (!xCol || !yCol) {
       scatterRequestIdRef.current += 1;
       prevKey.current = "";
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- clear stale fetch result
-      setData((d) => (d === null ? d : null));
+      setData(null);
       setLoading(false);
       return;
     }
-    const key = `${xCol}|${yCol}|${color}|${shape}`;
+    const key = `${xCol}|${yCol}|${color}|${shape}|${reloadTick}`;
     if (key === prevKey.current) return;
     prevKey.current = key;
     const requestId = ++scatterRequestIdRef.current;
@@ -797,7 +807,10 @@ function ScatterView({
       .finally(() => {
         if (scatterRequestIdRef.current === requestId) setLoading(false);
       });
-  }, [xCol, yCol, color, shape, sessionId]);
+    // setData is left out on purpose: the one this run closes over belongs to
+    // the render whose selectors were sent, which is what the stamp must say.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [xCol, yCol, color, shape, sessionId, reloadTick]);
 
   const fmt = (v: number | null | undefined, d = 3) =>
     typeof v === "number" ? (Math.abs(v) < 0.001 && v !== 0 ? v.toExponential(2) : v.toFixed(d)) : "—";
@@ -929,8 +942,17 @@ function ScatterView({
         <div className="text-red-500 text-xs bg-red-50 rounded-lg p-3">{error}</div>
       )}
 
+      {data && !loading && stale && (
+        <StaleResultNotice
+          reasons={staleWhy}
+          onRecompute={() => setReloadTick((t) => t + 1)}
+          busy={loading}
+          what="This scatter plot"
+        />
+      )}
+
       {data && !loading && (
-        <>
+        <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
           <div className="flex gap-3 flex-wrap flex-shrink-0">
             {[
               { key: "n",         label: <i>n</i>,                       value: String(data.points.length) },
@@ -996,7 +1018,7 @@ function ScatterView({
               defaultYAxis={yCol}
             />
           </div>
-        </>
+        </StaleGuard>
       )}
     </div>
   );
@@ -1017,6 +1039,14 @@ const KIND_STYLE: Record<string, { label: string; cls: string }> = {
   text:        { label: "T", cls: "bg-gray-100 text-gray-500" },
   date:        { label: "D", cls: "bg-purple-100 text-purple-700" },
 };
+
+// The column summary is stamped with no settings. Choosing a column or cycling
+// its kind always goes through loadSummary, which clears the summary and fetches
+// it again, so a summary for other settings is never on screen; what can move
+// under the one that is shown is the data, the case filter and the engine, and
+// the stamp reads those from the store. Keeping the column out also keeps the
+// stamp honest when the response lands before the render that selected it.
+const SUMMARY_PARAMS = {};
 
 const COLUMN_LIST_MIN_WIDTH = 224;
 const COLUMN_LIST_DEFAULT_WIDTH = 320;
@@ -1073,7 +1103,13 @@ export default function DescriptivePanel() {
   const [nameTip, setNameTip] = useState<{ text: string; x: number; y: number } | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const selectedRef = useRef<string | null>(null);
-  const [summary, setSummary] = useState<ColumnSummary | null>(null);
+  const {
+    result: stampedSummary, setResult: setSummary, stale: summaryStale, staleReasons: summaryWhy,
+  } = useStampedResult<ColumnSummary>("descriptive_summary", SUMMARY_PARAMS);
+  // `selected` is not persisted, so a remount starts on no column and the
+  // effect further down loads the first one. The cached summary stays off
+  // screen until then rather than being drawn under a blank column name.
+  const summary = selected ? stampedSummary : null;
   // Drives which distribution sub-tabs are offered: box plot, violin and Q-Q
   // are numeric-only. While a summary is still loading this stays false, so
   // the tab bar is never disabled on a column whose kind is not known yet.
@@ -1379,7 +1415,7 @@ export default function DescriptivePanel() {
       .finally(() => {
         if (summaryRequestIdRef.current === requestId) setSummaryLoading(false);
       });
-  }, [session?.session_id]);
+  }, [session?.session_id, setSummary]);
 
   useLayoutEffect(() => {
     if (!renameCol) return;
@@ -1871,8 +1907,21 @@ export default function DescriptivePanel() {
                 Select a column to view distribution
               </div>
             )}
+            {!summaryLoading && summary && summaryStale && (
+              <div className="px-4 pt-2 flex-shrink-0">
+                <StaleResultNotice
+                  reasons={summaryWhy}
+                  onRecompute={() => { if (selected) loadSummary(selected); }}
+                  busy={summaryLoading}
+                  what="This summary"
+                />
+              </div>
+            )}
             {!summaryLoading && summary && (
-              <>
+              // The charts inside (icon array and ranked bars included) are
+              // remounted and refetched on every summary load, so this one
+              // stamp covers them too.
+              <StaleGuard stale={summaryStale} reason={describeStale(summaryWhy)}>
                 {/* Header - compacted to a single row */}
                 <div className="flex items-center justify-between px-4 py-2 border-b border-gray-200 flex-shrink-0">
                   <div className="flex items-center gap-2 text-sm">
@@ -2041,7 +2090,7 @@ export default function DescriptivePanel() {
                     Drag the red lines on the right and bottom to resize the plot area • Changes are remembered
                   </div>
                 </div>
-              </>
+              </StaleGuard>
             )}
           </>
         )}

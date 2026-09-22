@@ -1,9 +1,10 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
 import { server } from '../test/server'
 import { clearSession, installSession, makeSession } from '../test/testUtils'
+import { useStore } from '../store'
 import ROCPanel from './ROCPanel'
 
 afterEach(() => clearSession())
@@ -45,6 +46,23 @@ function checkboxFor(labelText: string, scope: HTMLElement = document.body): HTM
   const span = within(scope).getByText(labelText)
   const label = span.closest('label') as HTMLLabelElement
   return within(label).getByRole('checkbox') as HTMLInputElement
+}
+
+const singleCurve = {
+  auc: 0.82, ci_lower: 0.65, ci_upper: 0.95, curve,
+  optimal: { cutoff: 2.1, sensitivity: 0.8, specificity: 0.75 },
+  result_text: 'SCORE1 predicted OUTCOME (AUC = 0.82).',
+  n: 3, n_positive: 2, n_negative: 1,
+}
+
+function mockSingleCurve() {
+  server.use(http.post('/api/stats/roc', () => HttpResponse.json(singleCurve)))
+}
+
+async function runSingleCurve(user: ReturnType<typeof userEvent.setup>) {
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Run ROC' })).toBeEnabled())
+  await user.click(screen.getByRole('button', { name: 'Run ROC' }))
+  await screen.findByRole('button', { name: 'CSV' })
 }
 
 describe('ROCPanel', () => {
@@ -251,5 +269,131 @@ describe('ROCPanel', () => {
 
     await waitFor(() => expect(screen.getByText('0.88')).toBeInTheDocument())
     expect(screen.getAllByText('Combined Model').length).toBeGreaterThan(0)
+  })
+
+  it('closes every export of the curve and the DeLong comparison once the data changes', async () => {
+    // Both results used to sit in panelCache with no stamp, so a data edit
+    // left them exportable as if they described the data on screen.
+    installSession(rocSession())
+    mockNoMissing()
+    mockSingleCurve()
+    server.use(
+      http.post('/api/stats/roc_compare', () =>
+        HttpResponse.json({
+          score_1: 'SCORE1', score_2: 'SCORE2',
+          auc_1: 0.82, auc_2: 0.65,
+          ci_1_low: 0.65, ci_1_high: 0.95, ci_2_low: 0.5, ci_2_high: 0.8,
+          ci_diff_low: 0.01, ci_diff_high: 0.33,
+          difference: 0.17, z: 2.1, p: 0.036, n: 3, significant: true,
+          interpretation: 'SCORE1 outperformed SCORE2.',
+          curve_1: curve, curve_2: curve,
+        }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<ROCPanel />)
+    await runSingleCurve(user)
+    await user.click(screen.getByRole('button', { name: /AUC Comparison \(DeLong\)/ }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Run DeLong Test' })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: 'Run DeLong Test' }))
+    await screen.findByText('SCORE1 outperformed SCORE2.')
+
+    const exports = () => [
+      screen.getByRole('button', { name: 'CSV' }),
+      screen.getByRole('button', { name: 'XLSX' }),
+      screen.getByRole('button', { name: 'Copy' }),
+      // One chart per result: the single curve and the DeLong overlay.
+      ...screen.getAllByRole('button', { name: '↓' }),
+      ...screen.getAllByRole('button', { name: '⧉' }),
+    ]
+    expect(screen.getAllByRole('button', { name: '↓' })).toHaveLength(2)
+    for (const b of exports()) expect(b).toBeEnabled()
+
+    act(() => useStore.getState().bumpDataVersion())
+
+    await waitFor(() => expect(screen.getAllByText(/Out of date\./)).toHaveLength(2))
+    expect(screen.getByText(/This ROC curve was computed before the data changed/)).toBeInTheDocument()
+    expect(screen.getByText(/This DeLong comparison was computed before the data changed/)).toBeInTheDocument()
+    for (const b of exports()) expect(b).toBeDisabled()
+  })
+
+  it('brings a cached curve back out of date when the data changed while the tab was away', async () => {
+    installSession(rocSession())
+    mockNoMissing()
+    mockSingleCurve()
+
+    const user = userEvent.setup()
+    const { unmount } = render(<ROCPanel />)
+    await runSingleCurve(user)
+    unmount()
+
+    act(() => useStore.getState().bumpDataVersion())
+    render(<ROCPanel />)
+
+    // Still on screen (the number answers the question it was asked), but not
+    // as a current result.
+    expect(await screen.findByText(/Out of date\./)).toBeInTheDocument()
+    expect(screen.getByText('0.82')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'CSV' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Copy' })).toBeDisabled()
+  })
+
+  it('closes the multi-curve exports once the data changes under them', async () => {
+    installSession(rocSession())
+    mockNoMissing()
+    server.use(
+      http.post('/api/stats/roc', () => HttpResponse.json({ auc: 0.8, curve, ci_lower: 0.6, ci_upper: 0.9 })),
+      http.post('/api/stats/roc_multi_compare', () =>
+        HttpResponse.json({ pairs: [], scores: ['SCORE1', 'SCORE2'], n: 3, n_pairs: 1, p_adjust: 'holm' }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<ROCPanel />)
+    await user.click(screen.getByRole('button', { name: 'Multi-curve' }))
+    await user.click(checkboxFor('SCORE1'))
+    await user.click(checkboxFor('SCORE2'))
+    await waitFor(() => expect(screen.getByRole('button', { name: /Run 2 ROCs/ })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: /Run 2 ROCs/ }))
+    await screen.findByText('AUC Summary')
+
+    const exports = () => [
+      screen.getByRole('button', { name: 'CSV' }),
+      screen.getByRole('button', { name: '↓' }),
+    ]
+    for (const b of exports()) expect(b).toBeEnabled()
+
+    act(() => useStore.getState().bumpDataVersion())
+
+    expect(await screen.findByText(/This set of ROC curves was computed before the data changed/)).toBeInTheDocument()
+    for (const b of exports()) expect(b).toBeDisabled()
+  })
+
+  it('marks the combined model, and the figure it is drawn on, stale when its predictors change', async () => {
+    installSession(rocSession())
+    mockNoMissing()
+    server.use(http.post('/api/stats/roc_combined', () => HttpResponse.json({ auc: 0.88, curve })))
+
+    const user = userEvent.setup()
+    render(<ROCPanel />)
+    await user.click(screen.getByRole('button', { name: 'Multi-curve' }))
+    await user.click(screen.getByRole('button', { name: /Combined Model/ }))
+    const combinedPanel = screen.getByText('Variables').closest('div')!.parentElement as HTMLElement
+    await user.click(checkboxFor('SCORE1', combinedPanel))
+    await user.click(checkboxFor('SCORE2', combinedPanel))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Run Combined Model' })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: 'Run Combined Model' }))
+    await screen.findByText('0.88')
+    expect(screen.getByRole('button', { name: '↓' })).toBeEnabled()
+
+    // Renaming the model only relabels the curve: still current.
+    await user.type(screen.getByPlaceholderText('Combined Model'), ' v2')
+    expect(screen.queryByText(/Out of date\./)).not.toBeInTheDocument()
+
+    await user.click(checkboxFor('SCORE3', combinedPanel))
+
+    expect(await screen.findByText(/This combined model was computed before the analysis settings changed/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '↓' })).toBeDisabled()
   })
 })

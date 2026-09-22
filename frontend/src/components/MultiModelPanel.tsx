@@ -14,10 +14,14 @@
 import { useMemo, useState } from "react";
 import { analysisCols, isNumericKind, isCategoricalKind, useStore, type Session } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
+import { useStampedResult } from "../hooks/useStampedResult";
 import { runMultiModel } from "../api";
 import { Tip } from "./Tip";
 import ResultExporter from "./ResultExporter";
+import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
 import { fmtP, pCellTitle } from "../lib/format";
+import { describeStale } from "../lib/resultStamp";
 
 interface Effect {
   level: string; reference?: boolean;
@@ -60,7 +64,17 @@ function MultiModelPanelBody({ session }: { session: Session }) {
   const [timeCol, setTimeCol] = usePersistedPanelState<string>("multimodel", "time", "");
   const [models, setModels] = usePersistedPanelState<ModelSpec[]>("multimodel", "models", DEFAULT_MODELS);
 
-  const [result, setResult] = useState<MultiModelResult | null>(null);
+  // Model labels are left out: they only name the columns, and renaming
+  // "Model 1" after the fit changes no estimate. The follow-up time is only
+  // sent for a time-to-event outcome.
+  const runParams = {
+    kind, outcome, exposure, asLevels,
+    timeCol: kind === "survival" ? timeCol : null,
+    adjustments: models.map((m) => m.covariates),
+  };
+  const {
+    result, setResult, stale, staleReasons: staleWhy,
+  } = useStampedResult<MultiModelResult>("multimodel", runParams);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -219,8 +233,11 @@ function MultiModelPanelBody({ session }: { session: Session }) {
       </div>
 
       <div className="flex-1 min-w-0 space-y-3">
+        {result && stale && (
+          <StaleResultNotice reasons={staleWhy} onRecompute={run} busy={loading} what="This adjustment table" />
+        )}
         {result ? (
-          <>
+          <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
             <div className="panel">
               <div className="mb-2 flex items-center justify-between">
                 <h4 className="text-sm font-semibold text-gray-700">
@@ -289,7 +306,7 @@ function MultiModelPanelBody({ session }: { session: Session }) {
                 <p key={w} className="rounded bg-amber-50 px-2 py-1.5 text-[11px] leading-relaxed text-amber-800">{w}</p>
               ))}
             </div>
-          </>
+          </StaleGuard>
         ) : (
           <div className="panel py-16 text-center text-gray-400">
             <p className="mb-2 text-lg">🧱</p>

@@ -1,10 +1,14 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, type ReactNode } from "react";
 import Plot from "../PlotComponent";
 import TitledPlot from "./TitledPlot";
 import PlotExporter from "./PlotExporter";
 import { useStore, paletteOf, isNumericKind, type Session } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
+import { useStampedResult } from "../hooks/useStampedResult";
 import ResultExporter from "./ResultExporter";
+import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
+import CopyTextButton from "./CopyTextButton";
 import ThreeCol from "./ThreeCol";
 import { Tip, LabelTip, InfoBanner } from "./Tip";
 import {
@@ -15,6 +19,8 @@ import {
   getRawColumns,
 } from "../api";
 import { fmtP } from "../lib/format";
+import { describeStale } from "../lib/resultStamp";
+import { staleExportTitle, useStaleGuard } from "../lib/staleGuard";
 import type { PlotData, PlotCaptureHandle } from "../lib/plotTypes";
 
 // Reads the live theme, so a custom palette — whose colours live on the theme
@@ -65,6 +71,42 @@ function downloadCSV(filename: string, rows: string[][]): void {
   URL.revokeObjectURL(url);
 }
 
+/** The hand-rolled CSV downloads: not one of the shared exporters, so they
+ *  read the result's guard themselves and stay shut while it is stale. */
+function CsvButton({ onClick, className, children }: {
+  onClick: () => void;
+  className: string;
+  children: ReactNode;
+}) {
+  const guard = useStaleGuard();
+  return (
+    <button
+      onClick={() => { if (!guard.stale) onClick(); }}
+      disabled={guard.stale}
+      title={guard.stale ? staleExportTitle(guard.reason) : undefined}
+      className={`${className} disabled:opacity-40 disabled:pointer-events-none`}
+    >
+      {children}
+    </button>
+  );
+}
+
+/** Where a tab's "Out of date" line goes: above all three columns, with the
+ *  whole layout inside the guard (the left column holds only controls). */
+function StampedLayout({ notice, stale, reason, children }: {
+  notice: ReactNode;
+  stale: boolean;
+  reason: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="space-y-2">
+      {notice}
+      <StaleGuard stale={stale} reason={reason}>{children}</StaleGuard>
+    </div>
+  );
+}
+
 interface PairResult {
   var1: string;
   var2: string;
@@ -107,8 +149,18 @@ function PairwiseTab({ sessionId, columns }: { sessionId: string; columns: strin
     [sessionCols],
   );
   const hasOrdinalSelected = vars.some((v) => ordinalNames.has(v));
-  const [results, setResults] = useState<PairResult[]>([]);
-  const [activeIdx, setActiveIdx] = useState<number | null>(null);
+  // Listwise deletion is fixed, so the pairs and the method are the whole run.
+  const runParams = { vars, method };
+  const {
+    result, setResult, stale, staleReasons: staleWhy,
+  } = useStampedResult<PairResult[]>("correlation_pairwise", runParams);
+  // A column rename empties a cached list instead of nulling it: an empty
+  // list is "no result", not a result that can go out of date.
+  const results = result ?? [];
+  const hasResults = results.length > 0;
+  // The list now survives a tab switch; open it on its strongest pair
+  // instead of an empty chart beside a full table.
+  const [activeIdx, setActiveIdx] = useState<number | null>(() => (hasResults ? 0 : null));
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -119,7 +171,7 @@ function PairwiseTab({ sessionId, columns }: { sessionId: string; columns: strin
 
   const run = async () => {
     if (vars.length < 2) { setError("Select at least 2 variables"); return; }
-    setError(""); setResults([]); setActiveIdx(null); setLoading(true);
+    setError(""); setResult(null); setActiveIdx(null); setLoading(true);
 
     const pairs: [string, string][] = [];
     for (let i = 0; i < vars.length; i++)
@@ -143,7 +195,7 @@ function PairwiseTab({ sessionId, columns }: { sessionId: string; columns: strin
         parsed.push({ ...d, var1: pairs[i][0], var2: pairs[i][1], autoSwitched });
       });
       parsed.sort((a, b) => Math.abs(b.r) - Math.abs(a.r));
-      setResults(parsed);
+      setResult(parsed);
       if (parsed.length > 0) setActiveIdx(0);
     } catch {
       setError("Computation failed");
@@ -343,7 +395,7 @@ function PairwiseTab({ sessionId, columns }: { sessionId: string; columns: strin
     </div>
   );
 
-  const rightCol = results.length > 0 ? (
+  const rightCol = hasResults ? (
     <div className="space-y-3">
       {/* Results table */}
       <div className="panel">
@@ -453,7 +505,10 @@ function PairwiseTab({ sessionId, columns }: { sessionId: string; columns: strin
             <div className="bg-gray-50 border border-gray-200 rounded-xl px-3 py-2.5 mt-2">
               <div className="flex items-center justify-between mb-1">
                 <span className="text-[10px] font-semibold text-gray-400 uppercase">Results Paragraph</span>
-                <button onClick={() => navigator.clipboard.writeText(active.result_text!)} className="text-[10px] px-2 py-0.5 rounded border border-gray-300 text-gray-500 hover:bg-indigo-50 hover:text-indigo-600 transition-colors">Copy</button>
+                <CopyTextButton
+                  text={active.result_text}
+                  className="text-[10px] px-2 py-0.5 rounded border border-gray-300 text-gray-500 hover:bg-indigo-50 hover:text-indigo-600 transition-colors disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-gray-500"
+                />
               </div>
               <p className="text-xs text-gray-700 leading-relaxed font-sans">{active.result_text}</p>
             </div>
@@ -472,12 +527,20 @@ function PairwiseTab({ sessionId, columns }: { sessionId: string; columns: strin
   );
 
   return (
-    <ThreeCol
-      storageKey="CorrelationPanel.Pairwise"
-      left={leftCol}
-      middle={middleCol}
-      right={rightCol}
-    />
+    <StampedLayout
+      stale={stale}
+      reason={describeStale(staleWhy)}
+      notice={hasResults && stale && (
+        <StaleResultNotice reasons={staleWhy} onRecompute={run} busy={loading} what="These correlations" />
+      )}
+    >
+      <ThreeCol
+        storageKey="CorrelationPanel.Pairwise"
+        left={leftCol}
+        middle={middleCol}
+        right={rightCol}
+      />
+    </StampedLayout>
   );
 }
 
@@ -502,7 +565,11 @@ function MatrixTab({ sessionId, columns }: { sessionId: string; columns: string[
   const [selected, setSelected] = usePersistedPanelState<string[]>("correlation_matrix", "selected", columns.slice(0, Math.min(8, columns.length)));
   const [colFilter, setColFilter] = useState("");
   const [method, setMethod] = usePersistedPanelState<string>("correlation_matrix", "method", "pearson");
-  const [data, setData] = useState<MatrixResult | null>(null);
+  // Heatmap vs scatter is a view of the same matrix, so it stays out.
+  const runParams = { selected, method };
+  const {
+    result: data, setResult: setData, stale, staleReasons: staleWhy,
+  } = useStampedResult<MatrixResult>("correlation_matrix", runParams);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [displayMode, setDisplayMode] = usePersistedPanelState<"heatmap" | "splom">("correlation_matrix", "displayMode", "heatmap");
@@ -681,12 +748,12 @@ function MatrixTab({ sessionId, columns }: { sessionId: string; columns: string[
       <div className="panel flex flex-col gap-2">
         <div className="flex items-center justify-between flex-shrink-0">
           <span className="text-xs font-semibold text-gray-500">Correlation Matrix</span>
-          <button
+          <CsvButton
             onClick={exportMatrix}
             className="flex items-center gap-1 text-[10px] px-2 py-1 rounded border border-gray-300 text-gray-500 hover:bg-gray-50 hover:text-indigo-600 hover:border-indigo-300 transition-colors"
           >
             ↓ Export CSV
-          </button>
+          </CsvButton>
         </div>
         <TitledPlot
           plotRefOut={corrHeatmapRef}
@@ -747,10 +814,10 @@ function MatrixTab({ sessionId, columns }: { sessionId: string; columns: string[
           </span>
           <div className="flex items-center gap-2">
             {rawLoading && <span className="text-[10px] text-gray-400 animate-pulse">Loading data…</span>}
-            <button onClick={exportMatrix}
+            <CsvButton onClick={exportMatrix}
               className="flex items-center gap-1 text-[10px] px-2 py-1 rounded border border-gray-300 text-gray-500 hover:bg-gray-50 hover:text-indigo-600 hover:border-indigo-300 transition-colors">
               ↓ Export CSV
-            </button>
+            </CsvButton>
           </div>
         </div>
         {rawData && Object.keys(rawData).length >= 2 ? (
@@ -849,12 +916,20 @@ function MatrixTab({ sessionId, columns }: { sessionId: string; columns: string[
   );
 
   return (
-    <ThreeCol
-      storageKey="CorrelationPanel.Matrix"
-      left={leftCol}
-      middle={middleCol}
-      right={rightCol}
-    />
+    <StampedLayout
+      stale={stale}
+      reason={describeStale(staleWhy)}
+      notice={data && stale && (
+        <StaleResultNotice reasons={staleWhy} onRecompute={run} busy={loading} what="This correlation matrix" />
+      )}
+    >
+      <ThreeCol
+        storageKey="CorrelationPanel.Matrix"
+        left={leftCol}
+        middle={middleCol}
+        right={rightCol}
+      />
+    </StampedLayout>
   );
 }
 
@@ -880,9 +955,14 @@ function ICCTab({ sessionId, columns }: { sessionId: string; columns: string[] }
   const plotBg = usePlotBg();
   const showGrid = useStore((s) => s.showGrid);
   const blandAltmanRef = useRef<PlotCaptureHandle | null>(null);
-  const [rater1, setRater1] = useState(columns[0] ?? "");
-  const [rater2, setRater2] = useState(columns[1] ?? "");
-  const [data, setData] = useState<ICCResult | null>(null);
+  // Persisted with the result: a cached ICC shown beside raters reset to the
+  // first two columns would read as settings-changed and mislabel its plot.
+  const [rater1, setRater1] = usePersistedPanelState<string>("correlation_icc", "rater1", columns[0] ?? "");
+  const [rater2, setRater2] = usePersistedPanelState<string>("correlation_icc", "rater2", columns[1] ?? "");
+  const runParams = { rater1, rater2 };
+  const {
+    result: data, setResult: setData, stale, staleReasons: staleWhy,
+  } = useStampedResult<ICCResult>("correlation_icc", runParams);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -998,7 +1078,7 @@ function ICCTab({ sessionId, columns }: { sessionId: string; columns: string[] }
     <div className="panel space-y-3 text-xs">
       <div className="flex items-center justify-between">
         <p className="text-gray-400 text-[10px] font-semibold uppercase tracking-wide">ICC(2,1) Result</p>
-        <button onClick={exportICC} className="text-[10px] px-1.5 py-0.5 rounded border border-gray-300 text-gray-500 hover:bg-gray-50 hover:text-indigo-600 hover:border-indigo-300 transition-colors">↓ CSV</button>
+        <CsvButton onClick={exportICC} className="text-[10px] px-1.5 py-0.5 rounded border border-gray-300 text-gray-500 hover:bg-gray-50 hover:text-indigo-600 hover:border-indigo-300 transition-colors">↓ CSV</CsvButton>
       </div>
       <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-3.5 text-center">
         <p className="text-[10px] font-semibold text-indigo-900 uppercase">Intraclass Correlation (ICC)</p>
@@ -1043,12 +1123,20 @@ function ICCTab({ sessionId, columns }: { sessionId: string; columns: string[] }
   );
 
   return (
-    <ThreeCol
-      storageKey="CorrelationPanel.ICC"
-      left={leftCol}
-      middle={middleCol}
-      right={rightCol}
-    />
+    <StampedLayout
+      stale={stale}
+      reason={describeStale(staleWhy)}
+      notice={data && stale && (
+        <StaleResultNotice reasons={staleWhy} onRecompute={run} busy={loading} what="This ICC" />
+      )}
+    >
+      <ThreeCol
+        storageKey="CorrelationPanel.ICC"
+        left={leftCol}
+        middle={middleCol}
+        right={rightCol}
+      />
+    </StampedLayout>
   );
 }
 
@@ -1068,9 +1156,13 @@ function KappaTab({ sessionId, columns }: { sessionId: string; columns: string[]
   const plotBg = usePlotBg();
   const showGrid = useStore((s) => s.showGrid);
   const kappaMatrixRef = useRef<PlotCaptureHandle | null>(null);
-  const [rater1, setRater1] = useState(columns[0] ?? "");
-  const [rater2, setRater2] = useState(columns[1] ?? "");
-  const [data, setData] = useState<KappaResult | null>(null);
+  // Persisted with the result, as in the ICC tab.
+  const [rater1, setRater1] = usePersistedPanelState<string>("correlation_kappa", "rater1", columns[0] ?? "");
+  const [rater2, setRater2] = usePersistedPanelState<string>("correlation_kappa", "rater2", columns[1] ?? "");
+  const runParams = { rater1, rater2 };
+  const {
+    result: data, setResult: setData, stale, staleReasons: staleWhy,
+  } = useStampedResult<KappaResult>("correlation_kappa", runParams);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -1179,7 +1271,7 @@ function KappaTab({ sessionId, columns }: { sessionId: string; columns: string[]
     <div className="panel space-y-3 text-xs">
       <div className="flex items-center justify-between">
         <p className="text-gray-400 text-[10px] font-semibold uppercase tracking-wide">κ Result</p>
-        <button onClick={exportKappa} className="text-[10px] px-1.5 py-0.5 rounded border border-gray-300 text-gray-500 hover:bg-gray-50 hover:text-indigo-600 hover:border-indigo-300 transition-colors">↓ CSV</button>
+        <CsvButton onClick={exportKappa} className="text-[10px] px-1.5 py-0.5 rounded border border-gray-300 text-gray-500 hover:bg-gray-50 hover:text-indigo-600 hover:border-indigo-300 transition-colors">↓ CSV</CsvButton>
       </div>
       <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-3.5 text-center">
         <p className="text-[10px] font-semibold text-indigo-900 uppercase">Cohen's Kappa (κ)</p>
@@ -1220,12 +1312,20 @@ function KappaTab({ sessionId, columns }: { sessionId: string; columns: string[]
   );
 
   return (
-    <ThreeCol
-      storageKey="CorrelationPanel.Kappa"
-      left={leftCol}
-      middle={middleCol}
-      right={rightCol}
-    />
+    <StampedLayout
+      stale={stale}
+      reason={describeStale(staleWhy)}
+      notice={data && stale && (
+        <StaleResultNotice reasons={staleWhy} onRecompute={run} busy={loading} what="This kappa" />
+      )}
+    >
+      <ThreeCol
+        storageKey="CorrelationPanel.Kappa"
+        left={leftCol}
+        middle={middleCol}
+        right={rightCol}
+      />
+    </StampedLayout>
   );
 }
 

@@ -1,9 +1,10 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
 import { server } from '../test/server'
 import { clearSession, installSession, makeSession } from '../test/testUtils'
+import { useStore } from '../store'
 import ThresholdPanel from './ThresholdPanel'
 
 afterEach(() => {
@@ -185,5 +186,40 @@ describe('ThresholdPanel', () => {
     await runWith(user)
 
     await waitFor(() => expect(screen.getByText(/too few/)).toBeInTheDocument())
+  })
+
+  it('closes every export of the fit once the data changes under it', async () => {
+    installSession(session())
+    mockRun()
+    const user = userEvent.setup()
+    render(<ThresholdPanel />)
+    await runWith(user)
+    await screen.findByText(/x = 40\.530/)
+
+    const exports = () => [
+      screen.getByRole('button', { name: 'CSV' }),
+      screen.getByRole('button', { name: 'PNG 300dpi' }),
+    ]
+    for (const b of exports()) expect(b).toBeEnabled()
+
+    act(() => useStore.getState().bumpDataVersion())
+
+    expect(await screen.findByText(/Out of date\./)).toBeInTheDocument()
+    for (const b of exports()) expect(b).toBeDisabled()
+  })
+
+  it('marks the fit out of date when a setting it was run with changes', async () => {
+    installSession(session())
+    mockRun()
+    const user = userEvent.setup()
+    render(<ThresholdPanel />)
+    await runWith(user)
+    await screen.findByText(/x = 40\.530/)
+    expect(screen.queryByText(/Out of date\./)).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('checkbox', { name: /age/ }))
+
+    expect(await screen.findByText(/analysis settings changed/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'CSV' })).toBeDisabled()
   })
 })

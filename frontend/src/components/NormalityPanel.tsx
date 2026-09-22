@@ -18,10 +18,14 @@ import Plot from "../PlotComponent";
 import { usePlotLayout, usePalette } from "../plotStyle";
 import { analysisCols, isNumericKind, isCategoricalKind, useStore, type Session } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
+import { useStampedResult } from "../hooks/useStampedResult";
+import { describeStale } from "../lib/resultStamp";
 import { runNormality } from "../api";
 import { Tip } from "./Tip";
 import ThreeCol from "./ThreeCol";
 import ResultExporter from "./ResultExporter";
+import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
 import { fmtP, pCellTitle } from "../lib/format";
 import type { Data, Layout } from "plotly.js";
 import type { PlotData, PlotLayout, PlotCaptureHandle } from "../lib/plotTypes";
@@ -133,7 +137,10 @@ function NormalityPanelBody({ session }: { session: Session }) {
   const [groupCol, setGroupCol] = usePersistedPanelState<string>("normality", "group", "");
   const [alpha, setAlpha] = usePersistedPanelState<number>("normality", "alpha", 0.05);
 
-  const [result, setResult] = useState<NormalityResult | null>(null);
+  const runParams = { variables, groupCol, alpha };
+  const {
+    result, setResult, stale, staleReasons: staleWhy,
+  } = useStampedResult<NormalityResult>("normality", runParams);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [focusKey, setFocusKey] = useState<string>("");
@@ -314,6 +321,15 @@ function NormalityPanelBody({ session }: { session: Session }) {
       middle={
         result ? (
           <div className="space-y-3">
+            {stale && (
+              <StaleResultNotice
+                reasons={staleWhy}
+                onRecompute={run}
+                busy={loading}
+                what="This normality assessment"
+              />
+            )}
+            <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
             <div className="panel">
               <div className="flex items-center justify-between mb-2">
                 <h4 className="text-sm font-semibold text-gray-700">
@@ -438,6 +454,7 @@ function NormalityPanelBody({ session }: { session: Session }) {
                 </div>
               </div>
             )}
+            </StaleGuard>
           </div>
         ) : (
           <div className="panel py-12 text-center text-gray-400">
@@ -452,6 +469,7 @@ function NormalityPanelBody({ session }: { session: Session }) {
       }
       right={
         result && focus ? (
+          <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
           <div className="space-y-3">
             <div className="panel space-y-2">
               <h4 className="text-sm font-semibold text-gray-700">All tests — {focus.block.label}</h4>
@@ -514,6 +532,7 @@ function NormalityPanelBody({ session }: { session: Session }) {
               ))}
             </div>
           </div>
+          </StaleGuard>
         ) : (
           <div className="panel text-xs text-gray-400">
             Results, all five tests and a paste-ready sentence appear here.

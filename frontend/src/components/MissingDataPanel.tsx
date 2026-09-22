@@ -15,11 +15,21 @@ import {
 import ResultExporter from "./ResultExporter";
 import api from "../api";
 import { CleaningTab } from "./CleaningTab";
+import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
+import CopyTextButton from "./CopyTextButton";
 import { fmtP } from "../lib/format";
+import { describeStale } from "../lib/resultStamp";
+import { staleExportTitle } from "../lib/staleGuard";
+import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
+import { useStampedResult } from "../hooks/useStampedResult";
 import { useMissing } from "./MissingGuard";
 
 interface DiagCol { name: string; n_missing: number; pct: number; kind: string; is_numeric: boolean; depends_on: string[]; likely: string }
 interface DiagResult { columns: DiagCol[]; overall_hint: string; recommendation: string; any_mar: boolean }
+/** One "Analyze missingness" run: the dependence check and Little's test are
+ *  requested together, so they are stamped together. */
+interface MissingnessDiagnostics { diag: DiagResult | null; mcar: McarResult | null; mcarNote: string | null }
 type MissingSort = "missing-desc" | "missing-asc" | "name-asc" | "name-desc";
 type QuickMethod = "__mean__" | "__median__" | "__mode__" | "__mice__";
 
@@ -235,24 +245,23 @@ export default function MissingDataPanel() {
     })
     .filter((m) => m.nMiss > 0);
 
-  // Selection + MICE state
-  const [selected, setSelected] = useState<string[]>([]);
+  // Selection + MICE state. The run inputs persist with the results: a result
+  // restored on remount beside inputs reset to their defaults would read as
+  // out of date, and its Recompute would run the defaults.
+  const [selected, setSelected] = usePersistedPanelState<string[]>("missing", "selected", []);
   const [missingSort, setMissingSort] = useState<MissingSort>("missing-desc");
-  const [miceIter, setMiceIter] = useState(20);
-  const [miceSeed, setMiceSeed] = useState(42);
-  const [miceMechanism, setMiceMechanism] = useState<"unknown" | "MCAR" | "MAR" | "MNAR">("unknown");
+  const [miceIter, setMiceIter] = usePersistedPanelState<number>("missing", "miceIter", 20);
+  const [miceSeed, setMiceSeed] = usePersistedPanelState<number>("missing", "miceSeed", 42);
+  const [miceMechanism, setMiceMechanism] = usePersistedPanelState<"unknown" | "MCAR" | "MAR" | "MNAR">("missing", "miceMechanism", "unknown");
   const [miceLoading, setMiceLoading] = useState(false);
-  const [micePreviewResult, setMicePreviewResult] = useState<MiceExportResult | null>(null);
   const [miceTransferLoading, setMiceTransferLoading] = useState(false);
   const [busy, setBusy] = useState<string | null>(null); // per-row action in flight
   const [err, setErr] = useState<string | null>(null);
   const [mutationNotice, setMutationNotice] = useState<string | null>(null);
 
-  // Diagnostics state
-  const [diag, setDiag] = useState<DiagResult | null>(null);
-  const [mcar, setMcar] = useState<McarResult | null>(null);
-  const [mcarNote, setMcarNote] = useState<string | null>(null);
-  const [compare, setCompare] = useState<CompareResult | null>(null);
+  // Reference-imputation state. Not persisted: the reference file cannot be,
+  // so a preview restored on remount rightly reads as computed from inputs
+  // that are no longer loaded.
   const [externalTarget, setExternalTarget] = useState("");
   const [externalPredictors, setExternalPredictors] = useState<string[]>([]);
   const [externalReferenceTarget, setExternalReferenceTarget] = useState("");
@@ -261,20 +270,83 @@ export default function MissingDataPanel() {
   const [externalReferenceMeta, setExternalReferenceMeta] = useState<ExternalReferenceColumnsResult | null>(null);
   const [externalMethod, setExternalMethod] = useState<"pmm" | "mice">("pmm");
   const [externalStratifyBy, setExternalStratifyBy] = useState("");
-  const [externalResult, setExternalResult] = useState<ExternalImputeResult | null>(null);
   const [externalLoading, setExternalLoading] = useState<"columns" | "preview" | "apply" | null>(null);
 
   // MNAR sensitivity state
-  const [mnarColumns, setMnarColumns] = useState<string[]>([]);
-  const [mnarDeltaText, setMnarDeltaText] = useState(MNAR_DEFAULT_DELTAS);
-  const [mnarModelType, setMnarModelType] = useState<MnarModelType>("logistic");
+  const [mnarColumns, setMnarColumns] = usePersistedPanelState<string[]>("missing", "mnarColumns", []);
+  const [mnarDeltaText, setMnarDeltaText] = usePersistedPanelState<string>("missing", "mnarDeltaText", MNAR_DEFAULT_DELTAS);
+  const [mnarModelType, setMnarModelType] = usePersistedPanelState<MnarModelType>("missing", "mnarModelType", "logistic");
   // Without an outcome model the backend skips model_delta_sensitivity, Heckman
   // and ISNI entirely — and model_type then has nothing to act on. These two
   // pickers are what make those three blocks (and the selector above) live.
-  const [mnarOutcome, setMnarOutcome] = useState("");
-  const [mnarPredictors, setMnarPredictors] = useState<string[]>([]);
+  const [mnarOutcome, setMnarOutcome] = usePersistedPanelState<string>("missing", "mnarOutcome", "");
+  const [mnarPredictors, setMnarPredictors] = usePersistedPanelState<string[]>("missing", "mnarPredictors", []);
   const [mnarLoading, setMnarLoading] = useState(false);
-  const [mnarResult, setMnarResult] = useState<MnarResult | null>(null);
+
+  // Resolved above the session guard because the reference preview's stamp
+  // is built from them, and hooks cannot follow an early return.
+  const externalTargetName = externalTarget || missingInfo[0]?.name || "";
+  const currentColumnNames = new Set(columns.map((c) => c.name));
+  const currentColumnByNorm = new Map(columns.map((c) => [normColumnName(c.name), c.name]));
+  const externalReferenceColumns = externalReferenceMeta?.columns ?? [];
+  const autoReferenceTarget = externalReferenceColumns.find(
+    (c) => normColumnName(c.name) === normColumnName(externalTargetName)
+  )?.name ?? "";
+  const externalReferenceTargetName = externalReferenceTarget || autoReferenceTarget;
+  const externalPredictorColumns = externalReferenceColumns.filter(
+    (c) => normColumnName(c.name) !== normColumnName(externalReferenceTargetName)
+  );
+  const predictorMappings = Object.fromEntries(
+    externalPredictors.map((name) => [
+      name,
+      externalPredictorMappings[name] || currentColumnByNorm.get(normColumnName(name)) || "",
+    ])
+  );
+  const mnarDeltaValues = parseDeltaValues(mnarDeltaText);
+  const mnarOutcomeModel = mnarOutcome !== "" && mnarPredictors.length > 0;
+
+  // Every result below reads the dataset, so each is stamped with what its
+  // request sent. The session id is there because a new dataset restarts the
+  // data version at 0, which on its own would let an old result read as current.
+  const {
+    result: diagnostics, setResult: setDiagnostics, stale: diagStale, staleReasons: diagStaleWhy,
+  } = useStampedResult<MissingnessDiagnostics>("missing_diag", { sid, columns: selected });
+  const {
+    result: compare, setResult: setCompare, stale: compareStale, staleReasons: compareStaleWhy,
+  } = useStampedResult<CompareResult>("missing_compare", { sid, columns: selected });
+  const {
+    result: micePreviewResult, setResult: setMicePreviewResult, stale: miceStale, staleReasons: miceStaleWhy,
+  } = useStampedResult<MiceExportResult>("missing_mice", {
+    sid, columns: selected, maxIter: miceIter, randomState: miceSeed, mechanism: miceMechanism,
+  });
+  const {
+    result: externalResult, setResult: setExternalResult, stale: externalStale, staleReasons: externalStaleWhy,
+  } = useStampedResult<ExternalImputeResult>("missing_external", {
+    sid,
+    target: externalTargetName,
+    referenceTarget: externalReferenceTargetName,
+    predictors: externalPredictors,
+    predictorMappings,
+    method: externalMethod,
+    mechanism: miceMechanism,
+    maxIter: miceIter,
+    randomState: miceSeed,
+    stratifyBy: externalStratifyBy || null,
+    // A File stringifies to "{}", so stamp what identifies it instead.
+    file: externalFile
+      ? { name: externalFile.name, size: externalFile.size, lastModified: externalFile.lastModified }
+      : null,
+  });
+  const {
+    result: mnarResult, setResult: setMnarResult, stale: mnarStale, staleReasons: mnarStaleWhy,
+  } = useStampedResult<MnarResult>("missing_mnar", {
+    sid,
+    columns: mnarColumns,
+    deltaValues: mnarDeltaValues,
+    modelType: mnarModelType,
+    outcome: mnarOutcomeModel ? mnarOutcome : null,
+    predictors: mnarOutcomeModel ? mnarPredictors : null,
+  });
 
   if (!session) return <p className="text-gray-400 text-sm p-6">Upload data first.</p>;
 
@@ -284,11 +356,7 @@ export default function MissingDataPanel() {
     useStore.setState((s) => ({ dataVersion: s.dataVersion + 1 }));
   };
 
-  const clearDiagnostics = () => {
-    setDiag(null);
-    setMcar(null);
-    setMcarNote(null);
-  };
+  const clearDiagnostics = () => setDiagnostics(null);
 
   const toggle = (name: string) => {
     clearDiagnostics();
@@ -342,7 +410,7 @@ export default function MissingDataPanel() {
   const runDiagnostics = async () => {
     if (selected.length === 0) { setErr("Select at least one column to analyze"); return; }
     const selectedNumeric = selected.filter((name) => missingInfo.some((m) => m.name === name && m.isNum));
-    setBusy("diag"); setErr(null); setDiag(null); setMcar(null); setMcarNote(null);
+    setBusy("diag"); setErr(null); setDiagnostics(null);
     try {
       const diagRequest = runMissingDiagnostics(sid, selected);
       const mcarRequest = selectedNumeric.length >= 2
@@ -352,14 +420,16 @@ export default function MissingDataPanel() {
         diagRequest,
         ...(mcarRequest ? [mcarRequest] : []),
       ]);
-      if (d.status === "fulfilled") setDiag(d.value.data);
-      else setErr(errText(d.reason));
+      if (d.status === "rejected") setErr(errText(d.reason));
+      let mcarResult: McarResult | null = null;
+      let note: string | null = null;
       if (mcarRequest) {
-        if (m?.status === "fulfilled") setMcar(m.value.data);
-        else if (m?.status === "rejected") setMcarNote(`Little's MCAR test could not be calculated: ${errText(m.reason)}`);
+        if (m?.status === "fulfilled") mcarResult = m.value.data;
+        else if (m?.status === "rejected") note = `Little's MCAR test could not be calculated: ${errText(m.reason)}`;
       } else {
-        setMcarNote("Little's MCAR test requires at least two selected numeric variables. The dependence analysis below is limited to the selected variable(s).");
+        note = "Little's MCAR test requires at least two selected numeric variables. The dependence analysis below is limited to the selected variable(s).";
       }
+      setDiagnostics({ diag: d.status === "fulfilled" ? d.value.data : null, mcar: mcarResult, mcarNote: note });
     } finally {
       setBusy(null);
     }
@@ -378,23 +448,6 @@ export default function MissingDataPanel() {
     }
   };
 
-  const externalTargetName = externalTarget || missingInfo[0]?.name || "";
-  const currentColumnNames = new Set(columns.map((c) => c.name));
-  const currentColumnByNorm = new Map(columns.map((c) => [normColumnName(c.name), c.name]));
-  const externalReferenceColumns = externalReferenceMeta?.columns ?? [];
-  const autoReferenceTarget = externalReferenceColumns.find(
-    (c) => normColumnName(c.name) === normColumnName(externalTargetName)
-  )?.name ?? "";
-  const externalReferenceTargetName = externalReferenceTarget || autoReferenceTarget;
-  const externalPredictorColumns = externalReferenceColumns.filter(
-    (c) => normColumnName(c.name) !== normColumnName(externalReferenceTargetName)
-  );
-  const predictorMappings = Object.fromEntries(
-    externalPredictors.map((name) => [
-      name,
-      externalPredictorMappings[name] || currentColumnByNorm.get(normColumnName(name)) || "",
-    ])
-  );
   const externalPayload = () => ({
     sessionId: sid,
     target: externalTargetName,
@@ -456,6 +509,10 @@ export default function MissingDataPanel() {
 
   const runExternalPreview = async () => {
     if (!validateExternal()) return;
+    // Pin the default target: it is "the first column with missing values",
+    // which moves the moment this target's values are transferred and would
+    // make the record of that transfer read as computed for another column.
+    if (!externalTarget) setExternalTarget(externalTargetName);
     setExternalLoading("preview"); setErr(null); setExternalResult(null); setMutationNotice(null);
     try {
       const res = await runExternalImputePreview(externalPayload());
@@ -468,6 +525,9 @@ export default function MissingDataPanel() {
   };
 
   const applyExternalImputation = async () => {
+    // Writing an out-of-date preview into the data would impute rows chosen
+    // on data that has since changed.
+    if (externalStale) return;
     if (!externalResult?.preview_rows?.length) {
       setErr("Preview target estimates before transferring data");
       return;
@@ -482,8 +542,12 @@ export default function MissingDataPanel() {
           imputed_value: row.imputed_value,
         })),
       });
-      setExternalResult((current) => current ? { ...current, applied: true } : current);
+      const transferred = { ...externalResult, applied: true };
+      setExternalResult(transferred);
       await refresh();
+      // Stamp again once the new data version has landed: from here on this is
+      // the record of the transfer, and the transfer must not mark it stale.
+      setExternalResult(transferred);
       setMutationNotice(`${res.data.n_imputed} value(s) transferred into ${res.data.target}.`);
     } catch (e: unknown) {
       setErr(errText(e));
@@ -509,6 +573,7 @@ export default function MissingDataPanel() {
   };
 
   const handleMICETransfer = async () => {
+    if (miceStale) return;
     if (!micePreviewResult?.preview_rows?.length) {
       setErr("Preview PMM estimates before transferring");
       return;
@@ -523,8 +588,11 @@ export default function MissingDataPanel() {
           imputed_value: r.imputed_value,
         })),
       });
-      setMicePreviewResult((current) => current ? { ...current, applied: true } : current);
+      const transferred = { ...micePreviewResult, applied: true };
+      setMicePreviewResult(transferred);
       await refresh();
+      // Stamp again after the data version moves, as for the reference transfer.
+      setMicePreviewResult(transferred);
       setMutationNotice(`${res.data.total_imputed} value(s) transferred into original columns: ${res.data.columns.join(", ")}.`);
     } catch (e: unknown) {
       setErr(errText(e));
@@ -540,7 +608,7 @@ export default function MissingDataPanel() {
 
   const runMnar = async () => {
     if (mnarColumns.length === 0) { setErr("Select at least one variable with missing data"); return; }
-    const deltaValues = parseDeltaValues(mnarDeltaText);
+    const deltaValues = mnarDeltaValues;
     if (!deltaValues) { setErr("Enter delta values as comma-separated numbers, e.g. -1, 0, 1"); return; }
     setErr(null); setMnarResult(null); setMnarLoading(true);
     try {
@@ -552,7 +620,7 @@ export default function MissingDataPanel() {
       };
       // Only send the outcome model when it is complete; a half-specified one
       // makes the backend fall back to the same placeholders as sending none.
-      if (mnarOutcome && mnarPredictors.length > 0) {
+      if (mnarOutcomeModel) {
         payload.outcome_col = mnarOutcome;
         payload.predictors = mnarPredictors;
       }
@@ -604,6 +672,9 @@ export default function MissingDataPanel() {
   };
 
   const mnarAnalysedColumns = mnarResult?.columns ?? mnarColumns;
+  const diag = diagnostics?.diag ?? null;
+  const mcar = diagnostics?.mcar ?? null;
+  const mcarNote = diagnostics?.mcarNote ?? null;
 
   return (
     <div className="max-w-4xl mx-auto p-4">
@@ -780,6 +851,15 @@ export default function MissingDataPanel() {
                 ))}
               </div>
 
+              {(diag || mcar) && diagStale && (
+                <StaleResultNotice
+                  reasons={diagStaleWhy}
+                  onRecompute={runDiagnostics}
+                  busy={busy === "diag"}
+                  what="This missingness analysis"
+                />
+              )}
+              <StaleGuard stale={diagStale} reason={describeStale(diagStaleWhy)}>
               {/* Data-driven hint (heuristic + Little's MCAR), no AI */}
               {(diag || mcar) && (
                 <div className="space-y-2">
@@ -810,6 +890,7 @@ export default function MissingDataPanel() {
                   {mcarNote}
                 </div>
               )}
+              </StaleGuard>
               {miceMechanism === "MNAR" && (
                 <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-[11px] text-amber-700">
                   ⚠️ MNAR: MICE assumes MAR and may bias results. For &gt;40–50% missing, use a dedicated MNAR sensitivity analysis (pattern-mixture / selection model).
@@ -851,6 +932,15 @@ export default function MissingDataPanel() {
                 {selected.length === 0 && <p className="text-xs text-gray-400">Select columns above</p>}
               </div>
 
+              {micePreviewResult && miceStale && (
+                <StaleResultNotice
+                  reasons={miceStaleWhy}
+                  onRecompute={handleMICEPreview}
+                  busy={miceLoading}
+                  what="This PMM preview"
+                />
+              )}
+              <StaleGuard stale={miceStale} reason={describeStale(miceStaleWhy)}>
               {micePreviewResult?.result_text && (
                 <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 text-sm text-emerald-800">{micePreviewResult.result_text}</div>
               )}
@@ -858,12 +948,10 @@ export default function MissingDataPanel() {
                 <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-4 py-3">
                   <div className="flex items-center justify-between gap-3 mb-1.5">
                     <p className="text-xs font-semibold text-indigo-800">Methods</p>
-                    <button
-                      onClick={() => navigator.clipboard.writeText(micePreviewResult.methods_text ?? "")}
-                      className="text-[10px] px-2 py-0.5 rounded border border-indigo-200 text-indigo-600 hover:bg-white transition-colors"
-                    >
-                      Copy
-                    </button>
+                    <CopyTextButton
+                      text={micePreviewResult.methods_text ?? ""}
+                      className="text-[10px] px-2 py-0.5 rounded border border-indigo-200 text-indigo-600 hover:bg-white transition-colors disabled:opacity-40 disabled:hover:bg-transparent"
+                    />
                   </div>
                   <p className="text-xs text-indigo-800 leading-relaxed">{micePreviewResult.methods_text}</p>
                 </div>
@@ -913,7 +1001,8 @@ export default function MissingDataPanel() {
                   <div className="flex justify-end">
                     <button
                       onClick={handleMICETransfer}
-                      disabled={miceTransferLoading || micePreviewResult.applied}
+                      disabled={miceTransferLoading || micePreviewResult.applied || miceStale}
+                      title={miceStale ? staleExportTitle(describeStale(miceStaleWhy)) : undefined}
                       className="px-4 py-2 text-sm font-medium bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
                     >
                       {miceTransferLoading ? "Transferring…" : micePreviewResult.applied ? "Transferred" : "Transfer to original columns"}
@@ -921,9 +1010,19 @@ export default function MissingDataPanel() {
                   </div>
                 </div>
               )}
+              </StaleGuard>
 
               {/* CCA vs MI comparison (sensitivity) */}
+              {compare?.comparisons && compareStale && (
+                <StaleResultNotice
+                  reasons={compareStaleWhy}
+                  onRecompute={runCompare}
+                  busy={busy === "compare"}
+                  what="This comparison"
+                />
+              )}
               {compare?.comparisons && (
+                <StaleGuard stale={compareStale} reason={describeStale(compareStaleWhy)}>
                 <div className="space-y-2">
                   <p className="text-xs font-semibold text-gray-700">Sensitivity — observed vs imputed distribution</p>
                   <div className="overflow-auto rounded-lg border border-gray-200">
@@ -946,6 +1045,7 @@ export default function MissingDataPanel() {
                   </div>
                   <p className="text-[10px] text-gray-400">KS p &lt; 0.05 = imputed distribution differs from observed (expected for MAR; large shifts warrant a closer look).</p>
                 </div>
+                </StaleGuard>
               )}
             </div>
           </div>
@@ -1117,6 +1217,15 @@ export default function MissingDataPanel() {
                 </button>
               </div>
 
+              {externalResult && externalStale && (
+                <StaleResultNotice
+                  reasons={externalStaleWhy}
+                  onRecompute={runExternalPreview}
+                  busy={externalLoading === "preview"}
+                  what="This reference-imputation preview"
+                />
+              )}
+              <StaleGuard stale={externalStale} reason={describeStale(externalStaleWhy)}>
               {externalResult?.result_text && (
                 <div className="bg-sky-50 border border-sky-200 rounded-xl px-4 py-3 text-sm text-sky-800">
                   {externalResult.result_text}
@@ -1156,7 +1265,8 @@ export default function MissingDataPanel() {
                   <div className="flex justify-end">
                     <button
                       onClick={applyExternalImputation}
-                      disabled={externalLoading !== null || externalResult.applied}
+                      disabled={externalLoading !== null || externalResult.applied || externalStale}
+                      title={externalStale ? staleExportTitle(describeStale(externalStaleWhy)) : undefined}
                       className="px-4 py-2 text-sm font-medium bg-sky-600 text-white rounded-lg hover:bg-sky-700 disabled:opacity-50"
                     >
                       {externalLoading === "apply" ? "Transferring…" : externalResult.applied ? "Transferred" : "Transfer data"}
@@ -1164,6 +1274,7 @@ export default function MissingDataPanel() {
                   </div>
                 </div>
               )}
+              </StaleGuard>
             </div>
           </div>
         )}
@@ -1316,7 +1427,16 @@ export default function MissingDataPanel() {
                 </div>
               )}
 
+              {mnarResult && mnarStale && (
+                <StaleResultNotice
+                  reasons={mnarStaleWhy}
+                  onRecompute={runMnar}
+                  busy={mnarLoading}
+                  what="This MNAR sensitivity analysis"
+                />
+              )}
               {mnarResult && (
+                <StaleGuard stale={mnarStale} reason={describeStale(mnarStaleWhy)}>
                 <div className="space-y-3">
                   {mnarResult.result_text && (
                     <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 text-sm text-emerald-800">
@@ -1607,17 +1727,16 @@ export default function MissingDataPanel() {
                     <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-4 py-3">
                       <div className="flex items-center justify-between gap-3 mb-1.5">
                         <p className="text-xs font-semibold text-indigo-800">R code</p>
-                        <button
-                          onClick={() => navigator.clipboard.writeText(mnarResult.r_code ?? "")}
-                          className="text-[10px] px-2 py-0.5 rounded border border-indigo-200 text-indigo-600 hover:bg-white transition-colors"
-                        >
-                          Copy
-                        </button>
+                        <CopyTextButton
+                          text={mnarResult.r_code ?? ""}
+                          className="text-[10px] px-2 py-0.5 rounded border border-indigo-200 text-indigo-600 hover:bg-white transition-colors disabled:opacity-40 disabled:hover:bg-transparent"
+                        />
                       </div>
                       <pre className="text-[11px] text-indigo-800 whitespace-pre-wrap">{mnarResult.r_code}</pre>
                     </div>
                   )}
                 </div>
+                </StaleGuard>
               )}
             </div>
           </div>

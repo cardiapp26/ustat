@@ -4,6 +4,10 @@ import { usePlotLayout, usePalette } from "../plotStyle";
 import { runBayesian } from "../api";
 import TitledPlot from "./TitledPlot";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
+import { useStampedResult } from "../hooks/useStampedResult";
+import { describeStale } from "../lib/resultStamp";
+import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
 import type { PlotData, PlotCaptureHandle } from "../lib/plotTypes";
 
 type AnalysisType = "ttest_one" | "ttest_ind" | "ttest_paired" | "correlation" | "regression";
@@ -49,32 +53,32 @@ function BayesianPanelBody({ session }: { session: Session }) {
   const [outcome, setOutcome] = usePersistedPanelState<string>("bayesian", "outcome", numCols[0] ?? "");
   const [predictor, setPredictor] = usePersistedPanelState<string>("bayesian", "predictor", numCols[1] ?? numCols[0] ?? "");
   const [predictors, setPredictors] = usePersistedPanelState<string[]>("bayesian", "predictors", []);
-  const [mu, setMu] = useState<number>(0.0);
+  // Persisted with the rest: the result now survives a tab switch, and a test
+  // value reset to 0 beside it would date a one-sample result for nothing.
+  const [mu, setMu] = usePersistedPanelState<number>("bayesian", "mu", 0.0);
   const [imputation, setImputation] = usePersistedPanelState<string>("bayesian", "imputation", "listwise");
 
-  const [result, setResult] = useState<BayesianResult | null>(null);
+  // The request less the session id, which is also what the result is stamped
+  // with: the predictor fields an analysis type does not send cannot date it.
+  const runParams: Record<string, unknown> = {
+    analysis_type: analysisType,
+    outcome,
+    imputation,
+    ...(analysisType === "ttest_one" ? { mu } : {}),
+    ...(analysisType === "ttest_ind" || analysisType === "ttest_paired" || analysisType === "correlation"
+      ? { predictor } : {}),
+    ...(analysisType === "regression" ? { predictors } : {}),
+  };
+  const {
+    result, setResult, stale, staleReasons: staleWhy,
+  } = useStampedResult<BayesianResult>("bayesian", runParams);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const run = async () => {
     setLoading(true); setError(null); setResult(null);
     try {
-      const payload: Record<string, unknown> = {
-        session_id: session.session_id,
-        analysis_type: analysisType,
-        outcome,
-        imputation
-      };
-
-      if (analysisType === "ttest_one") {
-        payload.mu = mu;
-      } else if (analysisType === "ttest_ind" || analysisType === "ttest_paired" || analysisType === "correlation") {
-        payload.predictor = predictor;
-      } else if (analysisType === "regression") {
-        payload.predictors = predictors;
-      }
-
-      const res = await runBayesian(payload);
+      const res = await runBayesian({ session_id: session.session_id, ...runParams });
       setResult(res.data as BayesianResult);
       
       // Log session action
@@ -334,7 +338,13 @@ function BayesianPanelBody({ session }: { session: Session }) {
 
       {/* Main Results Panel */}
       <div className="flex-1 min-w-0 space-y-4">
+        {result && stale && (
+          <StaleResultNotice reasons={staleWhy} onRecompute={run} busy={loading} what={`This ${result.analysis}`} />
+        )}
         {result ? (
+          // The prior/posterior plot's exporter closes while the result is out
+          // of date.
+          <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
           <div className="space-y-4">
             {/* Bayes Factor primary card */}
             <div className="panel flex flex-col md:flex-row gap-6 items-center justify-between">
@@ -407,6 +417,7 @@ function BayesianPanelBody({ session }: { session: Session }) {
               </details>
             )}
           </div>
+          </StaleGuard>
         ) : (
           <div className="panel text-center text-gray-400 py-24 bg-white border border-dashed border-gray-200">
             <p className="text-3xl mb-3">⚖️</p>

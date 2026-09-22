@@ -1,10 +1,14 @@
 import { useMemo, useRef, useState } from "react";
 import { runKMComposite } from "../api";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
+import { useStampedResult } from "../hooks/useStampedResult";
+import { describeStale } from "../lib/resultStamp";
 import type { PlotCaptureHandle, PlotData, PlotLayout } from "../lib/plotTypes";
 import { usePlotLayout, usePalette } from "../plotStyle";
 import { useStore, isCategoricalKind, isNumericKind, type ColMeta, type Session } from "../store";
 import TitledPlot from "./TitledPlot";
+import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
 
 interface EndpointRow {
   duration_col: string;
@@ -61,7 +65,18 @@ function KMCompositePanelBody({ session }: { session: Session }) {
   const [riskTimesRaw, setRiskTimesRaw] = usePersistedPanelState("km_composite", "riskTimes", "0, 3, 6, 9, 12");
   const [cumInc, setCumInc] = usePersistedPanelState("km_composite", "cumInc", true);
   const [inset, setInset] = usePersistedPanelState("km_composite", "inset", true);
-  const [result, setResult] = useState<KMCompositeResult | null>(null);
+  // What the curves and their numbers depend on. Panel labels and the zoom
+  // inset only dress the figure, so editing them after a run leaves the
+  // estimates current.
+  const runParams = {
+    groupCol,
+    endpoints: endpoints.map((ep) => ({ duration_col: ep.duration_col, event_col: ep.event_col })),
+    riskTimes: parseRiskTimes(riskTimesRaw),
+    cumInc,
+  };
+  const {
+    result, setResult, stale, staleReasons: staleWhy,
+  } = useStampedResult<KMCompositeResult>("km_composite", runParams);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -210,6 +225,10 @@ function KMCompositePanelBody({ session }: { session: Session }) {
       <div className="flex-1 panel min-h-0 bg-white border border-gray-200 shadow-sm rounded-2xl p-4 overflow-y-auto">
         {result && mergedLayout ? (
           <div className="space-y-4">
+            {stale && (
+              <StaleResultNotice reasons={staleWhy} onRecompute={run} busy={loading} what="This KM composite" />
+            )}
+            <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
             <TitledPlot
               plotRefOut={plotRef}
               storageKey={`km-composite:${groupCol}:${endpoints.map((e) => e.event_col).join(",")}`}
@@ -234,6 +253,7 @@ function KMCompositePanelBody({ session }: { session: Session }) {
                 </div>
               ))}
             </div>
+            </StaleGuard>
           </div>
         ) : (
           <div className="h-full min-h-[420px] flex items-center justify-center text-gray-400">

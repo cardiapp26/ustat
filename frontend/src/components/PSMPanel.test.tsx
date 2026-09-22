@@ -1,12 +1,16 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { server } from '../test/server'
-import { clearSession, installSession } from '../test/testUtils'
+import { clearSession, installSession, makeSession } from '../test/testUtils'
+import { useStore } from '../store'
 import PSMPanel from './PSMPanel'
 
-afterEach(() => clearSession())
+afterEach(() => {
+  clearSession()
+  vi.restoreAllMocks()
+})
 
 const PSM_RESULT = {
   balance_achieved: true,
@@ -126,6 +130,85 @@ describe('PSMPanel', () => {
   it('disables Run PSM until at least one covariate is selected', () => {
     installSession()
     render(<PSMPanel />)
+    expect(screen.getByRole('button', { name: /run psm/i })).toBeDisabled()
+  })
+
+  it('closes every export of a match, the cohort included, once the data changes under it', async () => {
+    // The SMD exporter checked nothing, and the matched-cohort downloads and
+    // "load as active dataset" handed out a cohort built from the old data.
+    installSession()
+    server.use(
+      http.post('/api/models/psm', () => HttpResponse.json({ ...PSM_RESULT, matched_session_id: 'matched-1' })),
+    )
+
+    const user = userEvent.setup()
+    render(<PSMPanel />)
+    await selectCovariates(user)
+    await user.click(screen.getByRole('button', { name: /run psm/i }))
+    await screen.findByText(/Balance achieved/i)
+
+    const exports = () => [
+      screen.getByRole('button', { name: 'CSV' }),
+      ...screen.getAllByRole('button', { name: '↓' }),
+      screen.getByRole('button', { name: /View & Analyze Matched Cohort/ }),
+      screen.getByRole('button', { name: /Export as CSV/ }),
+      screen.getByRole('button', { name: /Export as Excel/ }),
+      screen.getByRole('button', { name: /Export as SPSS/ }),
+    ]
+    for (const b of exports()) expect(b).toBeEnabled()
+
+    act(() => useStore.getState().bumpDataVersion())
+
+    expect(await screen.findByText(/Out of date\./)).toBeInTheDocument()
+    for (const b of exports()) expect(b).toBeDisabled()
+    expect(screen.getByRole('button', { name: /Export as CSV/ })).toHaveAttribute(
+      'title', expect.stringMatching(/^Recompute first: this result predates the data changed/),
+    )
+  })
+
+  it('flags the match stale when a setting it was computed under changes', async () => {
+    installSession()
+    server.use(http.post('/api/models/psm', () => HttpResponse.json(PSM_RESULT)))
+
+    const user = userEvent.setup()
+    render(<PSMPanel />)
+    await selectCovariates(user)
+    await user.click(screen.getByRole('button', { name: /run psm/i }))
+    await screen.findByText(/Balance achieved/i)
+
+    // Display-only: redraws the Love plot, cannot change the match.
+    await user.click(screen.getByText('Show Connectors').parentElement!.querySelector('div')!)
+    expect(screen.queryByText(/Out of date\./)).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Optimal' }))
+    expect(await screen.findByText(/the analysis settings changed/)).toBeInTheDocument()
+  })
+
+  it('loading the matched cohort drops the match instead of showing it as current on the new data', async () => {
+    // The cohort is a different session, and dataVersion restarts at 0 for it:
+    // without the session key the old match would read as current here.
+    const original = makeSession()
+    installSession(original)
+    const matched = makeSession({ session_id: 'matched-1', filename: 'psm_matched_cohort' })
+    server.use(
+      http.post('/api/models/psm', () => HttpResponse.json({ ...PSM_RESULT, matched_session_id: 'matched-1' })),
+      http.get('/api/sessions/matched-1', () => HttpResponse.json(matched)),
+    )
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {})
+
+    const user = userEvent.setup()
+    render(<PSMPanel />)
+    await selectCovariates(user)
+    await user.click(screen.getByRole('button', { name: /run psm/i }))
+    await screen.findByText(/Balance achieved/i)
+
+    await user.click(screen.getByRole('button', { name: /View & Analyze Matched Cohort/ }))
+
+    await waitFor(() => expect(useStore.getState().session?.session_id).toBe('matched-1'))
+    expect(useStore.getState().originalSession?.session_id).toBe(original.session_id)
+    expect(alertSpy).toHaveBeenCalledWith(expect.stringMatching(/^Successfully loaded matched cohort/))
+    await waitFor(() => expect(screen.queryByText(/Balance achieved/i)).not.toBeInTheDocument())
+    expect(screen.queryByText(/Out of date\./)).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /run psm/i })).toBeDisabled()
   })
 })

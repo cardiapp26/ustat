@@ -10,13 +10,18 @@
 import { useState, useRef, useMemo } from "react";
 import { useStore, paletteOf, analysisCols, type Session } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
+import { useStampedResult } from "../hooks/useStampedResult";
 import { runIPTW, getSessionInfo } from "../api";
 import { Tip } from "./Tip";
 import TitledPlot from "./TitledPlot";
 import ResultExporter from "./ResultExporter";
+import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
 import { fmtP } from "../lib/format";
+import { describeStale } from "../lib/resultStamp";
+import { staleExportTitle } from "../lib/staleGuard";
 import { useResizableRightCol } from "../hooks/useResizableRightCol";
-import { exportDataset } from "../lib/exportDataset";
+import { exportDataset, type ExportFmt } from "../lib/exportDataset";
 import type { PlotData, PlotLayout, PlotCaptureHandle } from "../lib/plotTypes";
 
 interface OutcomeCoefficient {
@@ -274,7 +279,10 @@ function PSOverlapPlot({
 export default function IPTWPanel() {
   const session = useStore((s) => s.session);
   if (!session) return null;
-  return <IPTWPanelBody session={session} />;
+  // Keyed by dataset: "View & Analyze Weighted Cohort" swaps the session, and
+  // `dataVersion` restarts at 0 for the new one, so a body that outlived the
+  // swap would hold weights for the old cohort stamped as current.
+  return <IPTWPanelBody key={session.session_id} session={session} />;
 }
 
 function IPTWPanelBody({ session }: { session: Session }) {
@@ -320,8 +328,35 @@ function IPTWPanelBody({ session }: { session: Session }) {
   const [seMethod, setSeMethod] = usePersistedPanelState<"robust" | "bootstrap">("iptw", "seMethod", "robust");
   const [bootstrapReps, setBootstrapReps] = usePersistedPanelState<number>("iptw", "bootstrapReps", 500);
 
-  // Result & UI
-  const [result, setResult] = useState<IPTWResult | null>(null);
+  // The request body minus the session: the weights, the balance and the
+  // outcome model all come from this one call. Stamping the body itself means
+  // a setting the request ignores (bootstrap reps under robust SEs, say) cannot
+  // flag the result stale. The balance threshold and the connector toggle only
+  // redraw the Love plot, so they stay out.
+  const runParams = {
+    treatment_col: treatCol,
+    covariates,
+    outcome_col: outcomeType === "binary" ? (outcomeCol || undefined) : undefined,
+    imputation: undefined,
+    random_state: Number.isFinite(randomState) ? randomState : undefined,
+    score_method: scoreMethod,
+    estimand,
+    stabilize,
+    trim_common_support: trimCommonSupport,
+    weight_truncation: weightTruncation,
+    weight_truncation_lo: weightTruncLo,
+    weight_truncation_hi: weightTruncHi,
+    weight_truncation_max: weightTruncMax,
+    outcome_type: outcomeType,
+    survival_duration_col: outcomeType === "survival" ? (survDuration || undefined) : undefined,
+    survival_event_col: outcomeType === "survival" ? (survEvent || undefined) : undefined,
+    se_method: seMethod,
+    bootstrap_reps: seMethod === "bootstrap" ? bootstrapReps : undefined,
+  };
+  const {
+    result, setResult, stale, staleReasons: staleWhy,
+  } = useStampedResult<IPTWResult>("iptw", runParams);
+  const staleText = describeStale(staleWhy);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [threshold, setThreshold] = useState(0.10);
@@ -335,32 +370,47 @@ function IPTWPanelBody({ session }: { session: Session }) {
     if (covariates.length === 0) { setError("Select at least one covariate"); return; }
     setLoading(true); setError(null); setResult(null);
     try {
-      const res = await runIPTW({
-        session_id: session.session_id,
-        treatment_col: treatCol,
-        covariates,
-        outcome_col: outcomeType === "binary" ? (outcomeCol || undefined) : undefined,
-        imputation: undefined,
-        random_state: Number.isFinite(randomState) ? randomState : undefined,
-        score_method: scoreMethod,
-        estimand,
-        stabilize,
-        trim_common_support: trimCommonSupport,
-        weight_truncation: weightTruncation,
-        weight_truncation_lo: weightTruncLo,
-        weight_truncation_hi: weightTruncHi,
-        weight_truncation_max: weightTruncMax,
-        outcome_type: outcomeType,
-        survival_duration_col: outcomeType === "survival" ? (survDuration || undefined) : undefined,
-        survival_event_col: outcomeType === "survival" ? (survEvent || undefined) : undefined,
-        se_method: seMethod,
-        bootstrap_reps: seMethod === "bootstrap" ? bootstrapReps : undefined,
-      });
+      const res = await runIPTW({ session_id: session.session_id, ...runParams });
       setResult(res.data as IPTWResult);
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { detail?: unknown } } }).response?.data?.detail;
       setError(typeof msg === "string" ? msg : (e instanceof Error ? e.message : "IPTW failed"));
     } finally { setLoading(false); }
+  };
+
+  // The weighted cohort is a dataset the backend built from the data as it was
+  // at the run. None of the guard-aware export controls carry it, so its
+  // download and "load as active dataset" close here, on the local flag.
+  const cohortBlockedTitle = stale ? staleExportTitle(staleText) : undefined;
+
+  const exportCohort = (fmt: ExportFmt) => {
+    if (stale || !result?.matched_session_id) return;
+    exportDataset(
+      { session_id: result.matched_session_id, filename: "iptw_weighted_cohort" },
+      session.columns.concat({ name: "iptw_weight", kind: "numeric", dtype: "float64" }),
+      fmt,
+    );
+  };
+
+  // Opening the cohort is a new session: the store clears the panel cache and
+  // moves to the Data tab, so these weights do not come back as current on the
+  // weighted data (they answered a question about the unweighted cohort).
+  const loadCohort = async () => {
+    if (stale || !result?.matched_session_id) return;
+    try {
+      setLoading(true);
+      const res = await getSessionInfo(result.matched_session_id);
+      setOriginalSession(session);
+      setSession(res.data);
+      // Switch to data tab so the user sees the new matched cohort patient list
+      useStore.getState().setActiveTab("data");
+      alert("Successfully loaded weighted cohort! The entire app is now filtered and updated to the weighted sample with IPTW weights.");
+    } catch (e: unknown) {
+      const detail = (e as { response?: { data?: { detail?: unknown } } }).response?.data?.detail;
+      alert("Failed to load weighted cohort: " + (typeof detail === "string" ? detail : (e instanceof Error ? e.message : String(e))));
+    } finally {
+      setLoading(false);
+    }
   };
 
   // Older backend builds returned smd_before/smd_after as scalar averages.
@@ -641,6 +691,18 @@ function IPTWPanelBody({ session }: { session: Session }) {
       {/* ── Main content ─────────────────────────────────────────────────── */}
       <div className="flex-1 min-w-0 overflow-y-auto space-y-4">
         {result ? (
+          <>
+          {stale && (
+            <StaleResultNotice
+              reasons={staleWhy}
+              onRecompute={run}
+              busy={loading}
+              what="This weighting"
+            />
+          )}
+          {/* The SMD table exporter, the three plots and the cohort actions
+              below all close while the weights are out of date. */}
+          <StaleGuard stale={stale} reason={staleText}>
           <div
             className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_var(--right-col)] gap-4 auto-rows-min items-start xl:grid-flow-dense relative"
             style={{ "--right-col": `${rightColW}px` } as React.CSSProperties}
@@ -707,63 +769,34 @@ function IPTWPanelBody({ session }: { session: Session }) {
               </p>
               <div className="flex flex-wrap gap-2 pt-1">
                 <button
-                  onClick={async () => {
-                    if (!result.matched_session_id) return;
-                    try {
-                      setLoading(true);
-                      const res = await getSessionInfo(result.matched_session_id);
-                      setOriginalSession(session);
-                      setSession(res.data);
-                      // Switch to data tab so the user sees the new matched cohort patient list
-                      useStore.getState().setActiveTab("data");
-                      alert("Successfully loaded weighted cohort! The entire app is now filtered and updated to the weighted sample with IPTW weights.");
-                    } catch (e: unknown) {
-                      const detail = (e as { response?: { data?: { detail?: unknown } } }).response?.data?.detail;
-                      alert("Failed to load weighted cohort: " + (typeof detail === "string" ? detail : (e instanceof Error ? e.message : String(e))));
-                    } finally {
-                      setLoading(false);
-                    }
-                  }}
-                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm flex items-center gap-1.5 transition-colors cursor-pointer"
+                  onClick={loadCohort}
+                  disabled={stale}
+                  title={cohortBlockedTitle}
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-indigo-600"
                 >
                   🔍 View & Analyze Weighted Cohort in App
                 </button>
                 <button
-                  onClick={() => {
-                    if (!result.matched_session_id) return;
-                    exportDataset(
-                      { session_id: result.matched_session_id, filename: "iptw_weighted_cohort" },
-                      session.columns.concat({ name: "iptw_weight", kind: "numeric", dtype: "float64" }),
-                      "csv"
-                    );
-                  }}
-                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 flex items-center gap-1.5 transition-colors cursor-pointer"
+                  onClick={() => exportCohort("csv")}
+                  disabled={stale}
+                  title={cohortBlockedTitle}
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white"
                 >
                   📥 Export as CSV
                 </button>
                 <button
-                  onClick={() => {
-                    if (!result.matched_session_id) return;
-                    exportDataset(
-                      { session_id: result.matched_session_id, filename: "iptw_weighted_cohort" },
-                      session.columns.concat({ name: "iptw_weight", kind: "numeric", dtype: "float64" }),
-                      "xlsx"
-                    );
-                  }}
-                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 flex items-center gap-1.5 transition-colors cursor-pointer"
+                  onClick={() => exportCohort("xlsx")}
+                  disabled={stale}
+                  title={cohortBlockedTitle}
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white"
                 >
                   📊 Export as Excel (.xlsx)
                 </button>
                 <button
-                  onClick={() => {
-                    if (!result.matched_session_id) return;
-                    exportDataset(
-                      { session_id: result.matched_session_id, filename: "iptw_weighted_cohort" },
-                      session.columns.concat({ name: "iptw_weight", kind: "numeric", dtype: "float64" }),
-                      "sav"
-                    );
-                  }}
-                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 flex items-center gap-1.5 transition-colors cursor-pointer"
+                  onClick={() => exportCohort("sav")}
+                  disabled={stale}
+                  title={cohortBlockedTitle}
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white"
                 >
                   💿 Export as SPSS (.sav)
                 </button>
@@ -1067,6 +1100,8 @@ function IPTWPanelBody({ session }: { session: Session }) {
               </div>
             )}
           </div>
+          </StaleGuard>
+          </>
         ) : (
           /* Empty state */
           <div className="space-y-4">

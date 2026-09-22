@@ -1,8 +1,13 @@
 import { useState, type ReactNode } from "react";
 import { useStore } from "../store";
 import { runAddedValue } from "../api";
+import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
+import { useStampedResult } from "../hooks/useStampedResult";
 import ResultExporter from "./ResultExporter";
+import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
 import { fmtP } from "../lib/format";
+import { describeStale } from "../lib/resultStamp";
 
 /**
  * Added Predictive Value — judge whether a new predictor genuinely improves a
@@ -64,11 +69,21 @@ export default function AddedValuePanel() {
   const sid = session?.session_id ?? "";
   const allCols = columns.map((c) => c.name);
 
-  const [outcome, setOutcome] = useState("");
-  const [basePreds, setBasePreds] = useState<string[]>([]);
-  const [newPreds, setNewPreds] = useState<string[]>([]);
-  const [cv, setCv] = useState(false);
-  const [result, setResult] = useState<AddedValueResult | null>(null);
+  // Persisted alongside the result: it comes back from the panel cache on a
+  // tab switch, and against selections reset to empty it would always read as
+  // computed under other settings.
+  const [outcome, setOutcome] = usePersistedPanelState<string>("added_value", "outcome", "");
+  const [basePreds, setBasePreds] = usePersistedPanelState<string[]>("added_value", "basePreds", []);
+  const [newPreds, setNewPreds] = usePersistedPanelState<string[]>("added_value", "newPreds", []);
+  const [cv, setCv] = usePersistedPanelState<boolean>("added_value", "cv", false);
+  // The request body minus the session: exactly what the comparison is fitted from.
+  const runParams = {
+    outcome, base_predictors: basePreds, new_predictors: newPreds,
+    model_type: "logistic", cv_folds: cv ? 5 : 0, bootstrap: 400,
+  };
+  const {
+    result, setResult, stale, staleReasons: staleWhy,
+  } = useStampedResult<AddedValueResult>("added_value", runParams);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -78,11 +93,7 @@ export default function AddedValuePanel() {
   const run = async () => {
     setLoading(true); setError(null); setResult(null);
     try {
-      const r = await runAddedValue({
-        session_id: sid, outcome,
-        base_predictors: basePreds, new_predictors: newPreds,
-        model_type: "logistic", cv_folds: cv ? 5 : 0, bootstrap: 400,
-      });
+      const r = await runAddedValue({ session_id: sid, ...runParams });
       setResult(r.data);
     } catch (e: unknown) {
       setError((e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? "Added-value analysis failed.");
@@ -168,6 +179,15 @@ export default function AddedValuePanel() {
           </div>
         ) : (
           <>
+            {stale && (
+              <StaleResultNotice
+                reasons={staleWhy}
+                onRecompute={run}
+                busy={loading}
+                what="This added-value comparison"
+              />
+            )}
+            <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
             <div className={`panel border ${result.added_value ? "border-emerald-300 bg-emerald-50" : "border-amber-300 bg-amber-50"}`}>
               <p className={`text-sm leading-relaxed ${result.added_value ? "text-emerald-900" : "text-amber-900"}`}>
                 {result.result_text}
@@ -218,6 +238,7 @@ export default function AddedValuePanel() {
             </div>
 
             <ResultExporter title="added_predictive_value" />
+            </StaleGuard>
           </>
         )}
       </div>

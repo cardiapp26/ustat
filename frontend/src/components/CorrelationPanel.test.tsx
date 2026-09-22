@@ -1,9 +1,10 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
 import { server } from '../test/server'
 import { clearSession, installSession, makeSession } from '../test/testUtils'
+import { useStore } from '../store'
 import CorrelationPanel from './CorrelationPanel'
 
 afterEach(() => clearSession())
@@ -22,6 +23,43 @@ const numericSession = () =>
       { AGE: 48, LDL: 110, BP: 120, GROUP: 'A' },
     ],
   })
+
+const pairResponse = {
+  r: 0.812,
+  p: 0.02,
+  n: 3,
+  ci_low: 0.1,
+  ci_high: 0.98,
+  method: 'pearson',
+  label: 'r',
+  normality_test: 'Shapiro-Wilk',
+  normality: {
+    AGE: { p: 0.5, statistic: 0.9, normal: true, skewness: 0.1, test: 'Shapiro-Wilk', bypass: null },
+    LDL: { p: 0.6, statistic: 0.95, normal: true, skewness: 0.2, test: 'Shapiro-Wilk', bypass: null },
+  },
+  scatter: { x: [55, 62, 48], y: [120, 140, 110] },
+  regression_line: { x: [48, 62], y: [110, 140] },
+  ci_band: { x: [48, 62], y_upper: [115, 145], y_lower: [105, 135] },
+  result_text: 'A significant positive correlation was found.',
+}
+
+const matrixResponse = {
+  variables: ['AGE', 'LDL'],
+  matrix: { AGE: { AGE: 1, LDL: 0.8 }, LDL: { AGE: 0.8, LDL: 1 } },
+  p_matrix: { AGE: { AGE: null, LDL: 0.01 }, LDL: { AGE: 0.01, LDL: null } },
+  multicollinearity_warnings: [],
+}
+
+const iccResponse = {
+  icc: 0.87,
+  ci_low: 0.6,
+  ci_high: 0.95,
+  f_stat: 15.2,
+  f_p: 0.001,
+  n: 3,
+  interpretation: 'Good',
+  bland_altman: { means: [125, 130, 115], diffs: [2, -1, 3], mean_diff: 1.3, loa_upper: 5, loa_lower: -3 },
+}
 
 function checkVar(name: string) {
   const candidates = screen.getAllByText(name)
@@ -179,6 +217,82 @@ describe('CorrelationPanel', () => {
 
     await waitFor(() => expect(screen.getByText('0.650')).toBeInTheDocument())
     expect(screen.getByText('Substantial', { selector: 'span' })).toBeInTheDocument()
+  })
+
+  it('closes every export of the pairwise correlations once the data changes under them', async () => {
+    // The Copy button wrote the paragraph straight to the clipboard, and the
+    // table and the scatter plot stayed exportable after an edit.
+    installSession(numericSession())
+    server.use(http.post('/api/stats/correlation_pair', () => HttpResponse.json(pairResponse)))
+
+    const user = userEvent.setup()
+    render(<CorrelationPanel />)
+    await user.click(screen.getByRole('button', { name: 'None' }))
+    await user.click(checkVar('AGE'))
+    await user.click(checkVar('LDL'))
+    await user.click(screen.getByRole('button', { name: /Compute Pair/ }))
+    await screen.findByText('A significant positive correlation was found.')
+
+    const exports = () => [
+      screen.getByRole('button', { name: 'Copy' }),
+      screen.getByRole('button', { name: 'CSV' }),
+      ...screen.getAllByRole('button', { name: '↓' }),
+    ]
+    for (const b of exports()) expect(b).toBeEnabled()
+
+    act(() => useStore.getState().bumpDataVersion())
+
+    expect(await screen.findByText(/Out of date\./)).toBeInTheDocument()
+    for (const b of exports()) expect(b).toBeDisabled()
+  })
+
+  it('closes the hand-rolled matrix CSV once the settings change under it', async () => {
+    installSession(numericSession())
+    server.use(http.post('/api/stats/correlation_matrix', () => HttpResponse.json(matrixResponse)))
+
+    const user = userEvent.setup()
+    render(<CorrelationPanel />)
+    await user.click(screen.getByRole('button', { name: 'Matrix' }))
+    await user.click(screen.getByRole('button', { name: 'Compute Matrix' }))
+    const csv = await screen.findByRole('button', { name: '↓ Export CSV' })
+    expect(csv).toBeEnabled()
+
+    await user.click(screen.getByRole('radio', { name: 'spearman' }))
+
+    expect(await screen.findByText(/Out of date\./)).toBeInTheDocument()
+    expect(screen.getByText(/the analysis settings changed/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '↓ Export CSV' })).toBeDisabled()
+  })
+
+  it('closes the ICC CSV and its Bland-Altman plot once the data changes, and recomputes', async () => {
+    installSession(numericSession())
+    let calls = 0
+    server.use(http.post('/api/stats/icc', () => {
+      calls += 1
+      return HttpResponse.json(iccResponse)
+    }))
+
+    const user = userEvent.setup()
+    render(<CorrelationPanel />)
+    await user.click(screen.getByRole('button', { name: 'ICC' }))
+    await user.click(screen.getByRole('button', { name: 'Compute' }))
+    await screen.findByText('0.870')
+
+    const exports = () => [
+      screen.getByRole('button', { name: '↓ CSV' }),
+      ...screen.getAllByRole('button', { name: '↓' }),
+    ]
+    for (const b of exports()) expect(b).toBeEnabled()
+
+    act(() => useStore.getState().bumpDataVersion())
+
+    expect(await screen.findByText(/Out of date\./)).toBeInTheDocument()
+    for (const b of exports()) expect(b).toBeDisabled()
+
+    await user.click(screen.getByRole('button', { name: 'Recompute' }))
+    await waitFor(() => expect(screen.queryByText(/Out of date\./)).not.toBeInTheDocument())
+    expect(calls).toBe(2)
+    for (const b of exports()) expect(b).toBeEnabled()
   })
 
   it('ICC tab: shows the backend error message on failure', async () => {

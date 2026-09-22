@@ -1,9 +1,10 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
 import { server } from '../test/server'
 import { clearSession, installSession, makeSession } from '../test/testUtils'
+import { useStore } from '../store'
 import KMCompositePanel from './KMCompositePanel'
 
 afterEach(() => clearSession())
@@ -84,5 +85,30 @@ describe('KMCompositePanel', () => {
     await user.click(screen.getByRole('button', { name: /generate km composite/i }))
 
     await waitFor(() => expect(screen.getByText(/must be binary 0\/1/)).toBeInTheDocument())
+  })
+
+  it('closes every export of the figure once the data changes under it', async () => {
+    installSession(trialSession())
+    server.use(
+      http.post('/api/charts/km_composite', () => HttpResponse.json(kmResponse)),
+    )
+
+    const user = userEvent.setup()
+    render(<KMCompositePanel />)
+    await user.click(screen.getByRole('button', { name: /generate km composite/i }))
+    await screen.findByTestId('plotly-mock')
+
+    // TitledPlot never offers the Plotly camera, so its own exporter is the
+    // figure's whole export surface.
+    const exports = () => [
+      screen.getByRole('button', { name: '↓' }),
+      screen.getByRole('button', { name: '⧉' }),
+    ]
+    for (const b of exports()) expect(b).toBeEnabled()
+
+    act(() => useStore.getState().bumpDataVersion())
+
+    expect(await screen.findByText(/This KM composite was computed before the data changed/)).toBeInTheDocument()
+    for (const b of exports()) expect(b).toBeDisabled()
   })
 })

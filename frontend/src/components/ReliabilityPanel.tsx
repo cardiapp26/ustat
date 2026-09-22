@@ -1,7 +1,12 @@
 import { useState } from "react";
 import { useStore, isNumericKind, type Session } from "../store";
 import { runCronbach } from "../api";
+import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
+import { useStampedResult } from "../hooks/useStampedResult";
+import { describeStale } from "../lib/resultStamp";
 import ResultExporter from "./ResultExporter";
+import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
 
 interface ItemStat {
   item: string;
@@ -41,8 +46,12 @@ export default function ReliabilityPanel() {
 function ReliabilityPanelBody({ session }: { session: Session }) {
   const numCols = session.columns.filter((c) => isNumericKind(c.kind)).map((c) => c.name);
 
-  const [items, setItems] = useState<string[]>([]);
-  const [result, setResult] = useState<ReliabilityResult | null>(null);
+  // Persisted beside the result: a cached alpha whose item list reset to
+  // empty on remount would read as computed from different settings.
+  const [items, setItems] = usePersistedPanelState<string[]>("reliability", "items", []);
+  const {
+    result, setResult, stale, staleReasons: staleWhy,
+  } = useStampedResult<ReliabilityResult>("reliability", { items });
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -84,8 +93,12 @@ function ReliabilityPanelBody({ session }: { session: Session }) {
         </div>
       </div>
 
-      <div className="flex-1">
+      <div className="flex-1 space-y-3">
+        {result && stale && (
+          <StaleResultNotice reasons={staleWhy} onRecompute={run} busy={loading} what="This reliability analysis" />
+        )}
         {result ? (
+          <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
           <div className="space-y-4">
             {/* Main result card */}
             <div className="panel">
@@ -180,6 +193,7 @@ function ReliabilityPanelBody({ session }: { session: Session }) {
               </details>
             )}
           </div>
+          </StaleGuard>
         ) : (
           <div className="panel text-center text-gray-400 py-12">
             <p className="text-lg mb-2">\uD83D\uDCCB</p>

@@ -7,7 +7,12 @@ import { Tip } from "./Tip";
 import TitledPlot from "./TitledPlot";
 import ResultExporter from "./ResultExporter";
 import ThreeCol from "./ThreeCol";
+import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
 import type { PlotCaptureHandle } from "../lib/plotTypes";
+import { describeStale } from "../lib/resultStamp";
+import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
+import { useStampedResult } from "../hooks/useStampedResult";
 
 type ModelKind = "random_forest" | "gradient_boosting" | "survival_benchmark";
 type Task = "auto" | "classification" | "regression";
@@ -215,25 +220,45 @@ export default function MLPanel() {
   const sid = session?.session_id ?? "";
   const numCols = columns.filter((c) => isNumericKind(c.kind)).map((c) => c.name);
 
-  const [model, setModel] = useState<ModelKind>("random_forest");
-  const [task, setTask] = useState<Task>("auto");
-  const [outcome, setOutcome] = useState("");
-  const [predictors, setPredictors] = useState<string[]>([]);
+  // The run inputs persist with the results: a result restored on remount
+  // beside inputs reset to their defaults would read as out of date, and its
+  // Recompute would run the defaults instead of what produced it.
+  const [model, setModel] = usePersistedPanelState<ModelKind>("ml", "model", "random_forest");
+  const [task, setTask] = usePersistedPanelState<Task>("ml", "task", "auto");
+  const [outcome, setOutcome] = usePersistedPanelState<string>("ml", "outcome", "");
+  const [predictors, setPredictors] = usePersistedPanelState<string[]>("ml", "predictors", []);
   const [predFilter, setPredFilter] = useState("");
-  const [nEstimators, setNEstimators] = useState(300);
-  const [maxDepth, setMaxDepth] = useState<string>("");
-  const [cvFolds, setCvFolds] = useState(5);
-  const [classWeight, setClassWeight] = useState(true);
-  const [learningRate, setLearningRate] = useState(0.1);
+  const [nEstimators, setNEstimators] = usePersistedPanelState<number>("ml", "nEstimators", 300);
+  const [maxDepth, setMaxDepth] = usePersistedPanelState<string>("ml", "maxDepth", "");
+  const [cvFolds, setCvFolds] = usePersistedPanelState<number>("ml", "cvFolds", 5);
+  const [classWeight, setClassWeight] = usePersistedPanelState<boolean>("ml", "classWeight", true);
+  const [learningRate, setLearningRate] = usePersistedPanelState<number>("ml", "learningRate", 0.1);
 
   // Survival ML benchmark sub-analysis
-  const [durationCol, setDurationCol] = useState("");
-  const [eventCol, setEventCol] = useState("");
-  const [includeShap, setIncludeShap] = useState(false);
-  const [nestedCv, setNestedCv] = useState(false);
+  const [durationCol, setDurationCol] = usePersistedPanelState<string>("ml", "durationCol", "");
+  const [eventCol, setEventCol] = usePersistedPanelState<string>("ml", "eventCol", "");
+  const [includeShap, setIncludeShap] = usePersistedPanelState<boolean>("ml", "includeShap", false);
+  const [nestedCv, setNestedCv] = usePersistedPanelState<boolean>("ml", "nestedCv", false);
 
-  const [result, setResult] = useState<MLResult | null>(null);
-  const [survResult, setSurvResult] = useState<SurvivalMLResult | null>(null);
+  // What each request is built from, as sent. The learning rate only reaches
+  // gradient boosting, so a random forest does not go stale over it. The
+  // session id is there because a new dataset restarts the data version at 0:
+  // a result from the previous dataset would otherwise read as current.
+  const maxDepthSent = maxDepth ? parseInt(maxDepth, 10) : null;
+  const predictParams = {
+    sid, model, outcome, predictors, task, nEstimators, maxDepth: maxDepthSent, cvFolds, classWeight,
+    learningRate: model === "gradient_boosting" ? learningRate : null,
+  };
+  const survivalParams = {
+    sid, durationCol, eventCol, predictors: predictors.length > 0 ? predictors : null,
+    cvFolds, nEstimators, includeShap, nestedCv,
+  };
+  const {
+    result, setResult, stale, staleReasons: staleWhy,
+  } = useStampedResult<MLResult>("ml_predict", predictParams);
+  const {
+    result: survResult, setResult: setSurvResult, stale: survStale, staleReasons: survStaleWhy,
+  } = useStampedResult<SurvivalMLResult>("ml_survival", survivalParams);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -270,7 +295,7 @@ export default function MLPanel() {
         session_id: sid,
         duration_col: durationCol,
         event_col: eventCol,
-        predictors: predictors.length > 0 ? predictors : null,
+        predictors: survivalParams.predictors,
         cv_folds: cvFolds,
         n_estimators: nEstimators,
         include_shap: includeShap,
@@ -303,7 +328,7 @@ export default function MLPanel() {
         predictors,
         task,
         n_estimators: nEstimators,
-        max_depth: maxDepth ? parseInt(maxDepth, 10) : null,
+        max_depth: maxDepthSent,
         cv_folds: cvFolds,
         class_weight_balanced: classWeight,
         learning_rate: learningRate,
@@ -530,6 +555,15 @@ export default function MLPanel() {
           isSurvival ? (
             survResult ? (
               <div className="space-y-3">
+                {survStale && (
+                  <StaleResultNotice
+                    reasons={survStaleWhy}
+                    onRecompute={runSurvivalBenchmark}
+                    busy={loading}
+                    what="This survival benchmark"
+                  />
+                )}
+                <StaleGuard stale={survStale} reason={describeStale(survStaleWhy)}>
                 {/* Warnings first: the backend's overfitting alarms must never sit below the fold. */}
                 {survWarnings.length > 0 && (
                   <div className="panel border-l-4 border-l-red-400 space-y-1.5">
@@ -641,6 +675,7 @@ export default function MLPanel() {
                     </div>
                   </div>
                 )}
+                </StaleGuard>
               </div>
             ) : (
               <div className="flex items-center justify-center h-[360px] border border-dashed border-gray-200 rounded-lg text-xs text-gray-400 text-center px-6">
@@ -650,6 +685,15 @@ export default function MLPanel() {
             )
           ) : result ? (
             <div className="space-y-3">
+              {stale && (
+                <StaleResultNotice
+                  reasons={staleWhy}
+                  onRecompute={run}
+                  busy={loading}
+                  what="This model"
+                />
+              )}
+              <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
               {/* ROC (classification) or predicted-vs-actual (regression) */}
               {isClass ? (
                 <div className="panel">
@@ -755,6 +799,7 @@ export default function MLPanel() {
                     defaultYAxis="" />
                 </div>
               )}
+              </StaleGuard>
             </div>
           ) : (
             <div className="flex items-center justify-center h-[360px] border border-dashed border-gray-200 rounded-lg text-xs text-gray-400">
@@ -765,7 +810,7 @@ export default function MLPanel() {
         right={
           isSurvival ? (
             survResult ? (
-              <>
+              <StaleGuard stale={survStale} reason={describeStale(survStaleWhy)}>
                 <div className="panel space-y-2">
                   <h4 className="text-sm font-semibold text-gray-800">Survival ML benchmark</h4>
                   <p className="text-[11px] text-gray-500">
@@ -923,10 +968,10 @@ export default function MLPanel() {
                     </ul>
                   </div>
                 )}
-              </>
+              </StaleGuard>
             ) : null
           ) : result ? (
-            <>
+            <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
               {/* Metric tiles */}
               <div className="panel space-y-2">
                 <h4 className="text-sm font-semibold text-gray-800">{result.model}</h4>
@@ -1075,7 +1120,7 @@ export default function MLPanel() {
                 are for prediction / screening; for inference (odds ratios, p-values)
                 use the Regression tab.
               </div>
-            </>
+            </StaleGuard>
           ) : null
         }
       />

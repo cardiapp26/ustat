@@ -1,9 +1,10 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
 import { server } from '../test/server'
 import { clearSession, installSession } from '../test/testUtils'
+import { useStore } from '../store'
 import MLPanel from './MLPanel'
 
 afterEach(() => clearSession())
@@ -104,6 +105,48 @@ describe('MLPanel', () => {
     await user.click(screen.getByRole('button', { name: /train & cross-validate/i }))
 
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Gradient Boosting' })).toBeInTheDocument())
+  })
+
+  it('closes every export of a model once the data changes under it', async () => {
+    installSession()
+    server.use(
+      http.post('/api/ml/random_forest', () => HttpResponse.json(baseResult)),
+    )
+
+    const user = userEvent.setup()
+    render(<MLPanel />)
+    await user.selectOptions(screen.getByRole('combobox', { name: /outcome/i }), 'DM')
+    await user.click(screen.getAllByRole('checkbox')[0])
+    await user.click(screen.getByRole('button', { name: /train & cross-validate/i }))
+
+    const csv = await screen.findByRole('button', { name: 'CSV' })
+    expect(csv).toBeEnabled()
+
+    act(() => useStore.getState().bumpDataVersion())
+
+    expect(await screen.findByText(/Out of date\./)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'CSV' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'XLSX' })).toBeDisabled()
+  })
+
+  it('marks a model stale when a predictor changes after the run', async () => {
+    installSession()
+    server.use(
+      http.post('/api/ml/random_forest', () => HttpResponse.json(baseResult)),
+    )
+
+    const user = userEvent.setup()
+    render(<MLPanel />)
+    await user.selectOptions(screen.getByRole('combobox', { name: /outcome/i }), 'DM')
+    await user.click(screen.getAllByRole('checkbox')[0])
+    await user.click(screen.getByRole('button', { name: /train & cross-validate/i }))
+    await screen.findByRole('button', { name: 'CSV' })
+    expect(screen.queryByText(/Out of date\./)).not.toBeInTheDocument()
+
+    await user.click(screen.getAllByRole('checkbox')[1])
+
+    expect(await screen.findByText(/analysis settings changed/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'CSV' })).toBeDisabled()
   })
 
   it('shows the backend error message on failure', async () => {
@@ -277,6 +320,23 @@ describe('MLPanel — survival ML benchmark', () => {
     expect(await screen.findByText(nestedReason)).toBeInTheDocument()
     expect(screen.getByText(shapReason)).toBeInTheDocument()
     expect(screen.getByText(competingReason)).toBeInTheDocument()
+  })
+
+  it('closes the benchmark exports once the data changes under it', async () => {
+    installSession()
+    server.use(http.post(SURVIVAL_URL, () => HttpResponse.json(survivalResult)))
+
+    const user = userEvent.setup()
+    await runSurvivalBenchmark(user)
+
+    const csv = await screen.findByRole('button', { name: 'CSV' })
+    expect(csv).toBeEnabled()
+
+    act(() => useStore.getState().bumpDataVersion())
+
+    expect(await screen.findByText(/Out of date\./)).toBeInTheDocument()
+    expect(screen.getByText(/This survival benchmark was computed before the data changed/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'CSV' })).toBeDisabled()
   })
 
   it('shows the backend error detail when the benchmark fails', async () => {

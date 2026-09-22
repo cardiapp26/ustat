@@ -1,8 +1,9 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
 import { server } from '../test/server'
+import { useStore } from '../store'
 import { clearSession, installSession } from '../test/testUtils'
 import NonInferiorityPanel from './NonInferiorityPanel'
 
@@ -101,5 +102,38 @@ describe('NonInferiorityPanel', () => {
     await user.click(screen.getByRole('button', { name: /run non-inferiority test/i }))
 
     await waitFor(() => expect(screen.getByText('Insufficient events for margin test')).toBeInTheDocument())
+  })
+})
+
+describe('NonInferiorityPanel staleness', () => {
+  it('closes the export of a margin test once the data changes under it', async () => {
+    installSession()
+    server.use(
+      http.get('/api/compute/test-session/unique/GROUP', () => HttpResponse.json({ values: ['A', 'B'] })),
+      http.post('/api/stats/noninferiority', () =>
+        HttpResponse.json({
+          non_inferior: true, effect: 'RR', estimate: 1.05, ci_level: 90, ci_low: 0.9, ci_high: 1.15,
+          margin: 1.2, bound: 'upper', alpha_one_sided: 0.05, p_noninferiority: 0.01,
+          test_group: 'B', ref_group: 'A', outcome_type: 'binary',
+          export_rows: [['k', 'v'], ['RR', '1.05']],
+        }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<NonInferiorityPanel />)
+    const selects = screen.getAllByRole('combobox')
+    await user.selectOptions(selects[0], 'DM')
+    await user.selectOptions(selects[1], 'GROUP')
+    await waitFor(() => expect(screen.getByText('Test (new) arm')).toBeInTheDocument())
+    await user.click(screen.getByRole('button', { name: /run non-inferiority test/i }))
+
+    const csv = await screen.findByRole('button', { name: 'CSV' })
+    expect(csv).toBeEnabled()
+
+    act(() => useStore.getState().bumpDataVersion())
+
+    expect(await screen.findByText(/Out of date\./)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'CSV' })).toBeDisabled()
   })
 })

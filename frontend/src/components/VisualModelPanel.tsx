@@ -15,8 +15,13 @@ import {
 import { Tip, InfoBanner } from "./Tip";
 import { MissingGuard, type ImputationStrategy } from "./MissingGuard";
 import TitledPlot from "./TitledPlot";
+import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
 import { fmtP } from "../lib/format";
+import { describeStale } from "../lib/resultStamp";
 import { useResizableRightCol } from "../hooks/useResizableRightCol";
+import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
+import { useStampedResult } from "../hooks/useStampedResult";
 import type { PlotLayout, PlotCaptureHandle } from "../lib/plotTypes";
 
 // ── Local result interfaces ───────────────────────────────────────────────────
@@ -162,13 +167,17 @@ function PolynomialSection({ sessionId, numCols }: { sessionId: string; numCols:
   const { w: rightColW, onDragStart: onResizeStart, onReset: onResizeReset } =
     useResizableRightCol("VisualModelPanel.poly", 380);
 
-  const [outcome,    setOutcome]    = useState(numCols[0] ?? "");
-  const [predictor,  setPredictor]  = useState(numCols[1] ?? numCols[0] ?? "");
-  const [degree,     setDegree]     = useState(2);
-  const [covariates, setCovariates] = useState<string[]>([]);
-  const [robustSE,   setRobustSE]   = useState(false);
-  const [imputation, setImputation] = useState<ImputationStrategy>("listwise");
-  const [result,     setResult]     = useState<PolynomialResult | null>(null);
+  // Each section's fit survives a section switch, so its settings must too:
+  // otherwise it comes back flagged stale with the defaults on screen.
+  const P = "visual_model_poly";
+  const [outcome,    setOutcome]    = usePersistedPanelState(P, "outcome", numCols[0] ?? "");
+  const [predictor,  setPredictor]  = usePersistedPanelState(P, "predictor", numCols[1] ?? numCols[0] ?? "");
+  const [degree,     setDegree]     = usePersistedPanelState(P, "degree", 2);
+  const [covariates, setCovariates] = usePersistedPanelState<string[]>(P, "covariates", []);
+  const [robustSE,   setRobustSE]   = usePersistedPanelState(P, "robustSE", false);
+  const [imputation, setImputation] = usePersistedPanelState<ImputationStrategy>(P, "imputation", "listwise");
+  const runParams = { outcome, predictor, degree, covariates, imputation, robustSE };
+  const { result, setResult, stale, staleReasons: staleWhy } = useStampedResult<PolynomialResult>(P, runParams);
   const [loading,    setLoading]    = useState(false);
   const [error,      setError]      = useState("");
   const plotRef = useRef<PlotCaptureHandle | null>(null);
@@ -242,8 +251,13 @@ function PolynomialSection({ sessionId, numCols }: { sessionId: string; numCols:
 
         {/* Result */}
         {result && (
+          <div className="flex-1 min-w-0 space-y-3">
+          {stale && (
+            <StaleResultNotice reasons={staleWhy} onRecompute={run} busy={loading} what="This polynomial fit" />
+          )}
+          <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
           <div
-            className="flex-1 grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_var(--right-col)] gap-4 auto-rows-min items-start xl:grid-flow-dense relative"
+            className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_var(--right-col)] gap-4 auto-rows-min items-start xl:grid-flow-dense relative"
             style={{ "--right-col": `${rightColW}px` } as React.CSSProperties}
           >
             <div
@@ -305,6 +319,8 @@ function PolynomialSection({ sessionId, numCols }: { sessionId: string; numCols:
               </div>
             )}
           </div>
+          </StaleGuard>
+          </div>
         )}
       </div>
     </div>
@@ -361,6 +377,7 @@ function detectRepeatClusters(cols: string[]): { base: string; members: string[]
 function LMMSection({ sessionId, allCols, numCols }: { sessionId: string; allCols: string[]; numCols: string[] }) {
   const session    = useStore(s => s.session);
   const setSession = useStore(s => s.setSession);
+  const bumpDataVersion = useStore(s => s.bumpDataVersion);
 
   // Derive binary cols (exactly 2 unique values 0/1) from preview
   const binaryCols = new Set<string>(
@@ -372,14 +389,14 @@ function LMMSection({ sessionId, allCols, numCols }: { sessionId: string; allCol
       .map(c => c.name)
   );
 
-  const [outcome, setOutcome] = useState(numCols[0] ?? "");
-  const [fixedEffects, setFixedEffects] = useState<string[]>([]);
-  const [groupCol, setGroupCol] = useState(() => {
-    // Auto-suggest first ID-like col as grouping variable
-    return allCols.find(isIdLike) ?? allCols[0] ?? "";
-  });
-  const [imputation, setImputation] = useState<ImputationStrategy>("listwise");
-  const [result, setResult] = useState<LMMResult | null>(null);
+  const P = "visual_model_lmm";
+  const [outcome, setOutcome] = usePersistedPanelState(P, "outcome", numCols[0] ?? "");
+  const [fixedEffects, setFixedEffects] = usePersistedPanelState<string[]>(P, "fixedEffects", []);
+  // Auto-suggest first ID-like col as grouping variable
+  const [groupCol, setGroupCol] = usePersistedPanelState(P, "groupCol", allCols.find(isIdLike) ?? allCols[0] ?? "");
+  const [imputation, setImputation] = usePersistedPanelState<ImputationStrategy>(P, "imputation", "listwise");
+  const runParams = { outcome, fixedEffects, groupCol, imputation };
+  const { result, setResult, stale, staleReasons: staleWhy } = useStampedResult<LMMResult>(P, runParams);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -424,6 +441,10 @@ function LMMSection({ sessionId, allCols, numCols }: { sessionId: string; allCol
         time_var_name: meltTimeVar,
         value_var_name: meltValueVar,
       });
+      // The reshape replaced the dataset whatever the refresh below does, and
+      // a same-session setSession does not bump the version: without this,
+      // every fit on the wide data would still read as current.
+      bumpDataVersion();
       setMeltDone(true);
       // Reload session metadata to pick up new long-format columns
       if (session) {
@@ -569,6 +590,10 @@ function LMMSection({ sessionId, allCols, numCols }: { sessionId: string; allCol
 
       {result && (
         <div className="flex-1 space-y-4">
+          {stale && (
+            <StaleResultNotice reasons={staleWhy} onRecompute={run} busy={loading} what={`This ${result.model}`} />
+          )}
+          <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
           <div className="panel space-y-3">
             <h4 className="font-semibold text-gray-900">{result.model}</h4>
 
@@ -601,6 +626,7 @@ function LMMSection({ sessionId, allCols, numCols }: { sessionId: string; allCol
               )}
             </InfoBanner>
           </div>
+          </StaleGuard>
         </div>
       )}
     </div>
@@ -609,13 +635,16 @@ function LMMSection({ sessionId, allCols, numCols }: { sessionId: string; allCol
 
 // ── GLM Section (Gamma + NegBinom) ────────────────────────────────────────────
 function GLMSection({ sessionId, allCols, numCols }: { sessionId: string; allCols: string[]; numCols: string[] }) {
-  const [glmType, setGlmType] = useState<"gamma" | "negbinom">("gamma");
-  const [outcome,    setOutcome]    = useState(numCols[0] ?? "");
-  const [predictors, setPredictors] = useState<string[]>([]);
-  const [link,       setLink]       = useState("log");
-  const [robustSE,   setRobustSE]   = useState(false);
-  const [imputation, setImputation] = useState<ImputationStrategy>("listwise");
-  const [result,     setResult]     = useState<GLMResult | null>(null);
+  const P = "visual_model_glm";
+  const [glmType, setGlmType] = usePersistedPanelState<"gamma" | "negbinom">(P, "glmType", "gamma");
+  const [outcome,    setOutcome]    = usePersistedPanelState(P, "outcome", numCols[0] ?? "");
+  const [predictors, setPredictors] = usePersistedPanelState<string[]>(P, "predictors", []);
+  const [link,       setLink]       = usePersistedPanelState(P, "link", "log");
+  const [robustSE,   setRobustSE]   = usePersistedPanelState(P, "robustSE", false);
+  const [imputation, setImputation] = usePersistedPanelState<ImputationStrategy>(P, "imputation", "listwise");
+  // `link` only reaches a Gamma request, so it is not a setting of a NB fit.
+  const runParams = { glmType, outcome, predictors, imputation, robustSE, link: glmType === "gamma" ? link : undefined };
+  const { result, setResult, stale, staleReasons: staleWhy } = useStampedResult<GLMResult>(P, runParams);
   const [loading,    setLoading]    = useState(false);
   const [error,      setError]      = useState("");
 
@@ -698,6 +727,10 @@ function GLMSection({ sessionId, allCols, numCols }: { sessionId: string; allCol
 
       {result && (
         <div className="flex-1 space-y-4">
+          {stale && (
+            <StaleResultNotice reasons={staleWhy} onRecompute={run} busy={loading} what={`This ${result.model}`} />
+          )}
+          <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
           <div className="panel space-y-3">
             <h4 className="font-semibold text-gray-900">{result.model}</h4>
             <StatCards pairs={[
@@ -721,6 +754,7 @@ function GLMSection({ sessionId, allCols, numCols }: { sessionId: string; allCol
               </InfoBanner>
             )}
           </div>
+          </StaleGuard>
         </div>
       )}
     </div>
@@ -734,10 +768,14 @@ function DiagnosticsSection({ sessionId, allCols, numCols }: { sessionId: string
   const td     = useTraceDefaults();
   const showGrid = useStore(s => s.showGrid);
 
-  const [outcome,    setOutcome]    = useState(numCols[0] ?? "");
-  const [predictors, setPredictors] = useState<string[]>([]);
-  const [imputation, setImputation] = useState<ImputationStrategy>("listwise");
-  const [diag,       setDiag]       = useState<DiagnosticsResult | null>(null);
+  const P = "visual_model_diag";
+  const [outcome,    setOutcome]    = usePersistedPanelState(P, "outcome", numCols[0] ?? "");
+  const [predictors, setPredictors] = usePersistedPanelState<string[]>(P, "predictors", []);
+  const [imputation, setImputation] = usePersistedPanelState<ImputationStrategy>(P, "imputation", "listwise");
+  const runParams = { outcome, predictors, imputation };
+  const {
+    result: diag, setResult: setDiag, stale, staleReasons: staleWhy,
+  } = useStampedResult<DiagnosticsResult>(P, runParams);
   const [loading,    setLoading]    = useState(false);
   const [error,      setError]      = useState("");
   const rfRef   = useRef<PlotCaptureHandle | null>(null);
@@ -807,7 +845,12 @@ function DiagnosticsSection({ sessionId, allCols, numCols }: { sessionId: string
         </div>
 
         {diag && (
-          <div className="flex-1 grid grid-cols-2 gap-4">
+          <div className="flex-1 min-w-0 space-y-3">
+          {stale && (
+            <StaleResultNotice reasons={staleWhy} onRecompute={run} busy={loading} what="This diagnostic run" />
+          )}
+          <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
+          <div className="grid grid-cols-2 gap-4">
             {/* Residuals vs Fitted */}
             <div className="panel relative">
               <TitledPlot
@@ -895,6 +938,8 @@ function DiagnosticsSection({ sessionId, allCols, numCols }: { sessionId: string
                 config={{ responsive: true, displaylogo: false, displayModeBar: false }}
               />
             </div>
+          </div>
+          </StaleGuard>
           </div>
         )}
       </div>

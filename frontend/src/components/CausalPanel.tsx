@@ -1,14 +1,30 @@
 import { useState, type ReactNode } from "react";
 import { useStore } from "../store";
 import { runIV2SLS, runMediation, runTargetTrial, runDiD, runRDD, runDAGAdjustment, runSEM, runCausalSensitivity } from "../api";
+import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
+import { useStampedResult } from "../hooks/useStampedResult";
 import ResultExporter from "./ResultExporter";
+import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
 import { fmtP } from "../lib/format";
+import { describeStale } from "../lib/resultStamp";
 
 type Method = "iv" | "mediation" | "target" | "did" | "rdd" | "dag" | "sem" | "sensitivity";
 
 function getErrorDetail(e: unknown, fallback: string): string {
   const detail = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
   return typeof detail === "string" ? detail : fallback;
+}
+
+/** The resample count actually sent, so a result is stamped with it too. */
+function clampBootstrap(n: number): number {
+  return Math.max(100, Math.min(20000, Math.round(n || 0)));
+}
+
+/** "A -> B" lines to edge pairs; blank and malformed lines are dropped. */
+function parseEdges(text: string): string[][] {
+  return text.split("\n").map((l) => l.trim()).filter(Boolean)
+    .map((l) => l.split(/->|→/).map((x) => x.trim())).filter((e) => e.length === 2 && e[0] && e[1]);
 }
 
 interface IVResult {
@@ -112,11 +128,13 @@ function IVTab() {
   const cols = (session?.columns ?? []).map((c) => c.name);
   const sid = session?.session_id ?? "";
 
-  const [outcome, setOutcome] = useState("");
-  const [endogenous, setEndogenous] = useState("");
-  const [instruments, setInstruments] = useState<string[]>([]);
-  const [covariates, setCovariates] = useState<string[]>([]);
-  const [result, setResult] = useState<IVResult | null>(null);
+  const [outcome, setOutcome] = usePersistedPanelState("causal_iv", "outcome", "");
+  const [endogenous, setEndogenous] = usePersistedPanelState("causal_iv", "endogenous", "");
+  const [instruments, setInstruments] = usePersistedPanelState<string[]>("causal_iv", "instruments", []);
+  const [covariates, setCovariates] = usePersistedPanelState<string[]>("causal_iv", "covariates", []);
+  const {
+    result, setResult, stale, staleReasons: staleWhy,
+  } = useStampedResult<IVResult>("causal_iv", { outcome, endogenous, instruments, covariates });
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -183,6 +201,8 @@ function IVTab() {
           </div>
         ) : (
           <>
+            {stale && <StaleResultNotice reasons={staleWhy} onRecompute={run} busy={loading} what="This 2SLS estimate" />}
+            <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
             <div className={`panel border ${result.first_stage.weak_instruments ? "border-amber-300 bg-amber-50" : "border-emerald-300 bg-emerald-50"}`}>
               <p className="text-sm text-gray-800 leading-relaxed">{result.result_text}</p>
               <div className="text-[11px] text-gray-500 mt-2"><i>n</i> = {result.n}</div>
@@ -205,6 +225,7 @@ function IVTab() {
               </div>
             )}
             <ResultExporter title="iv_2sls" />
+            </StaleGuard>
           </>
         )}
       </div>
@@ -217,19 +238,21 @@ function MediationTab() {
   const cols = (session?.columns ?? []).map((c) => c.name);
   const sid = session?.session_id ?? "";
 
-  const [outcome, setOutcome] = useState("");
-  const [treatment, setTreatment] = useState("");
-  const [mediator, setMediator] = useState("");
-  const [covariates, setCovariates] = useState<string[]>([]);
-  const [bootstrap, setBootstrap] = useState<number>(5000);
-  const [result, setResult] = useState<MediationResult | null>(null);
+  const [outcome, setOutcome] = usePersistedPanelState("causal_mediation", "outcome", "");
+  const [treatment, setTreatment] = usePersistedPanelState("causal_mediation", "treatment", "");
+  const [mediator, setMediator] = usePersistedPanelState("causal_mediation", "mediator", "");
+  const [covariates, setCovariates] = usePersistedPanelState<string[]>("causal_mediation", "covariates", []);
+  const [bootstrap, setBootstrap] = usePersistedPanelState<number>("causal_mediation", "bootstrap", 5000);
+  const {
+    result, setResult, stale, staleReasons: staleWhy,
+  } = useStampedResult<MediationResult>("causal_mediation", { outcome, treatment, mediator, covariates, bootstrap: clampBootstrap(bootstrap) });
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   const run = async () => {
     setLoading(true); setError(null); setResult(null);
     try {
-      const reps = Math.max(100, Math.min(20000, Math.round(bootstrap || 0)));
+      const reps = clampBootstrap(bootstrap);
       const r = await runMediation({ session_id: sid, outcome, treatment, mediator, covariates, bootstrap: reps });
       setResult(r.data as MediationResult);
     } catch (e: unknown) {
@@ -304,6 +327,8 @@ function MediationTab() {
           </div>
         ) : (
           <>
+            {stale && <StaleResultNotice reasons={staleWhy} onRecompute={run} busy={loading} what="This mediation analysis" />}
+            <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
             <div className={`panel border ${result.acme_significant ? "border-emerald-300 bg-emerald-50" : "border-amber-300 bg-amber-50"}`}>
               <p className="text-sm text-gray-800 leading-relaxed">{result.result_text}</p>
               <div className="text-[11px] text-gray-500 mt-2"><i>n</i> = {result.n}</div>
@@ -323,6 +348,7 @@ function MediationTab() {
               Paths: a (X→M) = {result.paths.a}, b (M→Y) = {result.paths.b}, c′ (direct) = {result.paths.c_prime}.
             </div>
             <ResultExporter title="mediation" />
+            </StaleGuard>
           </>
         )}
       </div>
@@ -335,20 +361,24 @@ function TargetTrialTab() {
   const cols = (session?.columns ?? []).map((c) => c.name);
   const sid = session?.session_id ?? "";
 
-  const [treatment, setTreatment] = useState("");
-  const [outcome, setOutcome] = useState("");
-  const [confounders, setConfounders] = useState<string[]>([]);
-  const [elig, setElig] = useState<{ column: string; op: string; value: string }[]>([]);
-  const [result, setResult] = useState<TargetTrialResult | null>(null);
+  const [treatment, setTreatment] = usePersistedPanelState("causal_target_trial", "treatment", "");
+  const [outcome, setOutcome] = usePersistedPanelState("causal_target_trial", "outcome", "");
+  const [confounders, setConfounders] = usePersistedPanelState<string[]>("causal_target_trial", "confounders", []);
+  const [elig, setElig] = usePersistedPanelState<{ column: string; op: string; value: string }[]>("causal_target_trial", "eligibility", []);
+  // The criteria as sent: a half-filled row is not part of the protocol, so
+  // adding one does not make the emulated trial out of date.
+  const eligibility = elig
+    .filter((e) => e.column && e.value !== "")
+    .map((e) => ({ column: e.column, op: e.op, value: Number(e.value) }));
+  const {
+    result, setResult, stale, staleReasons: staleWhy,
+  } = useStampedResult<TargetTrialResult>("causal_target_trial", { treatment, outcome, confounders, eligibility });
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   const run = async () => {
     setLoading(true); setError(null); setResult(null);
     try {
-      const eligibility = elig
-        .filter((e) => e.column && e.value !== "")
-        .map((e) => ({ column: e.column, op: e.op, value: Number(e.value) }));
       const r = await runTargetTrial({ session_id: sid, treatment, outcome, confounders, eligibility, bootstrap: 400 });
       setResult(r.data as TargetTrialResult);
     } catch (e: unknown) {
@@ -419,6 +449,8 @@ function TargetTrialTab() {
           </div>
         ) : (
           <>
+            {stale && <StaleResultNotice reasons={staleWhy} onRecompute={run} busy={loading} what="This emulated trial" />}
+            <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
             <div className={`panel border ${result.effect.significant ? "border-emerald-300 bg-emerald-50" : "border-amber-300 bg-amber-50"}`}>
               <p className="text-sm text-gray-800 leading-relaxed">{result.result_text}</p>
             </div>
@@ -460,6 +492,7 @@ function TargetTrialTab() {
             </div>
             <div className="text-[11px] text-amber-700">⚠ {result.caveats.join(" ")}</div>
             <ResultExporter title="target_trial" />
+            </StaleGuard>
           </>
         )}
       </div>
@@ -471,11 +504,13 @@ function DiDTab() {
   const session = useStore((s) => s.session);
   const cols = (session?.columns ?? []).map((c) => c.name);
   const sid = session?.session_id ?? "";
-  const [outcome, setOutcome] = useState("");
-  const [groupCol, setGroupCol] = useState("");
-  const [timeCol, setTimeCol] = useState("");
-  const [covariates, setCovariates] = useState<string[]>([]);
-  const [result, setResult] = useState<DiDResult | null>(null);
+  const [outcome, setOutcome] = usePersistedPanelState("causal_did", "outcome", "");
+  const [groupCol, setGroupCol] = usePersistedPanelState("causal_did", "groupCol", "");
+  const [timeCol, setTimeCol] = usePersistedPanelState("causal_did", "timeCol", "");
+  const [covariates, setCovariates] = usePersistedPanelState<string[]>("causal_did", "covariates", []);
+  const {
+    result, setResult, stale, staleReasons: staleWhy,
+  } = useStampedResult<DiDResult>("causal_did", { outcome, groupCol, timeCol, covariates });
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const run = async () => {
@@ -516,6 +551,8 @@ function DiDTab() {
       <div className="flex-1 min-w-0 space-y-4">
         {!result ? <div className="panel h-64 flex items-center justify-center text-gray-400 text-sm">Pick outcome, group, and time.</div> : (
           <>
+            {stale && <StaleResultNotice reasons={staleWhy} onRecompute={run} busy={loading} what="This DiD estimate" />}
+            <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
             <div className={`panel border ${result.significant ? "border-emerald-300 bg-emerald-50" : "border-amber-300 bg-amber-50"}`}>
               <p className="text-sm text-gray-800 leading-relaxed">{result.result_text}</p></div>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
@@ -527,6 +564,7 @@ function DiDTab() {
             </div>
             <div className="text-xs text-gray-500">Cell means — control: {result.cell_means.control_pre} → {result.cell_means.control_post}; treated: {result.cell_means.treated_pre} → {result.cell_means.treated_post}.</div>
             <ResultExporter title="did" />
+            </StaleGuard>
           </>
         )}
       </div>
@@ -538,11 +576,13 @@ function RDDTab() {
   const session = useStore((s) => s.session);
   const cols = (session?.columns ?? []).map((c) => c.name);
   const sid = session?.session_id ?? "";
-  const [outcome, setOutcome] = useState("");
-  const [running, setRunning] = useState("");
-  const [cutoff, setCutoff] = useState("");
-  const [bandwidth, setBandwidth] = useState("");
-  const [result, setResult] = useState<RDDResult | null>(null);
+  const [outcome, setOutcome] = usePersistedPanelState("causal_rdd", "outcome", "");
+  const [running, setRunning] = usePersistedPanelState("causal_rdd", "running", "");
+  const [cutoff, setCutoff] = usePersistedPanelState("causal_rdd", "cutoff", "");
+  const [bandwidth, setBandwidth] = usePersistedPanelState("causal_rdd", "bandwidth", "");
+  const {
+    result, setResult, stale, staleReasons: staleWhy,
+  } = useStampedResult<RDDResult>("causal_rdd", { outcome, running, cutoff, bandwidth });
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const run = async () => {
@@ -582,6 +622,8 @@ function RDDTab() {
       <div className="flex-1 min-w-0 space-y-4">
         {!result ? <div className="panel h-64 flex items-center justify-center text-gray-400 text-sm">Pick outcome, running variable, and cutoff.</div> : (
           <>
+            {stale && <StaleResultNotice reasons={staleWhy} onRecompute={run} busy={loading} what="This RDD estimate" />}
+            <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
             <div className={`panel border ${result.significant ? "border-emerald-300 bg-emerald-50" : "border-amber-300 bg-amber-50"}`}>
               <p className="text-sm text-gray-800 leading-relaxed">{result.result_text}</p></div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -592,6 +634,7 @@ function RDDTab() {
               <div className="rounded-xl border border-gray-200 bg-white p-3"><div className="text-[10px] uppercase tracking-wider text-gray-500">N in bandwidth</div><div className="text-xl font-semibold mt-1 text-gray-900">{result.n_in_bandwidth}</div><div className="text-[11px] text-gray-500 mt-0.5">{result.n_left} below / {result.n_right} above</div></div>
             </div>
             <ResultExporter title="rdd" />
+            </StaleGuard>
           </>
         )}
       </div>
@@ -600,17 +643,21 @@ function RDDTab() {
 }
 
 function DAGTab() {
-  const [edgeText, setEdgeText] = useState("Z -> T\nZ -> Y\nT -> M\nM -> Y\nT -> C\nY -> C");
-  const [treatment, setTreatment] = useState("T");
-  const [outcome, setOutcome] = useState("Y");
-  const [result, setResult] = useState<DAGResult | null>(null);
+  const [edgeText, setEdgeText] = usePersistedPanelState("causal_dag", "edgeText", "Z -> T\nZ -> Y\nT -> M\nM -> Y\nT -> C\nY -> C");
+  const [treatment, setTreatment] = usePersistedPanelState("causal_dag", "treatment", "T");
+  const [outcome, setOutcome] = usePersistedPanelState("causal_dag", "outcome", "Y");
+  // Stamped with the parsed edges, so a blank line or extra spacing does not
+  // count as a different graph. The backdoor analysis reads the typed graph
+  // and no dataset, so a data edit cannot make it out of date.
+  const edges = parseEdges(edgeText);
+  const {
+    result, setResult, stale, staleReasons: staleWhy,
+  } = useStampedResult<DAGResult>("causal_dag", { edges, treatment, outcome }, { dependsOnData: false });
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const run = async () => {
     setLoading(true); setError(null); setResult(null);
     try {
-      const edges = edgeText.split("\n").map((l) => l.trim()).filter(Boolean)
-        .map((l) => l.split(/->|→/).map((s) => s.trim())).filter((e) => e.length === 2 && e[0] && e[1]);
       const r = await runDAGAdjustment({ edges, treatment, outcome });
       setResult(r.data as DAGResult);
     } catch (e: unknown) { setError(getErrorDetail(e, "DAG analysis failed.")); } finally { setLoading(false); }
@@ -643,6 +690,8 @@ function DAGTab() {
       <div className="flex-1 min-w-0 space-y-4">
         {!result ? <div className="panel h-64 flex items-center justify-center text-gray-400 text-sm">Enter a DAG and the treatment → outcome of interest.</div> : (
           <>
+            {stale && <StaleResultNotice reasons={staleWhy} onRecompute={run} busy={loading} what="This adjustment set" />}
+            <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
             <div className="panel border border-emerald-300 bg-emerald-50">
               <p className="text-sm text-gray-800 leading-relaxed">{result.result_text}</p></div>
             <div className="grid grid-cols-2 gap-3">
@@ -662,6 +711,7 @@ function DAGTab() {
               </div>
             </div>
             <ResultExporter title="dag_backdoor" />
+            </StaleGuard>
           </>
         )}
       </div>
@@ -681,22 +731,30 @@ function SEMTab() {
   const cols = (session?.columns ?? []).map((c) => c.name);
   const sid = session?.session_id ?? "";
 
-  const [treatments, setTreatments] = useState<string[]>([]);
-  const [mediators, setMediators] = useState<string[]>([]);
-  const [outcomes, setOutcomes] = useState<string[]>([]);
-  const [covariates, setCovariates] = useState<string[]>([]);
-  const [serial, setSerial] = useState(false);
-  const [bootstrap, setBootstrap] = useState<number>(5000);
+  const [treatments, setTreatments] = usePersistedPanelState<string[]>("causal_sem", "treatments", []);
+  const [mediators, setMediators] = usePersistedPanelState<string[]>("causal_sem", "mediators", []);
+  const [outcomes, setOutcomes] = usePersistedPanelState<string[]>("causal_sem", "outcomes", []);
+  const [covariates, setCovariates] = usePersistedPanelState<string[]>("causal_sem", "covariates", []);
+  const [serial, setSerial] = usePersistedPanelState("causal_sem", "serial", false);
+  const [bootstrap, setBootstrap] = usePersistedPanelState<number>("causal_sem", "bootstrap", 5000);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [lavaanSpec, setLavaanSpec] = useState("");
-  const [result, setResult] = useState<SEMResult | null>(null);
+  const [lavaanSpec, setLavaanSpec] = usePersistedPanelState("causal_sem", "lavaanSpec", "");
+  const runParams = {
+    treatments, mediators, outcomes, covariates,
+    serial: serial && mediators.length >= 2,
+    bootstrap: clampBootstrap(bootstrap),
+    lavaanSpec: lavaanSpec.trim(),
+  };
+  const {
+    result, setResult, stale, staleReasons: staleWhy,
+  } = useStampedResult<SEMResult>("causal_sem", runParams);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   const run = async () => {
     setLoading(true); setError(null); setResult(null);
     try {
-      const reps = Math.max(100, Math.min(20000, Math.round(bootstrap || 0)));
+      const reps = clampBootstrap(bootstrap);
       const payload: Record<string, unknown> = {
         session_id: sid, treatments, mediators, outcomes, covariates,
         serial: serial && mediators.length >= 2, bootstrap: reps,
@@ -781,6 +839,8 @@ function SEMTab() {
           </div>
         ) : (
           <>
+            {stale && <StaleResultNotice reasons={staleWhy} onRecompute={run} busy={loading} what="This SEM fit" />}
+            <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
             <div className="panel border border-indigo-200 bg-indigo-50">
               <p className="text-sm text-gray-800 leading-relaxed">{result.result_text}</p>
               <div className="text-[11px] text-gray-500 mt-2"><i>n</i> = {result.n}</div>
@@ -891,6 +951,7 @@ function SEMTab() {
             </details>
 
             <ResultExporter title="sem" />
+            </StaleGuard>
           </>
         )}
       </div>
@@ -965,19 +1026,28 @@ function SensitivityTab() {
   const cols = (session?.columns ?? []).map((c) => c.name);
   const sid = session?.session_id ?? "";
 
-  const [estimate, setEstimate] = useState("");
-  const [measure, setMeasure] = useState("rr");
-  const [ciLow, setCiLow] = useState("");
-  const [ciHigh, setCiHigh] = useState("");
-  const [rareOutcome, setRareOutcome] = useState(false);
-  const [baselineRisk, setBaselineRisk] = useState("");
+  const [estimate, setEstimate] = usePersistedPanelState("causal_sensitivity", "estimate", "");
+  const [measure, setMeasure] = usePersistedPanelState("causal_sensitivity", "measure", "rr");
+  const [ciLow, setCiLow] = usePersistedPanelState("causal_sensitivity", "ciLow", "");
+  const [ciHigh, setCiHigh] = usePersistedPanelState("causal_sensitivity", "ciHigh", "");
+  const [rareOutcome, setRareOutcome] = usePersistedPanelState("causal_sensitivity", "rareOutcome", false);
+  const [baselineRisk, setBaselineRisk] = usePersistedPanelState("causal_sensitivity", "baselineRisk", "");
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [smd, setSmd] = useState("");
-  const [treatment, setTreatment] = useState("");
-  const [outcome, setOutcome] = useState("");
-  const [matchId, setMatchId] = useState("");
-  const [negControl, setNegControl] = useState("");
-  const [result, setResult] = useState<SensitivityResult | null>(null);
+  const [smd, setSmd] = usePersistedPanelState("causal_sensitivity", "smd", "");
+  const [treatment, setTreatment] = usePersistedPanelState("causal_sensitivity", "treatment", "");
+  const [outcome, setOutcome] = usePersistedPanelState("causal_sensitivity", "outcome", "");
+  const [matchId, setMatchId] = usePersistedPanelState("causal_sensitivity", "matchId", "");
+  const [negControl, setNegControl] = usePersistedPanelState("causal_sensitivity", "negControl", "");
+  // The dataset is only read when both columns are picked. Without them the
+  // suite is arithmetic on the typed estimate, which no data edit can change.
+  const usesData = Boolean(sid && treatment && outcome);
+  const runParams = {
+    estimate, measure, ciLow, ciHigh, rareOutcome, baselineRisk, smd,
+    columns: usesData ? { treatment, outcome, matchId, negControl } : null,
+  };
+  const {
+    result, setResult, stale, staleReasons: staleWhy,
+  } = useStampedResult<SensitivityResult>("causal_sensitivity", runParams, { dependsOnData: usesData });
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -998,7 +1068,7 @@ function SensitivityTab() {
       if (hi !== null) payload.ci_high = hi;
       if (baselineRisk !== "") payload.baseline_risk = Number(baselineRisk);
       if (smd !== "") payload.smd = Number(smd);
-      if (sid && treatment && outcome) {
+      if (usesData) {
         payload.session_id = sid;
         payload.treatment_col = treatment;
         payload.outcome_col = outcome;
@@ -1141,6 +1211,8 @@ function SensitivityTab() {
           </div>
         ) : (
           <>
+            {stale && <StaleResultNotice reasons={staleWhy} onRecompute={run} busy={loading} what="This sensitivity analysis" />}
+            <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
             <div className={`panel border ${result.warnings.length ? "border-amber-300 bg-amber-50" : "border-emerald-300 bg-emerald-50"}`}>
               <p className="text-sm text-gray-800 leading-relaxed">{result.result_text}</p>
               <div className="text-[11px] text-gray-500 mt-2">{result.test}</div>
@@ -1248,6 +1320,7 @@ function SensitivityTab() {
             </div>
 
             <ResultExporter title="causal_sensitivity" />
+            </StaleGuard>
           </>
         )}
       </div>

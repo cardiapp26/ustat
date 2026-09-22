@@ -2,8 +2,13 @@ import { useState, useRef } from "react";
 import { useStore, isNumericKind, type Session } from "../store";
 import { usePlotLayout, usePalette } from "../plotStyle";
 import { runFactorPCA } from "../api";
+import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
+import { useStampedResult } from "../hooks/useStampedResult";
+import { describeStale } from "../lib/resultStamp";
 import TitledPlot from "./TitledPlot";
 import ResultExporter from "./ResultExporter";
+import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
 import { fmtP } from "../lib/format";
 import type { PlotData, PlotCaptureHandle } from "../lib/plotTypes";
 
@@ -67,15 +72,25 @@ function FactorPCAPanelBody({ session }: { session: Session }) {
 
   const numCols = session.columns.filter((c) => isNumericKind(c.kind)).map((c) => c.name);
 
-  // States
-  const [items, setItems] = useState<string[]>([]);
-  const [extraction, setExtraction] = useState<"pca" | "efa">("pca");
-  const [rotation, setRotation] = useState<"none" | "varimax" | "promax">("varimax");
-  const [nFactorsMode, setNFactorsMode] = useState<"auto" | "manual">("auto");
-  const [nFactors, setNFactors] = useState<number>(1);
-  const [imputation, setImputation] = useState<"listwise" | "mean" | "median">("listwise");
+  // Persisted with the result: a fit restored after a tab switch has to come
+  // back with the settings it was run under, or it reads as stale and its
+  // Recompute button would fit whatever the defaults happen to be.
+  const [items, setItems] = usePersistedPanelState<string[]>("factor_pca", "items", []);
+  const [extraction, setExtraction] = usePersistedPanelState<"pca" | "efa">("factor_pca", "extraction", "pca");
+  const [rotation, setRotation] = usePersistedPanelState<"none" | "varimax" | "promax">("factor_pca", "rotation", "varimax");
+  const [nFactorsMode, setNFactorsMode] = usePersistedPanelState<"auto" | "manual">("factor_pca", "nFactorsMode", "auto");
+  const [nFactors, setNFactors] = usePersistedPanelState<number>("factor_pca", "nFactors", 1);
+  const [imputation, setImputation] = usePersistedPanelState<"listwise" | "mean" | "median">("factor_pca", "imputation", "listwise");
 
-  const [result, setResult] = useState<FactorPCAResult | null>(null);
+  // What the request is built from. The loading cutoff, sort order and open
+  // tab are display-only and stay out of it.
+  const runParams = {
+    items, extraction, rotation, imputation,
+    n_factors: nFactorsMode === "manual" ? nFactors : null,
+  };
+  const {
+    result, setResult, stale, staleReasons: staleWhy,
+  } = useStampedResult<FactorPCAResult>("factor_pca", runParams);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -383,7 +398,16 @@ function FactorPCAPanelBody({ session }: { session: Session }) {
 
       {/* Right results display */}
       <div className="flex-1 min-w-0 space-y-4">
+        {result && stale && (
+          <StaleResultNotice
+            reasons={staleWhy}
+            onRecompute={run}
+            busy={loading}
+            what="This factor analysis"
+          />
+        )}
         {result ? (
+          <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
           <div className="space-y-4">
             {/* Top custom sliders/switches */}
             <div className="panel py-2 px-4 flex flex-wrap items-center gap-4 text-xs bg-white border border-gray-200 rounded-xl">
@@ -601,6 +625,7 @@ function FactorPCAPanelBody({ session }: { session: Session }) {
               </details>
             )}
           </div>
+          </StaleGuard>
         ) : (
           <div className="panel text-center text-gray-400 py-24 bg-white border border-dashed border-gray-200">
             <p className="text-3xl mb-3">📊</p>

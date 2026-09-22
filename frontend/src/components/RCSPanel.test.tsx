@@ -1,9 +1,10 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { server } from '../test/server'
 import { clearSession, installSession, makeSession } from '../test/testUtils'
+import { useStore } from '../store'
 import RCSPanel from './RCSPanel'
 
 afterEach(() => clearSession())
@@ -170,5 +171,69 @@ describe('RCSPanel', () => {
     await user.click(runBtn)
 
     await waitFor(() => expect(screen.getByText('Model failed to converge')).toBeInTheDocument())
+  })
+
+  it('Univariate RCS: closes the table and figure exports once the data changes under the curve', async () => {
+    installSession(rcsSession())
+    server.use(
+      http.post('/api/models/rcs', () =>
+        HttpResponse.json({
+          x_values: [100, 130, 160], or_values: [0.9, 1.0, 1.4],
+          ci_low: [0.7, 1.0, 1.1], ci_high: [1.1, 1.0, 1.8], x_data: [120, 140, 110, 160],
+          predictor: 'LDL', model_type: 'cox', duration_col: 'TIME', event_col: 'EVENT',
+          knots: [100, 130, 160], n_knots: 3, ref_value: 130, n: 4, n_events: 3,
+        }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<RCSPanel />)
+    await settle()
+    await user.click(await screen.findByRole('button', { name: 'Run RCS' }))
+
+    const csv = await screen.findByRole('button', { name: 'CSV' })
+    // The figure's own exporter (TitledPlot), beside the table exporter.
+    const figure = [screen.getByTitle('Export chart'), screen.getByTitle('Copy chart to clipboard as PNG')]
+    expect(csv).toBeEnabled()
+    for (const b of figure) expect(b).toBeEnabled()
+
+    act(() => useStore.getState().bumpDataVersion())
+
+    expect(await screen.findByText(/Out of date\./)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'CSV' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'PNG 300dpi' })).toBeDisabled()
+    for (const b of figure) expect(b).toBeDisabled()
+  })
+
+  it('Cox-RCS: drops the modebar camera from the HR curves once the data changes', async () => {
+    installSession(rcsSession())
+    server.use(
+      http.post('/api/models/survival/cox_rcs', () =>
+        HttpResponse.json({
+          coefficients: [{ name: 'LDL', coef: 0.02, hr: 1.02, se: 0.01, z: 2.0, p: 0.04, ci_low: 1.0, ci_high: 1.05 }],
+          curves_1d: [{ column: 'LDL', x: [100, 130, 160], hr: [0.9, 1.0, 1.3], lower: [0.7, 0.8, 1.0], upper: [1.1, 1.2, 1.6], knots: [100, 130, 160], ref: 130 }],
+          surface_2d: null, interaction: null, n: 4, n_events: 3, concordance: 0.71,
+        }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<RCSPanel />)
+    await settle()
+    await user.click(screen.getByRole('radio', { name: /Cox-RCS \(multivariable\)/ }))
+    await settle()
+    await user.click(await screen.findByRole('button', { name: 'Run Cox-RCS' }))
+    await screen.findByText('Cox proportional hazards (RCS)')
+
+    const removed = () => {
+      const config = JSON.parse(screen.getByTestId('plotly-mock').getAttribute('data-config') ?? '{}')
+      return (config.modeBarButtonsToRemove ?? []) as string[]
+    }
+    expect(removed()).not.toContain('toImage')
+
+    act(() => useStore.getState().bumpDataVersion())
+
+    expect(await screen.findByText(/Out of date\./)).toBeInTheDocument()
+    expect(removed()).toContain('toImage')
   })
 })

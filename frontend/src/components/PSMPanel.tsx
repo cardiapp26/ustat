@@ -11,13 +11,18 @@
 import { useState, useRef, useMemo } from "react";
 import { useStore, paletteOf, analysisCols, type Session } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
+import { useStampedResult } from "../hooks/useStampedResult";
 import { runPSM, getSessionInfo } from "../api";
 import { Tip } from "./Tip";
 import TitledPlot from "./TitledPlot";
 import ResultExporter from "./ResultExporter";
+import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
 import { fmtP } from "../lib/format";
+import { describeStale } from "../lib/resultStamp";
+import { staleExportTitle } from "../lib/staleGuard";
 import { useResizableRightCol } from "../hooks/useResizableRightCol";
-import { exportDataset } from "../lib/exportDataset";
+import { exportDataset, type ExportFmt } from "../lib/exportDataset";
 import type { PlotData, PlotLayout, PlotCaptureHandle } from "../lib/plotTypes";
 
 interface OutcomeCoefficient {
@@ -296,7 +301,10 @@ function PSOverlapPlot({
 export default function PSMPanel() {
   const session = useStore((s) => s.session);
   if (!session) return null;
-  return <PSMPanelBody session={session} />;
+  // Keyed by dataset: "View & Analyze Matched Cohort" swaps the session, and
+  // `dataVersion` restarts at 0 for the new one, so a body that outlived the
+  // swap would hold a match on the old cohort stamped as current.
+  return <PSMPanelBody key={session.session_id} session={session} />;
 }
 
 function PSMPanelBody({ session }: { session: Session }) {
@@ -338,8 +346,33 @@ function PSMPanelBody({ session }: { session: Session }) {
   const [rosenbaumGammaMax] = useState<number>(3.0);
   const [covFilter, setCovFilter] = useState("");
 
-  // Result & UI
-  const [result, setResult] = useState<PSMResult | null>(null);
+  // The request body minus the session: the match, the outcome model and the
+  // Rosenbaum bounds all come from this one call. Stamping the body itself
+  // means a setting the request ignores (the survival columns under a binary
+  // outcome, say) cannot flag the result stale. The balance threshold and the
+  // connector toggle only redraw the Love plot, so they stay out.
+  const runParams = {
+    treatment_col: treatCol,
+    covariates,
+    outcome_col: outcomeType === "binary" ? (outcomeCol || undefined) : undefined,
+    caliper,
+    caliper_scale: caliperScale,
+    trim_common_support: trimCommonSupport,
+    ratio,
+    random_state: Number.isFinite(randomState) ? randomState : undefined,
+    score_method: scoreMethod,
+    matching_method: matchingMethod,
+    exact_match: exactMatch.length > 0 ? exactMatch : undefined,
+    outcome_type: outcomeType,
+    survival_duration_col: outcomeType === "survival" ? (survDuration || undefined) : undefined,
+    survival_event_col: outcomeType === "survival" ? (survEvent || undefined) : undefined,
+    compute_rosenbaum: outcomeType === "binary" && ratio === 1 && computeRosenbaum,
+    rosenbaum_gamma_max: rosenbaumGammaMax,
+  };
+  const {
+    result, setResult, stale, staleReasons: staleWhy,
+  } = useStampedResult<PSMResult>("psm", runParams);
+  const staleText = describeStale(staleWhy);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [threshold, setThreshold] = useState(0.10);
@@ -352,30 +385,47 @@ function PSMPanelBody({ session }: { session: Session }) {
     if (covariates.length === 0) { setError("Select at least one covariate"); return; }
     setLoading(true); setError(null); setResult(null);
     try {
-      const res = await runPSM({
-        session_id: session.session_id,
-        treatment_col: treatCol,
-        covariates,
-        outcome_col: outcomeType === "binary" ? (outcomeCol || undefined) : undefined,
-        caliper,
-        caliper_scale: caliperScale,
-        trim_common_support: trimCommonSupport,
-        ratio,
-        random_state: Number.isFinite(randomState) ? randomState : undefined,
-        score_method: scoreMethod,
-        matching_method: matchingMethod,
-        exact_match: exactMatch.length > 0 ? exactMatch : undefined,
-        outcome_type: outcomeType,
-        survival_duration_col: outcomeType === "survival" ? (survDuration || undefined) : undefined,
-        survival_event_col: outcomeType === "survival" ? (survEvent || undefined) : undefined,
-        compute_rosenbaum: outcomeType === "binary" && ratio === 1 && computeRosenbaum,
-        rosenbaum_gamma_max: rosenbaumGammaMax,
-      });
+      const res = await runPSM({ session_id: session.session_id, ...runParams });
       setResult(res.data as PSMResult);
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { detail?: unknown } } }).response?.data?.detail;
       setError(typeof msg === "string" ? msg : (e instanceof Error ? e.message : "PSM failed"));
     } finally { setLoading(false); }
+  };
+
+  // The matched cohort is a dataset the backend built from the data as it was
+  // at the run. None of the guard-aware export controls carry it, so its
+  // download and "load as active dataset" close here, on the local flag.
+  const cohortBlockedTitle = stale ? staleExportTitle(staleText) : undefined;
+
+  const exportCohort = (fmt: ExportFmt) => {
+    if (stale || !result?.matched_session_id) return;
+    exportDataset(
+      { session_id: result.matched_session_id, filename: "psm_matched_cohort" },
+      session.columns.concat({ name: "match_set_id", kind: "categorical", dtype: "object" }),
+      fmt,
+    );
+  };
+
+  // Opening the cohort is a new session: the store clears the panel cache and
+  // moves to the Data tab, so this match does not come back as current on the
+  // matched data (it answered a question about the unmatched cohort).
+  const loadCohort = async () => {
+    if (stale || !result?.matched_session_id) return;
+    try {
+      setLoading(true);
+      const res = await getSessionInfo(result.matched_session_id);
+      setOriginalSession(session);
+      setSession(res.data);
+      // Switch to data tab so the user sees the new matched cohort patient list
+      useStore.getState().setActiveTab("data");
+      alert("Successfully loaded matched cohort! The entire app is now filtered and updated to the matched sample.");
+    } catch (e: unknown) {
+      const detail = (e as { response?: { data?: { detail?: unknown } } }).response?.data?.detail;
+      alert("Failed to load matched cohort: " + (typeof detail === "string" ? detail : (e instanceof Error ? e.message : String(e))));
+    } finally {
+      setLoading(false);
+    }
   };
 
   const smdExportHeaders = ["Covariate", "SMD Before", "SMD After", "Reduction %", "Balanced (<0.10)"];
@@ -631,6 +681,18 @@ function PSMPanelBody({ session }: { session: Session }) {
       {/* ── Main content ─────────────────────────────────────────────────── */}
       <div className="flex-1 min-w-0 overflow-y-auto space-y-4">
         {result ? (
+          <>
+          {stale && (
+            <StaleResultNotice
+              reasons={staleWhy}
+              onRecompute={run}
+              busy={loading}
+              what="This match"
+            />
+          )}
+          {/* The SMD table exporter, both plots and the cohort actions below
+              all close while the match is out of date. */}
+          <StaleGuard stale={stale} reason={staleText}>
           <div
             className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_var(--right-col)] gap-4 auto-rows-min items-start xl:grid-flow-dense relative"
             style={{ "--right-col": `${rightColW}px` } as React.CSSProperties}
@@ -699,63 +761,34 @@ function PSMPanelBody({ session }: { session: Session }) {
               </p>
               <div className="flex flex-wrap gap-2 pt-1">
                 <button
-                  onClick={async () => {
-                    if (!result.matched_session_id) return;
-                    try {
-                      setLoading(true);
-                      const res = await getSessionInfo(result.matched_session_id);
-                      setOriginalSession(session);
-                      setSession(res.data);
-                      // Switch to data tab so the user sees the new matched cohort patient list
-                      useStore.getState().setActiveTab("data");
-                      alert("Successfully loaded matched cohort! The entire app is now filtered and updated to the matched sample.");
-                    } catch (e: unknown) {
-                      const detail = (e as { response?: { data?: { detail?: unknown } } }).response?.data?.detail;
-                      alert("Failed to load matched cohort: " + (typeof detail === "string" ? detail : (e instanceof Error ? e.message : String(e))));
-                    } finally {
-                      setLoading(false);
-                    }
-                  }}
-                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm flex items-center gap-1.5 transition-colors cursor-pointer"
+                  onClick={loadCohort}
+                  disabled={stale}
+                  title={cohortBlockedTitle}
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-indigo-600"
                 >
                   🔍 View & Analyze Matched Cohort in App
                 </button>
                 <button
-                  onClick={() => {
-                    if (!result.matched_session_id) return;
-                    exportDataset(
-                      { session_id: result.matched_session_id, filename: "psm_matched_cohort" },
-                      session.columns.concat({ name: "match_set_id", kind: "categorical", dtype: "object" }),
-                      "csv"
-                    );
-                  }}
-                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 flex items-center gap-1.5 transition-colors cursor-pointer"
+                  onClick={() => exportCohort("csv")}
+                  disabled={stale}
+                  title={cohortBlockedTitle}
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white"
                 >
                   📥 Export as CSV
                 </button>
                 <button
-                  onClick={() => {
-                    if (!result.matched_session_id) return;
-                    exportDataset(
-                      { session_id: result.matched_session_id, filename: "psm_matched_cohort" },
-                      session.columns.concat({ name: "match_set_id", kind: "categorical", dtype: "object" }),
-                      "xlsx"
-                    );
-                  }}
-                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 flex items-center gap-1.5 transition-colors cursor-pointer"
+                  onClick={() => exportCohort("xlsx")}
+                  disabled={stale}
+                  title={cohortBlockedTitle}
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white"
                 >
                   📊 Export as Excel (.xlsx)
                 </button>
                 <button
-                  onClick={() => {
-                    if (!result.matched_session_id) return;
-                    exportDataset(
-                      { session_id: result.matched_session_id, filename: "psm_matched_cohort" },
-                      session.columns.concat({ name: "match_set_id", kind: "categorical", dtype: "object" }),
-                      "sav"
-                    );
-                  }}
-                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 flex items-center gap-1.5 transition-colors cursor-pointer"
+                  onClick={() => exportCohort("sav")}
+                  disabled={stale}
+                  title={cohortBlockedTitle}
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white"
                 >
                   💿 Export as SPSS (.sav)
                 </button>
@@ -1074,6 +1107,8 @@ function PSMPanelBody({ session }: { session: Session }) {
               </div>
             )}
           </div>
+          </StaleGuard>
+          </>
         ) : (
           /* Empty state */
           <div className="space-y-4">

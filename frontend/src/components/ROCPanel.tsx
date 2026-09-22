@@ -1,11 +1,16 @@
 import { useState, useEffect, useMemo, useRef, type ReactNode } from "react";
 import TitledPlot from "./TitledPlot";
 import ResultExporter from "./ResultExporter";
+import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
+import CopyTextButton from "./CopyTextButton";
 import { useStore, paletteOf, isNumericKind, type Session } from "../store";
 import { runROC, runROCCompare, runROCMultiCompare, runROCCombined } from "../api";
 import { Tip, InfoBanner } from "./Tip";
 import { MissingGuard, type ImputationStrategy } from "./MissingGuard";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
+import { useStampedResult } from "../hooks/useStampedResult";
+import { describeStale } from "../lib/resultStamp";
 import { fmtP } from "../lib/format";
 import type { PlotData, PlotCaptureHandle } from "../lib/plotTypes";
 
@@ -195,6 +200,15 @@ const defaultStyle = (i: number): CurveStyle => ({
   dash: "solid",
 });
 
+/** No multi-curve run yet. One shared instance, so memos keyed on it hold. */
+const NO_CURVES: MultiResult[] = [];
+
+/** The manual cutoff as a request carries it: a number, or null for none. */
+const parseCutoff = (raw: string): number | null => {
+  const v = parseFloat(raw);
+  return isNaN(v) ? null : v;
+};
+
 // ── Metrics block (single mode) ───────────────────────────────────────────────
 
 // Trimmed from full clinical explanations to one-line definitions so the
@@ -345,14 +359,34 @@ function ROCPanelBody({ session }: { session: Session }) {
   const [scoreDirection, setScoreDirection]   = usePersistedPanelState<"auto" | "higher" | "lower">("roc", "scoreDirection", "auto");
   const [scoreDirection2, setScoreDirection2] = usePersistedPanelState<"auto" | "higher" | "lower">("roc", "scoreDirection2", "auto");
   const [useManual,    setUseManual]    = usePersistedPanelState<boolean>("roc", "useManual", false);
-  const [result,       setResult]       = usePersistedPanelState<ROCResult | null>("roc", "result", null);
   const [error,        setError]        = useState<string | null>(null);
   const [loading,      setLoading]      = useState(false);
   const [imputation,   setImputation]   = usePersistedPanelState<ImputationStrategy>("roc", "imputation", "listwise");
 
+  // The four results below used to sit in panelCache with nothing saying what
+  // they were computed from, so a curve came back after a tab switch looking
+  // current however much the data had changed. Each is stamped on its own:
+  // they are separate requests with separate inputs.
+  //
+  // `useManual` is left out of the single curve's stamp: the Youden J /
+  // Manual switch on the result card flips it to change which cutoff is
+  // displayed, and that cannot alter the curve. The cutoff typed is the input.
+  const singleParams = {
+    scoreCol, outcomeCol, imputation, direction: scoreDirection,
+    manualCutoff: parseCutoff(manualCutoff),
+  };
+  const {
+    result, setResult, stale: singleStale, staleReasons: singleWhy,
+  } = useStampedResult<ROCResult>("roc", singleParams);
+
   const [showCompare, setShowCompare] = usePersistedPanelState<boolean>("roc", "showCompare", false);
   const [scoreCol2,   setScoreCol2]   = usePersistedPanelState<string>("roc", "scoreCol2", numCols[1] ?? numCols[0] ?? "");
-  const [cmpResult,   setCmpResult]   = usePersistedPanelState<ROCCompareResult | null>("roc", "cmpResult", null);
+  const compareParams = {
+    scoreCol, scoreCol2, outcomeCol, direction1: scoreDirection, direction2: scoreDirection2,
+  };
+  const {
+    result: cmpResult, setResult: setCmpResult, stale: cmpStale, staleReasons: cmpWhy,
+  } = useStampedResult<ROCCompareResult>("roc_compare", compareParams);
   const [cmpError,    setCmpError]    = useState<string | null>(null);
   const [cmpLoading,  setCmpLoading]  = useState(false);
 
@@ -369,7 +403,16 @@ function ROCPanelBody({ session }: { session: Session }) {
 
   // ── Multi-curve state ──
   const [multiCols,    setMultiCols]    = usePersistedPanelState<string[]>("roc", "multiCols", []);
-  const [multiResults, setMultiResults] = usePersistedPanelState<MultiResult[]>("roc", "multiResults", []);
+  // `multiPAdjust` is not an input of the curves: changing it re-runs only
+  // the pairwise matrix, in place (effect below), which is shown and guarded
+  // together with them.
+  const multiParams = { multiCols, outcomeCol, imputation, direction: scoreDirection };
+  const {
+    result: multiStamped, setResult: setMultiStamped, stale: multiStale, staleReasons: multiWhy,
+  } = useStampedResult<MultiResult[]>("roc_multi", multiParams);
+  const multiResults = multiStamped ?? NO_CURVES;
+  // An empty run is "no result", not a result with nothing in it to be stale.
+  const setMultiResults = (r: MultiResult[]) => setMultiStamped(r.length ? r : null);
   const [multiStyles,  setMultiStyles]  = usePersistedPanelState<CurveStyle[]>("roc", "multiStyles", []);
   const [multiLoading, setMultiLoading] = useState(false);
   const [multiError,   setMultiError]   = useState<string | null>(null);
@@ -411,7 +454,12 @@ function ROCPanelBody({ session }: { session: Session }) {
   const [showCombined,     setShowCombined]     = usePersistedPanelState<boolean>("roc", "showCombined", false);
   const [combinedCols,     setCombinedCols]     = usePersistedPanelState<string[]>("roc", "combinedCols", []);
   const [combinedName,     setCombinedName]     = usePersistedPanelState<string>("roc", "combinedName", "Combined Model");
-  const [combinedResult,   setCombinedResult]   = usePersistedPanelState<MultiResult | null>("roc", "combinedResult", null);
+  // The model name is sent only to label the curve, so renaming it after the
+  // fit does not make the fit stale.
+  const combinedParams = { combinedCols, outcomeCol };
+  const {
+    result: combinedResult, setResult: setCombinedResult, stale: combinedStale, staleReasons: combinedWhy,
+  } = useStampedResult<MultiResult>("roc_combined", combinedParams);
   const [combinedStyle,    setCombinedStyle]    = usePersistedPanelState<CurveStyle>("roc", "combinedStyle", { color: "#dc2626", width: 3, dash: "solid" });
   const [combinedLoading,  setCombinedLoading]  = useState(false);
   const [combinedError,    setCombinedError]    = useState<string | null>(null);
@@ -515,7 +563,7 @@ function ROCPanelBody({ session }: { session: Session }) {
     if (!scoreCol || !outcomeCol) return;
     if (scoreCol === outcomeCol) { setError("Score and outcome columns must be different"); return; }
     setLoading(true); setError(null); setResult(null); setCmpResult(null);
-    const mc = useManual && manualCutoff !== "" ? parseFloat(manualCutoff) : undefined;
+    const mc = useManual ? parseCutoff(manualCutoff) : null;
     try {
       const res = await runROC({
         session_id: session.session_id,
@@ -523,7 +571,7 @@ function ROCPanelBody({ session }: { session: Session }) {
         outcome_column: outcomeCol,
         imputation,
         direction: scoreDirection,
-        ...(mc != null && !isNaN(mc) ? { manual_cutoff: mc } : {}),
+        ...(mc != null ? { manual_cutoff: mc } : {}),
       });
       setResult(res.data);
     } catch (e: unknown) {
@@ -645,6 +693,8 @@ function ROCPanelBody({ session }: { session: Session }) {
 
   const updateMultiStyle = (i: number, patch: Partial<CurveStyle>) =>
     setMultiStyles((prev) => prev.map((s, j) => j === i ? { ...s, ...patch } : s));
+
+  const combinedShown = showCombined && combinedResult != null && !combinedResult.error;
 
   // ── Multi-curve plot traces (reference first so it sits behind, then
   // individual ROC step curves, then combined-model curve on top) ──
@@ -850,7 +900,16 @@ function ROCPanelBody({ session }: { session: Session }) {
                     {cmpLoading ? "Testing…" : "Run DeLong Test"}
                   </button>
                   {cmpError && <p className="text-red-500 text-xs">{cmpError}</p>}
+                  {cmpResult && cmpStale && (
+                    <StaleResultNotice
+                      reasons={cmpWhy}
+                      onRecompute={runCompare}
+                      busy={cmpLoading}
+                      what="This DeLong comparison"
+                    />
+                  )}
                   {cmpResult && (
+                    <StaleGuard stale={cmpStale} reason={describeStale(cmpWhy)}>
                     <div className="space-y-2 mt-1">
                       <div className={`text-xs px-2 py-1.5 rounded font-semibold border flex items-center gap-1.5
                         ${cmpResult.significant ? "border-green-300 bg-green-50 text-green-700" : "border-gray-200 bg-gray-50 text-gray-500"}`}>
@@ -895,6 +954,7 @@ function ROCPanelBody({ session }: { session: Session }) {
                         <p className="italic">{cmpResult.interpretation}</p>
                       </div>
                     </div>
+                    </StaleGuard>
                   )}
                 </>
               )}
@@ -1007,7 +1067,16 @@ function ROCPanelBody({ session }: { session: Session }) {
                   </button>
                   {combinedError && <p className="text-red-500 text-xs">{combinedError}</p>}
 
+                  {combinedResult && combinedStale && (
+                    <StaleResultNotice
+                      reasons={combinedWhy}
+                      onRecompute={runCombined}
+                      busy={combinedLoading}
+                      what="This combined model"
+                    />
+                  )}
                   {combinedResult && !combinedResult.error && (
+                    <StaleGuard stale={combinedStale} reason={describeStale(combinedWhy)}>
                     <div className="flex items-center justify-between border-t border-gray-100 pt-2">
                       <div className="flex items-center gap-1.5">
                         <div className="w-3 h-0.5 rounded" style={{ background: combinedStyle.color, height: 3 }} />
@@ -1017,6 +1086,7 @@ function ROCPanelBody({ session }: { session: Session }) {
                         {combinedResult.auc}
                       </span>
                     </div>
+                    </StaleGuard>
                   )}
                 </>
               )}
@@ -1189,6 +1259,7 @@ function ROCPanelBody({ session }: { session: Session }) {
             }
 
             return (
+            <StaleGuard stale={singleStale} reason={describeStale(singleWhy)}>
             <div className="relative flex-shrink-0" style={{ width: "100%", minHeight: 420 }}>
             <TitledPlot
               plotRefOut={rocSingleRef}
@@ -1246,11 +1317,13 @@ function ROCPanelBody({ session }: { session: Session }) {
               config={{ responsive: true, displaylogo: false, displayModeBar: false }}
             />
             </div>
+            </StaleGuard>
             );
           })()}
 
           {/* ── DeLong comparison plot (publication quality) ── */}
           {mode === "single" && cmpResult && cmpResult.curve_1 && cmpResult.curve_2 && (
+            <StaleGuard stale={cmpStale} reason={describeStale(cmpWhy)}>
             <div className="relative flex-shrink-0" style={{ width: "100%", minHeight: 420 }}>
             <TitledPlot
               plotRefOut={rocCompareRef}
@@ -1320,10 +1393,15 @@ function ROCPanelBody({ session }: { session: Session }) {
               config={{ responsive: true, displaylogo: false, displayModeBar: false }}
             />
             </div>
+            </StaleGuard>
           )}
 
           {/* ── Multi-curve plot ── */}
-          {mode === "multi" && (multiResults.length > 0 || (showCombined && combinedResult && !combinedResult.error)) && (
+          {/* One figure, two results: it is out of date when either the
+              per-predictor curves or the combined curve drawn over them is. */}
+          {mode === "multi" && (multiResults.length > 0 || combinedShown) && (
+            <StaleGuard stale={multiStale} reason={describeStale(multiWhy)}>
+            <StaleGuard stale={combinedShown && combinedStale} reason={describeStale(combinedWhy)}>
             <div className="relative flex-shrink-0" style={{ width: "100%", minHeight: 420 }}>
             <TitledPlot
               plotRefOut={rocMultiRef}
@@ -1356,6 +1434,8 @@ function ROCPanelBody({ session }: { session: Session }) {
               config={{ responsive: true, displaylogo: false, displayModeBar: false }}
             />
             </div>
+            </StaleGuard>
+            </StaleGuard>
           )}
 
           {/* ── Empty state ── */}
@@ -1379,7 +1459,16 @@ function ROCPanelBody({ session }: { session: Session }) {
           have a proper column to live in. Only renders for single mode. */}
       {mode === "single" && (
         <div className="w-[380px] flex-shrink-0 flex flex-col gap-3 overflow-y-auto">
+          {result && singleStale && (
+            <StaleResultNotice
+              reasons={singleWhy}
+              onRecompute={run}
+              busy={loading}
+              what="This ROC curve"
+            />
+          )}
           {result && (
+            <StaleGuard stale={singleStale} reason={describeStale(singleWhy)}>
             <div className="panel space-y-2">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-gray-700">Results</h3>
@@ -1421,7 +1510,10 @@ function ROCPanelBody({ session }: { session: Session }) {
                 <div className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 mt-2">
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-[10px] font-semibold text-gray-400 uppercase">Results Paragraph</span>
-                    <button onClick={() => navigator.clipboard.writeText(result.result_text ?? "")} className="text-[10px] px-2 py-0.5 rounded border border-gray-300 text-gray-500 hover:bg-indigo-50 hover:text-indigo-600 transition-colors">Copy</button>
+                    <CopyTextButton
+                      text={result.result_text ?? ""}
+                      className="text-[10px] px-2 py-0.5 rounded border border-gray-300 text-gray-500 hover:bg-indigo-50 hover:text-indigo-600 transition-colors disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-gray-500"
+                    />
                   </div>
                   <p className="text-sm text-gray-700 leading-relaxed">{result.result_text}</p>
                 </div>
@@ -1458,6 +1550,7 @@ function ROCPanelBody({ session }: { session: Session }) {
                   label={useManual && result.manual ? "At manual cutoff" : "At optimal cutoff (Youden J)"} />
               )}
             </div>
+            </StaleGuard>
           )}
 
           {/* DeLong comparison moved back to the left sidebar — find it next
@@ -1468,6 +1561,15 @@ function ROCPanelBody({ session }: { session: Session }) {
       {/* ── Right results column (multi mode) ───────────────────────────── */}
       {mode === "multi" && multiResults.length > 0 && (
         <div className="w-[380px] flex-shrink-0 flex flex-col gap-3 overflow-y-auto">
+          {multiStale && (
+            <StaleResultNotice
+              reasons={multiWhy}
+              onRecompute={runMulti}
+              busy={multiLoading}
+              what="This set of ROC curves"
+            />
+          )}
+          <StaleGuard stale={multiStale} reason={describeStale(multiWhy)}>
           {/* AUC Summary */}
           <div className="panel space-y-2">
             <div className="flex items-center justify-between">
@@ -1577,6 +1679,7 @@ function ROCPanelBody({ session }: { session: Session }) {
               </p>
             </div>
           )}
+          </StaleGuard>
         </div>
       )}
     </div>
