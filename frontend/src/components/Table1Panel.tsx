@@ -430,7 +430,7 @@ function Table1PanelBody({ session }: { session: Session }) {
   });
 
   const staleWhy = result
-    ? staleReasons(table1Stamp, makeStamp({ dataVersion, caseFilter, engine, params: runParams() }))
+    ? staleReasons(table1Stamp, makeStamp({ dataVersion, caseFilter, engine, params: runParams(), sessionId: session.session_id }))
     : [];
   const stale = staleWhy.length > 0;
 
@@ -541,7 +541,7 @@ function Table1PanelBody({ session }: { session: Session }) {
       }
 
       setResult(rawResult);
-      writeStamp(makeStamp({ dataVersion, caseFilter, engine, params: runParams() }));
+      writeStamp(makeStamp({ dataVersion, caseFilter, engine, params: runParams(), sessionId: session.session_id }));
     } catch (e: unknown) {
       const detail = (e as { response?: { data?: { detail?: string } } }).response?.data?.detail;
       const msg = e instanceof Error ? e.message : String(e);

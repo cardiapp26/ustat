@@ -4,6 +4,7 @@ import type { ColKind } from "./store";
 import { runColumnStructureMutation } from "./lib/columnStructureLock";
 import { fromResponseHeaders, record as recordProvenance } from "./lib/engine/provenance";
 import { installSessionRecovery } from "./lib/sessionRecovery";
+import { annotateRequest, recordResponse } from "./lib/requestLog";
 
 const api = axios.create({ baseURL: "" });  // Vite proxy: /api → localhost:8000
 
@@ -12,6 +13,12 @@ const api = axios.create({ baseURL: "" });  // Vite proxy: /api → localhost:80
 // report its provenance would be an endpoint that silently inherits whatever
 // the session header claims, which is the bug this exists to close. See
 // lib/engine/provenance.ts.
+// Note the data version and filter each request is sent under, so a result
+// that lands after an edit is stamped with the data it was computed on.
+// Synchronous: axios otherwise runs request interceptors a microtask later,
+// after the caller's own code has already moved on.
+api.interceptors.request.use((config) => annotateRequest(config), null, { synchronous: true });
+
 api.interceptors.response.use((response) => {
   const url = response.config?.url;
   if (typeof url === "string" && url.startsWith("/api/")) {
@@ -19,6 +26,9 @@ api.interceptors.response.use((response) => {
     // provenance one microtask AFTER the caller's `await` resolved, so the
     // panel would stamp its result from whatever ran before it.
     recordProvenance(url, fromResponseHeaders(response.headers as Record<string, unknown>));
+    // And the request itself, so a saved analysis can be re-run and replayed
+    // (lib/requestLog). Synchronous for the same reason.
+    recordResponse(response.config, response.data);
   }
   return response;
 });

@@ -2,19 +2,28 @@
  * The project tree, header edition: keep the current analysis under a name,
  * list what is kept, restore one back into its panel.
  *
- * Restore is not a re-run. It puts the saved snapshot (selections + result +
- * stamp) back into the panel and navigates there; the panel's own Run button
- * re-runs against the data now on screen. The stamp decides whether the
- * restored number is still current, exactly as it does for a live result.
+ * Restore puts the saved snapshot (selections + result + stamp) back into the
+ * panel and navigates to its tab and sub-tab (lib/panelRegistry); the stamp
+ * decides whether the restored number is still current, exactly as it does
+ * for a live result. Re-run goes one step further: it sends the request the
+ * stamp recorded to the data now open and restores the fresh result, so a
+ * kept analysis recomputes without its panel's Run button. An analysis whose
+ * panel reshaped the response has no recorded request and can only be
+ * restored and recomputed in its panel.
  *
- * The "keep" list offers every panel that currently caches a result. The tab
- * recorded with it is the tab open at keep time -- for the analysis the user
- * just ran (the overwhelmingly common case) that is its own tab.
+ * The "keep" list offers every panel that currently caches a result, by name.
  */
 import { useEffect, useRef, useState } from "react";
-import { Bookmark, Check, Code2, Pencil, Trash2 } from "lucide-react";
+import { Bookmark, Check, Code2, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import { useStore, type SavedAnalysis } from "../store";
+import { panelLabel } from "../lib/panelRegistry";
 import SyntaxView from "./SyntaxView";
+
+/** Kept with the request that computed it, so it can be re-run as is. */
+function replayable(a: SavedAnalysis): boolean {
+  const snapshot = a.snapshot as { stamp?: { request?: unknown } } | null;
+  return !!snapshot?.stamp?.request;
+}
 
 interface CacheEntryWithResult {
   result?: unknown;
@@ -52,6 +61,23 @@ export default function SavedAnalysesMenu() {
   }, [open]);
 
   const keepable = panelsWithResults(panelCache);
+  const rerunAnalysis = useStore((s) => s.rerunAnalysis);
+  const [rerunning, setRerunning] = useState<string | null>(null);
+  const [rerunError, setRerunError] = useState<string | null>(null);
+
+  const rerun = async (a: SavedAnalysis) => {
+    setRerunning(a.id);
+    setRerunError(null);
+    try {
+      await rerunAnalysis(a.id);
+      setOpen(false);
+    } catch (e) {
+      const detail = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+      setRerunError(typeof detail === "string" ? detail : e instanceof Error ? e.message : "Re-run failed");
+    } finally {
+      setRerunning(null);
+    }
+  };
 
   const commitRename = (id: string) => {
     renameAnalysis(id, renameValue);
@@ -80,6 +106,9 @@ export default function SavedAnalysesMenu() {
           {savedAnalyses.length === 0 && (
             <p className="px-3 pb-2 text-xs text-gray-400">Nothing kept yet.</p>
           )}
+          {rerunError && (
+            <p role="alert" className="px-3 pb-1 text-[10px] text-red-600 leading-snug">{rerunError}</p>
+          )}
           {savedAnalyses.map((a) => (
             <div key={a.id} className="flex items-center gap-1 px-3 py-1.5 hover:bg-gray-50 group">
               {renamingId === a.id ? (
@@ -104,8 +133,19 @@ export default function SavedAnalysesMenu() {
                   >
                     <p className="text-xs text-gray-700 font-medium truncate">{a.name}</p>
                     <p className="text-[10px] text-gray-400 truncate">
-                      {a.panel} · {new Date(a.createdAt).toLocaleDateString()}
+                      {panelLabel(a.panel)} · {new Date(a.createdAt).toLocaleDateString()}
                     </p>
+                  </button>
+                  <button
+                    onClick={() => void rerun(a)}
+                    disabled={!replayable(a) || rerunning !== null}
+                    className="p-1 text-gray-300 hover:text-violet-600 opacity-0 group-hover:opacity-100 disabled:hover:text-gray-300 disabled:opacity-30"
+                    title={replayable(a)
+                      ? "Re-run on the data now open"
+                      : "Kept without the request that computed it: restore it and press Recompute in its panel"}
+                    aria-label={`Re-run ${a.name}`}
+                  >
+                    <RefreshCw size={12} className={rerunning === a.id ? "animate-spin" : ""} />
                   </button>
                   <button
                     onClick={() => { setSyntaxFor(a); setOpen(false); }}
@@ -144,7 +184,7 @@ export default function SavedAnalysesMenu() {
                   onClick={() => saveAnalysis(panel, activeTab)}
                   className="w-full px-3 py-1.5 text-left text-xs text-gray-600 hover:bg-violet-50 hover:text-violet-700 transition-colors"
                 >
-                  {panel}
+                  {panelLabel(panel)}
                 </button>
               ))}
             </>

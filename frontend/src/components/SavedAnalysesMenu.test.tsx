@@ -23,10 +23,10 @@ describe('SavedAnalysesMenu', () => {
     })
     render(<SavedAnalysesMenu />)
     openMenu()
-    expect(screen.getByText('models')).toBeInTheDocument()
-    expect(screen.queryByText('roc')).not.toBeInTheDocument()
+    expect(screen.getByText('Regression model')).toBeInTheDocument()
+    expect(screen.queryByText('ROC')).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByText('models'))
+    fireEvent.click(screen.getByText('Regression model'))
     const kept = useStore.getState().savedAnalyses
     expect(kept).toHaveLength(1)
     expect(kept[0].name).toBe('Analysis 1')
@@ -38,7 +38,7 @@ describe('SavedAnalysesMenu', () => {
     useStore.setState({ panelCache: { models: { result: { or: 2.1 } } } })
     render(<SavedAnalysesMenu />)
     openMenu()
-    fireEvent.click(screen.getByText('models'))
+    fireEvent.click(screen.getByText('Regression model'))
     useStore.getState().setPanelCache('models', { result: { or: 9.9 } })
     const kept = useStore.getState().savedAnalyses[0]
     expect((kept.snapshot as { result: { or: number } }).result.or).toBe(2.1)
@@ -48,7 +48,7 @@ describe('SavedAnalysesMenu', () => {
     useStore.setState({ panelCache: { models: { result: { or: 2.1 } } } })
     render(<SavedAnalysesMenu />)
     openMenu()
-    fireEvent.click(screen.getByText('models'))
+    fireEvent.click(screen.getByText('Regression model'))
     // Simulate the panel cache moving on and the user elsewhere. The menu
     // stays open after a keep, so no re-toggle here.
     useStore.setState({ panelCache: {}, activeTab: 'data' })
@@ -59,11 +59,39 @@ describe('SavedAnalysesMenu', () => {
     expect((state.panelCache.models as { result: { or: number } }).result.or).toBe(2.1)
   })
 
+  it('keeps an analysis under its own tab even when kept from another', () => {
+    // The Kaplan-Meier fit lives in Models > Survival; keeping it from the
+    // Tests tab used to restore it to Tests.
+    useStore.setState({ panelCache: { survival_km: { result: { n: 1 } } }, activeTab: 'tests' })
+    render(<SavedAnalysesMenu />)
+    openMenu()
+    fireEvent.click(screen.getByText('Survival: km'))
+    expect(useStore.getState().savedAnalyses[0].tab).toBe('models')
+    useStore.setState({ activeTab: 'data' })
+    fireEvent.click(screen.getByTitle('Restore into its panel'))
+    expect(useStore.getState().activeTab).toBe('models')
+    expect((useStore.getState().panelCache.combo_models as { sub: string }).sub).toBe('survival')
+  })
+
+  it('offers re-run only for an analysis kept with its request', () => {
+    useStore.setState({
+      savedAnalyses: [
+        { id: 'a', name: 'With request', panel: 'models', tab: 'models', createdAt: 1,
+          snapshot: { result: {}, stamp: { request: { method: 'POST', url: '/api/models/linear', body: {} } } } },
+        { id: 'b', name: 'Without', panel: 'models', tab: 'models', createdAt: 1, snapshot: { result: {}, stamp: {} } },
+      ],
+    })
+    render(<SavedAnalysesMenu />)
+    openMenu()
+    expect(screen.getByRole('button', { name: 'Re-run With request' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Re-run Without' })).toBeDisabled()
+  })
+
   it('renames and deletes a kept analysis', () => {
     useStore.setState({ panelCache: { models: { result: { or: 1 } } } })
     render(<SavedAnalysesMenu />)
     openMenu()
-    fireEvent.click(screen.getByText('models'))
+    fireEvent.click(screen.getByText('Regression model'))
 
     fireEvent.click(screen.getByTitle('Rename'))
     const input = screen.getByDisplayValue('Analysis 1')

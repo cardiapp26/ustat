@@ -25,6 +25,7 @@
 import type { EngineKind } from "./engine/types";
 import { latest as latestProvenance, type Provenance } from "./engine/provenance";
 import type { CaseFilter } from "../store";
+import type { RecordedRequest } from "./requestLog";
 
 declare const __APP_VERSION__: string;
 
@@ -51,6 +52,18 @@ export interface ResultStamp {
    * than left to discover when the numbers will not reproduce.
    */
   provenance?: Provenance | null;
+  /**
+   * The session the result was computed in. `dataVersion` restarts at 0 for
+   * every new session, so without this a result from the previous dataset
+   * would read as current at version 0 of the next one.
+   */
+  sessionId?: string | null;
+  /**
+   * The request that returned this exact result (see lib/requestLog), when
+   * the panel shows the response as returned. What lets a saved analysis be
+   * re-run and replayed; absent when the panel reshaped the response.
+   */
+  request?: RecordedRequest | null;
 }
 
 export type StaleReason = "data" | "filter" | "params" | "engine";
@@ -100,11 +113,13 @@ export interface StampInputs {
   caseFilter: CaseFilter | null;
   engine: EngineKind;
   params: unknown;
+  sessionId?: string | null;
 }
 
 export interface StampInputsWithProvenance extends StampInputs {
   /** Defaults to the most recently recorded run, which is this one. */
   provenance?: Provenance | null;
+  request?: RecordedRequest | null;
 }
 
 export function makeStamp(inputs: StampInputsWithProvenance): ResultStamp {
@@ -116,6 +131,8 @@ export function makeStamp(inputs: StampInputsWithProvenance): ResultStamp {
     engineVersion: appVersion(),
     at: Date.now(),
     provenance: inputs.provenance !== undefined ? inputs.provenance : latestProvenance(),
+    sessionId: inputs.sessionId ?? null,
+    request: inputs.request ?? null,
   };
 }
 
@@ -133,7 +150,8 @@ export function staleReasons(
   if (!stamp) return [];
   const dependsOnData = opts.dependsOnData !== false;
   const out: StaleReason[] = [];
-  if (dependsOnData && stamp.dataVersion !== current.dataVersion) out.push("data");
+  const otherSession = !!stamp.sessionId && !!current.sessionId && stamp.sessionId !== current.sessionId;
+  if (dependsOnData && (stamp.dataVersion !== current.dataVersion || otherSession)) out.push("data");
   if (dependsOnData && stamp.filterKey !== current.filterKey) out.push("filter");
   if (stamp.paramsKey !== current.paramsKey) out.push("params");
   if (stamp.engine !== current.engine || stamp.engineVersion !== current.engineVersion) {

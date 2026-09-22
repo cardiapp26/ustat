@@ -68,6 +68,9 @@ function rebaseEntry(entry: unknown, savedDataVersion: number): unknown {
     stamp: {
       ...stamp,
       dataVersion: stamp.dataVersion === savedDataVersion ? 0 : -1,
+      // The project reopens as a new session: a stamp that was current in the
+      // saved one is current in this one (the data version decides that).
+      sessionId: useStore.getState().session?.session_id ?? null,
     },
   };
 }

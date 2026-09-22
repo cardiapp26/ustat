@@ -30,7 +30,13 @@ export default function SyntaxView({ analysis, onClose }: { analysis: SavedAnaly
   useEffect(() => {
     let cancelled = false;
     api
-      .post("/api/project/syntax", { panel: analysis.panel, params: paramsOf(analysis) })
+      // The recorded request, when there is one, is what the server actually
+      // received; the template for it is keyed by endpoint (syntax_templates).
+      .post("/api/project/syntax", {
+        panel: analysis.panel,
+        params: paramsOf(analysis),
+        request: (analysis.snapshot as { stamp?: { request?: unknown } } | null)?.stamp?.request ?? null,
+      })
       .then((res) => { if (!cancelled) setSyntax(res.data); })
       .catch((e: unknown) => {
         if (!cancelled) setError(e instanceof Error ? e.message : "Request failed");

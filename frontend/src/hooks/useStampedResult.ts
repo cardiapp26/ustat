@@ -7,6 +7,7 @@ import {
   type StaleOptions,
   type StaleReason,
 } from "../lib/resultStamp";
+import { requestFor, sentContextFor } from "../lib/requestLog";
 
 interface StampedCache<T> {
   result?: T | null;
@@ -51,6 +52,7 @@ export function useStampedResult<T>(
   const dataVersion = useStore((s) => s.dataVersion);
   const caseFilter = useStore((s) => s.caseFilter);
   const engine = useStore((s) => s.engine);
+  const sessionId = useStore((s) => s.session?.session_id ?? null);
 
   // Read the cache once, on mount, for the same reason usePersistedPanelState
   // does: this hook owns the value afterwards and re-reading would fight it.
@@ -63,25 +65,42 @@ export function useStampedResult<T>(
     // reaches, which reads as "the data changed" until it is recomputed.
     if (cached?.result != null) {
       const s = useStore.getState();
-      return makeStamp({ dataVersion: -1, caseFilter: s.caseFilter, engine: s.engine, params, provenance: null });
+      return makeStamp({
+        dataVersion: -1, caseFilter: s.caseFilter, engine: s.engine, params, provenance: null,
+        sessionId: s.session?.session_id ?? null,
+      });
     }
     return null;
   });
 
   const current = useMemo(
-    () => makeStamp({ dataVersion, caseFilter, engine, params }),
-    [dataVersion, caseFilter, engine, params],
+    () => makeStamp({ dataVersion, caseFilter, engine, params, sessionId }),
+    [dataVersion, caseFilter, engine, params, sessionId],
   );
 
   const setResult = useCallback((r: T | null) => {
     const next = r == null
       ? null
-      : makeStamp({
-          dataVersion: useStore.getState().dataVersion,
-          caseFilter: useStore.getState().caseFilter,
-          engine: useStore.getState().engine,
-          params,
-        });
+      : (() => {
+          const now = useStore.getState();
+          // The state the request was SENT under, when the result is the
+          // response itself: a fit sent before an edit and landing after it
+          // is a fit of the old data, and must read as out of date.
+          const sent = sentContextFor(r);
+          return makeStamp({
+            dataVersion: sent?.dataVersion ?? now.dataVersion,
+            caseFilter: sent ? (sent.caseFilter as typeof now.caseFilter) : now.caseFilter,
+            engine: now.engine,
+            params,
+            sessionId: sent?.sessionId ?? now.session?.session_id ?? null,
+            // The request that returned exactly this object, if any: what a
+            // saved analysis re-runs and the replay script calls.
+            // Substitute the session the request was sent to: a dataset
+            // switched while it was in flight must not leave a dead id in a
+            // request that re-runs are aimed with.
+            request: requestFor(r, sent?.sessionId ?? now.session?.session_id),
+          });
+        })();
     setLocalResult(r);
     setLocalStamp(next);
     const existing = useStore.getState().panelCache[panel];

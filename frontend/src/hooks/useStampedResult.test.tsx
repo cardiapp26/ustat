@@ -27,6 +27,18 @@ describe("useStampedResult", () => {
     expect(view.result.current.staleReasons).toEqual(["data"]);
   });
 
+  it("marks a result from another session out of date even at the same data version", () => {
+    // dataVersion restarts at 0 for every session, so it cannot tell two
+    // datasets apart on its own.
+    const run = renderHook(() => useStampedResult<{ auc: number }>("swap", { a: 1 }));
+    act(() => run.result.current.setResult({ auc: 0.81 }));
+    run.unmount();
+    const s = useStore.getState();
+    act(() => useStore.setState({ session: { ...s.session!, session_id: "another" }, dataVersion: s.dataVersion }));
+    const again = renderHook(() => useStampedResult<{ auc: number }>("swap", { a: 1 }));
+    expect(again.result.current.staleReasons).toEqual(["data"]);
+  });
+
   it("marks a cached result stale once the data changes under it", () => {
     // The reported bug: edit a cell, come back to the panel, and the previous
     // fit is still on screen presented as current.

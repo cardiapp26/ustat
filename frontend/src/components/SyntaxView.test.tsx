@@ -47,6 +47,7 @@ describe('SyntaxView', () => {
     expect(sent).toEqual({
       panel: 'models',
       params: { model: 'logistic', outcome: 'dm', predictors: ['age'] },
+      request: null,
     })
     fireEvent.click(screen.getByText('R'))
     expect(screen.getByText(/r code/)).toBeInTheDocument()

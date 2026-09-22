@@ -3,6 +3,9 @@ import { runColumnStructureMutation } from "./lib/columnStructureLock";
 import type { EngineKind } from "./lib/engine/types";
 import type { IngestReport } from "./api";
 import type { LegendPosition, ThemePreset } from "./lib/plotPresets";
+import { locatePanel } from "./lib/panelRegistry";
+import { forSession, sentContextFor, setSendContextProvider } from "./lib/requestLog";
+import { makeStamp, type ResultStamp } from "./lib/resultStamp";
 
 export { runColumnStructureMutation } from "./lib/columnStructureLock";
 
@@ -373,6 +376,17 @@ interface AppState {
   deleteAnalysis: (id: string) => void;
   /** Put the snapshot back into its panel and navigate to its tab. */
   restoreAnalysis: (id: string) => void;
+  /**
+   * Re-run a saved analysis on the data now open, through the request its
+   * stamp recorded, and restore the fresh result. Rejects when the analysis
+   * was kept without a request (its panel reshaped the response): restore it
+   * and press Recompute instead.
+   */
+  rerunAnalysis: (id: string) => Promise<void>;
+  /** Bumped by restore and re-run so the hosting tab remounts: panels read
+   *  their cache entry once, on mount, and would otherwise keep showing the
+   *  result that was on screen before. */
+  restoreEpoch: number;
   // Column rename propagation — every panel's persisted variable selection
   // (usePersistedPanelState) lives in panelCache, keyed by panel id. A rename
   // in the Data tab doesn't touch those cached strings, so a panel with the
@@ -903,7 +917,8 @@ export const useStore = create<AppState>((set, get) => ({
       id,
       name: name?.trim() || `Analysis ${state.savedAnalyses.length + 1}`,
       panel,
-      tab,
+      // The panel's own tab, not whichever tab was open when it was kept.
+      tab: locatePanel(panel)?.tab ?? tab,
       createdAt: Date.now(),
       // Deep copy: the live cache keeps mutating as the user works, and a
       // kept analysis that silently tracked it would not be "kept" at all.
@@ -923,11 +938,57 @@ export const useStore = create<AppState>((set, get) => ({
   restoreAnalysis: (id) => set((state) => {
     const analysis = state.savedAnalyses.find((a) => a.id === id);
     if (!analysis) return state;
+    const place = locatePanel(analysis.panel);
+    const panelCache = { ...state.panelCache, [analysis.panel]: structuredClone(analysis.snapshot) };
+    if (place?.combo) {
+      // Select the sub-tab that hosts the panel (Models > Survival, say).
+      const combo = panelCache[place.combo.key];
+      const base = combo && typeof combo === "object" ? combo as Record<string, unknown> : {};
+      panelCache[place.combo.key] = { ...base, sub: place.combo.sub };
+    }
     return {
-      panelCache: { ...state.panelCache, [analysis.panel]: structuredClone(analysis.snapshot) },
-      activeTab: analysis.tab,
+      panelCache,
+      activeTab: place?.tab ?? analysis.tab,
+      restoreEpoch: state.restoreEpoch + 1,
     };
   }),
+  restoreEpoch: 0,
+  rerunAnalysis: async (id) => {
+    const state = get();
+    const analysis = state.savedAnalyses.find((a) => a.id === id);
+    const sessionId = state.session?.session_id;
+    if (!analysis) return;
+    if (!sessionId) throw new Error("Open a dataset to re-run this analysis on.");
+    const snapshot = (analysis.snapshot ?? {}) as Record<string, unknown> & { stamp?: ResultStamp | null };
+    const request = snapshot.stamp?.request;
+    if (!request) {
+      throw new Error(
+        "This analysis was kept without the request that computed it. Restore it and press Recompute in its panel.",
+      );
+    }
+    const { default: api } = await import("./api");
+    const call = forSession(request, sessionId);
+    const res = await api.request({ method: call.method, url: call.url, data: call.body ?? undefined });
+    const now = get();
+    // The state the re-run was SENT under, as for any result: an edit made
+    // while it ran leaves it computed on the data before the edit.
+    const sent = sentContextFor(res.data);
+    const stamp: ResultStamp = {
+      ...makeStamp({
+        dataVersion: sent?.dataVersion ?? now.dataVersion,
+        caseFilter: sent ? (sent.caseFilter as CaseFilter | null) : now.caseFilter,
+        engine: now.engine,
+        params: null, sessionId: sent?.sessionId ?? sessionId, request,
+      }),
+      // Same analysis, same settings: only the data it ran on is new.
+      paramsKey: snapshot.stamp?.paramsKey ?? "null",
+    };
+    const fresh = { ...snapshot, result: res.data, stamp };
+    set((s) => ({
+      savedAnalyses: s.savedAnalyses.map((a) => (a.id === id ? { ...a, snapshot: structuredClone(fresh) } : a)),
+    }));
+    get().restoreAnalysis(id);
+  },
   clearPanelCache: (panel) => set((state) => {
     const next = { ...state.panelCache };
     delete next[panel];
@@ -1079,16 +1140,27 @@ export const useStore = create<AppState>((set, get) => ({
       const res = await deleteRow(state.session.session_id, rowIdx);
       const d = res.data;
       // Same refresh payload structure as undo/redo, triggers global re-renders
-      set({ 
-        session: { ...state.session, rows: d.rows, columns: d.columns, preview: d.preview },
+      set((s) => ({
+        session: { ...state.session!, rows: d.rows, columns: d.columns, preview: d.preview },
         // Add 1 to undo depth because delete is a destructive action we pushed
         undoDepth: state.undoDepth + 1,
         redoDepth: 0,
         columnMutationRedo: [],
-      });
+        // A row is gone: every result computed with it is out of date. Undo
+        // and redo already bump this; the delete that they reverse did not.
+        dataVersion: s.dataVersion + 1,
+      }));
     } catch (e) {
       console.error("Failed to delete row", e);
       throw e;
     }
   },
 }));
+
+// Every API request records the data version, filter and session it is sent
+// under (lib/requestLog), so results are stamped with the data they were
+// computed on rather than the data when they happened to land.
+setSendContextProvider(() => {
+  const s = useStore.getState();
+  return { dataVersion: s.dataVersion, caseFilter: s.caseFilter, sessionId: s.session?.session_id ?? null };
+});

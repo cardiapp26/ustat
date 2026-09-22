@@ -593,6 +593,9 @@ export default function App() {
   const caseFilterKey = caseFilter
     ? JSON.stringify([caseFilter.conditions, caseFilter.selected, caseFilter.total])
     : "all";
+  // Restoring or re-running a saved analysis remounts the tab, so its panel
+  // reads the entry that was just put back (panels read their cache once).
+  const restoreEpoch = useStore((s) => s.restoreEpoch);
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -1052,7 +1055,7 @@ export default function App() {
 
       {/* Content */}
       <main className="flex-1 overflow-hidden flex flex-col">
-        <ErrorBoundary key={`${activeTab}:${caseFilterKey}`}>
+        <ErrorBoundary key={`${activeTab}:${caseFilterKey}:${restoreEpoch}`}>
           {activeTab === "data"        && <div className="flex-1 p-4 overflow-hidden flex flex-col" style={{minHeight:0}}><DataTable /></div>}
           {activeTab === "summary"     && <SummaryCombo />}
           {activeTab === "table1"      && <Table1Panel />}
