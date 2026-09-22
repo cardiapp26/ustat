@@ -5,7 +5,7 @@ import { BookOpen, X } from "lucide-react";
 import { runColumnStructureMutation, useStore } from "../store";
 import type { CaseCondition, ColMeta, Session } from "../store";
 import api from "../api";
-import { renameColumn, getColumnBadges, selectCases } from "../api";
+import { renameColumn, getColumnBadges, selectCases, getGridRows } from "../api";
 import DataDictionaryPanel from "./DataDictionaryPanel";
 
 // ── Kind cycling ───────────────────────────────────────────────────────────────
@@ -570,7 +570,60 @@ function DataTableBody({ session }: { session: Session }) {
     return out;
   }, [sortKeys, columns, indexedRows]);
 
+  // `preview` (and everything derived from it above — indexedRows, filtered,
+  // dateKeysByCol) is capped at PREVIEW_ROWS server-side. For a file that fits
+  // inside that cap, `preview` already IS the whole file and the client-side
+  // sort/filter/missing-only below is exact. For a bigger file, sort/filter/
+  // missing-only need to run over rows the client never received — ask the
+  // server, which runs the same predicates over the full in-memory frame
+  // (routers/session.py: /grid_rows) and hands back a page plus the true
+  // matched count.
+  const needsServerGrid = session.rows > preview.length &&
+    (sortKeys.length > 0 || Object.values(filters).some(Boolean) || showMissingOnly);
+
+  const [serverGrid, setServerGrid] = useState<{
+    rows: Record<string, unknown>[];
+    positions: number[];
+    matchedTotal: number;
+    truncated: boolean;
+  } | null>(null);
+  const [serverGridLoading, setServerGridLoading] = useState(false);
+
+  useEffect(() => {
+    const sid = session?.session_id;
+    if (!needsServerGrid || !sid) { setServerGrid(null); setServerGridLoading(false); return; }
+    let cancelled = false;
+    setServerGridLoading(true);
+    // Debounced: a text filter fires this on every keystroke otherwise.
+    const timer = setTimeout(() => {
+      getGridRows(sid, {
+        sort: sortKeys,
+        filters,
+        missing_only: showMissingOnly,
+        hide_unselected: hideUnselected,
+      })
+        .then((res) => {
+          if (cancelled) return;
+          setServerGrid({
+            rows: res.data.rows,
+            positions: res.data.positions,
+            matchedTotal: res.data.matched_total,
+            truncated: res.data.truncated,
+          });
+        })
+        // Non-fatal: falls back to the preview-only client path below, same
+        // as the column-badges fetch above.
+        .catch(() => { if (!cancelled) setServerGrid(null); })
+        .finally(() => { if (!cancelled) setServerGridLoading(false); });
+    }, 300);
+    return () => { cancelled = true; clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [needsServerGrid, session?.session_id, dataVersion, JSON.stringify(sortKeys), JSON.stringify(filters), showMissingOnly, hideUnselected]);
+
   const displayRows = useMemo(() => {
+    if (needsServerGrid && serverGrid) {
+      return serverGrid.rows.map((row, i): IndexedRow => ({ ...row, _idx: serverGrid.positions[i] }));
+    }
     if (sortKeys.length === 0) return filtered;
     return [...filtered].sort((a, b) => {
       // Select Cases rows are not part of the sort. Ordering them in among the
@@ -588,7 +641,7 @@ function DataTableBody({ session }: { session: Session }) {
       }
       return 0;
     });
-  }, [filtered, sortKeys, excludedRows, dateKeysByCol]);
+  }, [needsServerGrid, serverGrid, filtered, sortKeys, excludedRows, dateKeysByCol]);
 
   // ── Row virtualisation ──────────────────────────────────────────────────
   // A 1000 x 125 sheet is 126,000 <td>s and ~256k DOM nodes; rendering them
@@ -1765,9 +1818,17 @@ function DataTableBody({ session }: { session: Session }) {
         <p className="text-sm text-gray-500">
           Showing{" "}
           <span className="text-gray-900 font-medium">{displayRows.length}</span>
-          {displayRows.length !== preview.length && (
-            <span className="text-gray-400"> of {preview.length} previewed</span>
-          )}{" "}rows ·{" "}
+          {needsServerGrid && serverGrid ? (
+            displayRows.length !== serverGrid.matchedTotal && (
+              <span className="text-gray-400"> of {serverGrid.matchedTotal.toLocaleString()} matching</span>
+            )
+          ) : (
+            displayRows.length !== preview.length && (
+              <span className="text-gray-400"> of {preview.length} previewed</span>
+            )
+          )}{" "}rows
+          {serverGridLoading && <span className="ml-1 text-indigo-400 text-xs animate-pulse">updating…</span>}
+          {" "}·{" "}
           {/* A column's missing badge turns on the global missing-only filter
               AND adds a filter on that column, so one click on a small badge
               in a header can drop 371 rows to 33. That is what was asked for,

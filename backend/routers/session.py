@@ -800,6 +800,123 @@ def select_cases(session_id: str, body: SelectCasesRequest):
     }
 
 
+# ── Grid rows (sort/filter/missing-only over the full dataframe) ────────────────
+# The grid's own client-side sort/filter/missing-only run against `preview`,
+# which is capped at PREVIEW_ROWS -- for a file bigger than that they only
+# ever see the file's head, not the file. This endpoint mirrors the client's
+# predicate/sort semantics (DataTable.tsx: `filtered`/`displayRows`) but runs
+# them over the whole in-memory `df`, still returning at most PREVIEW_ROWS
+# rows since the grid can only usefully render/edit that many at once.
+
+class GridSortKey(BaseModel):
+    col: str
+    dir: str = "asc"  # "asc" | "desc"
+
+
+class GridRowsRequest(BaseModel):
+    sort: List[GridSortKey] = []
+    filters: Dict[str, str] = {}
+    missing_only: bool = False
+    hide_unselected: bool = False
+
+
+@router.post("/{session_id}/grid_rows")
+def get_grid_rows(session_id: str, body: GridRowsRequest):
+    df = store.get(session_id)
+    if df is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    from routers.upload import _detect_kind
+    from services.date_parser import parse_series
+    from services.store import _apply_conditions
+
+    mask = pd.Series(True, index=df.index)
+
+    # Per-column substring filter, case-insensitive. A missing cell never
+    # matches a non-empty filter, same as the client (DataTable.tsx: cell ===
+    # null/undefined only matches an empty filter string).
+    for col, needle in body.filters.items():
+        if not needle or col not in df.columns:
+            continue
+        cell = df[col]
+        notna = cell.notna()
+        as_str = cell.where(notna, "").astype(str).str.lower()
+        mask &= notna & as_str.str.contains(re.escape(needle.lower()), regex=True)
+
+    if body.missing_only:
+        missing = pd.Series(False, index=df.index)
+        for col in df.columns:
+            missing |= df[col].isna() | (df[col] == "")
+        mask &= missing
+
+    conditions = store.get_filter(session_id)
+
+    if body.hide_unselected and conditions:
+        selected_index = _apply_conditions(df, conditions).index
+        mask &= df.index.isin(selected_index)
+
+    filtered_df = df[mask]
+    matched_total = len(filtered_df)
+
+    sort_keys = [k for k in body.sort if k.col in df.columns]
+
+    if not sort_keys:
+        ordered = filtered_df
+    else:
+        # Select Cases rows are not part of the sort -- they sink to the
+        # bottom, in their original order, so the sorted block above them IS
+        # the selection (matches DataTable.tsx:576-584).
+        if conditions:
+            selected_index = _apply_conditions(filtered_df, conditions).index
+            excluded_mask = ~filtered_df.index.isin(selected_index)
+        else:
+            excluded_mask = pd.Series(False, index=filtered_df.index)
+
+        kept = filtered_df[~excluded_mask]
+        excluded_rows_df = filtered_df[excluded_mask]  # kept in original order
+
+        sort_frame = kept[[]].copy()
+        by_cols: List[str] = []
+        ascending: List[bool] = []
+        for i, key in enumerate(sort_keys):
+            kind = (store.get_kind_overrides(session_id).get(key.col)
+                    or _detect_kind(df[key.col]))
+            key_name = f"__sort_{i}__"
+            if kind == "date":
+                sort_frame[key_name] = parse_series(kept[key.col], order="auto")[0]
+            elif pd.api.types.is_numeric_dtype(kept[key.col]):
+                sort_frame[key_name] = kept[key.col]
+            else:
+                col = kept[key.col]
+                notna = col.notna() & (col != "")
+                sort_frame[key_name] = col.where(notna).astype(str).str.lower()
+                sort_frame.loc[~notna, key_name] = np.nan
+            by_cols.append(key_name)
+            ascending.append(key.dir != "desc")
+
+        # kind="stable" so rows tied on every key keep their original
+        # relative order, matching JS Array.sort's stability.
+        sort_frame = sort_frame.sort_values(
+            by=by_cols, ascending=ascending, na_position="last", kind="stable"
+        )
+        ordered = pd.concat([kept.loc[sort_frame.index], excluded_rows_df])
+
+    page = ordered.head(PREVIEW_ROWS)
+    positions = [int(i) for i in page.index]
+    rows = json.loads(
+        page.replace([np.inf, -np.inf], np.nan).to_json(
+            orient="records", default_handler=str, date_format="iso", date_unit="s"
+        )
+    )
+
+    return {
+        "rows": rows,
+        "positions": positions,
+        "matched_total": matched_total,
+        "truncated": matched_total > PREVIEW_ROWS,
+    }
+
+
 @router.get("/{session_id}/frame")
 def session_frame(session_id: str, columns: Optional[str] = Query(None)):
     """The filtered dataset, typed by declared kind, for an off-server run.

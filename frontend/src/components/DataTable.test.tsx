@@ -639,3 +639,56 @@ describe('DataTable column missing-value actions', () => {
     expect(screen.getByRole('button', { name: /MICE \(multiple imputation\)/i })).toBeInTheDocument()
   })
 })
+
+describe('server-driven grid rows (a file bigger than the preview cap)', () => {
+  it('sorts over the full dataframe via /grid_rows once rows exceed the preview length', async () => {
+    // `preview` only has 3 rows, but the real file has 5000 — a client-side
+    // sort could only ever reorder those 3. `needsServerGrid` should kick in
+    // and the grid should render whatever the server sends back instead.
+    installSession(makeSession({
+      columns: [{ name: 'c0', dtype: 'float64', kind: 'numeric' }],
+      preview: [{ c0: 1 }, { c0: 2 }, { c0: 3 }],
+      rows: 5000,
+    }))
+    server.use(
+      http.post('/api/sessions/test-session/grid_rows', () =>
+        HttpResponse.json({
+          rows: [{ c0: 999 }, { c0: 500 }],
+          positions: [4321, 10],
+          matched_total: 4321,
+          truncated: true,
+        }),
+      ),
+    )
+    const user = userEvent.setup()
+    render(<DataTable />)
+
+    await user.click(screen.getAllByTitle('Sort descending')[0])
+
+    await waitFor(() =>
+      expect(
+        [...document.querySelectorAll('tbody tr[class*="group"]')].map(
+          (r) => r.querySelectorAll('td')[1].textContent,
+        ),
+      ).toEqual(['999', '500']),
+    )
+    expect(screen.getByText(/4,321 matching/)).toBeInTheDocument()
+  })
+
+  it('does not call /grid_rows for a file that already fits inside the preview', async () => {
+    installSession(bigSession(6))
+    let called = false
+    server.use(
+      http.post('/api/sessions/test-session/grid_rows', () => {
+        called = true
+        return HttpResponse.json({ rows: [], positions: [], matched_total: 0, truncated: false })
+      }),
+    )
+    const user = userEvent.setup()
+    render(<DataTable />)
+
+    await user.click(screen.getAllByTitle('Sort ascending')[0])
+    await new Promise((r) => setTimeout(r, 400)) // past the debounce window
+    expect(called).toBe(false)
+  })
+})

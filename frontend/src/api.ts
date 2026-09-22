@@ -752,6 +752,24 @@ export const selectCases = (sessionId: string, conditions: object[], apply = tru
 export const clearCases  = (sessionId: string) =>
   api.delete(`/api/sessions/${sessionId}/select_cases`);
 
+export interface GridRowsRequest {
+  sort: { col: string; dir: "asc" | "desc" }[];
+  filters: Record<string, string>;
+  missing_only: boolean;
+  hide_unselected: boolean;
+}
+export interface GridRowsResponse {
+  rows: Record<string, unknown>[];
+  positions: number[];
+  matched_total: number;
+  truncated: boolean;
+}
+/** Sort/filter/missing-only over the full dataframe, not just the
+ * PREVIEW_ROWS-capped `preview` the grid normally renders from — see
+ * DataTable.tsx's `needsServerGrid`. */
+export const getGridRows = (sessionId: string, body: GridRowsRequest) =>
+  api.post<GridRowsResponse>(`/api/sessions/${sessionId}/grid_rows`, body);
+
 /** Duplicate rows by a chosen key. `dryRun` counts them without deleting. */
 export interface DeduplicateResult {
   deleted: number;
