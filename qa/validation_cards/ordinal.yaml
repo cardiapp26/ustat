@@ -15,7 +15,12 @@ behavior:
   missing_data: Listwise deletion over outcome + predictors
   weights: Not supported
   ties: Not applicable
-  category_coding: Outcome order taken from the dictionary's category order; predictors dummy-coded, first level reference
+  category_coding: >-
+    Outcome order from services/level_order.py, in priority order: the request's level_order,
+    the Data Dictionary's category order (metadata level_order), numeric codes, a recognised
+    grading vocabulary. Text categories with none of these are refused (422), never sorted
+    alphabetically. The order used and its source are returned (categories_in_rank_order,
+    level_order_source) and stated in result_text. Predictors dummy-coded, first level reference
 reference:
   software: R (pinned image qa/r_reference)
   entrypoint: MASS::polr and ordinal::clm (two independent references for the same fit)
@@ -27,6 +32,15 @@ tolerance:
   rel: 1.0e-4
   rationale: qa/models_audit/compare.py REL; polr and clm themselves differ slightly, which bounds how tight this can honestly be
 edge_cases:
-  - {case: user-defined category order respected end to end, status: open}
+  - {case: user-defined category order respected end to end, status: covered, test: backend/tests/test_level_order.py::test_dictionary_order_is_used}
+  - {case: text categories with no known order refused rather than sorted alphabetically, status: covered, test: backend/tests/test_level_order.py::test_text_categories_with_no_known_order_are_refused}
+  - {case: Poor / Fair / Good matches MASS::polr with the clinical order, status: covered, test: backend/tests/test_level_order.py::test_recognised_grading_labels_fit_the_polr_model}
+  - {case: category order survives the .ustat project file, status: covered, test: backend/tests/test_level_order.py::test_project_file_round_trip_keeps_the_order}
   - {case: empty outcome category, status: covered, test: backend/tests/test_validation_card_edge_cases.py::test_ordinal_empty_outcome_category}
-findings: []
+findings:
+  - id: alphabetical-outcome-order
+    summary: Text outcome categories were sorted alphabetically and the dictionary order was never read, so Poor / Fair / Good was fitted as Fair < Good < Poor
+    status: fixed
+    evidence: >-
+      On the test data MASS::polr gives beta = 1.2345 with the clinical order and -0.5755 with the
+      alphabetical one, the model uSTAT used to fit; backend/tests/test_level_order.py

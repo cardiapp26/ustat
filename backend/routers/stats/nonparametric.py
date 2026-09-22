@@ -11,6 +11,7 @@ from pydantic import AliasChoices, BaseModel, Field
 from services import store
 from services.category_health import clean_two_level
 from services.impute import apply_imputation
+from services.level_order import SOURCE_RECOGNISED, resolve_level_order
 from services.text_generators import (
     methods_mannwhitney,
     methods_kruskal,
@@ -183,32 +184,6 @@ def kruskal(req: KruskalRequest):
     return _sanitize(ret)
 
 
-# Ordinal vocabularies seen in clinical grading scales, lowest first. Matched
-# case-insensitively and only when every level of the column is covered.
-_ORDINAL_WORDS = [
-    ["none", "mild", "moderate", "severe"],
-    ["none", "low", "medium", "high"],
-    ["low", "medium", "high"],
-    ["low", "mid", "high"],
-    ["never", "rarely", "sometimes", "often", "always"],
-    ["absent", "mild", "moderate", "marked"],
-    ["i", "ii", "iii", "iv"],
-    ["grade 1", "grade 2", "grade 3", "grade 4"],
-    ["mild", "moderate", "severe"],
-    ["small", "medium", "large"],
-    ["negative", "equivocal", "positive"],
-]
-
-
-def _ordinal_rank_map(levels: list) -> Optional[list]:
-    """Rank each level by a known ordinal vocabulary, or None if unrecognised."""
-    lowered = [str(lv).strip().casefold() for lv in levels]
-    for vocab in _ORDINAL_WORDS:
-        if all(w in vocab for w in lowered) and len(set(lowered)) == len(lowered):
-            return [vocab.index(w) for w in lowered]
-    return None
-
-
 # ── 3. Jonckheere-Terpstra ─────────────────────────────────────────────────────
 
 
@@ -255,29 +230,34 @@ def jonckheere_terpstra(req: JonckheereRequest):
     )
     order_warnings: list = []
     order_source = "numeric value" if numeric_levels else "alphabetical (assumed)"
-    if not numeric_levels and req.scores is None:
+    if req.scores is None:
         # This test measures a trend ACROSS the ordering, so the ordering is
         # the hypothesis. Labels like Low / Medium / High sort to High, Low,
-        # Medium, which reverses the trend and changes the p-value — and none
-        # of that was visible in the response. Recognise the usual clinical
-        # ordinal words, and say out loud which order was used either way.
-        ranked = _ordinal_rank_map(raw_levels)
-        if ranked is not None:
-            levels = [lev for _, lev in sorted(zip(ranked, raw_levels))]
-            order_source = "recognised ordinal labels"
+        # Medium, which reverses the trend and changes the p-value. The order
+        # comes from the shared resolver (Data Dictionary, numeric codes, a
+        # known grading scale), and the response says which order was used.
+        # With `scores`, the caller's scores map onto the order below exactly
+        # as they always have.
+        order = resolve_level_order(raw_levels, req.group_column, session_id=req.session_id)
+        if order is not None:
+            levels = list(order.levels)
+            order_source = order.source
+        if order is not None and order.source == SOURCE_RECOGNISED:
             order_warnings.append(
                 f"'{req.group_column}' was ordered as "
                 + " < ".join(str(lv) for lv in levels)
-                + " from its labels. Send `scores` to set the order explicitly."
+                + " from its labels. Set the order in the Data Dictionary, or "
+                "send `scores`, to state it explicitly."
             )
-        else:
+        elif order is None:
             order_warnings.append(
                 f"'{req.group_column}' has non-numeric levels, so they were "
                 "placed in alphabetical order: "
                 + " < ".join(str(lv) for lv in levels)
-                + ". Jonckheere-Terpstra tests a trend ACROSS that order — if "
-                "this is not the clinical order, send `scores` to set it, "
-                "because the trend direction and the p-value depend on it."
+                + ". Jonckheere-Terpstra tests a trend ACROSS that order. If "
+                "this is not the clinical order, set it in the Data Dictionary "
+                "(or send `scores`), because the trend direction and the "
+                "p-value depend on it."
             )
     if req.scores is not None:
         if len(req.scores) != len(levels):

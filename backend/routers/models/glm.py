@@ -12,6 +12,14 @@ from loguru import logger
 from services import store
 from services.category_health import clean_two_level, rare_level_warnings
 from services.impute import apply_imputation
+from services.level_order import (
+    SOURCE_DICTIONARY,
+    SOURCE_NUMERIC,
+    SOURCE_RECOGNISED,
+    SOURCE_REQUEST,
+    level_key,
+    resolve_level_order,
+)
 from services.regression import (
     constant_column_warnings,
     design_with_constant,
@@ -476,6 +484,8 @@ class OrdinalRequest(BaseModel):
     outcome: str
     predictors: List[str]
     imputation: Optional[str] = "listwise"
+    # Low-to-high outcome order. Overrides the Data Dictionary's order.
+    level_order: Optional[List[str]] = None
 
 
 def _brant_test(y_codes: np.ndarray, X: pd.DataFrame) -> dict:
@@ -611,19 +621,31 @@ def ordinal_regression(req: OrdinalRequest):
     n_excluded = len(df_full) - len(df)
 
     y_raw = df[req.outcome]
-    # Order categories: numeric sort when the codes are numeric (e.g. 1/2/3),
-    # otherwise lexical. Preserves the clinical ordering for numeric-coded
-    # ordinal variables (NYHA, Killip, LDL groups, …).
-    uniq = list(pd.Series(y_raw.dropna().unique()))
-    num = pd.to_numeric(pd.Series(uniq), errors="coerce")
-    if num.notna().all():
-        cats = [u for _, u in sorted(zip(num.tolist(), uniq))]
-    else:
-        cats = sorted(uniq, key=lambda v: str(v))
+    # The category order IS the model: the thresholds are fitted between
+    # adjacent levels, so Poor / Fair / Good sorted alphabetically (Fair,
+    # Good, Poor) fits a different, wrong model. Take the order from the
+    # request, the Data Dictionary, numeric codes or a known grading scale,
+    # and refuse rather than guess when none of them applies.
+    order = resolve_level_order(
+        y_raw, req.outcome, session_id=req.session_id, explicit=req.level_order,
+    )
+    if order is None:
+        seen = sorted({str(v) for v in y_raw.dropna().unique()})
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"'{req.outcome}' has text categories {seen} with no known order. "
+                "An ordinal model needs them low to high: set the order in Data "
+                "Dictionary > Value labels > Category order, then run again. "
+                "uSTAT does not guess it alphabetically, because a wrong order "
+                "reverses the thresholds."
+            ),
+        )
+    cats = list(order.levels)
     if len(cats) < 3:
         raise HTTPException(status_code=422, detail="Ordinal outcome must have at least 3 ordered categories.")
 
-    y = pd.Categorical(y_raw, categories=cats, ordered=True).codes
+    y = pd.Categorical(y_raw.map(level_key), categories=list(order.keys), ordered=True).codes
     X = pd.get_dummies(df[req.predictors], drop_first=True).astype(float)
     X, dropped_const = drop_constant_columns(X)
     if X.shape[1] == 0:
@@ -690,7 +712,8 @@ def ordinal_regression(req: OrdinalRequest):
     res = {
         "model": "Ordinal Logistic (proportional odds)",
         "outcome": req.outcome,
-        "categories_in_rank_order": [str(c) for c in cats],
+        "categories_in_rank_order": list(order.keys),
+        "level_order_source": order.source,
         "n": int(len(df)),
         "n_obs": int(len(df)),
         "n_excluded": int(n_excluded),
@@ -703,17 +726,28 @@ def ordinal_regression(req: OrdinalRequest):
         "warnings": cat_warnings + constant_column_warnings(dropped_const),
         "result_text": "",
     }
-    res["result_text"] = _ordinal_results_text(len(cats), len(df), res["brant_proportional_odds"])
+    res["result_text"] = _ordinal_results_text(
+        list(order.keys), order.source, len(df), res["brant_proportional_odds"],
+    )
 
     ordinal_report = check_ordinal_assumptions_placeholder()
     res = add_assumption_warnings_to_result(res, ordinal_report)
     return _sanitize(res)
 
 
-def _ordinal_results_text(n_categories, n_obs, brant: dict | None = None):
+_ORDER_SOURCE_PHRASE = {
+    SOURCE_REQUEST: "as requested",
+    SOURCE_DICTIONARY: "as set in the data dictionary",
+    SOURCE_NUMERIC: "by numeric code",
+    SOURCE_RECOGNISED: "recognised from the category labels",
+}
+
+
+def _ordinal_results_text(categories: list, order_source: str, n_obs: int, brant: dict | None = None):
     text = (
-        f"Ordinal logistic regression was performed on {n_categories} ordered categories "
-        f"({n_obs} observations)."
+        f"Ordinal logistic regression was performed on {len(categories)} ordered categories "
+        f"({' < '.join(categories)}, ordered {_ORDER_SOURCE_PHRASE.get(order_source, order_source)}; "
+        f"{n_obs} observations)."
     )
     if brant and brant.get("computed") and brant.get("omnibus"):
         om = brant["omnibus"]

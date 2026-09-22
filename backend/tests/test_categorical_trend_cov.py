@@ -279,14 +279,15 @@ def test_unknown_session_404(client):
 # ── Level ordering for non-numeric labels ────────────────────────────────────
 
 
-def _labelled_frame():
+def _labelled_frame(labels=("Trace", "Moderate", "Heavy")):
     """Real dose-response with word labels whose alphabetical order is wrong.
 
-    Low 10% → Medium 30% → High 60%. Alphabetically that reads High, Low,
-    Medium, which reverses the exposure and flips the sign of the trend.
+    Trace 10% -> Moderate 30% -> Heavy 60%. Alphabetically that reads Heavy,
+    Moderate, Trace, which reverses the exposure and flips the sign of the
+    trend. Not a recognised grading vocabulary, so nothing rescues the order.
     """
     rows = []
-    for level, k in (("Low", 8), ("Medium", 24), ("High", 48)):
+    for level, k in zip(labels, (8, 24, 48)):
         rows += [{"dose": level, "evt": 1}] * k
         rows += [{"dose": level, "evt": 0}] * (GROUP_N - k)
     return pd.DataFrame(rows)
@@ -307,12 +308,12 @@ def test_alphabetical_fallback_is_flagged_not_silent(client):
 def test_explicit_level_order_recovers_the_true_trend(client):
     sid_lbl = make_session(_labelled_frame(), "ca_labels_ordered")
     r = _post(client, session_id=sid_lbl, ordinal_col="dose", event_col="evt",
-              level_order=["Low", "Medium", "High"])
+              level_order=["Trace", "Moderate", "Heavy"])
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["level_order_source"] == "caller-supplied level_order"
     assert body["warnings"] == []
-    assert [row["level"] for row in body["summary"]["levels"]] == ["Low", "Medium", "High"]
+    assert [row["level"] for row in body["summary"]["levels"]] == ["Trace", "Moderate", "Heavy"]
     assert body["z"] > 0
     assert body["summary"]["direction"] == "increasing"
 
@@ -322,12 +323,25 @@ def test_alphabetical_and_explicit_orders_disagree_in_sign(client):
     sid_lbl = make_session(_labelled_frame(), "ca_labels_sign")
     assumed = _post(client, session_id=sid_lbl, ordinal_col="dose", event_col="evt").json()
     stated = _post(client, session_id=sid_lbl, ordinal_col="dose", event_col="evt",
-                   level_order=["Low", "Medium", "High"]).json()
+                   level_order=["Trace", "Moderate", "Heavy"]).json()
     assert assumed["z"] < 0 < stated["z"], (
         f"expected opposite signs, got {assumed['z']} and {stated['z']}"
     )
     # Both are 'significant', which is exactly why the silent version was unsafe.
     assert assumed["significant"] and stated["significant"]
+
+
+def test_recognised_grading_labels_are_ordered_without_level_order(client):
+    """Low / Medium / High is a known scale: ordered by meaning, not spelling,
+    and the response says the order was read from the labels."""
+    sid_lbl = make_session(_labelled_frame(("Low", "Medium", "High")), "ca_labels_known")
+    r = _post(client, session_id=sid_lbl, ordinal_col="dose", event_col="evt")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["level_order_source"] == "recognised ordinal labels"
+    assert [row["level"] for row in body["summary"]["levels"]] == ["Low", "Medium", "High"]
+    assert body["summary"]["direction"] == "increasing"
+    assert "from its labels" in " ".join(body["warnings"])
 
 
 def test_numeric_levels_need_no_warning(client, sid):

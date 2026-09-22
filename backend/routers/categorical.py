@@ -7,6 +7,7 @@ from pydantic import AliasChoices, BaseModel, Field
 from typing import List, Optional
 
 from services import store
+from services.level_order import SOURCE_RECOGNISED, resolve_level_order
 from services.category_health import clean_two_level
 from services.stat_utils import (
     cohens_h, adjust_pvalues, kendalls_w, sorted_groups, sanitize_nonfinite,
@@ -835,7 +836,24 @@ def cochran_armitage(req: CochranArmitageRequest):
         order_source = "caller-supplied level_order"
     else:
         levels = sorted(present, key=lambda x: (0, float(x)) if _is_numeric_level(x) else (1, str(x)))
-        if all(_is_numeric_level(v) for v in present):
+        # Without custom scores, the order comes from the shared resolver
+        # (Data Dictionary, numeric codes, a known grading scale). Custom
+        # scores keep mapping onto the order below, as they always have.
+        order = (
+            resolve_level_order(present, req.ordinal_col, session_id=req.session_id)
+            if req.scores is None else None
+        )
+        if order is not None:
+            levels = list(order.levels)
+            order_source = order.source
+            if order.source == SOURCE_RECOGNISED:
+                ca_warnings.append(
+                    f"'{req.ordinal_col}' was ordered as "
+                    + " < ".join(str(v) for v in levels)
+                    + " from its labels. Set the order in the Data Dictionary, "
+                    "or pass level_order, to state it explicitly."
+                )
+        elif all(_is_numeric_level(v) for v in present):
             order_source = "numeric value"
         else:
             # Alphabetical order is an assumption, not a fact: "Low, Medium,
@@ -845,8 +863,9 @@ def cochran_armitage(req: CochranArmitageRequest):
             ca_warnings.append(
                 f"'{req.ordinal_col}' has non-numeric levels, so they were ordered "
                 f"alphabetically: {[str(v) for v in levels]}. If that is not the "
-                "true low-to-high order, the trend direction is wrong — pass "
-                "level_order (or scores) to state the ordering explicitly."
+                "true low-to-high order, the trend direction is wrong. Set the "
+                "order in the Data Dictionary, or pass level_order (or scores), "
+                "to state it explicitly."
             )
     K = len(levels)
     if K < 3:

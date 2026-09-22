@@ -989,6 +989,7 @@ def _attach_value_labels(columns: list, session_id: str) -> list:
             "missing_ranges",
             "missing_user_values",
             "measure",
+            "level_order",
         ):
             if m.get(key):
                 c[key] = m.get(key)
