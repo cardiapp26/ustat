@@ -3,6 +3,7 @@ import { useStore, type ColMeta, type Session } from "../store";
 import { saveMetadata, getUniqueValues } from "../api";
 import DictionaryValueLabelImport, { type ValueLabelImportResult } from "./DictionaryValueLabelImport";
 import LevelOrderEditor from "./LevelOrderEditor";
+import { changesAnalysisData, formatMissingCodes, parseMissingCodes } from "../lib/missingCodes";
 
 const ROLES = ["", "outcome", "predictor", "covariate", "id", "time", "event"] as const;
 const ROLE_COLORS: Record<string, string> = {
@@ -43,6 +44,9 @@ export default function DataDictionaryPanel() {
 
 function DataDictionaryPanelBody({ session }: { session: Session }) {
   const setSession = useStore((s) => s.setSession);
+  const bumpDataVersion = useStore((s) => s.bumpDataVersion);
+  // The codes as typed, so "99," survives until the next keystroke.
+  const [codesText, setCodesText] = useState<Record<string, string>>({});
 
   const [meta, setMeta] = useState<Record<string, Partial<ColMeta>>>({});
   const [saving, setSaving] = useState(false);
@@ -66,9 +70,11 @@ function DataDictionaryPanelBody({ session }: { session: Session }) {
         missing_user_values: col.missing_user_values ?? [],
         measure: col.measure ?? "",
         level_order: col.level_order,
+        missing_codes: col.missing_codes,
       };
     }
     setMeta(m);
+    setCodesText(Object.fromEntries(session.columns.map((c) => [c.name, formatMissingCodes(c.missing_codes)])));
     // Seed metadata only when the dataset itself changes — not on every column
     // edit (which would clobber the user's in-progress dictionary edits).
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -111,6 +117,12 @@ function DataDictionaryPanelBody({ session }: { session: Session }) {
     setSaved(false);
   };
 
+  const updateMissingCodes = (colName: string, text: string) => {
+    setCodesText((prev) => ({ ...prev, [colName]: text }));
+    setMeta((prev) => ({ ...prev, [colName]: { ...prev[colName], missing_codes: parseMissingCodes(text) } }));
+    setSaved(false);
+  };
+
   const updateLevelOrder = (colName: string, order: string[]) => {
     setMeta((prev) => ({ ...prev, [colName]: { ...prev[colName], level_order: order } }));
     setSaved(false);
@@ -125,12 +137,17 @@ function DataDictionaryPanelBody({ session }: { session: Session }) {
     setSaving(true);
     try {
       await saveMetadata(session.session_id, meta);
+      // Missing codes and category order change what analyses compute, so
+      // every result stamped before this save is out of date. Labels and
+      // descriptions do not, and saving them leaves results current.
+      const numbersChanged = session.columns.some((c) => changesAnalysisData(c, meta[c.name]));
       // Update local session columns with the metadata
       const updatedCols = session.columns.map((c) => ({
         ...c,
         ...(meta[c.name] ?? {}),
       }));
       setSession({ ...session, columns: updatedCols });
+      if (numbersChanged) bumpDataVersion();
       setSaved(true);
     } catch {
       /* ignore */
@@ -176,7 +193,8 @@ function DataDictionaryPanelBody({ session }: { session: Session }) {
     const rows = [["Name", "Label", "Type", "SPSS Measure", "Units", "Role", "Missing", "Description"]];
     for (const col of session.columns) {
       const m = meta[col.name] ?? {};
-      rows.push([col.name, m.label ?? "", col.kind, m.measure ?? "", m.units ?? "", m.role ?? "", formatMissing(m), m.description ?? ""]);
+      const missingCell = [formatMissing(m), formatMissingCodes(m.missing_codes)].filter(Boolean).join(", ");
+      rows.push([col.name, m.label ?? "", col.kind, m.measure ?? "", m.units ?? "", m.role ?? "", missingCell, m.description ?? ""]);
     }
     const csv = rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\r\n");
     const blob = new Blob([csv], { type: "text/csv" });
@@ -280,7 +298,21 @@ function DataDictionaryPanelBody({ session }: { session: Session }) {
                       {!isOpen && hasOrder && " \u00b7 ordered"}
                     </button>
                   </td>
-                  <td className="px-3 py-1.5 font-mono text-[10px] text-gray-500 max-w-28 truncate" title={missing || ""}>{missing || "-"}</td>
+                  <td className="px-1 py-1">
+                    {missing && (
+                      <span className="block px-2 font-mono text-[10px] text-gray-500 truncate" title={`Imported: ${missing}`}>
+                        {missing}
+                      </span>
+                    )}
+                    <input
+                      aria-label={`Missing codes for ${col.name}`}
+                      className="w-full bg-transparent border border-transparent hover:border-gray-200 focus:border-indigo-400 rounded px-2 py-0.5 font-mono text-[10px] focus:outline-none"
+                      value={codesText[col.name] ?? ""}
+                      placeholder="e.g. 99, 999"
+                      title="Values that mean missing here. They stay in the data; every analysis reads them as missing."
+                      onChange={(e) => updateMissingCodes(col.name, e.target.value)}
+                    />
+                  </td>
                   <td className="px-1 py-1">
                     <input className="w-full bg-transparent border border-transparent hover:border-gray-200 focus:border-indigo-400 rounded px-2 py-0.5 text-xs focus:outline-none"
                       value={m.description ?? ""} placeholder="Description…"

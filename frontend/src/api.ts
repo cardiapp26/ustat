@@ -706,6 +706,15 @@ export const createBlankSession = () => api.post("/api/sessions/blank");
 export const loadSession   = (file: File) => { const fd = new FormData(); fd.append("file", file); return api.post("/api/sessions/load_session", fd); };
 export const getAuditTrail = (sessionId: string) => api.get(`/api/sessions/${sessionId}/audit`);
 export const saveMetadata  = (sessionId: string, columns: Record<string, unknown>) => api.post(`/api/sessions/${sessionId}/metadata`, { columns });
+export interface MissingCodeSuggestion { value: string; count: number; reason: string }
+/** What each column's declared missing codes catch, and undeclared values
+ *  that look like codes (proposals only; nothing is applied). */
+export interface MissingCodesOverview {
+  counts: Record<string, number>;
+  suggestions: Record<string, MissingCodeSuggestion[]>;
+}
+export const getMissingCodes = (sessionId: string) =>
+  api.get<MissingCodesOverview>(`/api/sessions/${sessionId}/missing_codes`);
 /** Swap the picked values with their labels. `swap` names the rows to rewrite;
  *  every other label in `labels` is carried over untouched. */
 export const swapValueLabels = (

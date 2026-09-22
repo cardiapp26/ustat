@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { server } from '../test/server'
 import { clearSession, installSession, makeSession } from '../test/testUtils'
 import DataDictionaryPanel from './DataDictionaryPanel'
+import { useStore } from '../store'
 
 vi.mock('xlsx', () => ({
   read: () => ({ SheetNames: ['Dictionary'], Sheets: { Dictionary: {} } }),
@@ -170,6 +171,42 @@ describe('DataDictionaryPanel', () => {
     await user.click(screen.getByRole('button', { name: /save metadata/i }))
     await waitFor(() => expect(savedBody).not.toBeNull())
     expect(savedBody!.columns.GROUP.level_order).toEqual([])
+  })
+
+  it('saves typed missing codes and marks results computed before them out of date', async () => {
+    installSession()
+    let savedBody: { columns: Record<string, { missing_codes?: string[] }> } | null = null
+    server.use(
+      http.post('/api/sessions/test-session/metadata', async ({ request }) => {
+        savedBody = (await request.json()) as typeof savedBody
+        return HttpResponse.json({ status: 'ok' })
+      }),
+    )
+    const before = useStore.getState().dataVersion
+    const user = userEvent.setup()
+    render(<DataDictionaryPanel />)
+
+    await user.type(screen.getByRole('textbox', { name: 'Missing codes for AGE' }), '99, 999')
+    await user.click(screen.getByRole('button', { name: /save metadata/i }))
+
+    await waitFor(() => expect(savedBody).not.toBeNull())
+    expect(savedBody!.columns.AGE.missing_codes).toEqual(['99', '999'])
+    expect(useStore.getState().dataVersion).toBe(before + 1)
+  })
+
+  it('leaves results current when only a label changes', async () => {
+    installSession()
+    server.use(http.post('/api/sessions/test-session/metadata', () => HttpResponse.json({ status: 'ok' })))
+    const before = useStore.getState().dataVersion
+    const user = userEvent.setup()
+    render(<DataDictionaryPanel />)
+
+    const row = screen.getByText('AGE').closest('tr')!
+    await user.type(within(row).getByPlaceholderText(/Variable label/), 'Age in years')
+    await user.click(screen.getByRole('button', { name: /save metadata/i }))
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /saved/i })).toBeInTheDocument())
+    expect(useStore.getState().dataVersion).toBe(before)
   })
 
   it('imports a wide value-label dictionary with automatic and label-based matching', async () => {

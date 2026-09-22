@@ -25,6 +25,9 @@ export interface ColMeta {
   /** Low-to-high order of the column's levels (level_key spellings), set in
    *  the Data Dictionary and read by order-aware analyses on the server. */
   level_order?: string[];
+  /** Values that mean "missing" in this column (99, 999, 8 = don't know).
+   *  Kept in the data; every analysis on the server reads them as missing. */
+  missing_codes?: string[];
   role?: "outcome" | "predictor" | "covariate" | "id" | "time" | "event" | "";
   /** When true the column is hidden from analysis variable pickers (kept in the
    *  dataset, e.g. NAME / row-id columns). Toggled from the data-tab menu. */

@@ -56,6 +56,7 @@ import { useStore } from "./store";
 import UploadZone from "./components/UploadZone";
 import { EngineChip, EngineFallbackNotice } from "./components/EngineProvenance";
 import IngestReportNotice from "./components/IngestReportNotice";
+import MissingCodeNotice from "./components/MissingCodeNotice";
 import DataTable from "./components/DataTable";
 import DescriptivePanel from "./components/DescriptivePanel";
 import ChartsPanel from "./components/ChartsPanel";
@@ -1047,6 +1048,7 @@ export default function App() {
       {/* What import changed on the way in. Sits above the tabs because it is
           about the dataset as a whole, not about any one analysis. */}
       <IngestReportNotice />
+      <MissingCodeNotice />
 
       {/* Content */}
       <main className="flex-1 overflow-hidden flex flex-col">

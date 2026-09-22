@@ -166,3 +166,11 @@ def test_spss_user_missing_round_trips_as_codes(client):
     out, meta = _read_sav(client.get(f"/api/sessions/{sid}/export", params={"fmt": "sav"}).content)
     assert out["q"].tolist() == [1.0, 2.0, 8.0, 9.0]
     assert [m["lo"] for m in meta.missing_ranges["q"]] == [8.0, 9.0]
+
+
+def test_session_columns_carry_the_codes(client):
+    """The Data Dictionary reads them back after a reload."""
+    sid = make_session(pd.DataFrame({"age": AGES}), "mc_columns")
+    _declare(client, sid, "age", ["999"])
+    cols = client.get(f"/api/sessions/{sid}").json()["columns"]
+    assert next(c for c in cols if c["name"] == "age")["missing_codes"] == ["999"]
