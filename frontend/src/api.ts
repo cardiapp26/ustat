@@ -699,6 +699,8 @@ export const getNameSuggestions = (sessionId: string) =>
 
 // Session management
 export const saveSession   = (sessionId: string) => api.get(`/api/sessions/${sessionId}/save_session`, { responseType: "blob" });
+/** A stored snapshot (save_session payload) as SPSS .sav; the server keeps nothing. */
+export const exportSnapshotSav = (payload: object) => api.post("/api/sessions/export_sav", payload, { responseType: "blob" });
 export const getSessionInfo = (sessionId: string) => api.get<SessionInfo>(`/api/sessions/${sessionId}`);
 export const createBlankSession = () => api.post("/api/sessions/blank");
 export const loadSession   = (file: File) => { const fd = new FormData(); fd.append("file", file); return api.post("/api/sessions/load_session", fd); };

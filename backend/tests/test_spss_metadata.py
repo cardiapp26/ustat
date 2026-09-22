@@ -180,3 +180,55 @@ def test_spss_export_sanitizes_invalid_variable_names(client):
     assert meta.column_names_to_labels["x_y"] == "x y"
     assert meta.column_names_to_labels["v1x"] == "1x"
     assert meta.column_names_to_labels["ya__aral"] == "yaş aralığı"
+
+
+def _read_sav(content: bytes):
+    fd, path = tempfile.mkstemp(suffix=".sav")
+    os.close(fd)
+    try:
+        with open(path, "wb") as f:
+            f.write(content)
+        return pyreadstat.read_sav(path, user_missing=True)
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def test_snapshot_exports_as_sav_without_opening_a_session(client):
+    """A Recent-work card's snapshot (the save_session payload) becomes a
+    .sav with its dictionary, and the server keeps no copy of the data."""
+    sid = _upload_sav(client)["session_id"]
+    payload = client.get(f"/api/sessions/{sid}/save_session").json()
+
+    before = set(store._store)
+    response = client.post("/api/sessions/export_sav", json=payload)
+    assert response.status_code == 200, response.text
+    assert set(store._store) == before, "exporting a snapshot must not create a session"
+    assert ".sav" in response.headers["content-disposition"]
+
+    df, meta = _read_sav(response.content)
+    assert list(df.columns) == ["Grup", "Age"]
+    assert meta.column_names_to_labels["Grup"] == "Patient control group"
+    assert meta.variable_value_labels["Grup"] == {0.0: "Hasta", 1.0: "Kontrol", 9.0: "Cevapsiz"}
+    assert meta.missing_ranges["Age"] == [{"lo": -99.0, "hi": -99.0}]
+    assert meta.variable_measure["Grup"] == "nominal"
+
+
+def test_snapshot_sav_keeps_the_declared_column_order(client):
+    """The first row omits a key; the payload's column list still rules."""
+    payload = {
+        "filename": "kohort.json",
+        "columns": [{"name": "yas", "kind": "numeric"}, {"name": "grup", "kind": "categorical"}],
+        "col_metadata": {"grup": {"value_labels": {"1": "Hasta", "2": "Kontrol"}}},
+        "kind_overrides": {},
+        "data": [{"grup": 1}, {"yas": 61, "grup": 2}, {"yas": 70, "grup": 1}],
+    }
+    response = client.post("/api/sessions/export_sav", json=payload)
+    assert response.status_code == 200, response.text
+    df, meta = _read_sav(response.content)
+    assert list(df.columns) == ["yas", "grup"]
+    assert pd.isna(df["yas"].iloc[0])
+    assert meta.variable_value_labels["grup"] == {1.0: "Hasta", 2.0: "Kontrol"}
+    assert 'filename="kohort.sav"' in response.headers["content-disposition"]

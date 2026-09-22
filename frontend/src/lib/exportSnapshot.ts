@@ -9,16 +9,25 @@
  * stored payload instead. It also means the download works with the backend
  * down, and never disturbs whatever session the user currently has open.
  *
- * SPSS (.sav) is deliberately absent: writing it needs pyreadstat, which is
- * server-side. Resume the session and use the header menu for that one.
+ * SPSS (.sav) is the exception: writing it needs pyreadstat, which is
+ * server-side. The snapshot goes to a stateless endpoint that converts it in
+ * memory and stores nothing, so no session is left behind; it does need the
+ * backend to be reachable.
  */
+import { exportSnapshotSav } from "../api";
 
-export type SnapshotFmt = "csv" | "tsv" | "xlsx" | "json";
+export type SnapshotFmt = "csv" | "tsv" | "xlsx" | "sav" | "json";
 
-export const SNAPSHOT_FORMATS: { fmt: SnapshotFmt; label: string; ext: string }[] = [
+export const SNAPSHOT_FORMATS: { fmt: SnapshotFmt; label: string; ext: string; note?: string }[] = [
   { fmt: "csv", label: "CSV", ext: "csv" },
   { fmt: "tsv", label: "TSV", ext: "tsv" },
   { fmt: "xlsx", label: "Excel", ext: "xlsx" },
+  // The one format that leaves the browser, and the card says its snapshot
+  // never does, so the menu says so too.
+  {
+    fmt: "sav", label: "SPSS (.sav)", ext: "sav",
+    note: "Converted on the uSTAT server, in memory; nothing is stored there.",
+  },
   { fmt: "json", label: "Session (JSON)", ext: "json" },
 ];
 
@@ -157,6 +166,31 @@ async function writeXlsx(
   );
 }
 
+/** The server's reason for a failed blob request, which arrives as a Blob. */
+async function blobErrorDetail(e: unknown): Promise<string> {
+  const err = e as { response?: { data?: unknown }; message?: string };
+  const data = err.response?.data;
+  if (data instanceof Blob) {
+    try {
+      const parsed = JSON.parse(await data.text()) as { detail?: unknown };
+      if (typeof parsed.detail === "string") return parsed.detail;
+    } catch {
+      /* not JSON: fall through to the transport message */
+    }
+  }
+  if (!err.response) return "the uSTAT server did not respond";
+  return err.message ?? "unknown error";
+}
+
+async function writeSav(payload: SavedSessionPayload, filename: string): Promise<void> {
+  try {
+    const res = await exportSnapshotSav(payload);
+    triggerDownload(res.data as Blob, filename);
+  } catch (e) {
+    throw new Error(`SPSS (.sav) export failed: ${await blobErrorDetail(e)}.`);
+  }
+}
+
 /** Write the snapshot to disk in the requested format. */
 export async function exportSnapshot(
   record: ExportableSnapshot,
@@ -183,6 +217,11 @@ export async function exportSnapshot(
 
   if (fmt === "xlsx") {
     await writeXlsx(payload, `${base}.xlsx`);
+    return;
+  }
+
+  if (fmt === "sav") {
+    await writeSav(payload, `${base}.sav`);
     return;
   }
 

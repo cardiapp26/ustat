@@ -205,6 +205,24 @@ describe('RecentSessionsPanel', () => {
     )
   })
 
+  it('offers SPSS (.sav) for a snapshot and exports it in that format', async () => {
+    mockLists([baseMeta])
+    const payload = JSON.stringify({ filename: 'patients.csv', columns: [{ name: 'id' }], data: [{ id: 1 }] })
+    vi.mocked(sessionDb.getRecentSession).mockResolvedValue({ ...baseMeta, payload })
+    const user = userEvent.setup()
+    render(<RecentSessionsPanel />)
+    await screen.findByText('patients.csv')
+
+    await user.click(screen.getByTitle(/save as/i))
+    await user.click(screen.getByRole('menuitem', { name: /SPSS \(\.sav\)/ }))
+
+    await waitFor(() =>
+      expect(exportSnapshot.exportSnapshot).toHaveBeenCalledWith(
+        { name: 'patients.csv', payload }, 'sav',
+      ),
+    )
+  })
+
   it('closes the Save as menu without exporting when dismissed', async () => {
     mockLists([baseMeta])
     const user = userEvent.setup()

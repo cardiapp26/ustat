@@ -458,10 +458,12 @@ export default function RecentSessionsPanel() {
                         <button
                           key={f.fmt}
                           role="menuitem"
+                          title={f.note}
                           onClick={() => void onSaveAs(it.id, f.fmt)}
                           className="w-full text-left text-[11px] text-gray-700 hover:bg-indigo-50 hover:text-indigo-700 px-2.5 py-1.5 transition-colors"
                         >
                           {f.label}
+                          {f.note && <span className="block text-[9px] leading-tight text-gray-400">via the server, not stored</span>}
                         </button>
                       ))}
                     </div>

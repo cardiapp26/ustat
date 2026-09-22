@@ -586,84 +586,133 @@ async def export_dataset(
         )
 
     if fmt == "sav":
-        import pyreadstat
-
         try:
             kinds: dict = json.loads(col_kinds)
         except Exception:
             kinds = {}
-
-        # Load user-defined value labels from session metadata
-        col_metadata = store.get_metadata(session_id)
-
-        # Build a clean copy of the dataframe suitable for pyreadstat
-        df_sav = df.copy()
-
-        from routers.upload import _detect_kind
-
-        kind_overrides = store.get_kind_overrides(session_id)
-
-        # SPSS variable names are restrictive. Sanitize them and keep original names as labels.
-        used_names: set = set()
-        name_map: dict = {}
-        for col in df_sav.columns:
-            sanitized = _sanitize_spss_name(col, used_names)
-            used_names.add(sanitized)
-            name_map[col] = sanitized
-
-        df_sav.rename(columns=name_map, inplace=True)
-
-        column_labels: dict = {}
-        variable_measure: dict = {}
-        variable_value_labels: dict = {}
-        missing_ranges: dict = {}
-
-        for original_col, sav_col in name_map.items():
-            kind = kinds.get(original_col) or kind_overrides.get(original_col) or _detect_kind(df_sav[sav_col])
-            if kind not in ("categorical", "text", "ordinal") and df_sav[sav_col].dtype == object:
-                df_sav[sav_col] = pd.to_numeric(df_sav[sav_col], errors="coerce")
-
-            metadata = col_metadata.get(original_col, {}) or {}
-            label = metadata.get("label")
-            if original_col != sav_col:
-                # Preserve the original column name; append any user label after a separator.
-                column_labels[sav_col] = f"{original_col} | {label}" if label else original_col
-            elif label:
-                column_labels[sav_col] = str(label)
-
-            variable_measure[sav_col] = _measure_for_export(kind, metadata)
-
-            user_labels = metadata.get("value_labels", {})
-            labels = _sav_value_labels(user_labels, df_sav[sav_col])
-            if labels:
-                variable_value_labels[sav_col] = labels
-            elif kind in ("categorical", "text", "ordinal") and pd.api.types.is_numeric_dtype(df_sav[sav_col]):
-                unique_vals = sorted(df_sav[sav_col].dropna().unique())
-                variable_value_labels[sav_col] = {float(v): str(v) for v in unique_vals}
-
-            user_missing = _sav_missing_ranges(metadata.get("missing_ranges"), df_sav[sav_col])
-            if user_missing:
-                missing_ranges[sav_col] = user_missing
-
-        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".sav")
-        os.close(tmp_fd)
-        try:
-            pyreadstat.write_sav(
-                df_sav,
-                tmp_path,
-                column_labels=column_labels if column_labels else None,
-                variable_measure=variable_measure,
-                variable_value_labels=variable_value_labels if variable_value_labels else None,
-                missing_ranges=missing_ranges if missing_ranges else None,
-            )
-            with open(tmp_path, "rb") as f:
-                content = f.read()
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"SAV export failed: {exc}") from exc
-        finally:
-            os.unlink(tmp_path)
-
+        # Kinds sent with the request win over the session's own overrides.
+        content = _sav_bytes(
+            df, store.get_metadata(session_id),
+            {**store.get_kind_overrides(session_id), **kinds},
+        )
         return Response(content=content, media_type="application/octet-stream", headers=_cd("sav"))
+
+
+def _sav_bytes(df: pd.DataFrame, col_metadata: dict, kinds: dict) -> bytes:
+    """The dataset as an SPSS .sav file: names made SPSS-legal (the original
+    kept as the variable label), value labels, measure level and user-missing
+    ranges carried over from the column metadata. ``kinds`` maps a column to
+    its declared kind; anything it omits is detected."""
+    import pyreadstat
+    from routers.upload import _detect_kind
+
+    df_sav = df.copy()
+
+    # SPSS variable names are restrictive. Sanitize them and keep original names as labels.
+    used_names: set = set()
+    name_map: dict = {}
+    for col in df_sav.columns:
+        sanitized = _sanitize_spss_name(col, used_names)
+        used_names.add(sanitized)
+        name_map[col] = sanitized
+
+    df_sav.rename(columns=name_map, inplace=True)
+
+    column_labels: dict = {}
+    variable_measure: dict = {}
+    variable_value_labels: dict = {}
+    missing_ranges: dict = {}
+
+    for original_col, sav_col in name_map.items():
+        kind = kinds.get(original_col) or _detect_kind(df_sav[sav_col])
+        if kind not in ("categorical", "text", "ordinal") and df_sav[sav_col].dtype == object:
+            df_sav[sav_col] = pd.to_numeric(df_sav[sav_col], errors="coerce")
+
+        metadata = (col_metadata or {}).get(original_col, {}) or {}
+        label = metadata.get("label")
+        if original_col != sav_col:
+            # Preserve the original column name; append any user label after a separator.
+            column_labels[sav_col] = f"{original_col} | {label}" if label else original_col
+        elif label:
+            column_labels[sav_col] = str(label)
+
+        variable_measure[sav_col] = _measure_for_export(kind, metadata)
+
+        user_labels = metadata.get("value_labels", {})
+        labels = _sav_value_labels(user_labels, df_sav[sav_col])
+        if labels:
+            variable_value_labels[sav_col] = labels
+        elif kind in ("categorical", "text", "ordinal") and pd.api.types.is_numeric_dtype(df_sav[sav_col]):
+            unique_vals = sorted(df_sav[sav_col].dropna().unique())
+            variable_value_labels[sav_col] = {float(v): str(v) for v in unique_vals}
+
+        user_missing = _sav_missing_ranges(metadata.get("missing_ranges"), df_sav[sav_col])
+        if user_missing:
+            missing_ranges[sav_col] = user_missing
+
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".sav")
+    os.close(tmp_fd)
+    try:
+        pyreadstat.write_sav(
+            df_sav,
+            tmp_path,
+            column_labels=column_labels if column_labels else None,
+            variable_measure=variable_measure,
+            variable_value_labels=variable_value_labels if variable_value_labels else None,
+            missing_ranges=missing_ranges if missing_ranges else None,
+        )
+        with open(tmp_path, "rb") as f:
+            return f.read()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"SAV export failed: {exc}") from exc
+    finally:
+        os.unlink(tmp_path)
+
+
+def _attachment_headers(filename: str, ext: str) -> dict:
+    """Content-Disposition for a download, safe for non-ASCII (Turkish) names."""
+    from urllib.parse import quote
+    base = filename.rsplit(".", 1)[0] if "." in filename else filename
+    ascii_base = base.encode("ascii", errors="replace").decode("ascii")
+    utf8_base = quote(base, safe="")
+    return {"Content-Disposition": f"attachment; filename=\"{ascii_base}.{ext}\"; filename*=UTF-8''{utf8_base}.{ext}"}
+
+
+class SnapshotSavRequest(BaseModel):
+    """A saved session snapshot, the save_session payload, to write as .sav."""
+    filename: Optional[str] = None
+    columns: List[Dict[str, Any]] = []
+    col_metadata: Dict[str, Any] = {}
+    kind_overrides: Optional[Dict[str, str]] = None
+    data: List[Dict[str, Any]]
+
+
+@router.post("/export_sav")
+async def export_snapshot_sav(body: SnapshotSavRequest):
+    """Write a locally stored snapshot as SPSS .sav without opening a session.
+
+    Recent-work cards keep their dataset only in the browser, and .sav needs
+    pyreadstat, which lives here. Loading the snapshot as a session just to
+    export it would leave a copy of the data on the server that nothing
+    removes, so this converts in memory and stores nothing.
+    """
+    order = [c["name"] for c in body.columns if isinstance(c.get("name"), str) and c["name"]]
+    df = pd.DataFrame(body.data)
+    if order:
+        # The payload's own column list, not the first row's keys: a row whose
+        # first cell is missing can omit the key and reorder the file.
+        df = df.reindex(columns=order + [c for c in df.columns if c not in order])
+    from routers.upload import coerce_numeric_objects
+    df = coerce_numeric_objects(df)
+
+    kinds = body.kind_overrides
+    if kinds is None:
+        kinds = {c["name"]: c["kind"] for c in body.columns if c.get("name") and c.get("kind")}
+    content = _sav_bytes(df, body.col_metadata, kinds)
+    return Response(
+        content=content, media_type="application/octet-stream",
+        headers=_attachment_headers(body.filename or "dataset", "sav"),
+    )
 
 
 # ── Select Cases ────────────────────────────────────────────────────────────────

@@ -1,10 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   baseName,
   buildDelimited,
   cellToText,
+  exportSnapshot,
   snapshotColumns,
 } from "./exportSnapshot";
+import { exportSnapshotSav } from "../api";
+
+vi.mock("../api", () => ({ exportSnapshotSav: vi.fn() }));
 
 const payload = {
   filename: "cohort.xlsx",
@@ -101,5 +105,38 @@ describe("baseName", () => {
   it("falls back to the payload filename and then to a default", () => {
     expect(baseName({ name: "", payload: "" }, payload)).toBe("cohort");
     expect(baseName({ name: "", payload: "" }, {})).toBe("dataset");
+  });
+});
+
+describe("exportSnapshot as SPSS (.sav)", () => {
+  it("sends the stored payload to the stateless converter and downloads <name>.sav", async () => {
+    vi.mocked(exportSnapshotSav).mockResolvedValue({ data: new Blob(["SAV"]) } as never);
+    const names: string[] = [];
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      names.push(this.download);
+    });
+    URL.createObjectURL = vi.fn(() => "blob:x");
+    URL.revokeObjectURL = vi.fn();
+
+    await exportSnapshot({ name: "cohort.xlsx", payload: JSON.stringify(payload) }, "sav");
+
+    expect(exportSnapshotSav).toHaveBeenCalledWith(payload);
+    expect(names).toEqual(["cohort.sav"]);
+    click.mockRestore();
+  });
+
+  it("passes the server's reason on when conversion fails", async () => {
+    const body = new Blob([JSON.stringify({ detail: "SAV export failed: bad name" })]);
+    vi.mocked(exportSnapshotSav).mockRejectedValue({ response: { status: 400, data: body }, message: "400" });
+    await expect(
+      exportSnapshot({ name: "cohort", payload: JSON.stringify(payload) }, "sav"),
+    ).rejects.toThrow("SPSS (.sav) export failed: SAV export failed: bad name.");
+  });
+
+  it("says so when the server is unreachable", async () => {
+    vi.mocked(exportSnapshotSav).mockRejectedValue({ message: "Network Error" });
+    await expect(
+      exportSnapshot({ name: "cohort", payload: JSON.stringify(payload) }, "sav"),
+    ).rejects.toThrow("the uSTAT server did not respond");
   });
 });
