@@ -10,12 +10,25 @@ per-result provenance line remains the authority on what produced a number.
 
 Coverage is an explicit allow-list. An analysis outside it gets None, and the
 caller shows "no translation yet" with the raw params -- an honest gap beats
-a wrong formula. Params come from the panel's own runParams object
-(frontend), field names as the panels send them.
+a wrong formula.
+
+Two inputs, tried in this order:
+
+* the request the result was computed from (method, URL, JSON body), which a
+  result's stamp records when the panel shows the response as returned. It is
+  keyed by endpoint, uses the API's own field names, and is what the server
+  actually received, so it is preferred. The per-endpoint templates live in
+  services/syntax/, one module per family;
+* the panel's own runParams object (frontend field names), for analyses saved
+  without a recorded request.
 """
 from __future__ import annotations
 
-from typing import Optional
+import re
+from typing import Callable, Dict, Optional
+from urllib.parse import parse_qs, urlsplit
+
+from services.syntax import ENDPOINTS
 
 _HEADER_PY = (
     "# {title}\n"
@@ -179,7 +192,8 @@ def _models(params: dict) -> Optional[dict]:
             ),
             "r": (
                 f"fit <- glm({_fml(outcome, predictors)}, data = df, family = binomial)\n"
-                "exp(cbind(OR = coef(fit), confint(fit)))"
+                "# Wald intervals, as uSTAT (and statsmodels); confint() would profile.\n"
+                "exp(cbind(OR = coef(fit), confint.default(fit)))"
             ),
         }
     if model == "poisson":
@@ -223,16 +237,54 @@ _PANELS = {
 }
 
 
-def translate(panel: str, params: dict) -> Optional[dict]:
-    """{title, python, r} for a known (panel, params) combination, else None."""
+# ── Endpoint templates (recorded requests) ──────────────────────────────────
+# Each handler takes the JSON body (plus query-string values merged in for
+# GET endpoints) with the API's own field names. They live in
+# services/syntax/, one module per family of analyses.
+
+_ENDPOINTS: Dict[str, Callable[[dict], Optional[dict]]] = ENDPOINTS
+
+_SID_SEGMENT = re.compile(r"/(\{sid\}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?=/|$)")
+
+
+def _endpoint_key(url: str) -> str:
+    """The path with any session segment normalised to {sid}."""
+    return _SID_SEGMENT.sub("/{sid}", urlsplit(url).path).rstrip("/")
+
+
+def translate_request(request: Optional[dict]) -> Optional[dict]:
+    """{title, python, r} for a recorded request, else None."""
+    if not isinstance(request, dict) or not isinstance(request.get("url"), str):
+        return None
+    handler = _ENDPOINTS.get(_endpoint_key(request["url"]))
+    if handler is None:
+        return None
+    body = dict(request.get("body") or {}) if isinstance(request.get("body"), dict) else {}
+    for key, values in parse_qs(urlsplit(request["url"]).query).items():
+        body.setdefault(key, values[0] if len(values) == 1 else values)
+    return handler(body)
+
+
+def _wrap(out: Optional[dict]) -> Optional[dict]:
+    if out is None:
+        return None
+    # The title is built from column names and sits in a comment line; a
+    # line break inside one would push the rest out as code.
+    title = " ".join(str(out["title"]).split())
+    return {
+        "title": title,
+        "python": _HEADER_PY.format(title=title) + out["python"] + "\n",
+        "r": _HEADER_R.format(title=title) + out["r"] + "\n",
+    }
+
+
+def translate(panel: str, params: dict, request: Optional[dict] = None) -> Optional[dict]:
+    """{title, python, r} for a recorded request, or failing that a known
+    (panel, params) combination; None when neither is covered."""
+    from_request = _wrap(translate_request(request))
+    if from_request is not None:
+        return from_request
     handler = _PANELS.get(panel)
     if handler is None:
         return None
-    out = handler(params if isinstance(params, dict) else {})
-    if out is None:
-        return None
-    return {
-        "title": out["title"],
-        "python": _HEADER_PY.format(title=out["title"]) + out["python"] + "\n",
-        "r": _HEADER_R.format(title=out["title"]) + out["r"] + "\n",
-    }
+    return _wrap(handler(params if isinstance(params, dict) else {}))

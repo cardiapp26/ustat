@@ -94,6 +94,9 @@ async def export_script(session_id: str, body: SaveProjectRequest, lang: str = "
 class SyntaxRequest(BaseModel):
     panel: str
     params: dict
+    # The request the result was computed from, when its stamp recorded one:
+    # {method, url, body}. Preferred over params (see syntax_templates).
+    request: Optional[dict] = None
 
 
 @router.post("/syntax")
@@ -106,7 +109,7 @@ async def analysis_syntax(body: SyntaxRequest):
     """
     from services.syntax_templates import translate
 
-    out = translate(body.panel, body.params)
+    out = translate(body.panel, body.params, body.request)
     if out is None:
         return {"title": None, "python": None, "r": None}
     return out
