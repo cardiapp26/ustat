@@ -107,8 +107,69 @@ describe('DataDictionaryPanel', () => {
     await user.click(within(row).getByRole('button', { name: /edit/i }))
 
     await waitFor(() => expect(screen.getByText(/Value labels for/)).toBeInTheDocument())
-    expect(screen.getByText('A')).toBeInTheDocument()
-    expect(screen.getByText('B')).toBeInTheDocument()
+    // One label input per value, and the same values in the order editor.
+    expect(screen.getAllByPlaceholderText('label…')).toHaveLength(2)
+    const editor = screen.getByRole('region', { name: 'Category order for GROUP' })
+    expect(within(editor).getByText('A')).toBeInTheDocument()
+    expect(within(editor).getByText('B')).toBeInTheDocument()
+  })
+
+  it('sets a category order low to high and saves it as level_order', async () => {
+    installSession()
+    let savedBody: { columns: Record<string, { level_order?: string[] }> } | null = null
+    server.use(
+      // The unique-values endpoint returns levels sorted alphabetically.
+      http.get('/api/compute/test-session/unique/GROUP', () =>
+        HttpResponse.json({ values: ['Heavy', 'Moderate', 'Trace'] }),
+      ),
+      http.post('/api/sessions/test-session/metadata', async ({ request }) => {
+        savedBody = (await request.json()) as typeof savedBody
+        return HttpResponse.json({ status: 'ok' })
+      }),
+    )
+
+    const user = userEvent.setup()
+    render(<DataDictionaryPanel />)
+    const row = screen.getByText('GROUP').closest('tr')!
+    await user.click(within(row).getByRole('button', { name: /edit/i }))
+
+    const editor = await screen.findByRole('region', { name: 'Category order for GROUP' })
+    await user.click(within(editor).getByRole('button', { name: 'Move Trace up' }))
+    await user.click(within(editor).getByRole('button', { name: 'Move Trace up' }))
+    await user.click(within(editor).getByRole('button', { name: 'Move Heavy down' }))
+    const items = within(editor).getAllByRole('listitem').map((li) => li.textContent)
+    expect(items.map((t) => t?.replace(/[↑↓]/g, ''))).toEqual(['1.Trace', '2.Moderate', '3.Heavy'])
+
+    await user.click(screen.getByRole('button', { name: /save metadata/i }))
+    await waitFor(() => expect(savedBody).not.toBeNull())
+    expect(savedBody!.columns.GROUP.level_order).toEqual(['Trace', 'Moderate', 'Heavy'])
+  })
+
+  it('clears a saved category order by sending an empty list', async () => {
+    installSession(makeSession({
+      columns: [{ name: 'GROUP', dtype: 'object', kind: 'categorical', level_order: ['Trace', 'Moderate', 'Heavy'] }],
+      preview: [{ GROUP: 'Trace' }],
+    }))
+    let savedBody: { columns: Record<string, { level_order?: string[] }> } | null = null
+    server.use(
+      http.get('/api/compute/test-session/unique/GROUP', () =>
+        HttpResponse.json({ values: ['Heavy', 'Moderate', 'Trace'] }),
+      ),
+      http.post('/api/sessions/test-session/metadata', async ({ request }) => {
+        savedBody = (await request.json()) as typeof savedBody
+        return HttpResponse.json({ status: 'ok' })
+      }),
+    )
+
+    const user = userEvent.setup()
+    render(<DataDictionaryPanel />)
+    const row = screen.getByText('GROUP').closest('tr')!
+    await user.click(within(row).getByRole('button', { name: /ordered/i }))
+    const editor = await screen.findByRole('region', { name: 'Category order for GROUP' })
+    await user.click(within(editor).getByRole('button', { name: 'Clear order' }))
+    await user.click(screen.getByRole('button', { name: /save metadata/i }))
+    await waitFor(() => expect(savedBody).not.toBeNull())
+    expect(savedBody!.columns.GROUP.level_order).toEqual([])
   })
 
   it('imports a wide value-label dictionary with automatic and label-based matching', async () => {

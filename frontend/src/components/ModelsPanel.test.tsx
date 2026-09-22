@@ -200,6 +200,37 @@ describe('ModelsPanel', () => {
     expect(note).toHaveTextContent('not penalised profile likelihood')
   })
 
+  it('Ordinal: states the outcome order the model was fitted with and its source', async () => {
+    stubBackgroundEndpoints()
+    installSession(regressionSession())
+    server.use(
+      http.post('/api/models/ordinal', () =>
+        HttpResponse.json({
+          model: 'Ordinal Logistic (proportional odds)',
+          outcome: 'DEATH',
+          categories_in_rank_order: ['Poor', 'Fair', 'Good'],
+          level_order_source: 'data dictionary',
+          result_text: 'Ordinal logistic regression was performed on 3 ordered categories.',
+          coefficients: [{ variable: 'AGE', p: 0.01, odds_ratio: 1.3, or_ci_low: 1.1, or_ci_high: 1.5, log_odds: 0.26, se: 0.1 }],
+          thresholds: [],
+        }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<ModelsPanel />)
+    await user.click(document.querySelector('input[name="model"][value="ordinal"]') as HTMLElement)
+    await user.selectOptions(selectAfterLabel(/^Outcome/), 'DEATH')
+    await user.click(checkPredictor('AGE'))
+    await user.click(screen.getByRole('button', { name: 'Fit Model' }))
+
+    expect(await screen.findByText(/Outcome order \(low → high\)/)).toBeInTheDocument()
+    expect(screen.getByText('Poor < Fair < Good', { exact: false })).toBeInTheDocument()
+    expect(screen.getByText(/set in the Data Dictionary/)).toBeInTheDocument()
+    // The paragraph used to render twice for every model without an OR table.
+    expect(screen.getAllByText('Results Paragraph')).toHaveLength(1)
+  })
+
   it('OR Table: runs univariate + multivariate logistic table and renders both columns', async () => {
     stubBackgroundEndpoints()
     installSession(regressionSession())

@@ -66,3 +66,24 @@ export function CiMethodNote({ method, note }: { method?: string; note?: string 
     </div>
   );
 }
+
+const ORDER_SOURCE_LABEL: Record<string, string> = {
+  request: "as requested",
+  "data dictionary": "set in the Data Dictionary",
+  "numeric value": "by numeric code",
+  "recognised ordinal labels": "recognised from the labels; set it in the Data Dictionary to change it",
+};
+
+/** The outcome order an ordinal model was fitted with, and where it came
+ *  from. The thresholds sit between adjacent levels, so the order is part of
+ *  the model and belongs next to its results. */
+export function OutcomeOrderNote({ categories, source }: { categories?: string[]; source?: string }) {
+  if (!categories || categories.length === 0) return null;
+  return (
+    <p className="mt-3 text-xs text-gray-600">
+      <span className="font-semibold text-gray-800">Outcome order (low → high): </span>
+      {categories.join(" < ")}
+      {source && <span className="text-gray-400"> · {ORDER_SOURCE_LABEL[source] ?? source}</span>}
+    </p>
+  );
+}

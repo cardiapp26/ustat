@@ -168,6 +168,8 @@ export interface ModelResult {
   use_firth?: boolean;
   ci_method?: string;
   method_note?: string;
+  categories_in_rank_order?: string[];
+  level_order_source?: string;
 }
 
 export interface BrantTest {

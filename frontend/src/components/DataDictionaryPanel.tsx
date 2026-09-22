@@ -2,6 +2,7 @@ import { useState, useEffect, Fragment } from "react";
 import { useStore, type ColMeta, type Session } from "../store";
 import { saveMetadata, getUniqueValues } from "../api";
 import DictionaryValueLabelImport, { type ValueLabelImportResult } from "./DictionaryValueLabelImport";
+import LevelOrderEditor from "./LevelOrderEditor";
 
 const ROLES = ["", "outcome", "predictor", "covariate", "id", "time", "event"] as const;
 const ROLE_COLORS: Record<string, string> = {
@@ -64,6 +65,7 @@ function DataDictionaryPanelBody({ session }: { session: Session }) {
         missing_ranges: col.missing_ranges ?? [],
         missing_user_values: col.missing_user_values ?? [],
         measure: col.measure ?? "",
+        level_order: col.level_order,
       };
     }
     setMeta(m);
@@ -106,6 +108,11 @@ function DataDictionaryPanelBody({ session }: { session: Session }) {
       else next[rawValue] = label;
       return { ...prev, [colName]: { ...prev[colName], value_labels: next } };
     });
+    setSaved(false);
+  };
+
+  const updateLevelOrder = (colName: string, order: string[]) => {
+    setMeta((prev) => ({ ...prev, [colName]: { ...prev[colName], level_order: order } }));
     setSaved(false);
   };
 
@@ -186,7 +193,7 @@ function DataDictionaryPanelBody({ session }: { session: Session }) {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-sm font-semibold text-gray-900">Data Dictionary</h2>
-          <p className="text-xs text-gray-400">{session.columns.length} variables \u00B7 {session.rows} observations</p>
+          <p className="text-xs text-gray-400">{session.columns.length} variables · {session.rows} observations</p>
         </div>
         <div className="flex gap-2">
           <button onClick={handleAutoDetect} className="text-xs px-3 py-1.5 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50">
@@ -224,6 +231,7 @@ function DataDictionaryPanelBody({ session }: { session: Session }) {
               const vLabels = (m.value_labels ?? {}) as Record<string, string>;
               const vLabelCount = Object.values(vLabels).filter((v) => v && String(v).trim() !== "").length;
               const isOpen = openValueLabelsFor === col.name;
+              const hasOrder = (m.level_order ?? []).length > 0;
               const unique = uniqueValuesByCol[col.name];
               const missing = formatMissing(m);
               return (
@@ -242,7 +250,7 @@ function DataDictionaryPanelBody({ session }: { session: Session }) {
                   <td className="px-3 py-1.5 text-gray-500">{m.measure || "-"}</td>
                   <td className="px-1 py-1">
                     <input className="w-full bg-transparent border border-transparent hover:border-gray-200 focus:border-indigo-400 rounded px-2 py-0.5 text-xs focus:outline-none"
-                      value={m.label ?? ""} placeholder="Variable label\u2026"
+                      value={m.label ?? ""} placeholder="Variable label…"
                       onChange={(e) => update(col.name, "label", e.target.value)} />
                   </td>
                   <td className="px-1 py-1">
@@ -269,12 +277,13 @@ function DataDictionaryPanelBody({ session }: { session: Session }) {
                       title={col.kind === "numeric" ? "Edit value labels \u2014 useful for coded variables like Sex (0/1)" : "Edit value labels"}
                     >
                       {isOpen ? "Close \u25b2" : vLabelCount > 0 ? `${vLabelCount} label${vLabelCount > 1 ? "s" : ""}` : "Edit \u25be"}
+                      {!isOpen && hasOrder && " \u00b7 ordered"}
                     </button>
                   </td>
                   <td className="px-3 py-1.5 font-mono text-[10px] text-gray-500 max-w-28 truncate" title={missing || ""}>{missing || "-"}</td>
                   <td className="px-1 py-1">
                     <input className="w-full bg-transparent border border-transparent hover:border-gray-200 focus:border-indigo-400 rounded px-2 py-0.5 text-xs focus:outline-none"
-                      value={m.description ?? ""} placeholder="Description\u2026"
+                      value={m.description ?? ""} placeholder="Description…"
                       onChange={(e) => update(col.name, "description", e.target.value)} />
                   </td>
                 </tr>
@@ -294,28 +303,37 @@ function DataDictionaryPanelBody({ session }: { session: Session }) {
                         )}
                       </div>
                       {unique === null ? (
-                        <p className="text-[11px] text-gray-400">Loading unique values\u2026</p>
+                        <p className="text-[11px] text-gray-400">Loading unique values…</p>
                       ) : !unique || unique.length === 0 ? (
                         <p className="text-[11px] text-gray-400">No values found.</p>
                       ) : unique.length > 50 ? (
                         <p className="text-[11px] text-amber-600">
-                          {unique.length} unique values \u2014 too many to label individually. Value labels are intended for coded categoricals (Sex, Group, etc.).
+                          {unique.length} unique values: too many to label individually. Value labels are intended for coded categoricals (Sex, Group, etc.).
                         </p>
                       ) : (
+                        <>
                         <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-64 overflow-y-auto">
                           {unique.map((v) => (
                             <label key={v} className="flex items-center gap-2 bg-white border border-gray-200 rounded px-2 py-1.5">
                               <span className="font-mono text-xs text-gray-500 min-w-[3rem] text-right">{v}</span>
-                              <span className="text-gray-300">\u2192</span>
+                              <span className="text-gray-300">→</span>
                               <input
                                 value={vLabels[v] ?? ""}
-                                placeholder="label\u2026"
+                                placeholder="label…"
                                 onChange={(e) => updateValueLabel(col.name, v, e.target.value)}
                                 className="flex-1 text-xs bg-transparent border border-gray-200 rounded px-1.5 py-0.5 focus:outline-none focus:border-indigo-400"
                               />
                             </label>
                           ))}
                         </div>
+                        <LevelOrderEditor
+                          column={col.name}
+                          values={unique}
+                          order={m.level_order}
+                          labels={vLabels}
+                          onChange={(order) => updateLevelOrder(col.name, order)}
+                        />
+                        </>
                       )}
                     </td>
                   </tr>

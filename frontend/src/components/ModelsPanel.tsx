@@ -14,7 +14,7 @@ import CoxHRTable from "./models/CoxHRTable";
 import { useModelData } from "./models/useModelData";
 import type { ModelResult } from "./models/shared";
 import { MODEL_GUIDANCE, MODEL_FOREST_TITLE } from "./models/guidance";
-import { CiMethodNote, ForestBuilderButton, SparklineMini } from "./models/widgets";
+import { CiMethodNote, ForestBuilderButton, OutcomeOrderNote, SparklineMini } from "./models/widgets";
 import MultiOutcomeResult from "./models/MultiOutcomeResult";
 
 export default function ModelsPanel() {
@@ -867,6 +867,10 @@ export default function ModelsPanel() {
                 </div>
               )}
 
+              {model === "ordinal" && (
+                <OutcomeOrderNote categories={result.categories_in_rank_order} source={result.level_order_source} />
+              )}
+
               {/* ── Brant test of the proportional-odds assumption (ordinal) ── */}
               {result.brant_proportional_odds?.computed && result.brant_proportional_odds.omnibus && (() => {
                 const b = result.brant_proportional_odds!;
@@ -973,17 +977,6 @@ export default function ModelsPanel() {
               <PredictionPanel result={result} />
             )}
 
-            {/* Results text for all regression models */}
-            {result.result_text && !result.table && !isMultiOutcome && (
-              <div className="panel">
-                <div className="flex items-center justify-between mb-2">
-                  <h4 className="font-semibold text-gray-900">Results Paragraph</h4>
-                  <button onClick={() => navigator.clipboard.writeText(result.result_text ?? "")} className="text-[10px] px-2 py-1 rounded border border-gray-300 text-gray-500 hover:bg-indigo-50 hover:text-indigo-600 transition-colors">Copy</button>
-                </div>
-                <p className="text-sm text-gray-700 leading-relaxed bg-gray-50 border border-gray-200 rounded-xl px-4 py-3">{result.result_text}</p>
-              </div>
-            )}
-
             {/* OR Table (Uni + Multi) */}
             {result.table && (
               <div className="panel">
@@ -1010,7 +1003,7 @@ export default function ModelsPanel() {
               </div>
             )}
 
-            {/* Auto-generated results text */}
+            {/* Results paragraph, once, for every single-outcome model. */}
             {result.result_text && !isMultiOutcome && (
               <div className="panel">
                 <div className="flex items-center justify-between mb-2">
