@@ -78,6 +78,42 @@ def _sav_missing_ranges(ranges: Any, series: pd.Series) -> list:
     return out
 
 
+# What SPSS can declare as user-missing per variable (readstat enforces it and
+# refuses the whole file otherwise): three discrete values, or one range plus
+# one discrete value. Strings: three discrete values.
+_SPSS_MAX_DISCRETE = 3
+
+
+def _spss_missing_spec(items: list, numeric: bool) -> tuple:
+    """Split declared missing values into what SPSS can hold and the rest.
+
+    Returns ``(spec, overflow)``. The overflow codes are written as
+    system-missing: undeclared, SPSS would read them as valid values."""
+    def _ok(v):
+        return isinstance(v, (int, float)) if numeric else isinstance(v, str)
+
+    ranges, discrete = [], []
+    for item in items:
+        if isinstance(item, dict):
+            lo, hi = item.get("lo"), item.get("hi")
+            if not (_ok(lo) and _ok(hi)):
+                continue
+            if lo == hi:
+                discrete.append(lo)
+            elif numeric:
+                ranges.append({"lo": lo, "hi": hi})
+        elif _ok(item):
+            discrete.append(item)
+    discrete = list(dict.fromkeys(discrete))
+    if ranges:
+        spec = ranges[:1] + discrete[:1]
+        overflow = ranges[1:] + discrete[1:]
+    else:
+        spec = discrete[:_SPSS_MAX_DISCRETE]
+        overflow = discrete[_SPSS_MAX_DISCRETE:]
+    return spec, overflow
+
+
 def _measure_for_export(kind: str, metadata: dict) -> str:
     measure = str((metadata or {}).get("measure", "")).strip().lower()
     if measure in {"nominal", "ordinal", "scale"}:
@@ -646,9 +682,21 @@ def _sav_bytes(df: pd.DataFrame, col_metadata: dict, kinds: dict) -> bytes:
             unique_vals = sorted(df_sav[sav_col].dropna().unique())
             variable_value_labels[sav_col] = {float(v): str(v) for v in unique_vals}
 
-        user_missing = _sav_missing_ranges(metadata.get("missing_ranges"), df_sav[sav_col])
+        # Imported SPSS ranges and the codes declared in the Data Dictionary
+        # are both user-missing in the file, so SPSS treats them as uSTAT did.
+        declared = list(metadata.get("missing_ranges") or []) + list(metadata.get("missing_codes") or [])
+        user_missing = _sav_missing_ranges(declared, df_sav[sav_col])
         if user_missing:
-            missing_ranges[sav_col] = user_missing
+            spec, overflow = _spss_missing_spec(
+                user_missing, pd.api.types.is_numeric_dtype(df_sav[sav_col]),
+            )
+            if spec:
+                missing_ranges[sav_col] = spec
+            if overflow:
+                from services.missing_codes import column_missing_mask
+                over = column_missing_mask(df_sav[sav_col], {"missing_ranges": overflow})
+                if over is not None:
+                    df_sav[sav_col] = df_sav[sav_col].mask(over)
 
     tmp_fd, tmp_path = tempfile.mkstemp(suffix=".sav")
     os.close(tmp_fd)
@@ -1134,6 +1182,32 @@ async def save_metadata(session_id: str, body: ColumnMetadataRequest):
     store.log_action(session_id, "metadata_updated", {"columns": list(body.columns.keys())})
 
     return {"status": "ok", "columns_updated": list(body.columns.keys())}
+
+
+@router.get("/{session_id}/missing_codes")
+async def missing_codes_overview(session_id: str):
+    """Declared missing codes and what they catch, plus values that look like
+    undeclared codes (999 among ages 18 to 95).
+
+    ``counts``: cells each column's declared codes turn into missing.
+    ``suggestions``: per column, proposed codes with a count and a reason.
+    Only proposals: nothing is marked missing until the user declares it.
+    """
+    df = store.get(session_id)
+    if df is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    from services.missing_codes import apply_missing_codes, missing_code_counts, suggest_missing_codes
+
+    meta = store.get_metadata(session_id)
+    # Suggest on the masked frame, so a code already declared (or imported
+    # from SPSS) is not proposed again.
+    masked = apply_missing_codes(df, meta)
+    suggestions = {}
+    for col in masked.columns:
+        found = suggest_missing_codes(masked[col])
+        if found:
+            suggestions[col] = found
+    return {"counts": missing_code_counts(df, meta), "suggestions": suggestions}
 
 
 @router.get("/{session_id}/name_suggestions")

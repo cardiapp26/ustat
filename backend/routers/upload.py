@@ -342,8 +342,12 @@ def _read(filename: str, content: bytes) -> tuple[pd.DataFrame, dict[str, dict]]
             if ext == "sas7bdat":
                 df, meta = pyreadstat.read_sas7bdat(tmp_path)
             elif ext == "sav":
-                df, meta = pyreadstat.read_sav(tmp_path)
-                _, meta = pyreadstat.read_sav(tmp_path, metadataonly=True, user_missing=True)
+                # user_missing=True keeps SPSS user-missing codes (9, -99) in
+                # the data instead of turning them into NaN on the way in, so
+                # the grid, exports and a .sav round-trip still carry them.
+                # Analyses see them as missing all the same: the imported
+                # missing_ranges are applied in store.get_filtered.
+                df, meta = pyreadstat.read_sav(tmp_path, user_missing=True)
             elif ext == "dta":
                 df, meta = pyreadstat.read_dta(tmp_path)
         finally:

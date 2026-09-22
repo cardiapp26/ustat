@@ -18,6 +18,7 @@ from threading import Lock
 from fastapi import HTTPException
 
 from ustat_engine import EngineError
+from services.missing_codes import apply_missing_codes
 from ustat_engine.frame import select as _select
 
 # Per-dataset size ceiling (rows × columns). Guards the in-memory store against
@@ -285,7 +286,9 @@ def _apply_conditions(df: pd.DataFrame, conditions: List[dict]) -> pd.DataFrame:
 
 
 def get_filtered(session_id: str) -> Optional[pd.DataFrame]:
-    """Return the session dataframe with any active case filter applied."""
+    """Return the session dataframe as analyses see it: declared missing codes
+    (99, 999, "don't know") set to missing, then any active case filter
+    applied. The stored data keeps its codes; see services/missing_codes."""
     with _lock:
         entry = _store.get(session_id)
         if entry is None:
@@ -294,6 +297,14 @@ def get_filtered(session_id: str) -> Optional[pd.DataFrame]:
         # Update access timestamp
         entry["timestamp"] = time.time()
         conditions = _filters.get(session_id, [])
+        coded = {
+            col: meta for col, meta in (_metadata.get(session_id) or {}).items()
+            if isinstance(meta, dict) and (
+                meta.get("missing_codes") or meta.get("missing_ranges") or meta.get("missing_user_values")
+            )
+        }
+    # Codes before the filter, as SPSS does: "age > 50" must not select 999.
+    df = apply_missing_codes(df, coded)
     return _apply_conditions(df, conditions)
 
 

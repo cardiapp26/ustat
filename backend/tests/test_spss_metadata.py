@@ -66,8 +66,14 @@ def test_spss_upload_imports_dictionary_metadata(client):
     assert by_name["Age"]["label"] == "Age in years"
     assert by_name["Age"]["missing_ranges"] == [{"lo": -99, "hi": -99}]
 
-    assert body["preview"][2]["Grup"] is None
-    assert body["preview"][2]["Age"] is None
+    # User-missing codes stay in the data, as SPSS's Data View shows them...
+    assert body["preview"][2]["Grup"] == 9
+    assert body["preview"][2]["Age"] == -99
+    # ...and every analysis reads them as missing.
+    analysed = store.get_filtered(sid)
+    assert pd.isna(analysed["Grup"].iloc[2])
+    assert pd.isna(analysed["Age"].iloc[2])
+    assert analysed["Age"].mean() == 47.5
 
     stored = store.get_metadata(sid)
     assert stored["Grup"]["value_labels"]["0"] == "Hasta"
