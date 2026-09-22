@@ -13,13 +13,17 @@ The script's shape:
     1. upload the ORIGINAL raw file (path supplied by the user at the top),
     2. replay every recorded step in order,
     3. export the prepared dataset,
-    4. list every saved analysis with its parameters, as documentation --
-       an analysis snapshot records its params but not its endpoint, so the
-       honest output is the definition, not a guessed call.
+    4. re-run every saved analysis whose stamp recorded the request that
+       computed it (method, URL, JSON body), through the same endpoint, and
+       write the responses to analysis_results.json. An analysis without a
+       recorded request (its panel reshaped the response, or it predates
+       request capture) is listed with its parameters instead: the honest
+       output is the definition, not a guessed call.
 """
 from __future__ import annotations
 
 import json
+import re
 import time
 from urllib.parse import quote
 from typing import Optional
@@ -59,6 +63,37 @@ def _route_for(op: str, params: dict):
     if op.startswith("compute/"):
         return "POST", f"/api/compute/{{sid}}/{op.split('/', 1)[1]}", params
     return None
+
+
+# A recorded analysis URL: an /api/ path, the session as the literal {sid},
+# nothing that could close the string it is pasted into. A project file is
+# user data, so a URL outside this shape is not emitted at all.
+_REQUEST_URL = re.compile(r"^/api/[A-Za-z0-9_./?=&%,+:-]*$")
+_REQUEST_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
+
+
+def _analysis_request(analysis: dict):
+    """(method, url, body) recorded in a saved analysis's stamp, or None."""
+    snapshot = analysis.get("snapshot")
+    stamp = snapshot.get("stamp") if isinstance(snapshot, dict) else None
+    req = stamp.get("request") if isinstance(stamp, dict) else None
+    if not isinstance(req, dict):
+        return None
+    method = str(req.get("method", "")).upper()
+    url = req.get("url")
+    body = req.get("body")
+    if method not in _REQUEST_METHODS or not isinstance(url, str):
+        return None
+    if not _REQUEST_URL.match(url.replace("{sid}", "")) or "{" in url.replace("{sid}", ""):
+        return None
+    if body is not None and not isinstance(body, dict):
+        return None
+    return method, url, body
+
+
+def _comment(text) -> str:
+    """One line of user text, safe inside a # comment."""
+    return " ".join(str(text).split())
 
 
 def _py(value) -> str:
@@ -150,26 +185,60 @@ def generate_python_script(
     ]
 
     if analyses:
-        lines += [
-            "",
-            "# 4. Saved analyses (definitions).",
-            "# A saved analysis records its panel and parameters; re-running it",
-            "# is done in uSTAT (restore + Run). The definitions are listed so",
-            "# the analysis is specified, not merely remembered:",
-        ]
-        for a in analyses:
-            if not isinstance(a, dict):
-                continue
-            lines.append(f"#   - {a.get('name')} (panel: {a.get('panel')})")
-            stamp = (a.get("snapshot") or {}).get("stamp") if isinstance(a.get("snapshot"), dict) else None
-            params_key = (stamp or {}).get("paramsKey")
-            if isinstance(params_key, str) and params_key not in ("", "null"):
-                lines.append(f"#     params: {params_key}")
+        lines += _python_analyses(analyses)
 
     if skipped:
         lines += ["", f"# NOTE: {len(skipped)} step(s) had no replay route and are marked above."]
 
     return "\n".join(lines) + "\n"
+
+
+def _python_analyses(analyses: list) -> list:
+    lines = [
+        "",
+        "# 4. Saved analyses, re-run through the endpoints the GUI called on",
+        "# the prepared data above. Responses go to analysis_results.json.",
+        "import json",
+        "results = {}",
+        "",
+    ]
+    for a in analyses:
+        if not isinstance(a, dict):
+            continue
+        name = _comment(a.get("name"))
+        request = _analysis_request(a)
+        if request is None:
+            lines.append(f"# {name} (panel: {_comment(a.get('panel'))}): no recorded request;")
+            lines.append("#   restore it in uSTAT and press Recompute.")
+            params_key = _params_key(a)
+            if params_key:
+                lines.append(f"#   params: {_comment(params_key)}")
+            lines.append("")
+            continue
+        method, url, body = request
+        lines.append(f"# {name} (panel: {_comment(a.get('panel'))})")
+        call = f'requests.{method.lower()}(f"{{BASE}}{url}"'
+        if body is not None:
+            lines.append(f"body = {_py(body)}")
+            if "session_id" in body:
+                lines.append('body["session_id"] = sid')
+            call += ", json=body"
+        call += ")"
+        lines.append(f"results[{json.dumps(a.get('name') or 'analysis', ensure_ascii=False)}] = check({call}).json()")
+        lines.append("")
+    lines += [
+        'with open("analysis_results.json", "w", encoding="utf-8") as fh:',
+        "    json.dump(results, fh, ensure_ascii=False, indent=2)",
+        'print(f"{len(results)} analysis result(s) written to analysis_results.json")',
+    ]
+    return lines
+
+
+def _params_key(analysis: dict) -> Optional[str]:
+    snapshot = analysis.get("snapshot")
+    stamp = snapshot.get("stamp") if isinstance(snapshot, dict) else None
+    key = (stamp or {}).get("paramsKey") if isinstance(stamp, dict) else None
+    return key if isinstance(key, str) and key not in ("", "null") else None
 
 
 def _r(value) -> str:
@@ -272,23 +341,52 @@ def generate_r_script(
     ]
 
     if analyses:
-        lines += [
-            "",
-            "# 4. Saved analyses (definitions).",
-            "# A saved analysis records its panel and parameters; re-running it",
-            "# is done in uSTAT (restore + Run). Listed so the analysis is",
-            "# specified, not merely remembered:",
-        ]
-        for a in analyses:
-            if not isinstance(a, dict):
-                continue
-            lines.append(f"#   - {a.get('name')} (panel: {a.get('panel')})")
-            stamp = (a.get("snapshot") or {}).get("stamp") if isinstance(a.get("snapshot"), dict) else None
-            params_key = (stamp or {}).get("paramsKey")
-            if isinstance(params_key, str) and params_key not in ("", "null"):
-                lines.append(f"#     params: {params_key}")
+        lines += _r_analyses(analyses)
 
     if skipped:
         lines += ["", f"# NOTE: {len(skipped)} step(s) had no replay route and are marked above."]
 
     return "\n".join(lines) + "\n"
+
+
+def _r_analyses(analyses: list) -> list:
+    lines = [
+        "",
+        "# 4. Saved analyses, re-run through the endpoints the GUI called on",
+        "# the prepared data above. Responses go to analysis_results.json.",
+        "results <- list()",
+        "",
+    ]
+    for a in analyses:
+        if not isinstance(a, dict):
+            continue
+        name = _comment(a.get("name"))
+        request = _analysis_request(a)
+        if request is None:
+            lines.append(f"# {name} (panel: {_comment(a.get('panel'))}): no recorded request;")
+            lines.append("#   restore it in uSTAT and press Recompute.")
+            params_key = _params_key(a)
+            if params_key:
+                lines.append(f"#   params: {_comment(params_key)}")
+            lines.append("")
+            continue
+        method, url, body = request
+        # sprintf: a literal % in the URL must be doubled.
+        template = url.replace("%", "%%").replace("{sid}", "%s")
+        r_url = (f'sprintf("%s{template}", BASE, sid)' if "{sid}" in url
+                 else f'sprintf("%s{template}", BASE)')
+        lines.append(f"# {name} (panel: {_comment(a.get('panel'))})")
+        call = f"check({method}({r_url}"
+        if body is not None:
+            lines.append(f"body <- {_r(body)}")
+            if "session_id" in body:
+                lines.append("body$session_id <- sid")
+            call += ', body = body, encode = "json"'
+        call += "))"
+        lines.append(f"results[[{_r(a.get('name') or 'analysis')}]] <- content({call})")
+        lines.append("")
+    lines += [
+        'jsonlite::write_json(results, "analysis_results.json", auto_unbox = TRUE, pretty = TRUE)',
+        'cat(sprintf("%d analysis result(s) written to analysis_results.json\\n", length(results)))',
+    ]
+    return lines

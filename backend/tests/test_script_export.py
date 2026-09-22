@@ -129,3 +129,66 @@ def test_endpoint_serves_script_from_recorded_steps():
 
     r3 = client.post("/api/project/nope/script", json={"ui_state": None})
     assert r3.status_code == 404
+
+
+def _recorded(name, method, url, body):
+    return {
+        "id": name, "name": name, "panel": "models", "tab": "models", "createdAt": 1,
+        "snapshot": {"result": {}, "stamp": {
+            "dataVersion": 0, "paramsKey": "{}",
+            "request": {"method": method, "url": url, "body": body},
+        }},
+    }
+
+
+def test_recorded_analysis_is_replayed_through_its_endpoint():
+    analyses = [
+        _recorded("Model 1", "POST", "/api/models/logistic",
+                  {"session_id": "{sid}", "outcome": "DM", "predictors": ["AGE"]}),
+        _recorded("Ages", "GET", "/api/stats/{sid}/descriptive?column=AGE", None),
+    ]
+    script = generate_python_script([], analyses=analyses)
+    ast.parse(script)
+    assert 'body["session_id"] = sid' in script
+    assert 'results["Model 1"] = check(requests.post(f"{BASE}/api/models/logistic", json=body)).json()' in script
+    assert 'requests.get(f"{BASE}/api/stats/{sid}/descriptive?column=AGE")' in script
+    assert script.index("/export/csv") < script.index("/api/models/logistic")
+    assert "analysis_results.json" in script
+
+
+def test_a_crafted_url_is_never_pasted_into_the_script():
+    """A project file is user data: a URL that could close its string and
+    run code must not reach the generated script."""
+    evil = '/api/x"); import os; os.system("echo pwned"); ("'
+    script = generate_python_script([], analyses=[_recorded("Evil", "POST", evil, {})])
+    ast.parse(script)
+    assert "os.system" not in script
+    assert "Evil (panel: models): no recorded request" in script
+
+
+def test_r_script_replays_recorded_analyses_and_parses():
+    import os
+    import shutil
+    import subprocess
+    import tempfile
+    from services.script_export import generate_r_script
+
+    analyses = [
+        _recorded("Model 1", "POST", "/api/models/logistic",
+                  {"session_id": "{sid}", "outcome": "DM", "predictors": ["AGE"]}),
+        _recorded("Ages", "GET", "/api/stats/{sid}/descriptive?column=AGE%20y", None),
+    ]
+    script = generate_r_script([], analyses=analyses)
+    assert "body$session_id <- sid" in script
+    assert 'sprintf("%s/api/models/logistic", BASE)' in script
+    assert 'sprintf("%s/api/stats/%s/descriptive?column=AGE%%20y", BASE, sid)' in script
+    if shutil.which("Rscript"):
+        with tempfile.NamedTemporaryFile("w", suffix=".R", delete=False) as fh:
+            fh.write(script)
+            path = fh.name
+        try:
+            proc = subprocess.run(["Rscript", "-e", f"invisible(parse(file='{path}'))"],
+                                  capture_output=True, text=True, timeout=60)
+            assert proc.returncode == 0, proc.stderr
+        finally:
+            os.unlink(path)
