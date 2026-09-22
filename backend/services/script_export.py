@@ -43,6 +43,7 @@ _ROUTES = {
     "sessions/delete_row": ("DELETE", "/api/sessions/{sid}/row/{row_index}"),
     "sessions/undo": ("POST", "/api/sessions/{sid}/undo"),
     "sessions/redo": ("POST", "/api/sessions/{sid}/redo"),
+    "sessions/metadata": ("POST", "/api/sessions/{sid}/metadata"),
     "merge/apply": ("POST", "/api/merge/apply"),
     "filter": ("POST", "/api/sessions/{sid}/select_cases"),
 }

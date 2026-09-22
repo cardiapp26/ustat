@@ -39,6 +39,10 @@ _RULES: list = [
     ("DELETE", re.compile(r"^/api/sessions/(?P<sid>[^/]+)/select_cases$"), "sessions/clear_cases"),
     ("DELETE", re.compile(r"^/api/sessions/(?P<sid>[^/]+)/row/(?P<row_index>\d+)$"), "sessions/delete_row"),
     ("POST", re.compile(r"^/api/merge/apply$"), "merge/apply"),
+    # The Data Dictionary: declared missing codes and category orders change
+    # what every analysis computes, so a recipe without them replays a
+    # different dataset (a 999 back as an age).
+    ("POST", re.compile(r"^/api/sessions/(?P<sid>[^/]+)/metadata$"), "sessions/metadata"),
 ]
 
 # compute/ ops that are reads despite living on the compute router.

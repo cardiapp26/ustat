@@ -174,3 +174,17 @@ def test_session_columns_carry_the_codes(client):
     _declare(client, sid, "age", ["999"])
     cols = client.get(f"/api/sessions/{sid}").json()["columns"]
     assert next(c for c in cols if c["name"] == "age")["missing_codes"] == ["999"]
+
+
+def test_replay_recipe_declares_the_codes_before_any_analysis(client):
+    """The replay script must rebuild the dataset analyses saw: without the
+    dictionary step, a replayed model would read 999 as an age."""
+    from services.script_export import generate_python_script
+
+    sid = make_session(pd.DataFrame({"age": AGES}), "mc_recipe")
+    _declare(client, sid, "age", ["999"])
+    steps = store.get_steps(sid)
+    assert steps[-1]["op"] == "sessions/metadata"
+    assert steps[-1]["params"] == {"columns": {"age": {"missing_codes": ["999"]}}}
+    script = generate_python_script(steps)
+    assert script.index("/api/sessions/{sid}/metadata") < script.index("/export/csv")
