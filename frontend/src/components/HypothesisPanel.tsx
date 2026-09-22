@@ -4,6 +4,8 @@ import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
 import { runTTest, runChiSquare, runAnova, runMannWhitney, runFisher, runKruskal, runAncova, runTwoWayAnova, runJonckheereTerpstra, runMancova } from "../api";
 import ResultExporter from "./ResultExporter";
 import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
+import CopyTextButton from "./CopyTextButton";
 import ResultProvenanceLine from "./ResultProvenanceLine";
 import { useStampedResult } from "../hooks/useStampedResult";
 import { describeStale } from "../lib/resultStamp";
@@ -227,7 +229,7 @@ function ResultCard({ result, stale = false, staleReason, provenance }: {
         <div className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 mt-2">
           <div className="flex items-center justify-between mb-1">
             <span className="text-[10px] font-semibold text-gray-400 uppercase">Results Paragraph</span>
-            <button onClick={() => navigator.clipboard.writeText(result.result_text ?? "")} className="text-[10px] px-2 py-0.5 rounded border border-gray-300 text-gray-500 hover:bg-indigo-50 hover:text-indigo-600 transition-colors">Copy</button>
+            <CopyTextButton text={result.result_text ?? ""} />
           </div>
           <p className="text-sm text-gray-700 leading-relaxed">{result.result_text}</p>
         </div>
@@ -546,7 +548,9 @@ function HypothesisPanelBody({ session }: { session: Session }) {
           />
         )}
         {result ? (
-          <ResultCard result={result} stale={stale} staleReason={describeStale(staleWhy)} provenance={stamp?.provenance} />
+          <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
+            <ResultCard result={result} stale={stale} staleReason={describeStale(staleWhy)} provenance={stamp?.provenance} />
+          </StaleGuard>
         ) : (
           <div className="panel h-64 flex items-center justify-center text-gray-400">
             Configure and run a hypothesis test

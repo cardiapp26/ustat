@@ -55,7 +55,18 @@ export function useStampedResult<T>(
   // Read the cache once, on mount, for the same reason usePersistedPanelState
   // does: this hook owns the value afterwards and re-reading would fight it.
   const [result, setLocalResult] = useState<T | null>(() => cached?.result ?? null);
-  const [stamp, setLocalStamp] = useState<ResultStamp | null>(() => cached?.stamp ?? null);
+  const [stamp, setLocalStamp] = useState<ResultStamp | null>(() => {
+    if (cached?.stamp) return cached.stamp;
+    // A cached result with no stamp predates stamping, or came through a
+    // cache that dropped it. Nothing says what it was computed from, so it
+    // cannot be shown as current: stamp it with a data version no session
+    // reaches, which reads as "the data changed" until it is recomputed.
+    if (cached?.result != null) {
+      const s = useStore.getState();
+      return makeStamp({ dataVersion: -1, caseFilter: s.caseFilter, engine: s.engine, params, provenance: null });
+    }
+    return null;
+  });
 
   const current = useMemo(
     () => makeStamp({ dataVersion, caseFilter, engine, params }),

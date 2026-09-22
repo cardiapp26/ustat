@@ -4,6 +4,8 @@ import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
 import { runLinear, runLogistic, runFirthLogistic, runKM, runCox, runLogisticTable, runPoisson, runCoxUniMulti, runOrdinal, runMultiOutcomeRegression } from "../api";
 import { Tip, InfoBanner } from "./Tip";
 import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
+import CopyTextButton from "./CopyTextButton";
 import ResultProvenanceLine from "./ResultProvenanceLine";
 import { useStampedResult } from "../hooks/useStampedResult";
 import { describeStale } from "../lib/resultStamp";
@@ -791,7 +793,10 @@ export default function ModelsPanel() {
         )}
 
         {result ? (
-          isHRTable && result.rows ? (
+          // Every export inside (tables, Word/HTML, plots, Copy, the Forest
+          // Builder hand-off) is closed while the fit is out of date.
+          <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
+          {isHRTable && result.rows ? (
             <div className="panel">
               <h4 className="font-semibold text-gray-900 mb-2">
                 Univariable, Parsimonious &amp; Fully adjusted Cox HR Table
@@ -1008,7 +1013,7 @@ export default function ModelsPanel() {
               <div className="panel">
                 <div className="flex items-center justify-between mb-2">
                   <h4 className="font-semibold text-gray-900">Results Paragraph</h4>
-                  <button onClick={() => navigator.clipboard.writeText(result.result_text ?? "")} className="text-[10px] px-2 py-1 rounded border border-gray-300 text-gray-500 hover:bg-indigo-50 hover:text-indigo-600 transition-colors">Copy</button>
+                  <CopyTextButton text={result.result_text ?? ""} />
                 </div>
                 <p className="text-sm text-gray-700 leading-relaxed bg-gray-50 border border-gray-200 rounded-xl px-4 py-3">{result.result_text}</p>
               </div>
@@ -1048,7 +1053,8 @@ export default function ModelsPanel() {
               </div>
             )}
           </div>
-          )
+          )}
+          </StaleGuard>
         ) : (
           <div className="panel h-64 flex items-center justify-center text-gray-400">
             Configure and fit a model

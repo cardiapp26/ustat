@@ -6,6 +6,8 @@ import { useStore, paletteOf } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
 import { useStampedResult } from "../hooks/useStampedResult";
 import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
+import { describeStale } from "../lib/resultStamp";
 import ResultProvenanceLine from "./ResultProvenanceLine";
 import { Tip } from "./Tip";
 import type { PlotCaptureHandle, PlotData, PlotLayout } from "../lib/plotTypes";
@@ -694,6 +696,7 @@ export default function PowerPanel() {
         />
       )}
       {result ? (
+        <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-5">
 
           {/* Result card + interpretation — 2 cols */}
@@ -857,6 +860,7 @@ export default function PowerPanel() {
             </div>
           )}
         </div>
+        </StaleGuard>
       ) : (
         /* ── Empty state ── */
         <div className="space-y-3">

@@ -1,16 +1,22 @@
 /** Small presentational pieces shared by the Models panel's forms and result
  *  cards. Extracted from ModelsPanel.tsx. */
 import { useStore, paletteOf } from "../../store";
+import { staleExportTitle, useStaleGuard } from "../../lib/staleGuard";
 
 const _pal = () => paletteOf(useStore.getState().plotTheme);
 
-/** Send-to-Forest-Builder control, shared by both forest cards. */
+/** Send-to-Forest-Builder control, shared by both forest cards. The rows
+ *  leave the result's stamp behind, so an out-of-date fit cannot be sent. */
 export function ForestBuilderButton({ onClick }: { onClick: () => void }) {
+  const guard = useStaleGuard();
   return (
     <button
-      onClick={onClick}
-      title="Add these estimates as rows in the Forest Builder, keeping whatever is already there — so a figure can combine several fits (e.g. a continuous exposure and its dichotomised form, which cannot share one model)."
-      className="flex-shrink-0 whitespace-nowrap rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-medium text-indigo-700 transition-colors hover:bg-indigo-100"
+      onClick={() => { if (!guard.stale) onClick(); }}
+      disabled={guard.stale}
+      title={guard.stale
+        ? staleExportTitle(guard.reason)
+        : "Add these estimates as rows in the Forest Builder, keeping whatever is already there, so a figure can combine several fits (e.g. a continuous exposure and its dichotomised form, which cannot share one model)."}
+      className="flex-shrink-0 whitespace-nowrap rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-medium text-indigo-700 transition-colors hover:bg-indigo-100 disabled:opacity-40 disabled:hover:bg-indigo-50"
     >
       → Forest Builder
     </button>

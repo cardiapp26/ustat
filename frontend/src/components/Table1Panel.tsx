@@ -3,6 +3,9 @@ import { useStore, type Session } from "../store";
 import api from "../api";
 import ResultExporter from "./ResultExporter";
 import StaleResultNotice from "./StaleResultNotice";
+import StaleGuard from "./StaleGuard";
+import CopyTextButton from "./CopyTextButton";
+import { staleExportTitle, useStaleGuard } from "../lib/staleGuard";
 import ResultProvenanceLine from "./ResultProvenanceLine";
 import { describeStale, makeStamp, staleReasons, type ResultStamp } from "../lib/resultStamp";
 import { fmtP, warningText } from "../lib/format";
@@ -791,6 +794,7 @@ function Table1PanelBody({ session }: { session: Session }) {
         )}
 
         {result && (
+          <StaleGuard stale={stale} reason={describeStale(staleWhy)}>
           <div className="p-4">
             <ResultProvenanceLine provenance={table1Stamp?.provenance} />
             {stale && (
@@ -1114,6 +1118,7 @@ function Table1PanelBody({ session }: { session: Session }) {
             {/* ── Format for Journal ── */}
             <JournalFormatSection result={result} />
           </div>
+          </StaleGuard>
         )}
       </div>
     </div>
@@ -1133,6 +1138,7 @@ interface JournalData {
 }
 
 function JournalFormatSection({ result }: { result: T1Result }) {
+  const guard = useStaleGuard();
   const [journalData, setJournalData] = useState<JournalData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1155,7 +1161,7 @@ function JournalFormatSection({ result }: { result: T1Result }) {
   };
 
   const exportJournal = async (fmt: "xlsx" | "docx") => {
-    if (!journalData) return;
+    if (!journalData || guard.stale) return;
     try {
       const res = await api.post("/api/pub_tables/export", {
         formatted_table: journalData,
@@ -1220,20 +1226,20 @@ function JournalFormatSection({ result }: { result: T1Result }) {
 
           {/* Export buttons */}
           <div className="flex items-center gap-2">
-            <button onClick={() => exportJournal("docx")}
-              className="text-xs px-3 py-1.5 rounded-lg border border-indigo-300 text-indigo-600 hover:bg-indigo-50 transition-colors font-medium">
+            <button onClick={() => exportJournal("docx")} disabled={guard.stale}
+              title={guard.stale ? staleExportTitle(guard.reason) : undefined}
+              className="text-xs px-3 py-1.5 rounded-lg border border-indigo-300 text-indigo-600 hover:bg-indigo-50 transition-colors font-medium disabled:opacity-40">
               Download Word (.docx)
             </button>
-            <button onClick={() => exportJournal("xlsx")}
-              className="text-xs px-3 py-1.5 rounded-lg border border-emerald-300 text-emerald-600 hover:bg-emerald-50 transition-colors font-medium">
+            <button onClick={() => exportJournal("xlsx")} disabled={guard.stale}
+              title={guard.stale ? staleExportTitle(guard.reason) : undefined}
+              className="text-xs px-3 py-1.5 rounded-lg border border-emerald-300 text-emerald-600 hover:bg-emerald-50 transition-colors font-medium disabled:opacity-40">
               Download Excel (.xlsx)
             </button>
-            <button onClick={() => {
-              if (journalData.html) navigator.clipboard.writeText(journalData.html);
-            }}
-              className="text-xs px-3 py-1.5 rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-50 transition-colors">
-              Copy HTML
-            </button>
+            {journalData.html && (
+              <CopyTextButton text={journalData.html} label="Copy HTML"
+                className="text-xs px-3 py-1.5 rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-50 transition-colors disabled:opacity-40" />
+            )}
           </div>
 
           {/* Abbreviations */}

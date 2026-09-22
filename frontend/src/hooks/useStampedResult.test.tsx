@@ -17,6 +17,16 @@ describe("useStampedResult", () => {
     expect(second.result.current.stale).toBe(false);
   });
 
+  it("treats a cached result with no stamp as out of date, not current", () => {
+    // A result cached before stamping existed (or through a path that drops
+    // the stamp) says nothing about what it was computed from.
+    act(() => useStore.getState().setPanelCache("legacy", { result: { auc: 0.7 } }));
+    const view = renderHook(() => useStampedResult<{ auc: number }>("legacy", { a: 1 }));
+    expect(view.result.current.result).toEqual({ auc: 0.7 });
+    expect(view.result.current.stale).toBe(true);
+    expect(view.result.current.staleReasons).toEqual(["data"]);
+  });
+
   it("marks a cached result stale once the data changes under it", () => {
     // The reported bug: edit a cell, come back to the panel, and the previous
     // fit is still on screen presented as current.

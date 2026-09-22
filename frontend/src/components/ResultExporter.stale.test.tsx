@@ -29,7 +29,7 @@ describe("ResultExporter — stale results cannot be exported", () => {
     render(<ResultExporter title="Cox" headers={HEADERS} rows={ROWS} stale staleReason="the data changed" />);
     expect(screen.getByText("Export blocked")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "CSV" }))
-      .toHaveAttribute("title", "Recompute first — this result predates the data changed");
+      .toHaveAttribute("title", "Recompute first: this result predates the data changed");
   });
 
   it("appends the engine and library versions to a CSV", async () => {

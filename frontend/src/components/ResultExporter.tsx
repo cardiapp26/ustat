@@ -17,6 +17,7 @@ import { plotlyToTiffBlob, downloadBlob } from "../lib/tiffEncoder";
 import { withRegisteredPlotCapture } from "../lib/plotCapture";
 import type { PlotRef, PlotCaptureHandle } from "../lib/plotTypes";
 import { provenanceLines, type Provenance } from "../lib/engine/provenance";
+import { staleExportTitle, useStaleGuard } from "../lib/staleGuard";
 
 /** Minimal shape of the Plotly module / graph-div fields we call. */
 interface PlotlyToImage {
@@ -231,8 +232,12 @@ async function copyTableToClipboard(headers: string[], rows: (string | number | 
 }
 
 export default function ResultExporter({
-  title, headers, rows, plotRef, stale = false, staleReason, provenance, className = "",
+  title, headers, rows, plotRef, stale: staleProp = false, staleReason: staleReasonProp, provenance, className = "",
 }: Props) {
+  // An explicit prop, or the <StaleGuard> the exporter sits inside.
+  const guard = useStaleGuard();
+  const stale = staleProp || guard.stale;
+  const staleReason = staleReasonProp ?? guard.reason;
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   // "Copied" pill flashes for ~1.5 s on a successful copy.
@@ -245,9 +250,7 @@ export default function ResultExporter({
     headers && rows ? [...rows, ...provenanceRows(provenance, headers.length)] : [];
   const hasPlot = !!plotRef;
 
-  const blockedTitle = staleReason
-    ? `Recompute first — this result predates ${staleReason}`
-    : "Recompute first — this result is out of date";
+  const blockedTitle = staleExportTitle(staleReason);
 
   const handle = async (format: "csv" | "xlsx" | "png" | "tiff" | "copy-table" | "copy-plot") => {
     if (busy || stale) return;

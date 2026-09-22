@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { exportStyledTable } from "../api";
 import { downloadBlob } from "../lib/tiffEncoder";
+import { staleExportTitle, useStaleGuard } from "../lib/staleGuard";
 import {
   copyStyledTable,
   downloadStyledHtml,
@@ -13,8 +14,11 @@ import {
 export function StyledTableExporter({ data }: { data: () => StyledTableData }) {
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState(false);
+  const guard = useStaleGuard();
+  const blocked = guard.stale ? staleExportTitle(guard.reason) : null;
 
   const handleCopy = async () => {
+    if (guard.stale) return;
     const ok = await copyStyledTable(data());
     if (ok) {
       setCopied(true);
@@ -23,6 +27,7 @@ export function StyledTableExporter({ data }: { data: () => StyledTableData }) {
   };
 
   const handleDocx = async () => {
+    if (guard.stale) return;
     setBusy(true);
     try {
       const d = data();
@@ -42,13 +47,13 @@ export function StyledTableExporter({ data }: { data: () => StyledTableData }) {
 
   return (
     <div className="flex items-center gap-1.5">
-      <button onClick={handleCopy} className={btn} title="Copy as a styled table (paste into Word / Google Docs)">
+      <button onClick={handleCopy} disabled={guard.stale} className={btn} title={blocked ?? "Copy as a styled table (paste into Word / Google Docs)"}>
         {copied ? "Copied ✓" : "Copy table"}
       </button>
-      <button onClick={handleDocx} disabled={busy} className={btn} title="Download as a styled Word document">
+      <button onClick={handleDocx} disabled={busy || guard.stale} className={btn} title={blocked ?? "Download as a styled Word document"}>
         {busy ? "…" : "Word"}
       </button>
-      <button onClick={() => downloadStyledHtml(data())} className={btn} title="Download as a styled HTML file">
+      <button onClick={() => { if (!guard.stale) downloadStyledHtml(data()); }} disabled={guard.stale} className={btn} title={blocked ?? "Download as a styled HTML file"}>
         HTML
       </button>
     </div>

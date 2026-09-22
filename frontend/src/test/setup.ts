@@ -41,6 +41,8 @@ vi.mock('react-plotly.js', () => ({
       'data-testid': 'plotly-mock',
       'data-plotly': JSON.stringify(props.data ?? []),
       'data-layout': JSON.stringify(props.layout ?? {}),
+      // Export controls live in the config (the modebar camera, say).
+      'data-config': JSON.stringify(props.config ?? {}),
     })
   },
 }))

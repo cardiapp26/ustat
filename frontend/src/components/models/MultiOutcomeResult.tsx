@@ -2,6 +2,7 @@
  *  result_text + per-outcome model fit + ResultExporter. Extracted from
  *  ModelsPanel.tsx. */
 import ResultExporter from "../ResultExporter";
+import CopyTextButton from "../CopyTextButton";
 import type { Provenance } from "../../lib/engine/provenance";
 import { fmtP, pCellTitle } from "../../lib/format";
 
@@ -92,12 +93,7 @@ export default function MultiOutcomeResult({
         <div className="panel bg-gray-50 border border-gray-200 p-3">
           <div className="flex items-center justify-between mb-1">
             <span className="text-[10px] uppercase tracking-wider text-gray-500 font-medium">Results</span>
-            <button
-              onClick={() => navigator.clipboard.writeText(result.result_text ?? "")}
-              className="text-[10px] px-2 py-0.5 rounded border border-gray-300 text-gray-500 hover:bg-indigo-50 hover:text-indigo-600 transition-colors"
-            >
-              Copy
-            </button>
+            <CopyTextButton text={result.result_text ?? ""} />
           </div>
           <p className="text-sm text-gray-700 leading-relaxed">{result.result_text}</p>
         </div>

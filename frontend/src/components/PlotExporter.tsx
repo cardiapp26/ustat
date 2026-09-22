@@ -6,6 +6,7 @@
 import { useState, useEffect } from "react";
 import { plotlyToTiffBlob, downloadBlob } from "../lib/tiffEncoder";
 import type { PlotRef, PlotCaptureHandle } from "../lib/plotTypes";
+import { staleExportTitle, useStaleGuard } from "../lib/staleGuard";
 
 type ExportFmt = "png" | "svg" | "tiff" | "jpeg";
 
@@ -41,6 +42,8 @@ export default function PlotExporter({
   const [fmt, setFmt]         = useState<ExportFmt>("png");
   const [dpi, setDpi]         = useState(300);
   const [busy, setBusy]       = useState(false);
+  // Inside an out-of-date result the figure cannot leave the app.
+  const guard = useStaleGuard();
   
   useEffect(() => {
     if (defaultWidth) setWidth(defaultWidth);
@@ -96,7 +99,7 @@ export default function PlotExporter({
 
   /** Copy the rendered chart to the system clipboard as a PNG image. */
   const copyImage = async () => {
-    if (busy) return;
+    if (busy || guard.stale) return;
     setBusy(true);
     try {
       await onBeforeCapture?.();
@@ -120,6 +123,7 @@ export default function PlotExporter({
   };
 
   const downloadImage = async () => {
+    if (guard.stale) return;
     const el = getEl();
     if (!el) return;
     setBusy(true);
@@ -189,16 +193,17 @@ export default function PlotExporter({
     <div className={`absolute top-2 right-2 z-10 flex gap-1 ${className}`}>
       <button
         onClick={copyImage}
-        disabled={busy}
+        disabled={busy || guard.stale}
         className="p-1.5 rounded-lg bg-white/80 border border-gray-200 shadow-sm text-gray-500 hover:text-emerald-600 hover:bg-white hover:border-emerald-200 transition-colors text-xs disabled:opacity-50"
-        title="Copy chart to clipboard as PNG"
+        title={guard.stale ? staleExportTitle(guard.reason) : "Copy chart to clipboard as PNG"}
       >
         ⧉
       </button>
       <button
         onClick={() => setOpen(o => !o)}
-        className="p-1.5 rounded-lg bg-white/80 border border-gray-200 shadow-sm text-gray-500 hover:text-indigo-600 hover:bg-white hover:border-indigo-200 transition-colors text-xs"
-        title="Export chart"
+        disabled={guard.stale}
+        className="p-1.5 rounded-lg bg-white/80 border border-gray-200 shadow-sm text-gray-500 hover:text-indigo-600 hover:bg-white hover:border-indigo-200 transition-colors text-xs disabled:opacity-50"
+        title={guard.stale ? staleExportTitle(guard.reason) : "Export chart"}
       >
         ↓
       </button>
@@ -208,7 +213,7 @@ export default function PlotExporter({
         </span>
       )}
 
-      {open && (
+      {open && !guard.stale && (
         <div className="absolute right-0 top-8 bg-white border border-gray-200 rounded-xl shadow-xl p-4 w-52 space-y-3 z-20">
           <p className="text-xs font-semibold text-gray-700">Export Chart</p>
 

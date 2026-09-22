@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -229,6 +229,46 @@ describe('ModelsPanel', () => {
     expect(screen.getByText(/set in the Data Dictionary/)).toBeInTheDocument()
     // The paragraph used to render twice for every model without an OR table.
     expect(screen.getAllByText('Results Paragraph')).toHaveLength(1)
+  })
+
+  it('closes every export of a fit once the data changes under it', async () => {
+    // Only ResultExporter used to check staleness: the Word table, the Copy
+    // button, the forest plot and the Forest Builder hand-off stayed open.
+    stubBackgroundEndpoints()
+    installSession(regressionSession())
+    server.use(
+      http.post('/api/models/firth_logistic', () =>
+        HttpResponse.json({
+          model: 'Firth Penalized Logistic Regression',
+          outcome: 'DEATH',
+          result_text: 'Firth penalized logistic regression was used.',
+          coefficients: [
+            { variable: 'const', p: 0.5, odds_ratio: 0.01, or_ci_low: 0.001, or_ci_high: 0.1, log_odds: -4.6, se: 1 },
+            { variable: 'AGE', p: 0.014, odds_ratio: 1.07, or_ci_low: 1.01, or_ci_high: 1.14, log_odds: 0.068, se: 0.03 },
+          ],
+        }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<ModelsPanel />)
+    await user.click(screen.getByText('Firth Logistic (penalized)'))
+    await user.selectOptions(selectAfterLabel(/^Outcome/), 'DEATH')
+    await user.click(checkPredictor('AGE'))
+    await user.click(screen.getByRole('button', { name: 'Fit Model' }))
+    await screen.findAllByRole('button', { name: '→ Forest Builder' })
+
+    const exports = () => [
+      screen.getByRole('button', { name: 'Copy' }),
+      ...screen.getAllByRole('button', { name: 'Word' }),
+      ...screen.getAllByRole('button', { name: '→ Forest Builder' }),
+    ]
+    for (const b of exports()) expect(b).toBeEnabled()
+
+    act(() => useStore.getState().bumpDataVersion())
+
+    expect(await screen.findByText(/Out of date\./)).toBeInTheDocument()
+    for (const b of exports()) expect(b).toBeDisabled()
   })
 
   it('OR Table: runs univariate + multivariate logistic table and renders both columns', async () => {
