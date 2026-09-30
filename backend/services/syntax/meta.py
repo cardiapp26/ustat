@@ -35,7 +35,7 @@ def _vals(rows: list, key: str, lang: str) -> str:
     return nvec([r.get(key) for r in rows], lang)
 
 
-def _python(tab, se, ci, measure, log, cc, method) -> str:
+def _python(tab, se, ci, measure, log, cc, method, hk=False) -> str:
     tr = "np.log" if log else ""
     parts, ys, vs, names = [], [], [], []
     if tab:
@@ -63,19 +63,28 @@ def _python(tab, se, ci, measure, log, cc, method) -> str:
         ys.append("y_ci")
         vs.append("v_ci")
         names.extend(s.get("label") for s in ci)
+    # combine_effects knows DL ("dl") and Paule-Mandel ("pm") but has no
+    # REML τ²; the R script is the exact replication for REML.
+    method_re = "pm" if method in ("PM", "REML") else "dl"
+    reml_note = ("# statsmodels has no REML tau^2; PM (iterated) shown, and "
+                 "the R script replicates REML exactly.\n" if method == "REML" else "")
+    hk_note = ("# combine_effects has no Hartung-Knapp CI; use use_t=True for a t-based\n"
+               "# interval, or the R script (test = \"knha\") for the exact HK adjustment.\n"
+               if hk else "")
     return (
         "import numpy as np\n"
         + ("from scipy import stats\n" if ci else "")
         + "from statsmodels.stats.meta_analysis import combine_effects"
         + (", effectsize_2proportions" if tab else "") + "\n\n"
         + "".join(parts)
+        + reml_note + hk_note
         + f"res = combine_effects(np.concatenate([{', '.join(ys)}]), np.concatenate([{', '.join(vs)}]),\n"
-        f"                      method_re=\"{method.lower()}\", row_names={plist(names)})\n"
+        f"                      method_re=\"{method_re}\", row_names={plist(names)})\n"
         "res.summary_frame()" + ("  # log scale: np.exp() for the ratio" if log else "")
     )
 
 
-def _r(tab, se, ci, measure, log, cc, method) -> str:
+def _r(tab, se, ci, measure, log, cc, method, hk=False) -> str:
     tr = "log" if log else ""
     frames, parts = [], []
     if tab:
@@ -102,7 +111,8 @@ def _r(tab, se, ci, measure, log, cc, method) -> str:
         "library(metafor)\n\n" + "".join(parts)
         + f"dat <- rbind({', '.join(frames)})\n"
         'fe <- rma(yi, vi, data = dat, method = "FE", slab = study)\n'
-        f're <- rma(yi, vi, data = dat, method = "{method}", slab = study)\n'
+        f're <- rma(yi, vi, data = dat, method = "{method}"'
+        + (', test = "knha"' if hk else '') + ', slab = study)\n'
         "summary(re)  # Q, tau^2, I^2\n"
         + ("# With PM, metafor derives I^2 from tau^2; uSTAT's I^2 is (Q - df) / Q,\n"
            "# which equals metafor's only for DL.\n" if method == "PM" else "")
@@ -114,20 +124,24 @@ def _r(tab, se, ci, measure, log, cc, method) -> str:
 
 def analyze(b: dict) -> dict:
     measure = str(b.get("measure") or "OR").upper()
-    method = "PM" if str(b.get("tau2_method") or "DL").upper() == "PM" else "DL"
+    m = str(b.get("tau2_method") or "DL").upper()
+    method = m if m in ("PM", "REML") else "DL"
+    hk = bool(b.get("hartung_knapp"))
     cc = number(b.get("cc"), 0.5)
     tab, se, ci = _split(b.get("studies") or [])
     if measure not in _SM_STAT:
         tab = []  # uSTAT accepts 2x2 input only for OR, RR and RD
     log = measure in _LOG
-    title = f"Meta-analysis ({measure}, {method} tau^2): {len(tab) + len(se) + len(ci)} studies"
+    title = (f"Meta-analysis ({measure}, {method} tau^2"
+             + (", Hartung-Knapp" if hk else "")
+             + f"): {len(tab) + len(se) + len(ci)} studies")
     if not (tab or se or ci):
         return {"title": title,
                 "python": "# No usable study rows in the request (need a 2x2, effect + SE or effect + CI).",
                 "r": "# No usable study rows in the request (need a 2x2, effect + SE or effect + CI)."}
     return {"title": title,
-            "python": _python(tab, se, ci, measure, log, cc, method),
-            "r": _r(tab, se, ci, measure, log, cc, method)}
+            "python": _python(tab, se, ci, measure, log, cc, method, hk),
+            "r": _r(tab, se, ci, measure, log, cc, method, hk)}
 
 
 ENDPOINTS = {"/api/meta/analyze": analyze}

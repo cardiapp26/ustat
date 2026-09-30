@@ -75,7 +75,19 @@ class _R:
             raise EngineError("Field 'studies' is required.", status_hint=422)
         self.studies = [_S(s) for s in params["studies"]]
         self.measure = params.get("measure", "OR")            # OR | RR | RD | SMD | MD | generic
-        self.tau2_method = params.get("tau2_method", "DL")    # DL | PM
+        self.tau2_method = str(params.get("tau2_method", "DL"))  # DL | PM | REML
+        # Anything not on this list used to be silently computed as
+        # DerSimonian-Laird while the requested name was stamped on the
+        # result: "HK" came back labelled HK but pooled with DL τ². The
+        # name and the arithmetic must not be allowed to diverge.
+        if self.tau2_method.upper() not in ("DL", "PM", "REML"):
+            raise EngineError(
+                f"Unknown tau2_method '{self.tau2_method}'. Use DL, PM or REML. "
+                "For Hartung-Knapp confidence intervals set hartung_knapp: true "
+                "(it adjusts the CI, not the τ² estimator).",
+                status_hint=422,
+            )
+        self.hartung_knapp = bool(params.get("hartung_knapp", False))
         self.cc = params.get("cc", 0.5)                        # continuity correction for zero cells (2×2)
 
 
@@ -172,6 +184,50 @@ def _tau2_PM(y: np.ndarray, v: np.ndarray, max_iter: int = 100) -> float:
     return float(tau2)
 
 
+def _tau2_REML(y: np.ndarray, v: np.ndarray, max_iter: int = 100) -> float:
+    """Restricted maximum-likelihood τ² via the standard fixed-point
+    iteration (Viechtbauer 2005): with w = 1/(v+τ²) and μ the weighted mean,
+
+        τ²_new = Σ w² ((y-μ)² − v) / Σ w²  +  1 / Σ w
+
+    where the trailing term is the REML degrees-of-freedom correction for
+    estimating μ. Clamped at 0, started from DL."""
+    df = len(y) - 1
+    if df <= 0:
+        return 0.0
+    tau2 = _tau2_DL(y, v)
+    for _ in range(max_iter):
+        w = 1.0 / (v + tau2)
+        mu = np.sum(w * y) / np.sum(w)
+        num = float(np.sum(w ** 2 * ((y - mu) ** 2 - v)))
+        new = num / float(np.sum(w ** 2)) + 1.0 / float(np.sum(w))
+        new = max(0.0, new)
+        if abs(new - tau2) < 1e-8:
+            tau2 = new
+            break
+        tau2 = new
+    return float(tau2)
+
+
+def _tau2_est(y: np.ndarray, v: np.ndarray, method: str) -> float:
+    m = method.upper()
+    if m == "PM":
+        return _tau2_PM(y, v)
+    if m == "REML":
+        return _tau2_REML(y, v)
+    return _tau2_DL(y, v)
+
+
+def _hk_se(y: np.ndarray, v: np.ndarray, tau2: float, mu: float) -> float:
+    """Hartung-Knapp standard error of the pooled mean: the weighted mean
+    squared deviation about μ, scaled by k−1, replaces the inverse-variance
+    SE; inference then uses t with k−1 df."""
+    k = len(y)
+    w = 1.0 / (v + tau2)
+    q = float(np.sum(w * (y - mu) ** 2)) / (k - 1)
+    return math.sqrt(q / float(np.sum(w)))
+
+
 def _hetero(y: np.ndarray, v: np.ndarray) -> dict:
     w = 1.0 / v
     mu = np.sum(w * y) / np.sum(w)
@@ -220,10 +276,21 @@ def analyze(params: dict) -> dict:
     k = len(rows)
     log = _log_scale(req.measure)
 
-    tau2 = _tau2_PM(y, v) if req.tau2_method.upper() == "PM" else _tau2_DL(y, v)
+    tau2 = _tau2_est(y, v, req.tau2_method)
     fe = _pool(y, v, 0.0)
     re = _pool(y, v, tau2)
     het = _hetero(y, v)
+
+    # Hartung-Knapp: replace the Wald z CI on the random-effects mean with
+    # the HK variance estimator and a t distribution on k−1 df.
+    ci_method = "Wald (z)"
+    if req.hartung_knapp and k >= 2:
+        se_hk = _hk_se(y, v, tau2, re["mu"])
+        t_crit = float(st.t.ppf(0.975, k - 1))
+        re = {**re, "se": se_hk,
+              "ci_low": re["mu"] - t_crit * se_hk,
+              "ci_high": re["mu"] + t_crit * se_hk}
+        ci_method = f"Hartung-Knapp (t, {k - 1} df)"
 
     # 95% prediction interval (Higgins 2009): mu ± t_{k-2} * sqrt(tau2 + se_re^2)
     pi_low = pi_high = None
@@ -255,7 +322,9 @@ def analyze(params: dict) -> dict:
     re_e, re_lo, re_hi = _fmt(re)
 
     interp = (
-        f"Random-effects meta-analysis ({req.tau2_method.upper()} τ²; k = {k} studies). "
+        f"Random-effects meta-analysis ({req.tau2_method.upper()} τ²"
+        + ("; Hartung-Knapp CI" if req.hartung_knapp and k >= 2 else "")
+        + f"; k = {k} studies). "
         f"Pooled {req.measure} = {re_e:.3f} (95% CI {re_lo:.3f}–{re_hi:.3f}). "
         f"Heterogeneity: Q({het['Q_df']}) = {het['Q']:.2f}, p = {het['Q_p']:.4f}, "
         f"I² = {het['I2_pct']:.1f}%, τ² = {tau2:.4f}."
@@ -272,6 +341,8 @@ def analyze(params: dict) -> dict:
         "test": "Meta-analysis",
         "measure": req.measure, "k": k, "log_scale": log,
         "tau2_method": req.tau2_method.upper(), "tau2": round(tau2, 6),
+        "ci_method": ci_method,
+        "hartung_knapp": bool(req.hartung_knapp and k >= 2),
         "studies": study_rows,
         "fixed": {"effect": round(fe_e, 4), "ci_low": round(fe_lo, 4), "ci_high": round(fe_hi, 4)},
         "random": {"effect": round(re_e, 4), "ci_low": round(re_lo, 4), "ci_high": round(re_hi, 4)},
@@ -304,16 +375,25 @@ def subgroup(params: dict) -> dict:
             continue
         y = np.array([r["y"] for r in grp])
         v = np.array([r["v"] for r in grp])
-        tau2 = (_tau2_PM(y, v) if req.tau2_method.upper() == "PM" else _tau2_DL(y, v)) if len(grp) >= 2 else 0.0
+        tau2 = _tau2_est(y, v, req.tau2_method) if len(grp) >= 2 else 0.0
         pooled = _pool(y, v, tau2)
         het = _hetero(y, v) if len(grp) >= 2 else {"Q": 0, "Q_df": 0, "Q_p": None, "I2_pct": 0, "H2": None}
+        # Q_between stays on the inverse-variance (Wald) SEs even under
+        # Hartung-Knapp: the HK variance is a per-subgroup CI adjustment,
+        # not part of the standard between-group heterogeneity statistic.
         mus.append(pooled["mu"])
         vars_.append(pooled["se"] ** 2)
+        ci_low, ci_high = pooled["ci_low"], pooled["ci_high"]
+        if req.hartung_knapp and len(grp) >= 2:
+            se_hk = _hk_se(y, v, tau2, pooled["mu"])
+            t_crit = float(st.t.ppf(0.975, len(grp) - 1))
+            ci_low = pooled["mu"] - t_crit * se_hk
+            ci_high = pooled["mu"] + t_crit * se_hk
         sub_results.append({
             "subgroup": name, "k": len(grp),
             "effect": round(_back(req.measure, pooled["mu"]), 4),
-            "ci_low": round(_back(req.measure, pooled["ci_low"]), 4),
-            "ci_high": round(_back(req.measure, pooled["ci_high"]), 4),
+            "ci_low": round(_back(req.measure, ci_low), 4),
+            "ci_high": round(_back(req.measure, ci_high), 4),
             "tau2": round(tau2, 6), "I2_pct": het["I2_pct"],
         })
 
@@ -361,7 +441,7 @@ def meta_regression(params: dict) -> dict:
     y = np.array([r["y"] for r in rows])
     v = np.array([r["v"] for r in rows])
     x = np.array([float(r["moderator"]) for r in rows])
-    tau2 = _tau2_PM(y, v) if req.tau2_method.upper() == "PM" else _tau2_DL(y, v)
+    tau2 = _tau2_est(y, v, req.tau2_method)
     w = 1.0 / (v + tau2)
 
     X = sm.add_constant(x)
@@ -501,8 +581,9 @@ register(
         deps=("numpy", "scipy"),
         required_columns=lambda params: [],
         cost_key="meta.analyze",
-        doc="Fixed + random-effects meta-analysis pooling (DL / PM τ²), "
-            "Q / I² / H² heterogeneity, 95% prediction interval, per-study weights.",
+        doc="Fixed + random-effects meta-analysis pooling (DL / PM / REML τ², "
+            "optional Hartung-Knapp CI), Q / I² / H² heterogeneity, "
+            "95% prediction interval, per-study weights.",
         tags=("meta-analysis", "pooling"),
     )
 )

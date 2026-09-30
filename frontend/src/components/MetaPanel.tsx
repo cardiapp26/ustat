@@ -34,6 +34,7 @@ interface MetaResult {
   null_line: number;
   I2_pct: number;
   tau2: number;
+  ci_method?: string;
   Q: number;
   Q_p: number;
   prediction_low?: number | null;
@@ -92,6 +93,7 @@ export default function MetaPanel() {
   // the default "analyze" layout would throw, as it carries no pooled estimate.
   const [measure, setMeasure] = usePersistedPanelState("meta", "measure", "OR");
   const [tau2Method, setTau2Method] = usePersistedPanelState("meta", "tau2Method", "DL");
+  const [hartungKnapp, setHartungKnapp] = usePersistedPanelState("meta", "hartungKnapp", false);
   const [inputType, setInputType] = usePersistedPanelState<InputType>("meta", "inputType", "ci");
   const [rows, setRows] = usePersistedPanelState<Row[]>("meta", "rows", SAMPLE);
   const [mode, setMode] = usePersistedPanelState<Mode>("meta", "mode", "analyze");
@@ -140,7 +142,7 @@ export default function MetaPanel() {
   // only changes here in run(), together with a new result, and the setter
   // this render hands out would stamp the mode that was on screen before the
   // click, flagging every fresh result stale.
-  const runParams = { studies: buildStudies(), measure, tau2Method };
+  const runParams = { studies: buildStudies(), measure, tau2Method, hartungKnapp };
   // Pooling reads only the typed studies, never the dataset, so a cell edit
   // or case filter cannot make it out of date.
   const {
@@ -155,7 +157,7 @@ export default function MetaPanel() {
     setMode(m);
     setLoading(true); setError(null); setResult(null);
     try {
-      const payload = { studies, measure, tau2_method: tau2Method };
+      const payload = { studies, measure, tau2_method: tau2Method, hartung_knapp: hartungKnapp };
       const fn = m === "analyze" ? runMetaAnalyze : m === "subgroup" ? runMetaSubgroup
         : m === "regression" ? runMetaRegression : runMetaBias;
       const res = await fn(payload);
@@ -288,11 +290,17 @@ export default function MetaPanel() {
         </label>
         <label className="flex items-center gap-1.5 text-xs text-gray-600">
           τ²
-          <Tip text="DerSimonian-Laird (closed form) or Paule-Mandel (iterative, recommended)." />
+          <Tip text="DerSimonian-Laird (closed form), Paule-Mandel (iterative) or REML (restricted maximum likelihood, the metafor default)." />
           <select value={tau2Method} onChange={(e) => setTau2Method(e.target.value)} className="text-xs border border-gray-300 rounded px-2 py-1 bg-white">
             <option value="DL">DerSimonian-Laird</option>
             <option value="PM">Paule-Mandel</option>
+            <option value="REML">REML</option>
           </select>
+        </label>
+        <label className="flex items-center gap-1.5 text-xs text-gray-600">
+          <input type="checkbox" checked={hartungKnapp} onChange={(e) => setHartungKnapp(e.target.checked)} className="accent-indigo-500" />
+          Hartung-Knapp
+          <Tip text="Replaces the Wald z CI on the pooled mean with the Hartung-Knapp t interval (k-1 df); wider and better calibrated with few studies." />
         </label>
         <label className="flex items-center gap-1.5 text-xs text-gray-600">
           Input
@@ -391,7 +399,7 @@ export default function MetaPanel() {
                 <div className="grid grid-cols-2 gap-1.5">
                   {[
                     ["Random " + result.measure, `${result.random.effect}`],
-                    ["95% CI", `${result.random.ci_low}–${result.random.ci_high}`],
+                    [result.ci_method?.startsWith("Hartung-Knapp") ? "95% CI (HK t)" : "95% CI", `${result.random.ci_low}–${result.random.ci_high}`],
                     ["Fixed " + result.measure, `${result.fixed.effect}`],
                     ["I²", `${result.I2_pct}%`],
                     ["τ²", result.tau2],

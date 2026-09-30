@@ -3,7 +3,8 @@ Meta-analysis router.
 
 Endpoints
 ---------
-POST /analyze     — fixed + random-effects pooling (DL / PM τ²), Q / I² / H²,
+POST /analyze     - fixed + random-effects pooling (DL / PM / REML τ²,
+                    optional Hartung-Knapp CI), Q / I² / H²,
                     95% prediction interval, per-study weights
 POST /subgroup    — subgroup pooling + between-group heterogeneity (Q_between)
 POST /regression  — meta-regression (effect ~ moderator) via weighted LS
@@ -57,7 +58,8 @@ class MetaStudy(BaseModel):
 class MetaRequest(BaseModel):
     studies: List[MetaStudy]
     measure: str = "OR"          # OR | RR | RD | SMD | MD | generic
-    tau2_method: str = "DL"      # DL | PM
+    tau2_method: str = "DL"      # DL | PM | REML (anything else → 422)
+    hartung_knapp: bool = False  # HK/KNHA t-based CI on the pooled mean
     cc: float = 0.5              # continuity correction for zero cells (2×2)
 
 

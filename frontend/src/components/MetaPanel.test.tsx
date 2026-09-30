@@ -161,6 +161,38 @@ describe('MetaPanel', () => {
     expect(screen.getByTestId('plotly-mock')).toBeInTheDocument()
   })
 
+  it('offers REML and sends the Hartung-Knapp flag, labelling the HK interval', async () => {
+    let sent: Record<string, unknown> | null = null
+    server.use(
+      http.post('/api/meta/analyze', async ({ request }) => {
+        sent = (await request.json()) as Record<string, unknown>
+        return HttpResponse.json({
+          studies: [
+            { label: 'Trial A', effect: 0.75, ci_low: 0.5, ci_high: 1.1, weight_pct: 50 },
+            { label: 'Trial B', effect: 0.82, ci_low: 0.55, ci_high: 1.2, weight_pct: 50 },
+          ],
+          random: { effect: 0.78, ci_low: 0.52, ci_high: 1.17 },
+          fixed: { effect: 0.79, ci_low: 0.62, ci_high: 0.99 },
+          measure: 'OR', null_line: 1, I2_pct: 12.5, tau2: 0.02,
+          tau2_method: 'REML', ci_method: 'Hartung-Knapp (t, 1 df)', hartung_knapp: true,
+          Q: 3.1, Q_p: 0.45,
+        })
+      }),
+    )
+
+    const user = userEvent.setup()
+    render(<MetaPanel />)
+    await user.selectOptions(screen.getByDisplayValue('DerSimonian-Laird'), 'REML')
+    await user.click(screen.getByRole('checkbox', { name: /hartung-knapp/i }))
+    await user.click(screen.getByRole('button', { name: /forest \+ pool/i }))
+
+    await waitFor(() => expect(sent).not.toBeNull())
+    expect(sent!.tau2_method).toBe('REML')
+    expect(sent!.hartung_knapp).toBe(true)
+    // The pooled-result card names the interval it shows.
+    expect(await screen.findByText('95% CI (HK t)')).toBeInTheDocument()
+  })
+
   it('shows a validation error when fewer than 2 studies are present', async () => {
     const user = userEvent.setup()
     render(<MetaPanel />)

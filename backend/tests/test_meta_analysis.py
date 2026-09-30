@@ -327,3 +327,100 @@ def test_analyze_rejects_unsupported_measure_for_2x2(client):
     ]
     r = client.post("/api/meta/analyze", json={"studies": studies, "measure": "SMD"})
     assert r.status_code == 422
+
+
+# ── REML τ², Hartung-Knapp CI, tau2_method validation ───────────────────────
+
+
+def test_analyze_reml_tau2_between_estimates(client):
+    # Unequal SEs matter: with equal within-study variances DL, PM and REML
+    # coincide exactly, and the test would pass against a silent fallback.
+    rng = np.random.default_rng(5)
+    studies = [
+        {"label": f"R{i}", "effect": round(float(te + rng.normal(0, 0.05)), 4),
+         "se": round(0.05 + 0.06 * (i % 4), 4)}
+        for i, te in enumerate(np.linspace(-1.5, 1.5, 9))
+    ]
+    out = {}
+    for m in ("DL", "PM", "REML"):
+        r = client.post("/api/meta/analyze", json={
+            "studies": studies, "measure": "generic", "tau2_method": m,
+        })
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert d["tau2_method"] == m
+        out[m] = d["tau2"]
+    # All three see the same large heterogeneity; REML must be a real,
+    # distinct estimate, not a silent DL fallback.
+    assert out["REML"] > 0
+    assert out["REML"] != out["DL"]
+
+
+def test_analyze_reml_matches_restricted_likelihood_argmax(client):
+    studies = [
+        {"label": "A", "effect": 0.5, "se": 0.10},
+        {"label": "B", "effect": 0.3, "se": 0.12},
+        {"label": "C", "effect": 0.8, "se": 0.09},
+        {"label": "D", "effect": 0.4, "se": 0.15},
+        {"label": "E", "effect": 0.6, "se": 0.11},
+    ]
+    r = client.post("/api/meta/analyze", json={
+        "studies": studies, "measure": "generic", "tau2_method": "REML",
+    })
+    d = r.json()
+    y = np.array([s["effect"] for s in studies])
+    v = np.array([s["se"] for s in studies]) ** 2
+
+    def restll(t2):
+        w = 1 / (v + t2)
+        mu = (w * y).sum() / w.sum()
+        return -0.5 * (np.log(v + t2).sum() + (w * (y - mu) ** 2).sum() + np.log(w.sum()))
+
+    grid = np.linspace(0, 0.2, 20001)
+    argmax = grid[int(np.argmax([restll(t) for t in grid]))]
+    assert abs(d["tau2"] - argmax) < 1e-4
+
+
+def test_analyze_hartung_knapp_widens_ci_and_labels_it(client):
+    studies = _heterogeneous_studies()
+    base = client.post("/api/meta/analyze", json={
+        "studies": studies, "measure": "generic", "tau2_method": "REML",
+    }).json()
+    hk = client.post("/api/meta/analyze", json={
+        "studies": studies, "measure": "generic", "tau2_method": "REML",
+        "hartung_knapp": True,
+    }).json()
+    assert base["ci_method"] == "Wald (z)"
+    assert hk["ci_method"].startswith("Hartung-Knapp")
+    assert hk["hartung_knapp"] is True
+    # Same point estimate, different interval machinery.
+    assert hk["random"]["effect"] == base["random"]["effect"]
+    width_base = base["random"]["ci_high"] - base["random"]["ci_low"]
+    width_hk = hk["random"]["ci_high"] - hk["random"]["ci_low"]
+    assert width_hk != width_base
+
+
+def test_analyze_unknown_tau2_method_is_rejected_not_mislabelled(client):
+    """'HK' used to come back 200, labelled HK, computed as DL."""
+    studies = _homogeneous_studies()
+    r = client.post("/api/meta/analyze", json={
+        "studies": studies, "measure": "generic", "tau2_method": "HK",
+    })
+    assert r.status_code == 422
+    assert "Unknown tau2_method" in r.text
+    assert "hartung_knapp" in r.text  # points at the correct knob
+
+
+def test_subgroup_accepts_reml_and_hk(client):
+    studies = _heterogeneous_studies()
+    for i, s in enumerate(studies):
+        s["subgroup"] = "early" if i < 4 else "late"
+    r = client.post("/api/meta/subgroup", json={
+        "studies": studies, "measure": "generic", "tau2_method": "REML",
+        "hartung_knapp": True,
+    })
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert len(d["subgroups"]) == 2
+    for g in d["subgroups"]:
+        assert g["ci_low"] < g["effect"] < g["ci_high"]
