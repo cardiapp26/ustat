@@ -143,7 +143,12 @@ export function encodeTiff(opts: TiffOptions): Uint8Array {
  */
 export async function plotlyToTiffBlob(
   graphDiv: HTMLElement,
-  opts: { width: number; height: number; dpi: number; filename?: string },
+  opts: {
+    width: number; height: number; dpi: number; filename?: string;
+    /** Plotly scale; defaults to dpi / 72. A print-width export passes the
+     *  scale that lands the layout on the column's exact pixel count. */
+    scale?: number;
+  },
 ): Promise<Blob> {
   // Prefer the Plotly instance react-plotly.js already attached to the
   // gd (saves a dynamic import + side-steps the ESM tree-shake bug);
@@ -158,7 +163,7 @@ export async function plotlyToTiffBlob(
   if (!Plotly?.toImage) {
     Plotly = (await import("plotly.js/dist/plotly")).default as unknown as PlotlyToImage;
   }
-  const scale = opts.dpi / 72;
+  const scale = opts.scale ?? opts.dpi / 72;
   const dataUrl: string = await Plotly.toImage(graphDiv, {
     format: "png",
     width: opts.width,

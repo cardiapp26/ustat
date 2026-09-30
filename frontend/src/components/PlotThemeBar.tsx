@@ -18,11 +18,16 @@ const PALETTE_LABELS: Record<PaletteName, string> = {
   jama:      "JAMA",
   porcelain: "Porcelain (one hue, ordered)",
   palm:      "Palm (soft, unordered)",
+  publication: "Publication (figures4papers)",
   custom:    "Custom",
 };
 
 const FONTS = [
   { label: "System (default)", value: "system-ui, sans-serif" },
+  // Most journals (Nature, Cell, JAMA, NEJM) ask for Arial or Helvetica in
+  // figures; each falls back to the other so the export matches either way.
+  { label: "Arial (journal)",     value: "Arial, Helvetica, sans-serif" },
+  { label: "Helvetica (journal)", value: "Helvetica, Arial, sans-serif" },
   { label: "Inter",            value: "Inter, sans-serif" },
   { label: "Georgia (serif)",  value: "Georgia, serif" },
   { label: "Courier (mono)",   value: "Courier New, monospace" },
@@ -281,6 +286,22 @@ export default function PlotThemeBar() {
                 Every other series turns grey. Matched against the legend label, exactly as shown.
               </p>
             </div>
+
+            {/* Print-safe bars: hatch + black edge, for greyscale print. */}
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={plotTheme.barPatterns}
+                onChange={(e) => setPlotTheme({ barPatterns: e.target.checked })}
+                className="mt-0.5 accent-indigo-500"
+              />
+              <span>
+                <span className="block text-xs text-gray-700">Hatch bar series (greyscale print)</span>
+                <span className="block text-[10px] text-gray-400">
+                  First series solid, the rest striped, all with black edges.
+                </span>
+              </span>
+            </label>
 
             {/* Font */}
             <div>

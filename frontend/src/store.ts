@@ -74,7 +74,7 @@ export type DescriptiveTab = "histogram" | "boxplot" | "violin" | "qq" | "waterf
 
 export type PaletteName =
   | "indigo" | "clinical" | "nature" | "grayscale" | "warm" | "jama"
-  | "porcelain" | "palm" | "custom";
+  | "porcelain" | "palm" | "publication" | "custom";
 
 export interface PlotTheme {
   palette: PaletteName;
@@ -104,6 +104,14 @@ export interface PlotTheme {
    */
   highlightGroup: string;
   highlightColor: string;
+  /**
+   * Hatch the bars of the second and later series ("/", "\\", "x", ...) and
+   * give every bar a black edge, so groups that differ only in hue stay
+   * distinct when the journal prints in greyscale. The first series stays
+   * solid: it is usually the reference, and a single-series histogram should
+   * not come out striped.
+   */
+  barPatterns: boolean;
 }
 
 export const DEFAULT_THEME: PlotTheme = {
@@ -123,6 +131,7 @@ export const DEFAULT_THEME: PlotTheme = {
   seriesColors: {},
   highlightGroup: "",
   highlightColor: "#f5572f",
+  barPatterns: false,
 };
 
 export const PALETTES: Record<PaletteName, string[]> = {
@@ -141,6 +150,12 @@ export const PALETTES: Record<PaletteName, string[]> = {
   // Low-saturation greens with one amber: hue separates a few unordered
   // groups without any of them shouting.
   palm:      ["#43593b","#d4a017","#77835a","#f2d17e","#acad79","#58402e","#929960","#5a7049"],
+  // The semantic palette of Chen Liu's figures4papers (Nature Machine
+  // Intelligence, ICML, NeurIPS figures): deep blue for the arm of interest,
+  // green for the favourable contrast, brick red for the comparator, then
+  // teal, violet and a mid grey. Their pale neutral (#CFCECE) is swapped for
+  // #767676 so a sixth series is still visible on a white panel.
+  publication: ["#0f4d92","#8bcf8b","#b64342","#42949e","#9a4d8e","#767676","#3775ba","#e9a6a1"],
   // Placeholder: the live values come from theme.customPalette, so that a
   // palette the user edits is not frozen into a module constant.
   custom:    ["#4c72b0","#dd8452","#55a868","#c44e52","#8172b3","#937860","#da8bc3","#8c8c8c"],

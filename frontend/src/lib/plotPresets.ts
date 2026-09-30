@@ -9,7 +9,7 @@
  * and the tests all read one definition.
  */
 
-export type ThemePreset = "minimal" | "gray" | "bw" | "classic" | "light" | "dark";
+export type ThemePreset = "minimal" | "gray" | "bw" | "classic" | "pubr" | "light" | "dark";
 
 /** Where the legend sits. "auto" leaves Plotly's own placement, which a
  *  panel may already have overridden for its own reasons. */
@@ -28,6 +28,8 @@ export interface PresetSpec {
   /** "none": no axis lines. "lb": left and bottom only. "box": all four. */
   axisLine: "none" | "lb" | "box";
   lineColor: string;
+  /** Axis line and tick width in px. Defaults to 1. */
+  lineWidth?: number;
   ticks: "" | "outside";
 }
 
@@ -72,6 +74,20 @@ export const THEME_PRESETS: Record<ThemePreset, PresetSpec> = {
     lineColor: "#333333",
     ticks: "outside",
   },
+  // ggpubr's theme_pubr, and the house style of figures4papers: no grid,
+  // heavy left and bottom axes, dark ticks outside. Survives the reduction
+  // to a single journal column where a 1 px axis thins to a hairline.
+  pubr: {
+    label: "theme_pubr",
+    description: "No grid; heavy left and bottom axes. Holds up when shrunk to one journal column.",
+    plotBg: "#ffffff",
+    gridColor: "#e5e7eb",
+    gridDefault: false,
+    axisLine: "lb",
+    lineColor: "#111111",
+    lineWidth: 2,
+    ticks: "outside",
+  },
   light: {
     label: "theme_light",
     description: "Light grey frame and grid.",
@@ -94,7 +110,7 @@ export const THEME_PRESETS: Record<ThemePreset, PresetSpec> = {
   },
 };
 
-export const PRESET_ORDER: ThemePreset[] = ["minimal", "gray", "bw", "classic", "light", "dark"];
+export const PRESET_ORDER: ThemePreset[] = ["minimal", "gray", "bw", "classic", "pubr", "light", "dark"];
 
 /** Plotly properties shared by both axes under a preset. Callers spread this
  *  under their own axis settings, so a log scale or a category axis survives. */
@@ -105,12 +121,36 @@ export function presetAxis(preset: ThemePreset, showGrid: boolean): Record<strin
     zeroline: false,
     showline: spec.axisLine !== "none",
     linecolor: spec.lineColor,
-    linewidth: 1,
+    linewidth: spec.lineWidth ?? 1,
     // Plotly's "mirror" draws the opposite side too — that is the box.
     mirror: spec.axisLine === "box",
     ticks: spec.ticks,
     tickcolor: spec.lineColor,
+    tickwidth: spec.lineWidth ?? 1,
   };
+}
+
+/** Hatch shapes in the order series take them. The first is solid: the
+ *  reference series, and any single-series bar chart, stay unstriped. */
+export const BAR_PATTERN_SHAPES = ["", "/", "\\", "x", ".", "-", "|", "+"] as const;
+
+/**
+ * A Plotly layout template that hatches bar series and edges them in black,
+ * for figures printed in greyscale (figures4papers' print-safe bars).
+ *
+ * A template's per-type trace list is cycled across the traces of that type,
+ * so every bar chart that merges the base layout picks this up without its
+ * trace builder being told. Values a trace sets itself (its colour, its own
+ * pattern) still win over the template.
+ */
+export function barPatternTemplate(): Record<string, unknown> {
+  const bars = BAR_PATTERN_SHAPES.map((shape) => ({
+    marker: {
+      line: { color: "#000000", width: 1 },
+      pattern: { shape, fillmode: "overlay", fgcolor: "#000000", size: 7, solidity: 0.25 },
+    },
+  }));
+  return { data: { bar: bars, histogram: bars } };
 }
 
 export const LEGEND_POSITION_LABELS: Record<LegendPosition, string> = {

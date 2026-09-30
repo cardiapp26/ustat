@@ -3,7 +3,7 @@
  * All Plotly charts should merge `usePlotLayout()` into their layout prop.
  */
 import { useStore, paletteOf, type PlotTheme } from "./store";
-import { legendLayout, presetAxis } from "./lib/plotPresets";
+import { barPatternTemplate, legendLayout, presetAxis } from "./lib/plotPresets";
 
 /** The base layout for a theme, as a pure function so it can be tested
  *  without a store. `usePlotLayout` reads the store and calls this. */
@@ -21,6 +21,7 @@ export function baseLayout(
     xaxis: { ...axis },
     yaxis: { ...axis },
     ...legendLayout(theme.legendPosition ?? "auto"),
+    ...(theme.barPatterns ? { template: barPatternTemplate() } : {}),
     ...overrides,
   };
 }

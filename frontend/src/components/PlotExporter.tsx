@@ -7,6 +7,11 @@ import { useState, useEffect } from "react";
 import { plotlyToTiffBlob, downloadBlob } from "../lib/tiffEncoder";
 import type { PlotRef, PlotCaptureHandle } from "../lib/plotTypes";
 import { staleExportTitle, useStaleGuard } from "../lib/staleGuard";
+import {
+  PRINT_SIZES, PRINT_SIZE_ORDER, MIN_PRINT_PT, exportScale, printHeightMm, printPixels, printedPt,
+  suggestedLayoutWidth, withPngDpi, type PrintSizeId,
+} from "../lib/printSize";
+import { useStore } from "../store";
 
 type ExportFmt = "png" | "svg" | "tiff" | "jpeg";
 
@@ -42,6 +47,12 @@ export default function PlotExporter({
   const [fmt, setFmt]         = useState<ExportFmt>("png");
   const [dpi, setDpi]         = useState(300);
   const [busy, setBusy]       = useState(false);
+  // A journal column width fixes the printed size; width/height then only
+  // set the layout (and so how large the text prints).
+  const [printSize, setPrintSize] = useState<PrintSizeId>("custom");
+  const fontPx = useStore((s) => s.plotTheme.fontSize);
+  const widthMm = PRINT_SIZES[printSize].widthMm;
+  const rasterScale = exportScale(width, dpi, widthMm);
   // Inside an out-of-date result the figure cannot leave the app.
   const guard = useStaleGuard();
   
@@ -90,11 +101,32 @@ export default function PlotExporter({
       Plotly = mod?.toImage ? mod : mod?.default;
     }
     if (!Plotly?.toImage) throw new Error("plotly.js toImage not available");
-    const scale = dpi / 72;
     // Plotly's supported opaque mode composites transparent paper onto white.
-    const dataUrl: string = await Plotly.toImage(el, { format: "png", width, height, scale, setBackground: "opaque" });
+    const dataUrl: string = await Plotly.toImage(el, {
+      format: "png", width, height, scale: rasterScale, setBackground: "opaque",
+    });
     const res = await fetch(dataUrl);
-    return await res.blob();
+    return stampPngDpi(await res.blob());
+  };
+
+  /** Write the chosen DPI into the PNG so Word and journal portals size it
+   *  as printed rather than as a 96 dpi screen image. */
+  const stampPngDpi = async (blob: Blob): Promise<Blob> => {
+    const bytes = withPngDpi(new Uint8Array(await blob.arrayBuffer()), dpi);
+    const ab = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(ab).set(bytes);
+    return new Blob([ab], { type: "image/png" });
+  };
+
+  /** Pick a print size; a column width also picks a layout width whose base
+   *  text prints at about 7 pt, keeping the current aspect ratio. */
+  const choosePrintSize = (id: PrintSizeId) => {
+    setPrintSize(id);
+    const mm = PRINT_SIZES[id].widthMm;
+    if (mm === null) return;
+    const w = suggestedLayoutWidth(fontPx, mm);
+    setHeight(Math.round((w * height) / width));
+    setWidth(w);
   };
 
   /** Copy the rendered chart to the system clipboard as a PNG image. */
@@ -132,7 +164,7 @@ export default function PlotExporter({
       if (fmt === "tiff") {
         // Plotly cannot emit TIFF natively — rasterise to PNG at the
         // requested DPI, then encode an uncompressed baseline RGB TIFF.
-        const blob = await plotlyToTiffBlob(el, { width, height, dpi });
+        const blob = await plotlyToTiffBlob(el, { width, height, dpi, scale: rasterScale });
         downloadBlob(blob, `${safeTitle}.tiff`);
       } else {
         // Use Plotly.toImage instead of Plotly.downloadImage — the latter
@@ -157,7 +189,7 @@ export default function PlotExporter({
         if (!Plotly?.toImage) {
           throw new Error("plotly.js toImage not available");
         }
-        const scale = (fmt === "png" || fmt === "jpeg") ? dpi / 72 : 1;  // SVG vector
+        const scale = (fmt === "png" || fmt === "jpeg") ? rasterScale : 1;  // SVG vector
         const dataUrl: string = await Plotly.toImage(el, {
           format: fmt,
           width,
@@ -169,7 +201,8 @@ export default function PlotExporter({
         // for small charts but Safari truncates very large data URLs; round
         // through a Blob so any chart size downloads cleanly.
         const res = await fetch(dataUrl);
-        const blob = await res.blob();
+        const raw = await res.blob();
+        const blob = fmt === "png" ? await stampPngDpi(raw) : raw;
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
@@ -214,21 +247,46 @@ export default function PlotExporter({
       )}
 
       {open && !guard.stale && (
-        <div className="absolute right-0 top-8 bg-white border border-gray-200 rounded-xl shadow-xl p-4 w-52 space-y-3 z-20">
+        <div className="absolute right-0 top-8 bg-white border border-gray-200 rounded-xl shadow-xl p-4 w-60 space-y-3 z-20">
           <p className="text-xs font-semibold text-gray-700">Export Chart</p>
+
+          <div>
+            <label className="text-[10px] text-gray-400 block mb-0.5">Print size</label>
+            <select value={printSize} aria-label="Print size"
+              onChange={e => choosePrintSize(e.target.value as PrintSizeId)}
+              className="select w-full text-xs py-0.5">
+              {PRINT_SIZE_ORDER.map(id => <option key={id} value={id}>{PRINT_SIZES[id].label}</option>)}
+            </select>
+          </div>
 
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="text-[10px] text-gray-400 block mb-0.5">Width px</label>
+              <label className="text-[10px] text-gray-400 block mb-0.5">{widthMm === null ? "Width px" : "Layout width px"}</label>
               <input type="number" value={width} onChange={e => setWidth(+e.target.value)}
-                className="select w-full text-xs py-0.5" min={400} max={4000} step={100} />
+                className="select w-full text-xs py-0.5" min={200} max={4000} step={widthMm === null ? 100 : 10} />
             </div>
             <div>
-              <label className="text-[10px] text-gray-400 block mb-0.5">Height px</label>
+              <label className="text-[10px] text-gray-400 block mb-0.5">{widthMm === null ? "Height px" : "Layout height px"}</label>
               <input type="number" value={height} onChange={e => setHeight(+e.target.value)}
-                className="select w-full text-xs py-0.5" min={200} max={3000} step={100} />
+                className="select w-full text-xs py-0.5" min={150} max={3000} step={widthMm === null ? 100 : 10} />
             </div>
           </div>
+
+          {widthMm !== null && (() => {
+            const pt = printedPt(fontPx, width, widthMm);
+            const small = pt < MIN_PRINT_PT;
+            return (
+              <p className="text-[10px] leading-snug text-gray-500" data-testid="print-readout">
+                Prints {widthMm} × {printHeightMm(widthMm, width, height).toFixed(0)} mm
+                {fmt !== "svg" && <> · {printPixels(widthMm, dpi)} px wide</>}
+                <br />
+                <span className={small ? "text-amber-600 font-medium" : ""}>
+                  Base text ≈ {pt.toFixed(1)} pt{small && ` (under ${MIN_PRINT_PT} pt: narrow the layout)`}
+                </span>
+                {fmt === "svg" && <><br />SVG is vector: place it at {widthMm} mm wide.</>}
+              </p>
+            );
+          })()}
 
           <div className="grid grid-cols-4 gap-0 rounded overflow-hidden border border-gray-200">
             {(["png", "tiff", "jpeg", "svg"] as const).map(f => (

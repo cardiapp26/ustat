@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { applySeriesPins, applyHighlight, baseLayout, ordinalLadder } from './plotStyle'
 import { DEFAULT_THEME, PALETTES, paletteOf, type PlotTheme } from './store'
-import { PRESET_ORDER, THEME_PRESETS, legendLayout } from './lib/plotPresets'
+import { BAR_PATTERN_SHAPES, PRESET_ORDER, THEME_PRESETS, legendLayout } from './lib/plotPresets'
 
 describe('paletteOf', () => {
   it('returns the named palette', () => {
@@ -103,6 +103,46 @@ describe('baseLayout presets', () => {
   it('caller overrides win over the preset', () => {
     const l = baseLayout({ ...DEFAULT_THEME, preset: 'bw' }, true, { plot_bgcolor: '#000000' })
     expect(l.plot_bgcolor).toBe('#000000')
+  })
+})
+
+describe('theme_pubr preset', () => {
+  it('draws heavy left/bottom axes with no grid by default', () => {
+    const l = baseLayout({ ...DEFAULT_THEME, preset: 'pubr' }, THEME_PRESETS.pubr.gridDefault)
+    expect(l.xaxis).toMatchObject({
+      showline: true, mirror: false, linewidth: 2, tickwidth: 2, ticks: 'outside', gridcolor: 'transparent',
+    })
+  })
+
+  it('leaves the other presets at a 1 px axis', () => {
+    expect(baseLayout({ ...DEFAULT_THEME, preset: 'classic' }, false).yaxis).toMatchObject({ linewidth: 1 })
+  })
+})
+
+describe('publication palette', () => {
+  it('leads with the figures4papers blue, green, red', () => {
+    expect(PALETTES.publication.slice(0, 3)).toEqual(['#0f4d92', '#8bcf8b', '#b64342'])
+  })
+})
+
+describe('bar patterns', () => {
+  type Tpl = { data: { bar: { marker: { pattern: { shape: string }; line: { color: string } } }[] } }
+
+  it('adds no template while off', () => {
+    expect(baseLayout(DEFAULT_THEME, true).template).toBeUndefined()
+  })
+
+  it('cycles hatch shapes over bar traces, first one solid, all edged in black', () => {
+    const t = baseLayout({ ...DEFAULT_THEME, barPatterns: true }, true).template as Tpl
+    expect(t.data.bar.map((b) => b.marker.pattern.shape)).toEqual([...BAR_PATTERN_SHAPES])
+    expect(t.data.bar[0].marker.pattern.shape).toBe('')
+    expect(new Set(BAR_PATTERN_SHAPES).size).toBe(BAR_PATTERN_SHAPES.length)
+    expect(t.data.bar.every((b) => b.marker.line.color === '#000000')).toBe(true)
+  })
+
+  it('yields to a template the caller passes', () => {
+    const own = { data: {} }
+    expect(baseLayout({ ...DEFAULT_THEME, barPatterns: true }, true, { template: own }).template).toBe(own)
   })
 })
 
