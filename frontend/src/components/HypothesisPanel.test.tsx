@@ -192,6 +192,88 @@ describe('HypothesisPanel', () => {
     expect(screen.getByText(/expected cell counts are below 5/)).toBeInTheDocument()
   })
 
+  it('one-way ANOVA sends the chosen post-hoc method and control group', async () => {
+    installSession()
+    let sent: Record<string, unknown> | null = null
+    server.use(
+      http.post('/api/stats/anova', async ({ request }) => {
+        sent = (await request.json()) as Record<string, unknown>
+        return HttpResponse.json({
+          test: 'One-way ANOVA', interpretation: 'ok', significant: true,
+          F: 5.1, p: 0.002,
+          posthoc_method: "Dunnett (vs control 'placebo')",
+          posthoc_note: 'Omnibus test was not significant; these comparisons were requested as planned contrasts and should be reported as such.',
+          posthoc: [
+            { group1: 'high', group2: 'placebo', statistic: 4.2, p_adj: 0.001,
+              mean_diff: 13.2, ci_low: 6.1, ci_high: 20.2, significant: true },
+          ],
+        })
+      }),
+    )
+
+    const user = userEvent.setup()
+    render(<HypothesisPanel />)
+    await user.click(screen.getByRole('radio', { name: /one-way anova/i }))
+    await user.selectOptions(screen.getByLabelText(/post-hoc method/i), 'dunnett')
+    await user.type(screen.getByLabelText(/control group/i), 'placebo')
+    await user.click(screen.getByRole('checkbox', { name: /planned contrasts/i }))
+    await user.click(screen.getByRole('button', { name: /run test/i }))
+
+    await waitFor(() => expect(sent).not.toBeNull())
+    expect(sent!.posthoc).toBe('dunnett')
+    expect(sent!.control_group).toBe('placebo')
+    expect(sent!.force_posthoc).toBe(true)
+    // Dunnett rows carry a simultaneous CI on the mean difference.
+    await waitFor(() =>
+      expect(screen.getByText(/Dunnett \(vs control 'placebo'\)/)).toBeInTheDocument(),
+    )
+    expect(screen.getByText('[6.10, 20.20]')).toBeInTheDocument()
+    expect(screen.getByText(/planned contrasts and should be reported/)).toBeInTheDocument()
+  })
+
+  it('two-way ANOVA renders model-based EMMs and simple effects', async () => {
+    installSession()
+    server.use(
+      http.post('/api/advanced_anova/two_way_anova', () =>
+        HttpResponse.json({
+          test: 'Two-way ANOVA (drug × dose)',
+          interpretation: 'Interaction significant.',
+          significant: true,
+          effects: [
+            { term: 'drug', F: 27.8, df_num: 1, df_den: 66, p: 0.000002, significant: true, effect_size: { value: 0.297 } },
+            { term: 'drug × dose (interaction)', F: 39.5, df_num: 1, df_den: 66, p: 0.0000001, significant: true, effect_size: { value: 0.374 } },
+          ],
+          emms: [
+            { factor1: 'drugA', factor2: 'low', n: 20, mean: 9.735, sd: 1.9, emm: 9.735, se: 0.49, ci_low: 8.747, ci_high: 10.723 },
+          ],
+          emm_marginal: [
+            { factor: 'drug', level: 'drugA', emm: 11.307, se: 0.429, ci_low: 10.451, ci_high: 12.162 },
+          ],
+          simple_effects: [
+            { effect_of: 'drug', within_factor: 'dose', within_level: 'high', F: 67.2, df_num: 1, df_den: 66, p: 0.0000001, significant: true, partial_eta_sq: 0.505 },
+          ],
+          posthoc: [],
+        }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<HypothesisPanel />)
+    await user.click(screen.getByRole('radio', { name: /two-way anova/i }))
+    await user.click(screen.getByRole('button', { name: /run test/i }))
+
+    await waitFor(() =>
+      expect(screen.getByText('Estimated marginal means (model-based)')).toBeInTheDocument(),
+    )
+    // Marginal EMM with CI, not just a raw cell mean.
+    expect(screen.getByText('[10.451, 12.162]')).toBeInTheDocument()
+    expect(screen.getByText(/Simple main effects/)).toBeInTheDocument()
+    expect(screen.getByText('dose = high')).toBeInTheDocument()
+    // The effects table renders as a table, not as [object Object] rows.
+    expect(screen.getByText('drug × dose (interaction)')).toBeInTheDocument()
+    expect(screen.queryByText(/\[object Object\]/)).not.toBeInTheDocument()
+  })
+
   it('two-way ANOVA lets you choose the first factor', async () => {
     // factor1 is sent as groupCol, but "two_way" was missing from the list
     // that renders the Group column selector, so the field was invisible.

@@ -720,6 +720,42 @@ def games_howell(groups: dict[str, np.ndarray]) -> list[dict]:
     return results
 
 
+def dunnett_test(groups: dict[str, np.ndarray], control: str) -> list[dict]:
+    """Dunnett's many-to-one comparisons: every group vs the named control.
+
+    The p-values come from scipy's multivariate-t implementation of
+    Dunnett's distribution, so they are already adjusted for the family of
+    k−1 comparisons; the CIs are the matching simultaneous 95% intervals
+    on the mean difference (treatment − control)."""
+    if control not in groups:
+        raise ValueError(f"Control group '{control}' not found among groups.")
+    treat_names = [n for n in groups.keys() if n != control]
+    if not treat_names:
+        return []
+    control_arr = groups[control]
+    samples = [groups[n] for n in treat_names]
+    res = sp.dunnett(*samples, control=control_arr)
+    ci = res.confidence_interval(confidence_level=0.95)
+    results = []
+    for i, name in enumerate(treat_names):
+        p_val = float(res.pvalue[i])
+        results.append(
+            {
+                "group1": name,
+                "group2": control,
+                "statistic": round(float(res.statistic[i]), 4),
+                "p_adj": round(p_val, 6),
+                "significant": p_val < 0.05,
+                "mean_diff": round(float(groups[name].mean() - control_arr.mean()), 4),
+                "ci_low": round(float(ci.low[i]), 4),
+                "ci_high": round(float(ci.high[i]), 4),
+                "effect_size": cohen_d(groups[name], control_arr),
+                "correction": "dunnett",
+            }
+        )
+    return results
+
+
 def dunn_test(groups: dict[str, np.ndarray], correction: str = "holm") -> list[dict]:
     """Dunn's test for pairwise comparisons after Kruskal-Wallis."""
     names = list(groups.keys())

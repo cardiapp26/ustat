@@ -59,14 +59,20 @@ def fisher(b: dict) -> dict:
         "python": (
             "import pandas as pd\n"
             "from scipy import stats\n\n"
-            f"tab = pd.crosstab({pcol(r)}, {pcol(c)})  # must be 2x2\n"
-            "stats.fisher_exact(tab)  # the sample odds ratio ad/bc, as uSTAT reports"
+            f"tab = pd.crosstab({pcol(r)}, {pcol(c)})\n"
+            "# 2x2: the sample odds ratio ad/bc, as uSTAT reports.\n"
+            "stats.fisher_exact(tab)\n"
+            "# r x c: SciPy has no Fisher-Freeman-Halton; uSTAT estimates the p by\n"
+            "# Monte Carlo permutation (5000 resamples, seed 42); see the R call."
         ),
         "r": (
             f"tab <- table({rcol(r)}, {rcol(c)})\n"
-            "# Same p. R's estimate is the conditional MLE odds ratio with an exact CI;\n"
-            "# uSTAT reports the sample odds ratio ad/bc with a Woolf interval.\n"
-            "fisher.test(tab)"
+            "# 2x2: same p. R's estimate is the conditional MLE odds ratio with an\n"
+            "# exact CI; uSTAT reports the sample odds ratio ad/bc with a Woolf interval.\n"
+            "fisher.test(tab)\n"
+            "# r x c: Fisher-Freeman-Halton by simulation, as uSTAT computes it\n"
+            "# (Monte Carlo p-values differ slightly between runs and seeds).\n"
+            "fisher.test(tab, simulate.p.value = TRUE, B = 5000)"
         ),
     }
 

@@ -198,6 +198,9 @@ export interface AnovaRequest {
   session_id: string;
   column: string;
   group_column: string;
+  posthoc?: "auto" | "tukey" | "games_howell" | "dunnett" | "none";
+  control_group?: string;
+  force_posthoc?: boolean;
 }
 
 export interface MannWhitneyRequest {
@@ -402,6 +405,7 @@ export const deleteColumn      = (sessionId: string, col: string) => api.delete(
 export const getUniqueValues   = (sessionId: string, col: string) => api.get(`/api/compute/${sessionId}/unique/${encodeURIComponent(col)}`);
 
 export const runCorrelationPair = (data: object) => api.post("/api/stats/correlation_pair", data);
+export const runPartialCorrelation = (data: object) => api.post("/api/stats/partial_correlation", data);
 export const runCorrelationMatrix = (data: object) => api.post("/api/stats/correlation_matrix", data);
 export interface ICCRequest {
   session_id: string;

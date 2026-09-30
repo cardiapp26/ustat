@@ -58,7 +58,15 @@ def methods_mannwhitney(col: str, group_col: str) -> str:
     )
 
 
-def methods_fisher(row_col: str, col_col: str) -> str:
+def methods_fisher(row_col: str, col_col: str, rxc: tuple | None = None,
+                   resamples: int | None = None) -> str:
+    if rxc is not None:
+        return (
+            f"The association between {row_col} and {col_col} ({rxc[0]}×{rxc[1]} table) was assessed "
+            f"using the Fisher-Freeman-Halton exact test, with the p-value estimated by "
+            f"Monte Carlo permutation ({resamples or 5000} resamples). "
+            f"Effect size was quantified with Cramér's V."
+        )
     return (
         f"The association between {row_col} and {col_col} was assessed "
         f"using Fisher's exact test (appropriate for small samples or low expected cell counts). "
@@ -137,10 +145,22 @@ def results_mannwhitney(result: dict) -> str:
 
 
 def results_fisher(result: dict) -> str:
-    or_val = result.get("odds_ratio", 1)
     p = result.get("p", 1)
     sig = result.get("significant", False)
     es_list = result.get("effect_sizes", [])
+    if "odds_ratio" not in result:
+        # r\u00d7c Fisher-Freeman-Halton: no odds ratio; report Cram\u00e9r's V.
+        v_text = ""
+        if es_list:
+            v_text = f", Cram\u00e9r's V = {es_list[0].get('value', 0):.3f}"
+            if es_list[0].get("ci_low") is not None:
+                v_text += f" (95% CI: {es_list[0]['ci_low']:.3f}\u2013{es_list[0]['ci_high']:.3f})"
+        return (
+            f"The Fisher-Freeman-Halton exact test (Monte Carlo) "
+            f"{'revealed a significant association' if sig else 'showed no significant association'}, "
+            f"p = {_p_str(p)}{v_text}."
+        )
+    or_val = result.get("odds_ratio", 1)
     ci_text = ""
     if es_list and es_list[0].get("ci_low") is not None:
         ci_text = f" (95% CI: {es_list[0]['ci_low']:.2f}\u2013{es_list[0]['ci_high']:.2f})"
@@ -204,7 +224,13 @@ def r_chisquare(row_col: str, col_col: str, exact: str | None = None) -> str:
 def r_mannwhitney(col: str, group_col: str) -> str:
     return f'wilcox.test({col} ~ {group_col}, data = data)'
 
-def r_fisher(row_col: str, col_col: str) -> str:
+def r_fisher(row_col: str, col_col: str, rxc: bool = False,
+             resamples: int | None = None) -> str:
+    if rxc:
+        return (
+            f'fisher.test(table(data${row_col}, data${col_col}), '
+            f'simulate.p.value = TRUE, B = {resamples or 5000})'
+        )
     return f'fisher.test(table(data${row_col}, data${col_col}))'
 
 def r_kruskal(col: str, group_col: str) -> str:

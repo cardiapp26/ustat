@@ -75,6 +75,40 @@ def paired_ttest(b: dict) -> dict:
 def anova(b: dict) -> dict:
     y = field(b, "column", default="outcome")
     g = field(b, "group_column", "group_col", default="group")
+    choice = str(b.get("posthoc") or "auto").lower()
+    control = b.get("control_group")
+    forced = bool(b.get("force_posthoc"))
+    gate = ("# Post hoc, requested even without a significant omnibus (planned contrasts):\n"
+            if forced else
+            "# Post hoc, run only when p < 0.05 with 3+ groups:\n")
+    if choice == "dunnett":
+        ctrl = str(control) if control is not None else "the first group"
+        py_ph = (gate
+                 + f"# Dunnett's many-to-one comparisons against the control ({ctrl}).\n"
+                 f"by_name = {{str(k): x.dropna() for k, x in df.groupby({lit(g)})[{lit(y)}]}}\n"
+                 + (f"control = by_name.pop({str(control)!r})\n" if control is not None
+                    else "control = by_name.pop(sorted(by_name)[0])\n")
+                 + "stats.dunnett(*by_name.values(), control=control)")
+        r_ph = (gate
+                + f"# DescTools::DunnettTest, control = the reference arm.\n"
+                f'DescTools::DunnettTest({rname(y)} ~ factor({rname(g)}), data = df'
+                + (f', control = "{control}"' if control is not None else "") + ")")
+    elif choice == "games_howell":
+        py_ph = gate + "# Games-Howell (not in SciPy; see the R comment).\n"
+        r_ph = gate + f"rstatix::games_howell_test(df, {rname(y)} ~ {rname(g)})"
+    elif choice == "none":
+        py_ph = "# Post hoc disabled in the request.\n"
+        r_ph = "# Post hoc disabled in the request.\n"
+    elif choice == "tukey":
+        py_ph = gate + "stats.tukey_hsd(*groups)"
+        r_ph = gate + f"TukeyHSD(aov({rname(y)} ~ factor({rname(g)}), data = df))"
+    else:  # auto: the Levene-driven switch
+        py_ph = (gate
+                 + "# Tukey HSD, or Games-Howell after Welch (not in SciPy; see the R comment).\n"
+                 "stats.tukey_hsd(*groups)")
+        r_ph = (gate
+                + f"# Games-Howell after Welch (rstatix::games_howell_test({rname(y)} ~ {rname(g)})).\n"
+                f"TukeyHSD(aov({rname(y)} ~ factor({rname(g)}), data = df))")
     return {
         "title": f"One-way ANOVA: {y} by {g}",
         "python": (
@@ -86,17 +120,13 @@ def anova(b: dict) -> dict:
             "else:\n"
             "    res = stats.f_oneway(*groups)\n"
             "res\n"
-            "# Post hoc, run only when p < 0.05 with 3+ groups: Tukey HSD, or\n"
-            "# Games-Howell after Welch (not in SciPy; see the R comment).\n"
-            "stats.tukey_hsd(*groups)"
+            + py_ph
         ),
         "r": (
             _LEVENE_COMMENT
             + f"lev <- car::leveneTest({rname(y)} ~ factor({rname(g)}), data = df)\n"
             f'oneway.test({rname(y)} ~ factor({rname(g)}), data = df, var.equal = lev[1, "Pr(>F)"] >= 0.05)\n'
-            "# Post hoc, run only when p < 0.05 with 3+ groups: Tukey HSD, or\n"
-            f"# Games-Howell after Welch (rstatix::games_howell_test({rname(y)} ~ {rname(g)})).\n"
-            f"TukeyHSD(aov({rname(y)} ~ factor({rname(g)}), data = df))"
+            + r_ph
         ),
     }
 

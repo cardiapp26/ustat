@@ -216,3 +216,80 @@ def test_mancova_missing_column_400(client):
         "session_id": sid, "outcomes": ["y1", "nope"], "group_col": "group", "covariates": [],
     })
     assert r.status_code == 400, r.text
+
+
+# ── Two-way ANOVA: model-based EMMs, simple effects ─────────────────────────
+
+def _interaction_df(seed=3):
+    """Unbalanced 2x2 with a real drug x dose interaction."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for a, b, mu, n in [("drugA", "low", 10, 20), ("drugA", "high", 12, 10),
+                        ("drugB", "low", 10, 15), ("drugB", "high", 20, 25)]:
+        for _ in range(n):
+            rows.append({"y": rng.normal(mu, 2), "drug": a, "dose": b})
+    return pd.DataFrame(rows)
+
+
+def test_two_way_model_based_emms(client):
+    sid = make_session(_interaction_df(), "tw_emm")
+    r = client.post("/api/advanced_anova/two_way_anova", json={
+        "session_id": sid, "outcome": "y", "factor1": "drug", "factor2": "dose"})
+    assert r.status_code == 200
+    d = r.json()
+    # Cell EMMs equal observed cell means in the full factorial, and carry
+    # a CI from the pooled residual MS.
+    for cell in d["emms"]:
+        assert cell["emm"] == cell["mean"]
+        assert cell["ci_low"] < cell["emm"] < cell["ci_high"]
+    # Marginal EMMs are the UNWEIGHTED average of the cell means: for drugA
+    # the weighted (raw) mean is pulled toward the n=20 low-dose cell, the
+    # EMM must sit exactly halfway between the two cell means.
+    cells = {(c["factor1"], c["factor2"]): c["emm"] for c in d["emms"]}
+    marg = {(m["factor"], m["level"]): m["emm"] for m in d["emm_marginal"]}
+    expected = (cells[("drugA", "low")] + cells[("drugA", "high")]) / 2
+    assert abs(marg[("drug", "drugA")] - expected) < 0.001
+    raw_mean = _interaction_df().query("drug == 'drugA'")["y"].mean()
+    assert abs(marg[("drug", "drugA")] - raw_mean) > 0.3  # unbalanced: differs from raw
+
+
+def test_two_way_simple_effects_when_interaction_significant(client):
+    sid = make_session(_interaction_df(), "tw_simple")
+    r = client.post("/api/advanced_anova/two_way_anova", json={
+        "session_id": sid, "outcome": "y", "factor1": "drug", "factor2": "dose"})
+    d = r.json()
+    inter = next(e for e in d["effects"] if "interaction" in e["term"])
+    assert inter["significant"]
+    se = d["simple_effects"]
+    assert len(se) == 4  # drug within each dose, dose within each drug
+    by_key = {(s["effect_of"], s["within_level"]): s for s in se}
+    # Constructed truth: drug matters at high dose (12 vs 20), not at low (10 vs 10).
+    assert by_key[("drug", "high")]["significant"]
+    assert not by_key[("drug", "low")]["significant"]
+    # Cell comparisons within levels ride along in posthoc
+    assert any("within" in p["factor"] for p in d["posthoc"])
+    assert d["posthoc_method"] == "Tukey-Kramer on model-based EMMs"
+    # The R script must describe the same analysis the numbers came from.
+    assert "joint_tests" in d["r_code"]
+    assert "TukeyHSD" not in d["r_code"]
+
+
+def test_two_way_no_interaction_keeps_marginal_posthoc(client):
+    rng = np.random.default_rng(9)
+    rows = []
+    for a in ("A", "B", "C"):
+        for b in ("x", "y"):
+            mu = {"A": 10, "B": 14, "C": 18}[a] + (2 if b == "y" else 0)
+            for _ in range(15):
+                rows.append({"out": rng.normal(mu, 2), "f1": a, "f2": b})
+    sid = make_session(pd.DataFrame(rows), "tw_noint")
+    r = client.post("/api/advanced_anova/two_way_anova", json={
+        "session_id": sid, "outcome": "out", "factor1": "f1", "factor2": "f2"})
+    d = r.json()
+    inter = next(e for e in d["effects"] if "interaction" in e["term"])
+    assert not inter["significant"]
+    assert d["simple_effects"] == []
+    # Marginal Tukey-Kramer comparisons for the significant f1 main effect
+    f1_rows = [p for p in d["posthoc"] if p["factor"] == "f1"]
+    assert len(f1_rows) == 3  # A-B, A-C, B-C
+    assert all(p["significant"] for p in f1_rows)

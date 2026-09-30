@@ -33,7 +33,8 @@ from services.stat_utils import (
     eta_squared, omega_squared,
     cramers_v, odds_ratio_effect,
     check_normality, check_equal_variances,
-    tukey_hsd, games_howell, sorted_groups,
+    tukey_hsd, games_howell, dunnett_test, sorted_groups,
+    _fisher_freeman_halton_mc, FFH_RESAMPLES,
 )
 
 router = APIRouter()
@@ -221,25 +222,71 @@ def fisher_exact(req: FisherRequest):
     df = _get_df(req.session_id)
     work, warnings = _clean_crosstab_work(df, req.row_column, req.col_column)
     ct = pd.crosstab(work[req.row_column], work[req.col_column])
-    if ct.shape != (2, 2):
-        raise HTTPException(status_code=400, detail="Fisher's exact test requires a 2×2 table")
+    n_rows, n_cols = ct.shape
+    if n_rows < 2 or n_cols < 2:
+        raise HTTPException(
+            status_code=400,
+            detail="Fisher's exact test needs at least a 2×2 table; one of "
+                   "the variables has a single observed level.",
+        )
+    if max(n_rows, n_cols) > 10:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Table is {n_rows}×{n_cols}; exact tests beyond 10 levels "
+                   "per variable are not meaningful; check that both columns "
+                   "are truly categorical.",
+        )
     table = ct.values.tolist()
-    or_val, p = scipy_stats.fisher_exact(ct.values)
+
+    if (n_rows, n_cols) == (2, 2):
+        or_val, p = scipy_stats.fisher_exact(ct.values)
+        sig = bool(p < 0.05)
+        es = odds_ratio_effect(ct.values)
+        p_str = '<0.001' if p < 0.001 else f'{p:.4f}'
+        ret = {
+            "test": "Fisher's exact test",
+            "odds_ratio": float(or_val), "p": float(p),
+            "significant": sig,
+            "effect_sizes": [es],
+            "table": table,
+            "row_labels": ct.index.tolist(),
+            "col_labels": ct.columns.tolist(),
+            "warnings": warnings,
+            "interpretation": f"{'Significant' if sig else 'No significant'} association (p = {p_str}, OR = {es['value']:.2f}, 95% CI: {es['ci_low']:.2f}–{es['ci_high']:.2f})",
+            "methods_text": methods_fisher(req.row_column, req.col_column),
+            "r_code": r_fisher(req.row_column, req.col_column),
+        }
+        ret["result_text"] = results_fisher(ret)
+        return _sanitize(ret)
+
+    # r×c: Fisher-Freeman-Halton via Monte Carlo permutation (the same
+    # estimator the chi-square small-cell fallback uses). No odds ratio on
+    # an r×c table; Cramér's V carries the effect size instead.
+    p = _fisher_freeman_halton_mc(ct.values)
+    if not np.isfinite(p):
+        raise HTTPException(status_code=400, detail="Exact test could not be computed on this table.")
     sig = bool(p < 0.05)
-    es = odds_ratio_effect(ct.values)
+    chi2, _, dof, _ = scipy_stats.chi2_contingency(ct.values, correction=False)
+    es = cramers_v(float(chi2), int(ct.values.sum()), min(n_rows, n_cols), dof=int(dof))
     p_str = '<0.001' if p < 0.001 else f'{p:.4f}'
+    test_name = f"Fisher-Freeman-Halton exact test (Monte Carlo, {FFH_RESAMPLES} resamples)"
     ret = {
-        "test": "Fisher's exact test",
-        "odds_ratio": float(or_val), "p": float(p),
+        "test": test_name,
+        "p": float(p),
         "significant": sig,
         "effect_sizes": [es],
         "table": table,
         "row_labels": ct.index.tolist(),
         "col_labels": ct.columns.tolist(),
         "warnings": warnings,
-        "interpretation": f"{'Significant' if sig else 'No significant'} association (p = {p_str}, OR = {es['value']:.2f}, 95% CI: {es['ci_low']:.2f}–{es['ci_high']:.2f})",
-        "methods_text": methods_fisher(req.row_column, req.col_column),
-        "r_code": r_fisher(req.row_column, req.col_column),
+        "interpretation": (
+            f"{'Significant' if sig else 'No significant'} association between "
+            f"{req.row_column} and {req.col_column} on the {n_rows}×{n_cols} table "
+            f"(Fisher-Freeman-Halton Monte Carlo p = {p_str}, Cramér's V = {es['value']:.3f})"
+        ),
+        "methods_text": methods_fisher(req.row_column, req.col_column,
+                                       rxc=(n_rows, n_cols), resamples=FFH_RESAMPLES),
+        "r_code": r_fisher(req.row_column, req.col_column, rxc=True, resamples=FFH_RESAMPLES),
     }
     ret["result_text"] = results_fisher(ret)
     return _sanitize(ret)
@@ -253,6 +300,14 @@ class AnovaRequest(BaseModel):
     group_column: str = Field(
         validation_alias=AliasChoices("group_column", "group_col"),
     )
+    # "auto" keeps the Levene-driven Tukey/Games-Howell switch. "dunnett"
+    # compares every arm to `control_group` (the multi-arm-trial default).
+    posthoc: str = "auto"          # auto | tukey | games_howell | dunnett | none
+    control_group: Optional[str] = None
+    # Post-hoc normally only runs after a significant omnibus; planned
+    # comparisons (Dunnett against placebo above all) are legitimate
+    # without that gate, so the caller may ask for them regardless.
+    force_posthoc: bool = False
 
 
 @router.post("/anova")
@@ -302,16 +357,45 @@ def anova(req: AnovaRequest):
         assumptions.append(check_normality(arr, name))
 
     # Post-hoc tests
+    choice = (req.posthoc or "auto").lower()
+    if choice not in ("auto", "tukey", "games_howell", "dunnett", "none"):
+        raise HTTPException(
+            status_code=422,
+            detail=(f"Unknown posthoc '{req.posthoc}'. "
+                    "Use auto, tukey, games_howell, dunnett or none."),
+        )
     posthoc = []
     posthoc_method = None
-    if sig and k > 2:
-        equal_var = assumptions[0]["met"]
-        if equal_var:
+    posthoc_note = None
+    equal_var = assumptions[0]["met"]
+    run_posthoc = (sig or req.force_posthoc) and k > 2 and choice != "none"
+    if run_posthoc:
+        if choice == "dunnett":
+            control = req.control_group if req.control_group is not None else group_names[0]
+            if control not in grp_dict:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(f"Control group '{control}' not found in "
+                            f"'{req.group_column}' (groups: {', '.join(group_names)})."),
+                )
+            posthoc = dunnett_test(grp_dict, control)
+            posthoc_method = f"Dunnett (vs control '{control}')"
+            if not equal_var:
+                posthoc_note = ("Levene indicates unequal variances; Dunnett assumes "
+                                "equal variances; interpret with caution or use Games-Howell.")
+        elif choice == "tukey" or (choice == "auto" and equal_var):
             posthoc = tukey_hsd(grp_dict)
             posthoc_method = "Tukey HSD"
+            if choice == "tukey" and not equal_var:
+                posthoc_note = ("Levene indicates unequal variances; Tukey was requested "
+                                "explicitly; Games-Howell is the robust alternative.")
         else:
             posthoc = games_howell(grp_dict)
             posthoc_method = "Games-Howell (unequal variances)"
+        if not sig and req.force_posthoc:
+            posthoc_note = ((posthoc_note + " ") if posthoc_note else "") + (
+                "Omnibus test was not significant; these comparisons were "
+                "requested as planned contrasts and should be reported as such.")
 
     p_str = '<0.001' if p < 0.001 else f'{p:.4f}'
     group_stats = df.groupby(req.group_column)[req.column].agg(["count", "mean", "std"]).reset_index()
@@ -329,6 +413,7 @@ def anova(req: AnovaRequest):
         "assumptions": assumptions,
         "posthoc": posthoc,
         "posthoc_method": posthoc_method,
+        "posthoc_note": posthoc_note,
         "groups": [
             {k: (float(v) if isinstance(v, (int, float)) else str(v)) for k, v in row.items()}
             for row in group_stats.to_dict(orient="records")

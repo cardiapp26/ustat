@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from scipy import stats
 from typing import List
 import statsmodels.formula.api as smf
 from statsmodels.stats.anova import anova_lm
@@ -10,7 +11,7 @@ from statsmodels.stats.anova import anova_lm
 from services import store
 from services.impute import apply_imputation
 from services.stat_utils import (
-    partial_eta_squared, check_normality, group_summary, tukey_hsd, sorted_groups,
+    partial_eta_squared, check_normality, group_summary, sorted_groups,
 )
 
 router = APIRouter()
@@ -259,38 +260,169 @@ def two_way_anova(req: TwoWayAnovaRequest):
     # Assumptions
     assumptions = [check_normality(model.resid.values, "Residuals")]
 
-    # EMMs per cell
-    emms = []
-    for g1 in sorted(df[req.factor1].unique()):
-        for g2 in sorted(df[req.factor2].unique()):
-            cell = df[(df[req.factor1] == g1) & (df[req.factor2] == g2)][req.outcome]
-            emms.append({
-                "factor1": str(g1), "factor2": str(g2),
-                "n": int(len(cell)),
-                "mean": round(float(cell.mean()), 4) if len(cell) > 0 else None,
-                "sd": round(float(cell.std(ddof=1)), 4) if len(cell) > 1 else None,
-            })
+    levels1 = sorted(df[req.factor1].unique())
+    levels2 = sorted(df[req.factor2].unique())
+    interaction_sig = any(e["significant"] and "interaction" in e["term"] for e in effects)
 
-    # Post-hoc for significant main effects
+    # ── Model-based estimated marginal means ────────────────────────────────
+    # In the full factorial the cell predictions equal the observed cell
+    # means, but the SEs come from the pooled residual MS, and the marginal
+    # EMMs are the *unweighted* average over the other factor's levels,
+    # what SPSS GLM / EMMEANS and R's emmeans report, and what the raw cell
+    # summary that used to sit under this key was not.
+    from patsy import build_design_matrices
+
+    cell_counts = {
+        (g1, g2): int(((df[req.factor1] == g1) & (df[req.factor2] == g2)).sum())
+        for g1 in levels1 for g2 in levels2
+    }
+    has_empty_cells = any(n == 0 for n in cell_counts.values())
+    df_resid = float(model.df_resid)
+    t_crit = float(stats.t.ppf(0.975, df_resid))
+    params = np.asarray(model.params)
+    cov = np.asarray(model.cov_params())
+
+    design_info = model.model.data.design_info
+    grid = pd.DataFrame(
+        [{req.factor1: g1, req.factor2: g2} for g1 in levels1 for g2 in levels2]
+    )
+    X_grid = None
+    if not has_empty_cells:
+        try:
+            (X_grid,) = build_design_matrices([design_info], grid)
+            X_grid = np.asarray(X_grid)
+        except Exception:
+            X_grid = None
+
+    def _lin(L: np.ndarray) -> tuple:
+        """Estimate, SE and 95% CI of the linear combination L·β."""
+        est = float(L @ params)
+        se = float(np.sqrt(max(L @ cov @ L, 0.0)))
+        return est, se, est - t_crit * se, est + t_crit * se
+
+    emms = []
+    row_of = {}
+    for idx, (g1, g2) in enumerate((a, b) for a in levels1 for b in levels2):
+        cell = df[(df[req.factor1] == g1) & (df[req.factor2] == g2)][req.outcome]
+        entry = {
+            "factor1": str(g1), "factor2": str(g2),
+            "n": int(len(cell)),
+            "mean": round(float(cell.mean()), 4) if len(cell) > 0 else None,
+            "sd": round(float(cell.std(ddof=1)), 4) if len(cell) > 1 else None,
+            "emm": None, "se": None, "ci_low": None, "ci_high": None,
+        }
+        if X_grid is not None:
+            row_of[(g1, g2)] = X_grid[idx]
+            est, se, lo, hi = _lin(X_grid[idx])
+            entry.update({"emm": round(est, 4), "se": round(se, 4),
+                          "ci_low": round(lo, 4), "ci_high": round(hi, 4)})
+        emms.append(entry)
+
+    emm_marginal = []
+    marginal_L = {}          # (factor_name, level) -> contrast row
+    if X_grid is not None:
+        for g1 in levels1:
+            L = np.mean([row_of[(g1, g2)] for g2 in levels2], axis=0)
+            marginal_L[(req.factor1, g1)] = L
+            est, se, lo, hi = _lin(L)
+            emm_marginal.append({"factor": req.factor1, "level": str(g1),
+                                 "emm": round(est, 4), "se": round(se, 4),
+                                 "ci_low": round(lo, 4), "ci_high": round(hi, 4)})
+        for g2 in levels2:
+            L = np.mean([row_of[(g1, g2)] for g1 in levels1], axis=0)
+            marginal_L[(req.factor2, g2)] = L
+            est, se, lo, hi = _lin(L)
+            emm_marginal.append({"factor": req.factor2, "level": str(g2),
+                                 "emm": round(est, 4), "se": round(se, 4),
+                                 "ci_low": round(lo, 4), "ci_high": round(hi, 4)})
+
+    def _tukey_pair(L_diff: np.ndarray, n_means: int) -> tuple:
+        """Tukey-Kramer comparison of two EMMs: q = |diff| / (SE/√2)."""
+        diff = float(L_diff @ params)
+        se = float(np.sqrt(max(L_diff @ cov @ L_diff, 0.0)))
+        if se == 0:
+            return diff, se, 0.0, 1.0
+        q = abs(diff) / (se / np.sqrt(2.0))
+        p = float(stats.studentized_range.sf(q, n_means, df_resid))
+        return diff, se, q, p
+
+    # ── Post-hoc on marginal EMMs (significant, non-qualified main effects) ─
     posthoc = []
     posthoc_method = None
-    for eff in effects:
-        if not eff["significant"] or "interaction" in eff["term"]:
-            continue
-        # Determine which factor
-        if req.factor1 in eff["raw_term"] and req.factor2 not in eff["raw_term"]:
-            factor = req.factor1
-        elif req.factor2 in eff["raw_term"] and req.factor1 not in eff["raw_term"]:
-            factor = req.factor2
-        else:
-            continue
-        grp_dict = {str(name): g[req.outcome].astype(float).values
-                    for name, g in df.groupby(factor)}
-        ph = tukey_hsd(grp_dict)
-        for p in ph:
-            p["factor"] = factor
-        posthoc.extend(ph)
-        posthoc_method = "Tukey HSD"
+    posthoc_note = None
+    if X_grid is not None:
+        for factor, levels in ((req.factor1, levels1), (req.factor2, levels2)):
+            eff = next((e for e in effects
+                        if e["term"] == factor and "interaction" not in e["term"]), None)
+            if eff is None or not eff["significant"]:
+                continue
+            for i in range(len(levels)):
+                for j in range(i + 1, len(levels)):
+                    L = marginal_L[(factor, levels[i])] - marginal_L[(factor, levels[j])]
+                    diff, se, q, p = _tukey_pair(L, len(levels))
+                    posthoc.append({
+                        "factor": factor,
+                        "group1": str(levels[i]), "group2": str(levels[j]),
+                        "statistic": round(q, 4), "mean_diff": round(diff, 4),
+                        "se": round(se, 4),
+                        "p_adj": round(p, 6), "significant": bool(p < req.alpha),
+                        "correction": "tukey_emm",
+                    })
+            posthoc_method = "Tukey-Kramer on model-based EMMs"
+        if interaction_sig and posthoc:
+            posthoc_note = ("The interaction is significant: marginal comparisons "
+                            "average over the other factor and should be read "
+                            "alongside the simple effects below.")
+
+    # ── Simple effects when the interaction is significant ─────────────────
+    # F test of one factor's cell means within each level of the other,
+    # using the full model's residual MS (the SPSS GLM / emmeans
+    # joint_tests(by=...) construction), plus Tukey-adjusted pairwise cell
+    # comparisons within that level.
+    simple_effects = []
+    if interaction_sig and X_grid is not None:
+        def _simple(effect_of: str, eff_levels: list, within: str, within_levels: list, key):
+            for w in within_levels:
+                rows = [row_of[key(lv, w)] for lv in eff_levels]
+                L = np.array([rows[i] - rows[0] for i in range(1, len(rows))])
+                LB = L @ params
+                M = L @ cov @ L.T
+                try:
+                    F = float(LB @ np.linalg.solve(M, LB)) / L.shape[0]
+                except np.linalg.LinAlgError:
+                    continue
+                df_num = L.shape[0]
+                p = float(stats.f.sf(F, df_num, df_resid))
+                simple_effects.append({
+                    "effect_of": effect_of, "within_factor": within,
+                    "within_level": str(w),
+                    "F": round(F, 4), "df_num": df_num, "df_den": int(df_resid),
+                    "p": round(p, 6), "significant": bool(p < req.alpha),
+                    "partial_eta_sq": round(F * df_num / (F * df_num + df_resid), 4),
+                })
+                for i in range(len(eff_levels)):
+                    for j in range(i + 1, len(eff_levels)):
+                        Ld = row_of[key(eff_levels[i], w)] - row_of[key(eff_levels[j], w)]
+                        diff, se, q, p_pair = _tukey_pair(Ld, len(eff_levels))
+                        posthoc.append({
+                            "factor": f"{effect_of} within {within} = {w}",
+                            "group1": str(eff_levels[i]), "group2": str(eff_levels[j]),
+                            "statistic": round(q, 4), "mean_diff": round(diff, 4),
+                            "se": round(se, 4),
+                            "p_adj": round(p_pair, 6),
+                            "significant": bool(p_pair < req.alpha),
+                            "correction": "tukey_emm",
+                        })
+        _simple(req.factor1, levels1, req.factor2, levels2, lambda lv, w: (lv, w))
+        _simple(req.factor2, levels2, req.factor1, levels1, lambda lv, w: (w, lv))
+        if posthoc_method is None:
+            posthoc_method = "Tukey-Kramer on model-based EMMs"
+
+    emm_note = None
+    if X_grid is None:
+        emm_note = ("Model-based EMMs unavailable"
+                    + (" (empty factor cells)" if has_empty_cells else "")
+                    + "; the table shows observed cell means only.")
 
     # Build interpretation
     interp_parts = []
@@ -314,6 +446,15 @@ def two_way_anova(req: TwoWayAnovaRequest):
             "",
         ])
 
+    interp = "Two-way ANOVA: " + "; ".join(interp_parts) + "."
+    if interaction_sig and simple_effects:
+        sig_simple = [s for s in simple_effects if s["significant"]]
+        interp += (
+            f" The interaction is significant, so main effects are qualified; "
+            f"simple effects were tested within each factor level "
+            f"({len(sig_simple)} of {len(simple_effects)} significant)."
+        )
+
     return {
         "test": f"Two-way ANOVA ({req.factor1} \u00D7 {req.factor2})",
         "effects": effects,
@@ -321,25 +462,39 @@ def two_way_anova(req: TwoWayAnovaRequest):
         "effect_sizes": [e["effect_size"] for e in effects],
         "assumptions": assumptions,
         "emms": emms,
+        "emm_marginal": emm_marginal,
+        "emm_note": emm_note,
+        "simple_effects": simple_effects,
         "posthoc": posthoc,
         "posthoc_method": posthoc_method,
+        "posthoc_note": posthoc_note,
         "summary": {
             f"{req.factor1}_levels": sorted(df[req.factor1].unique().tolist()),
             f"{req.factor2}_levels": sorted(df[req.factor2].unique().tolist()),
             "n": len(df),
         },
-        "interpretation": "Two-way ANOVA: " + "; ".join(interp_parts) + ".",
+        "interpretation": interp,
         "result_text": (
             f"A two-way ANOVA examined the effects of {req.factor1} ({k1} levels) and {req.factor2} ({k2} levels) "
             f"on {req.outcome} (N = {len(df)}). " + "; ".join(interp_parts) + "."
+            + (" As the interaction was significant, simple main effects were examined within each level of the other factor."
+               if interaction_sig and simple_effects else "")
         ),
         "export_rows": export_rows,
+        # This script reproduces the numbers on screen: emmeans(~ factor)
+        # matches the marginal EMM table, joint_tests(by=...) matches the
+        # simple-effect F tests, pairs(..., adjust="tukey") matches the
+        # Tukey-Kramer comparisons.
         "r_code": (
             f'model <- aov({req.outcome} ~ {req.factor1} * {req.factor2}, data = data)\n'
             f'summary(model)\n'
-            f'TukeyHSD(model)\n'
             f'library(emmeans)\n'
-            f'emmeans(model, ~ {req.factor1} | {req.factor2})'
+            f'emmeans(model, ~ {req.factor1})   # marginal EMMs (as shown)\n'
+            f'emmeans(model, ~ {req.factor2})\n'
+            f'pairs(emmeans(model, ~ {req.factor1}), adjust = "tukey")\n'
+            f'emm <- emmeans(model, ~ {req.factor1} | {req.factor2})\n'
+            f'joint_tests(emm, by = "{req.factor2}")   # simple main effects\n'
+            f'pairs(emm, adjust = "tukey")             # cell comparisons'
         ),
     }
 

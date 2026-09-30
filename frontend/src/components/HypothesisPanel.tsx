@@ -45,7 +45,7 @@ const TEST_GUIDANCE: Record<string, { when: string; assumptions: string; reading
   anova: {
     when: "Compare means across 3+ groups simultaneously (e.g. drug A vs. B vs. C). Avoids multiple-comparison inflation from running many t-tests.",
     assumptions: "Each group approximately normal, roughly equal variances (Levene's test). Robust if groups are balanced and n > 20 per group.",
-    reading: "A significant F-test (p < 0.05) means at least one group differs. Use post-hoc tests (Tukey, Bonferroni) to identify which pairs differ.",
+    reading: "A significant F-test (p < 0.05) means at least one group differs. Post-hoc identifies which pairs: Tukey HSD (all pairs, equal variances), Games-Howell (unequal variances), or Dunnett when every arm is compared to one control. Dunnett and other planned contrasts may be reported even without a significant omnibus.",
   },
   mannwhitney: {
     when: "Non-parametric alternative to the independent t-test. Use when data are ordinal, heavily skewed, or n < 20 per group.",
@@ -68,9 +68,9 @@ const TEST_GUIDANCE: Record<string, { when: string; assumptions: string; reading
     reading: "p < 0.05 means the variables are significantly associated. Report: \u03C7\u00B2(df) = X.XX, p = Y.YYY, and Cramer's V with its 95% CI. A V whose interval reaches 0 is compatible with no association at all.",
   },
   fisher: {
-    when: "Exact test for 2\u00D72 tables, especially when sample is small or any expected cell count < 5. Preferred over chi-square for small samples.",
-    assumptions: "Fixed marginals. No minimum sample size requirement — valid even for very small tables.",
-    reading: "p < 0.05 means the row and column variables are significantly associated. Also report the odds ratio and its 95% CI.",
+    when: "Exact test for small samples or low expected cell counts. 2\u00D72 tables get the classic Fisher's exact; larger r\u00D7c tables (e.g. stage \u00D7 center) get the Fisher-Freeman-Halton extension with a Monte Carlo p-value.",
+    assumptions: "Fixed marginals. No minimum sample size requirement; valid even for very small tables.",
+    reading: "p < 0.05 means the row and column variables are significantly associated. On a 2×2 also report the odds ratio and its 95% CI; on an r×c table report Cramér's V instead.",
   },
   ancova: {
     when: "Compare group means on an outcome after controlling for one or more continuous covariates. Essential when groups differ on a baseline variable (e.g. age, BMI).",
@@ -80,7 +80,7 @@ const TEST_GUIDANCE: Record<string, { when: string; assumptions: string; reading
   two_way: {
     when: "Examine the effects of two categorical factors (and their interaction) on a continuous outcome. E.g. drug type \u00D7 dose level on blood pressure.",
     assumptions: "Normality of residuals. Homogeneity of variances across all factor-level combinations.",
-    reading: "Check the interaction first. If significant, main effects are qualified by the interaction. Report F, p, and partial \u03B7\u00B2 for each term. Use EMMs to understand cell means.",
+    reading: "Check the interaction first. If significant, main effects are qualified by the interaction: read the simple main effects (one factor tested within each level of the other) and the Tukey-adjusted cell comparisons. EMMs are model-based with 95% CIs; with unbalanced cells the marginal EMM is the unweighted average of cell means, matching SPSS GLM and R's emmeans.",
   },
   mancova: {
     when: "Test a group effect on several correlated continuous outcomes at once (e.g. BDNF, GDNF, NTF3, NGF), while controlling for covariates (age, sex, anxiety, BMI, smoking). Use it as the omnibus step before per-outcome ANCOVAs to guard against multiple-comparison inflation.",
@@ -104,11 +104,55 @@ interface AssumptionCheck {
 interface PostHocRow {
   group1?: string;
   group2?: string;
+  factor?: string;
   statistic?: number;
   p_adj?: number | null;
   rank_diff?: number;
+  mean_diff?: number;
+  ci_low?: number;
+  ci_high?: number;
   effect_size?: { value?: number; magnitude?: string };
   significant?: boolean;
+}
+interface AnovaEffectRow {
+  term?: string;
+  F?: number;
+  df_num?: number;
+  df_den?: number;
+  p?: number;
+  significant?: boolean;
+  effect_size?: { value?: number };
+}
+interface EmmCellRow {
+  factor1?: string;
+  factor2?: string;
+  group?: string;
+  n?: number;
+  mean?: number | null;
+  sd?: number | null;
+  emm?: number | null;
+  se?: number | null;
+  ci_low?: number | null;
+  ci_high?: number | null;
+}
+interface EmmMarginalRow {
+  factor?: string;
+  level?: string;
+  emm?: number;
+  se?: number;
+  ci_low?: number;
+  ci_high?: number;
+}
+interface SimpleEffectRow {
+  effect_of?: string;
+  within_factor?: string;
+  within_level?: string;
+  F?: number;
+  df_num?: number;
+  df_den?: number;
+  p?: number;
+  significant?: boolean;
+  partial_eta_sq?: number;
 }
 interface TestResult {
   test?: string;
@@ -120,6 +164,13 @@ interface TestResult {
   warnings?: unknown[];
   posthoc?: PostHocRow[];
   posthoc_method?: string;
+  posthoc_note?: string | null;
+  effects?: AnovaEffectRow[];
+  emms?: EmmCellRow[];
+  emm_marginal?: EmmMarginalRow[];
+  emm_note?: string | null;
+  simple_effects?: SimpleEffectRow[];
+  covariate_effects?: unknown[];
   groups?: Record<string, unknown>[];
   table?: number[][];
   row_labels?: string[];
@@ -142,6 +193,8 @@ function ResultCard({ result, stale = false, staleReason, provenance }: {
   const skip = ["test", "interpretation", "significant", "crosstab", "groups",
                 "table", "row_labels", "col_labels", "curve", "effect_sizes",
                 "assumptions", "warnings", "summary", "posthoc", "posthoc_method",
+                "posthoc_note", "effects", "emms", "emm_marginal", "emm_note",
+                "simple_effects", "covariate_effects",
                 "result_text", "export_rows"];
 
   const statEntries = Object.entries(result).filter(([k]) => !skip.includes(k) && typeof result[k] !== "object");
@@ -173,6 +226,147 @@ function ResultCard({ result, stale = false, staleReason, provenance }: {
             </div>
           ))}
       </div>
+
+      {/* ANOVA effects table (two-way) */}
+      {(result.effects?.length ?? 0) > 0 && (
+        <div className="mt-2">
+          <p className="text-xs font-semibold text-gray-600 mb-1">Effects</p>
+          <div className="overflow-auto rounded border border-gray-200">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="bg-gray-50">
+                  <th className="px-2 py-1 text-left">Term</th>
+                  <th className="px-2 py-1 text-right">F</th>
+                  <th className="px-2 py-1 text-right">df</th>
+                  <th className="px-2 py-1 text-right"><i>p</i></th>
+                  <th className="px-2 py-1 text-right">Partial η²</th>
+                  <th className="px-2 py-1 text-center">Sig</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(result.effects ?? []).map((e, i) => (
+                  <tr key={i} className={`border-t border-gray-100 ${e.significant ? "" : "text-gray-400"}`}>
+                    <td className="px-2 py-1 font-medium">{e.term}</td>
+                    <td className="px-2 py-1 text-right font-mono">{e.F?.toFixed(2)}</td>
+                    <td className="px-2 py-1 text-right font-mono">{e.df_num}, {e.df_den}</td>
+                    <td className="px-2 py-1 text-right font-mono">{fmtP(e.p)}</td>
+                    <td className="px-2 py-1 text-right font-mono">{e.effect_size?.value?.toFixed(3) ?? "—"}</td>
+                    <td className="px-2 py-1 text-center">{e.significant ? "✓" : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Estimated marginal means */}
+      {(result.emm_marginal?.length ?? 0) > 0 && (
+        <div className="mt-2">
+          <p className="text-xs font-semibold text-gray-600 mb-1">Estimated marginal means (model-based)</p>
+          <div className="overflow-auto rounded border border-gray-200">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="bg-gray-50">
+                  <th className="px-2 py-1 text-left">Factor</th>
+                  <th className="px-2 py-1 text-left">Level</th>
+                  <th className="px-2 py-1 text-right">EMM</th>
+                  <th className="px-2 py-1 text-right">SE</th>
+                  <th className="px-2 py-1 text-right">95% CI</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(result.emm_marginal ?? []).map((m, i) => (
+                  <tr key={i} className="border-t border-gray-100">
+                    <td className="px-2 py-1 text-gray-500">{m.factor}</td>
+                    <td className="px-2 py-1 font-medium">{m.level}</td>
+                    <td className="px-2 py-1 text-right font-mono">{m.emm?.toFixed(3)}</td>
+                    <td className="px-2 py-1 text-right font-mono">{m.se?.toFixed(3)}</td>
+                    <td className="px-2 py-1 text-right font-mono">[{m.ci_low?.toFixed(3)}, {m.ci_high?.toFixed(3)}]</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* EMM cells (two-way) / adjusted group means (ANCOVA) */}
+      {(result.emms?.length ?? 0) > 0 && (
+        <div className="mt-2">
+          <p className="text-xs font-semibold text-gray-600 mb-1">
+            {result.emms?.[0]?.factor1 != null ? "Cell means (observed and model-based)" : "Estimated marginal means"}
+          </p>
+          {result.emm_note && (
+            <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 mb-1">{result.emm_note}</p>
+          )}
+          <div className="overflow-auto rounded border border-gray-200">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="bg-gray-50">
+                  <th className="px-2 py-1 text-left">Cell</th>
+                  <th className="px-2 py-1 text-right">n</th>
+                  <th className="px-2 py-1 text-right">Mean</th>
+                  <th className="px-2 py-1 text-right">SD</th>
+                  <th className="px-2 py-1 text-right">EMM</th>
+                  <th className="px-2 py-1 text-right">95% CI</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(result.emms ?? []).map((c, i) => (
+                  <tr key={i} className="border-t border-gray-100">
+                    <td className="px-2 py-1 font-medium">
+                      {c.factor1 != null ? `${c.factor1} × ${c.factor2}` : c.group}
+                    </td>
+                    <td className="px-2 py-1 text-right font-mono">{c.n ?? "—"}</td>
+                    <td className="px-2 py-1 text-right font-mono">{c.mean?.toFixed(3) ?? "—"}</td>
+                    <td className="px-2 py-1 text-right font-mono">{c.sd?.toFixed(3) ?? "—"}</td>
+                    <td className="px-2 py-1 text-right font-mono">{c.emm?.toFixed(3) ?? "—"}</td>
+                    <td className="px-2 py-1 text-right font-mono">
+                      {c.ci_low != null && c.ci_high != null ? `[${c.ci_low.toFixed(3)}, ${c.ci_high.toFixed(3)}]` : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Simple effects (interaction follow-up) */}
+      {(result.simple_effects?.length ?? 0) > 0 && (
+        <div className="mt-2">
+          <p className="text-xs font-semibold text-gray-600 mb-1">Simple main effects (interaction follow-up)</p>
+          <div className="overflow-auto rounded border border-gray-200">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="bg-gray-50">
+                  <th className="px-2 py-1 text-left">Effect of</th>
+                  <th className="px-2 py-1 text-left">Within</th>
+                  <th className="px-2 py-1 text-right">F</th>
+                  <th className="px-2 py-1 text-right">df</th>
+                  <th className="px-2 py-1 text-right"><i>p</i></th>
+                  <th className="px-2 py-1 text-right">Partial η²</th>
+                  <th className="px-2 py-1 text-center">Sig</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(result.simple_effects ?? []).map((s, i) => (
+                  <tr key={i} className={`border-t border-gray-100 ${s.significant ? "" : "text-gray-400"}`}>
+                    <td className="px-2 py-1 font-medium">{s.effect_of}</td>
+                    <td className="px-2 py-1">{s.within_factor} = {s.within_level}</td>
+                    <td className="px-2 py-1 text-right font-mono">{s.F?.toFixed(2)}</td>
+                    <td className="px-2 py-1 text-right font-mono">{s.df_num}, {s.df_den}</td>
+                    <td className="px-2 py-1 text-right font-mono">{fmtP(s.p)}</td>
+                    <td className="px-2 py-1 text-right font-mono">{s.partial_eta_sq?.toFixed(3)}</td>
+                    <td className="px-2 py-1 text-center">{s.significant ? "✓" : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Effect Sizes */}
       {(result.effect_sizes?.length ?? 0) > 0 && (
@@ -241,12 +435,17 @@ function ResultCard({ result, stale = false, staleReason, provenance }: {
           <p className="text-xs font-semibold text-gray-600 mb-1">
             Post-hoc: {result.posthoc_method ?? "Pairwise comparisons"}
           </p>
+          {result.posthoc_note && (
+            <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 mb-1">{result.posthoc_note}</p>
+          )}
           <div className="overflow-auto rounded border border-gray-200">
             <table className="w-full text-xs">
               <thead>
                 <tr className="bg-gray-50">
                   <th className="px-2 py-1 text-left">Comparison</th>
                   <th className="px-2 py-1 text-right">Statistic</th>
+                  <th className="px-2 py-1 text-right">Mean diff</th>
+                  <th className="px-2 py-1 text-right">95% CI</th>
                   <th className="px-2 py-1 text-right"><i>p</i> (adj)</th>
                   <th className="px-2 py-1 text-right">Effect size</th>
                   <th className="px-2 py-1 text-center">Sig</th>
@@ -255,8 +454,15 @@ function ResultCard({ result, stale = false, staleReason, provenance }: {
               <tbody>
                 {(result.posthoc ?? []).map((ph: PostHocRow, i: number) => (
                   <tr key={i} className={`border-t border-gray-100 ${ph.significant ? "" : "text-gray-400"}`}>
-                    <td className="px-2 py-1 font-medium">{ph.group1} vs {ph.group2}</td>
+                    <td className="px-2 py-1 font-medium">
+                      {ph.factor && <span className="text-gray-400 font-normal">{ph.factor}: </span>}
+                      {ph.group1} vs {ph.group2}
+                    </td>
                     <td className="px-2 py-1 text-right font-mono">{ph.statistic?.toFixed(3)}</td>
+                    <td className="px-2 py-1 text-right font-mono">{ph.mean_diff?.toFixed(3) ?? "—"}</td>
+                    <td className="px-2 py-1 text-right font-mono">
+                      {ph.ci_low != null && ph.ci_high != null ? `[${ph.ci_low.toFixed(2)}, ${ph.ci_high.toFixed(2)}]` : "—"}
+                    </td>
                     <td className="px-2 py-1 text-right font-mono">{fmtP(ph.p_adj)}</td>
                     <td className="px-2 py-1 text-right font-mono">
                       {ph.effect_size ? `${ph.effect_size.value?.toFixed(3)} (${ph.effect_size.magnitude})` : ph.rank_diff?.toFixed(2) ?? "—"}
@@ -334,10 +540,15 @@ function HypothesisPanelBody({ session }: { session: Session }) {
   // default because it strictly dominates Bonferroni while controlling
   // the same family-wise error rate.
   const [posthocCorrection, setPosthocCorrection] = usePersistedPanelState<"holm" | "bonferroni" | "fdr" | "none">("hypothesis", "correction", "holm");
+  // One-way ANOVA post-hoc: auto keeps the Levene-driven Tukey/Games-Howell
+  // switch; Dunnett compares every arm to a control (the multi-arm default).
+  const [anovaPosthoc, setAnovaPosthoc] = usePersistedPanelState<"auto" | "tukey" | "games_howell" | "dunnett" | "none">("hypothesis", "anovaPosthoc", "auto");
+  const [controlGroup, setControlGroup] = usePersistedPanelState<string>("hypothesis", "controlGroup", "");
+  const [forcePosthoc, setForcePosthoc] = usePersistedPanelState<boolean>("hypothesis", "forcePosthoc", false);
   // Everything the test is computed from. `mu` is a string from the input and
   // is stamped as typed: "0" and "0.0" fit the same model, and re-running is
   // cheaper than a comparison that has to know which fields are numeric.
-  const runParams = { test, col, col2, groupCol, mu, covariates, outcomes, factor2, posthocCorrection };
+  const runParams = { test, col, col2, groupCol, mu, covariates, outcomes, factor2, posthocCorrection, anovaPosthoc, controlGroup, forcePosthoc };
   const {
     result, setResult, stale, staleReasons: staleWhy, stamp,
   } = useStampedResult<TestResult>("hypothesis", runParams);
@@ -383,7 +594,11 @@ function HypothesisPanelBody({ session }: { session: Session }) {
       let res: { data: unknown } | undefined;
       if (test === "ttest_1sample")  res = await runTTest({ session_id: sid, column: col, mu: +mu });
       else if (test === "ttest_2sample") res = await runTTest({ session_id: sid, column: col, group_column: groupCol });
-      else if (test === "anova")     res = await runAnova({ session_id: sid, column: col, group_column: groupCol });
+      else if (test === "anova")     res = await runAnova({
+        session_id: sid, column: col, group_column: groupCol,
+        posthoc: anovaPosthoc, force_posthoc: forcePosthoc,
+        ...(anovaPosthoc === "dunnett" && controlGroup.trim() !== "" ? { control_group: controlGroup.trim() } : {}),
+      });
       else if (test === "mannwhitney") res = await runMannWhitney({ session_id: sid, column: col, group_column: groupCol });
       else if (test === "kruskal")   res = await runKruskal({ session_id: sid, column: col, group_column: groupCol, posthoc_correction: posthocCorrection });
       else if (test === "jonckheere") res = await runJonckheereTerpstra({ session_id: sid, column: col, group_column: groupCol });
@@ -486,6 +701,36 @@ function HypothesisPanelBody({ session }: { session: Session }) {
                 ))}
               </div>
               <p className="text-[10px] text-gray-400 mt-1">Bonferroni = most conservative; Holm dominates it.</p>
+            </div>
+          )}
+
+          {test === "anova" && (
+            <div>
+              <label className="text-xs text-gray-400 block mb-1">Post-hoc method</label>
+              <select className="select w-full" aria-label="Post-hoc method" value={anovaPosthoc}
+                onChange={(e) => setAnovaPosthoc(e.target.value as typeof anovaPosthoc)}>
+                <option value="auto">Auto (Tukey / Games-Howell by Levene)</option>
+                <option value="tukey">Tukey HSD</option>
+                <option value="games_howell">Games-Howell</option>
+                <option value="dunnett">Dunnett (vs control)</option>
+                <option value="none">None</option>
+              </select>
+              {anovaPosthoc === "dunnett" && (
+                <div className="mt-1.5">
+                  <label className="text-xs text-gray-400 block mb-1">Control group (empty = first level)</label>
+                  <input className="select w-full" aria-label="Control group" list="anova-control-levels" value={controlGroup}
+                    onChange={(e) => setControlGroup(e.target.value)} placeholder="e.g. placebo" />
+                  <datalist id="anova-control-levels">
+                    {(session.columns.find((c) => c.name === groupCol)?.level_order
+                      ?? Object.values(session.columns.find((c) => c.name === groupCol)?.value_labels ?? {}))
+                      .map((v) => <option key={v} value={v} />)}
+                  </datalist>
+                </div>
+              )}
+              <label className="flex items-center gap-2 mt-1.5 text-[11px] text-gray-500 cursor-pointer">
+                <input type="checkbox" checked={forcePosthoc} onChange={(e) => setForcePosthoc(e.target.checked)} className="accent-indigo-500" />
+                Run post-hoc even if omnibus is not significant (planned contrasts)
+              </label>
             </div>
           )}
 
