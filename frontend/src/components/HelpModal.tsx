@@ -171,7 +171,7 @@ export default function HelpModal({ onClose }: { onClose: () => void }) {
                   } />
 
                   <Block title="Categorical tests" body={
-                    <>Chi-square independence (with Yates / continuity correction), Fisher's exact (incl. Monte-Carlo for large tables),
+                    <>Chi-square independence (Pearson, no continuity correction; Fisher below expected counts of 5), Fisher's exact (incl. Monte-Carlo for large tables),
                     Cochran-Armitage trend, McNemar / Bowker (paired binary), Stuart-Maxwell (paired multinomial),
                     Cochran's Q (k matched groups). Effect sizes: φ, Cramér's V, odds ratio with exact CI.</>
                   } />

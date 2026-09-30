@@ -131,10 +131,15 @@ def test_fisher_exact(client, sid):
     assert len(b["table"]) == 2 and len(b["table"][0]) == 2
 
 
-def test_fisher_non2x2_rejected(client, sid):
+def test_fisher_non2x2_runs_freeman_halton(client, sid):
+    # r x c used to be refused; since Fisher-Freeman-Halton landed it is run
+    # by Monte Carlo, and this test still expected the old 400.
     r = client.post("/api/stats/fisher", json={
         "session_id": sid, "row_column": "cat_c", "col_column": "cat_b"})
-    assert r.status_code == 400, r.text
+    assert r.status_code == 200, r.text
+    b = r.json()
+    assert "Freeman-Halton" in b["test"]
+    assert 0.0 < b["p"] <= 1.0
 
 
 # ── Mann-Whitney ─────────────────────────────────────────────────────────────

@@ -138,7 +138,9 @@ def chisquare(req: ChiSqRequest):
                 "of each; there is nothing to test."
             ),
         )
-    chi2, p_chisquare, dof, _expected = scipy_stats.chi2_contingency(ct)
+    chi2, p_chisquare, dof, _expected = scipy_stats.chi2_contingency(
+        ct, correction=False
+    )
     n = ct.values.sum()
     min_dim = min(ct.shape)
     es = cramers_v(chi2, n, min_dim, dof)

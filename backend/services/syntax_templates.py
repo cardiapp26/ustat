@@ -150,8 +150,8 @@ def _hypothesis(params: dict) -> Optional[dict]:
         }
     if test in ("chisquare", "fisher"):
         col2 = params.get("col2") or params.get("groupCol") or "group"
-        fn_py = "chi2_contingency(tab)" if test == "chisquare" else "fisher_exact(tab)"
-        fn_r = "chisq.test(tab)" if test == "chisquare" else "fisher.test(tab)"
+        fn_py = "chi2_contingency(tab, correction=False)" if test == "chisquare" else "fisher_exact(tab)"
+        fn_r = "chisq.test(tab, correct = FALSE)" if test == "chisquare" else "fisher.test(tab)"
         return {
             "title": f"{'Chi-square' if test == 'chisquare' else 'Fisher exact'}: {col} x {col2}",
             "python": (

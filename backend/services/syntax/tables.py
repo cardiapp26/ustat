@@ -25,7 +25,7 @@ def chisquare(b: dict) -> dict:
             "import pandas as pd\n"
             "from scipy import stats\n\n"
             f"tab = pd.crosstab({pcol(r)}, {pcol(c)})\n"
-            "res = stats.chi2_contingency(tab)  # Yates' correction on a 2x2, as chisq.test\n"
+            "res = stats.chi2_contingency(tab, correction=False)  # Pearson, no Yates\n"
             "# uSTAT reports another p when any expected count is below 5:\n"
             "if (res.expected_freq < 5).any():\n"
             "    if tab.shape == (2, 2):\n"
@@ -39,7 +39,7 @@ def chisquare(b: dict) -> dict:
         ),
         "r": (
             f"tab <- table({rcol(r)}, {rcol(c)})\n"
-            "res <- chisq.test(tab)  # Yates' correction on a 2x2, as SciPy\n"
+            "res <- chisq.test(tab, correct = FALSE)  # Pearson, no Yates\n"
             "# uSTAT reports another p when any expected count is below 5:\n"
             "if (any(res$expected < 5)) {\n"
             "  # Labelled Fisher-Freeman-Halton (MC) in uSTAT, but ordered by the\n"

@@ -43,7 +43,8 @@ def methods_chisquare(row_col: str, col_col: str, exact: str | None = None) -> s
         )
     return (
         f"The association between {row_col} and {col_col} was assessed "
-        f"using Pearson's chi-square test of independence. "
+        f"using Pearson's chi-square test of independence (no continuity "
+        f"correction). "
         f"Effect size was measured with Cramer's V, with a 95% confidence "
         f"interval from the noncentral chi-square distribution. "
         f"All expected cell counts were 5 or greater."
@@ -219,7 +220,7 @@ def r_chisquare(row_col: str, col_col: str, exact: str | None = None) -> str:
         )
     if exact:
         return f'fisher.test({tbl})'
-    return f'chisq.test({tbl})'
+    return f'chisq.test({tbl}, correct = FALSE)'
 
 def r_mannwhitney(col: str, group_col: str) -> str:
     return f'wilcox.test({col} ~ {group_col}, data = data)'

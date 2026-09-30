@@ -1981,7 +1981,7 @@ def balloon(req: BalloonRequest):
         )
 
     observed = ct.to_numpy(dtype=float)
-    chi2, p, dof, expected = scipy_stats.chi2_contingency(observed)
+    chi2, p, dof, expected = scipy_stats.chi2_contingency(observed, correction=False)
     with np.errstate(divide="ignore", invalid="ignore"):
         resid = np.where(expected > 0, (observed - expected) / np.sqrt(expected), 0.0)
 

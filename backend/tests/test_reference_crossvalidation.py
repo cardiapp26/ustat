@@ -148,18 +148,9 @@ def test_chisquare_matches_scipy_and_df_reproduces_p(client, sid, frame):
     got = d.get("chi2", d.get("statistic"))
     dof = d.get("df", d.get("dof"))
 
-    # uSTAT applies Yates for 2x2; accept whichever variant it reports, but the
-    # reported chi2/df/p must be mutually consistent either way.
+    # uSTAT reports Pearson's chi-square without Yates' correction.
     uncorrected = sp.chi2_contingency(table, correction=False)
-    corrected = sp.chi2_contingency(table, correction=True)
-    matches_either = (
-        got == pytest.approx(uncorrected[0], rel=1e-10)
-        or got == pytest.approx(corrected[0], rel=1e-10)
-    )
-    assert matches_either, (
-        f"chi2={got} matches neither uncorrected {uncorrected[0]} "
-        f"nor Yates-corrected {corrected[0]}"
-    )
+    assert got == pytest.approx(uncorrected[0], rel=1e-10)
     assert dof == uncorrected[2]
     assert d["p"] == pytest.approx(sp.chi2.sf(got, dof), rel=1e-9)
 

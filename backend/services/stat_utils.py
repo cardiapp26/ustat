@@ -242,7 +242,8 @@ def _fisher_freeman_halton_mc(
 def _categorical_p_with_rule(ct: np.ndarray) -> tuple[Optional[float], str]:
     """Categorical association p-value with small-cell fallback rule.
 
-    Runs a chi-square test of independence. If any expected cell count is < 5,
+    Runs Pearson's chi-square test of independence, without Yates'
+    continuity correction. If any expected cell count is < 5,
     fall back to Fisher's exact test for 2×2 tables or a Fisher-Freeman-Halton
     Monte Carlo permutation test for larger r×c tables.
 
@@ -270,7 +271,13 @@ def _categorical_p_with_rule(ct: np.ndarray) -> tuple[Optional[float], str]:
             f"{n_rows} categories is too many to test — check the column is "
             "categorical and not free text or an identifier"
         )
-    chi2, p_chi, dof, expected = sp.chi2_contingency(obs)
+    # correction=False: SciPy (like R's chisq.test) applies Yates' correction
+    # on every 2x2 by default. The p was then footnoted as Pearson's, and a
+    # reader recomputing Pearson got another number (0.662 vs 0.829 on one
+    # reported table). Yates exists to protect small expected counts, and
+    # those tables already go to Fisher below, so the correction only made
+    # the large-count 2x2 p conservative.
+    chi2, p_chi, dof, expected = sp.chi2_contingency(obs, correction=False)
     if (expected < 5).any():
         if obs.shape == (2, 2):
             _, p_fisher = sp.fisher_exact(obs)

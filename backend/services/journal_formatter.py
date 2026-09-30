@@ -12,26 +12,41 @@ from typing import Optional
 # CONSTANTS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# Symbols are grouped by family (t/ANOVA *, rank tests #, chi-square §,
+# exact tests ¶) and leave out the dagger signs by house style.
+# Order matters: a test name is matched against these rows top to bottom, so
+# the specific variant (Welch, Freeman-Halton) has to come before the
+# generic one whose keyword it also contains. "t-test (Welch)" used to hit the
+# plain "t-test" row and be footnoted as Student's t-test.
 _TEST_SYMBOL_MAP = [
+    (["welch"], "**"),
     (["student", "t-test", "t test", "independent t", "paired t"], "*"),
-    (["mann", "whitney", "mann-whitney", "wilcoxon rank", "u test"], "\u2020"),
-    (["chi-square", "chi square", "pearson chi"], "\u2021"),
-    (["fisher-freeman-halton", "freeman-halton"], "\u2016"),
-    (["fisher"], "\u00A7"),
-    (["anova", "one-way anova"], "\u00B6"),
-    (["kruskal", "kruskal-wallis"], "**"),
-    (["log-rank", "log rank", "mantel"], "\u2020\u2020"),
+    (["anova", "one-way anova"], "***"),
+    (["mann", "whitney", "mann-whitney", "wilcoxon rank", "u test"], "#"),
+    (["kruskal", "kruskal-wallis"], "##"),
+    (["chi-square", "chi square", "pearson chi"], "\u00A7"),
+    (["fisher-freeman-halton", "freeman-halton"], "\u00B6\u00B6"),
+    (["fisher"], "\u00B6"),
+    (["log-rank", "log rank", "mantel"], "\u2016"),
+]
+
+# Footnote order: parametric, rank, chi-square, exact, survival. Sorting by
+# code point scattered the families.
+_TEST_SYMBOL_ORDER = [
+    "*", "**", "***", "#", "##",
+    "\u00A7", "\u00B6", "\u00B6\u00B6", "\u2016",
 ]
 
 _TEST_DISPLAY_NAMES = {
     "*": "Student\u2019s t-test",
-    "\u2020": "Mann-Whitney U test",
-    "\u2021": "Pearson chi-square test",
-    "\u00A7": "Fisher\u2019s exact test (used when any expected cell count was <5 in a 2\u00D72 table)",
-    "\u2016": "Fisher-Freeman-Halton exact test, Monte Carlo p-value with 5,000 resamples (used when any expected cell count was <5 in an r\u00D7c table)",
-    "\u00B6": "One-way ANOVA",
-    "**": "Kruskal-Wallis test",
-    "\u2020\u2020": "Log-rank test",
+    "**": "Welch\u2019s t-test (used when Levene\u2019s test indicated unequal variances, p<0.05)",
+    "***": "One-way ANOVA",
+    "#": "Mann-Whitney U test",
+    "##": "Kruskal-Wallis test",
+    "\u00A7": "Pearson chi-square test (no continuity correction)",
+    "\u00B6": "Fisher\u2019s exact test (used when any expected cell count was <5 in a 2\u00D72 table)",
+    "\u00B6\u00B6": "Fisher-Freeman-Halton exact test, Monte Carlo p-value with 5,000 resamples (used when any expected cell count was <5 in an r\u00D7c table)",
+    "\u2016": "Log-rank test",
 }
 
 _KNOWN_ABBREVIATIONS = {
@@ -160,6 +175,63 @@ def _detect_unit(var_name: str) -> Optional[str]:
     return None
 
 
+_NORMALITY_TEST_WORDING = {
+    "Shapiro-Wilk": "the Shapiro-Wilk test (n<50)",
+    "Kolmogorov-Smirnov (Lilliefors)": (
+        "the Kolmogorov-Smirnov test with Lilliefors correction (n\u226550)"
+    ),
+    "Skewness (CLT bypass)": "|skewness| \u22641.5 (n>2000)",
+}
+
+
+def _collect_normality(row: dict, tests: set, modes: set) -> None:
+    """Record which normality test decided this row, and on what sample.
+
+    The table printed mean \u00B1 SD or median [IQR] and a t-test or a rank test
+    on the strength of a normality check it never named. The chooser switches
+    from Shapiro-Wilk to Lilliefors-KS at n=50 per group, so a reader
+    re-checking with Shapiro alone reached a different verdict and read the
+    table as breaking its own rule.
+    """
+    mode = row.get("normality_mode")
+    per_group = row.get("per_group_normality") or {}
+    if mode == "within_group" and per_group:
+        modes.add("within_group")
+        for info in per_group.values():
+            name = (info or {}).get("test")
+            if name in _NORMALITY_TEST_WORDING:
+                tests.add(name)
+        return
+    name = row.get("normality_test")
+    if name in _NORMALITY_TEST_WORDING:
+        modes.add("overall")
+        tests.add(name)
+
+
+def _normality_footnote(tests: set, modes: set) -> Optional[str]:
+    if not tests:
+        return None
+    ordered = [t for t in _NORMALITY_TEST_WORDING if t in tests]
+    wording = [_NORMALITY_TEST_WORDING[t] for t in ordered]
+    joined = wording[0] if len(wording) == 1 else (
+        ", ".join(wording[:-1]) + " or " + wording[-1]
+    )
+    if modes == {"within_group"}:
+        scope = "within each group"
+        verdict = "in every group"
+    elif modes == {"overall"}:
+        scope = "in the whole sample"
+        verdict = ""
+    else:
+        scope = "within each group (or in the whole sample when ungrouped)"
+        verdict = ""
+    return (
+        f"Normality was assessed {scope} with {joined}; variables with "
+        f"p\u22650.05{' ' + verdict if verdict else ''} were treated as normally "
+        "distributed and summarised as mean \u00B1 SD, the others as median [IQR]."
+    )
+
+
 def _assign_test_symbol(test_name: str) -> str:
     if not test_name:
         return ""
@@ -251,6 +323,8 @@ def format_table1_for_journal(result: dict, options: dict = None) -> dict:
     # Build formatted rows
     formatted_rows = []
     used_tests = set()
+    normality_tests: set[str] = set()
+    normality_modes: set[str] = set()
     all_text = ""
 
     for row in result.get("rows", []):
@@ -258,6 +332,7 @@ def format_table1_for_journal(result: dict, options: dict = None) -> dict:
         all_text += " " + var_name
 
         if row["type"] == "numeric":
+            _collect_normality(row, normality_tests, normality_modes)
             # stat_rows: [{label, overall, group_stats: {group_label: value}}]
             stat_rows = row.get("stat_rows", [])
             for si, sr in enumerate(stat_rows):
@@ -406,17 +481,23 @@ def format_table1_for_journal(result: dict, options: dict = None) -> dict:
         abbr_str = "; ".join(f"{k} = {v}" for k, v in abbreviations.items())
         footnotes.append(f"Abbreviations: {abbr_str}")
     if used_tests:
-        test_notes = "; ".join(f"{sym} {_TEST_DISPLAY_NAMES.get(sym, '')}" for sym in sorted(used_tests))
+        ordered = [sym for sym in _TEST_SYMBOL_ORDER if sym in used_tests]
+        test_notes = "; ".join(f"{sym} {_TEST_DISPLAY_NAMES.get(sym, '')}" for sym in ordered)
         footnotes.append(f"Statistical tests: {test_notes}")
     footnotes.append("Values are presented as mean \u00B1 SD, median [IQR], or n (%) as appropriate.")
+    normality_note = _normality_footnote(normality_tests, normality_modes)
+    if normality_note:
+        footnotes.append(normality_note)
     # Document the categorical-test selection rule when any categorical
-    # variable was tested \u2014 even if Fisher / Fisher-Freeman-Halton did
-    # not end up firing, the reader needs to know the policy.
-    if any(s in ("\u2021", "\u00A7", "\u2016") for s in used_tests):
+    # variable was tested, even if Fisher / Fisher-Freeman-Halton did not end
+    # up firing: the reader needs to know the policy.
+    categorical_syms = {"\u00A7", "\u00B6", "\u00B6\u00B6"}
+    if used_tests & categorical_syms:
         footnotes.append(
-            "For categorical variables, Pearson chi-square was used when all expected "
-            "cell counts were \u22655; Fisher's exact test (2\u00D72 tables) or the "
-            "Fisher-Freeman-Halton exact test with a Monte Carlo p-value "
+            "For categorical variables, Pearson's chi-square test without "
+            "continuity correction was used when all expected cell counts were "
+            "\u22655; Fisher's exact test (2\u00D72 tables) "
+            "or the Fisher-Freeman-Halton exact test with a Monte Carlo p-value "
             "(r\u00D7c tables, 5,000 resamples, seed=42) was substituted when any "
             "expected cell count was <5."
         )
