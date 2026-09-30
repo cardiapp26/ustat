@@ -164,8 +164,9 @@ export default function HelpModal({ onClose }: { onClose: () => void }) {
                   } />
 
                   <Block title="Multi-group comparisons &amp; post-hoc" body={
-                    <>One-way ANOVA (Welch's option for unequal variances), Kruskal-Wallis, Brown-Forsythe. Post-hoc:
-                    Tukey HSD, Bonferroni, Games-Howell (unequal variances), Dunn's test (non-parametric). Repeated-measures ANOVA with
+                    <>One-way ANOVA (switches to Welch's automatically when Levene rejects equal variances), Kruskal-Wallis. Post-hoc:
+                    Tukey HSD, Games-Howell (unequal variances), Dunnett (every arm vs a control), Dunn's test (non-parametric,
+                    Holm / Bonferroni / FDR); planned contrasts can be requested even without a significant omnibus. Repeated-measures ANOVA with
                     Mauchly's sphericity check; Greenhouse-Geisser / Huynh-Feldt corrections applied automatically when violated.</>
                   } />
 
@@ -201,8 +202,8 @@ export default function HelpModal({ onClose }: { onClose: () => void }) {
                 <div className="space-y-3">
                   <Block title="Linear / GLM family" body={
                     <>Linear (OLS) with robust HC0–HC4 standard errors, Logistic (binary), Firth penalized logistic for separation /
-                    rare events, Poisson and Negative Binomial for counts (IRR with offset support), Gamma GLM, Ordinal (proportional odds),
-                    Multinomial. VIF / collinearity diagnostics, residual plots, influence (Cook's D, leverage), Box-Tidwell linearity check,
+                    rare events, Poisson and Negative Binomial for counts (IRR with offset support), Gamma GLM, Ordinal (proportional
+                    odds). VIF / collinearity diagnostics, residual plots, influence (Cook's D, leverage), Box-Tidwell linearity check,
                     and an <span className="font-semibold">OR table (Uni + Multi)</span> for one-click univariable → multivariable workflow.</>
                   } />
 
@@ -396,23 +397,20 @@ export default function HelpModal({ onClose }: { onClose: () => void }) {
                   } />
 
                   <Block title="Bayesian hypothesis tests" body={
-                    <>JZS Bayes Factor for t-tests, ANOVA, correlation, and proportions; BF₁₀ / BF₀₁ with evidence categories,
-                    prior (Cauchy) vs posterior density overlay, Savage-Dickey ratio, and robustness sweep over the prior scale <em>r</em>.</>
+                    <>JZS Bayes Factor for t-tests (one-sample, independent, paired), correlation, and linear regression;
+                    BF₁₀ / BF₀₁ with evidence categories and a prior (Cauchy, <em>r</em> = 0.707) vs posterior density overlay
+                    with the Savage-Dickey ratio at zero.</>
                   } />
 
                   <Block title="Meta-analysis" body={
-                    <>Pool OR / RR / SMD / MD / proportions with fixed-effect, DerSimonian-Laird, Paule-Mandel, or Hartung-Knapp random-effects.
-                    Heterogeneity: τ², I², Q, prediction interval. Forest plot, subgroup &amp; cumulative meta-analysis, sensitivity (leave-one-out).</>
+                    <>Pool OR / RR / HR / RD / MD / SMD with fixed-effect and random-effects models: DerSimonian-Laird, Paule-Mandel,
+                    or REML τ², with an optional Hartung-Knapp confidence interval on the pooled mean.
+                    Heterogeneity: τ², I², Q, H², 95% prediction interval. Forest plot and subgroup analysis with a between-group Q test.</>
                   } />
 
                   <Block title="Meta-regression &amp; bias" body={
-                    <>Mixed-effects meta-regression on study-level moderators with R² (Knapp-Hartung). Publication bias: Egger's &amp; Begg's tests,
-                    Trim-and-Fill, contour-enhanced funnel plot.</>
-                  } />
-
-                  <Block title="Network meta-analysis" body={
-                    <>Frequentist NMA with consistency checking (node-split, side-split), league table, SUCRA rankings,
-                    and forest plot vs a chosen reference comparator.</>
+                    <>Meta-regression on a study-level moderator via weighted least squares (1/(v+τ²) weights) with a bubble plot.
+                    Publication bias: Egger's &amp; Begg's tests, Tweedie trim-and-fill estimate, funnel plot.</>
                   } />
                 </div>
               </div>
@@ -586,13 +584,14 @@ const TOUR_TABS: TourTab[] = [
     id: "correlation",
     label: "Correlation",
     img: "/manual/05-correlation.png",
-    blurb: "Pearson / Spearman / Kendall correlation matrix with p-values and heatmap.",
+    blurb: "Pearson / Spearman / Kendall correlation matrix with p-values and heatmap; partial correlation with controls.",
     steps: [
       "Go to the Correlation tab.",
       "Tick ≥2 numeric or ordinal variables in the left list.",
       "Pick the method: Pearson (linear, normal), Spearman (monotonic/ranked), or Kendall (robust, small samples).",
       "Click Compute → coefficient matrix with p-values + color-coded heatmap.",
       "Click any cell for the scatter with a fitted line.",
+      "For an adjusted association (e.g. age-controlled), use the Partial sub-tab: two variables + control variables.",
     ],
     read: "|r| < 0.3 weak, 0.3–0.6 moderate, > 0.6 strong. p < 0.05 says it's non-zero, not that it's strong.",
   },
