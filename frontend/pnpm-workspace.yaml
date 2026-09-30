@@ -1,3 +1,7 @@
+# pnpm 10+ refuses dependency build scripts unless each one is decided here.
+# Neither is needed: msw's postinstall only copies its service worker when
+# package.json sets msw.workerDirectory (it does not), and es5-ext's only
+# prints a message.
 allowBuilds:
-  es5-ext: set this to true or false
-  msw: set this to true or false
+  es5-ext: false
+  msw: false
