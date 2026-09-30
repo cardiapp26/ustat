@@ -63,12 +63,31 @@ const TRANSFORMS = [
  *  are here because they are laborious to type correctly and easy to get
  *  wrong — SII in particular multiplies two counts before dividing, and
  *  writing it as N / L * P silently computes something else. */
-const EXAMPLES: Array<{ label: string; formula?: string; note?: string }> = [
+const EXAMPLES: Array<{
+  label: string;
+  formula?: string;
+  note?: string;
+  /** What each input column has to be in for the formula to land on the
+   *  canonical value. For these indices the unit convention IS the formula:
+   *  albumin in g/L instead of g/dL, or a lymphocyte count in /uL instead of
+   *  10^3/uL, moves the answer by one or three orders of magnitude and the
+   *  result still looks like a plausible number. */
+  units?: string;
+  /** A worked calculation. The point is the order of magnitude: a reader who
+   *  gets 0.0034 where the example gets 3.4 has the wrong unit somewhere. */
+  example?: string;
+}> = [
   { label: "BMI", formula: "Weight / ((Height / 100) ** 2)" },
   { label: "Pulse pressure", formula: "Systolic - Diastolic" },
   { label: "Creatinine ratio", formula: "Creatinine / Urea" },
   { label: "NLR", formula: "Neutrophils / Lymphocytes" },
   { label: "PLR", formula: "Platelets / Lymphocytes" },
+  {
+    label: "LMR",
+    formula: "Lymphocytes / Monocytes",
+    units: "Either count unit, as long as BOTH columns use the same one. A mismatch is off by 1000× in whichever direction it runs: lymphocytes 10³/µL over monocytes /µL reads 1000× low, the reverse pairing 1000× high, and both still look like plausible numbers.",
+    example: "Lymphocytes 1.8, monocytes 0.45 (10³/µL) → 1.8 / 0.45 = 4.0. Healthy median ≈ 5.3. Note MLR is the reciprocal, so a published “cut-off 0.25” is an MLR, not an LMR.",
+  },
   { label: "SII", formula: "Neutrophils * Platelets / Lymphocytes" },
   { label: "SIRI", formula: "Neutrophils * Monocytes / Lymphocytes" },
   // PIV and AISI are the same arithmetic under two names, both current in the
@@ -82,6 +101,55 @@ const EXAMPLES: Array<{ label: string; formula?: string; note?: string }> = [
   // absolute count instead (2250), the coefficient is 0.005, not 5; getting
   // that wrong scales the index by a thousand and it still looks plausible.
   { label: "PNI (Onodera)", formula: "10 * Albumin + 5 * Lymphocytes" },
+  // CRP-albumin family. Both published CAR conventions (mg/L over g/L, and
+  // mg/dL over g/dL) give the SAME ratio, because numerator and denominator
+  // scale together. What breaks it is the pairing a lab actually hands you
+  // (CRP in mg/L next to albumin in g/dL), which reads 10x high.
+  {
+    label: "CAR",
+    formula: "CRP / (10 * Albumin)",
+    units: "CRP mg/L, albumin g/dL. The ×10 puts albumin into g/L. Keep the brackets: CRP / 10 * Albumin multiplies where it should divide.",
+    example: "CRP 12 mg/L, albumin 3.8 g/dL → 12 / 38 = 0.32. Healthy ≈ 0.05–1; acute illness > 2.",
+  },
+  // CALLY is published as Alb(g/dL) x Lym(/uL) / (CRP(mg/dL) x 10^4). On the
+  // columns a lab export actually holds, every one of those conversions
+  // cancels and the 10^4 with them: lymphocytes in 10^3/uL supply the 1000,
+  // CRP in mg/L supplies the other 10. Writing the published form verbatim
+  // against these columns, 10^4 and all, overshoots by eight orders of
+  // magnitude.
+  {
+    label: "CALLY",
+    formula: "Albumin * Lymphocytes / CRP",
+    units: "Albumin g/dL, lymphocytes 10³/µL, CRP mg/L. The published ×10⁴ divisor is already absorbed by these units; do not add it back.",
+    example: "Albumin 4.0, lymphocytes 1.8, CRP 5 → 4.0 × 1.8 / 5 = 1.44. A healthy profile (4.5, 2.2, CRP 1) gives 9.9. Range ≈ 0.1 (severe inflammation) to 15.",
+  },
+  {
+    label: "HALP",
+    formula: "100 * Hemoglobin * Albumin * Lymphocytes / Platelets",
+    units: "Haemoglobin g/dL, albumin g/dL, lymphocytes and platelets both 10³/µL. The ×100 converts Hb and albumin to g/L; drop it and the index lands 100× low (~0.37 where it should read ~37).",
+    example: "Hb 13.0, albumin 4.0, lymphocytes 1.8, platelets 250 → 100 × 13 × 4 × 1.8 / 250 = 37.4. Typical ≈ 20–60.",
+  },
+  // MHR has four conventions in active use, not two, and no dominant one:
+  // cardiology mostly reports cells/uL over mg/dL, large population cohorts
+  // 10^9/L over mmol/L. Worse, feeding it a monocyte PERCENTAGE column lands
+  // in the same 2-10 band as the absolute-count form, so no plausibility
+  // check can separate them; only the user knows which column they have.
+  {
+    label: "MHR",
+    formula: "1000 * Monocytes / HDL",
+    units: "Monocytes 10³/µL, HDL mg/dL; the ×1000 gives monocytes per µL. On SI columns (monocytes 10⁹/L, HDL mmol/L) drop the ×1000; that scale runs ~26× lower. Check your monocyte column is an absolute count, not a percentage: a percentage lands in the same range as this formula and no range check can catch it.",
+    example: "Monocytes 0.45, HDL 42 mg/dL → 450 / 42 = 10.7. Conventional ≈ 8–23; SI ≈ 0.13–0.71 (healthy median ≈ 0.3–0.4). Cut-offs only transfer between papers that used the same convention.",
+  },
+  // Naples is a 0-4 count of abnormal components, not a measurement, and the
+  // `* 1` on each term is load-bearing: the formula engine ORs bare booleans
+  // together instead of adding them, so without it a patient with three
+  // abnormal components silently returns True rather than 3.
+  {
+    label: "Naples (0–4)",
+    formula: "(Albumin < 4) * 1 + (Cholesterol <= 180) * 1 + (Neutrophils / Lymphocytes > 2.96) * 1 + (Lymphocytes / Monocytes <= 4.44) * 1",
+    units: "Albumin g/dL, total cholesterol mg/dL, counts 10³/µL. Each × 1 is required: without it the four terms combine as true/false and the column comes out boolean instead of 0–4.",
+    example: "Albumin 3.8, cholesterol 170, NLR 5.0, LMR 4.0 → all four abnormal = 4. Note the boundaries are asymmetric: albumin exactly 4.0 and NLR exactly 2.96 score 0, but cholesterol exactly 180 and LMR exactly 4.44 score 1. Total 0 / 1–2 / 3–4 = Naples group 0 / 1 / 2.",
+  },
   { label: "Log Troponin", note: "— use the Transform tab for log transforms" },
 ];
 
@@ -214,6 +282,9 @@ function FormulaTab({
   const [templates, setTemplates] = useState<FormulaTemplate[]>(loadTemplates);
   const [tplName, setTplName] = useState("");
   const [showTplInput, setShowTplInput] = useState(false);
+  // Which example has its units + worked calculation open. One at a time:
+  // the list is long enough that expanding them all buries the formulas.
+  const [openExample, setOpenExample] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const insert = (text: string) => {
@@ -408,22 +479,54 @@ function FormulaTab({
           <p className="text-[10px] text-gray-400 -mt-0.5">
             Click one to load it, then swap in your own column names.
           </p>
-          {EXAMPLES.map(({ label, formula, note }) => (
-            <div key={label} className="flex items-baseline gap-2">
-              <span className="font-medium text-gray-600 w-28 flex-shrink-0">{label}:</span>
-              {formula ? (
-                <button
-                  onClick={() => setFormula(formula)}
-                  className="font-mono text-indigo-600 hover:text-indigo-800 hover:underline text-left"
-                  title="Load this formula into the editor"
-                >
-                  {formula}
-                </button>
-              ) : (
-                <span className="text-gray-400">{note}</span>
-              )}
-            </div>
-          ))}
+          {EXAMPLES.map(({ label, formula, note, units, example }) => {
+            const open = openExample === label;
+            return (
+              <div key={label}>
+                <div className="flex items-baseline gap-2">
+                  <span className="font-medium text-gray-600 w-28 flex-shrink-0">{label}:</span>
+                  {formula ? (
+                    <button
+                      onClick={() => setFormula(formula)}
+                      className="font-mono text-indigo-600 hover:text-indigo-800 hover:underline text-left"
+                      title="Load this formula into the editor"
+                    >
+                      {formula}
+                    </button>
+                  ) : (
+                    <span className="text-gray-400">{note}</span>
+                  )}
+                  {(units || example) && (
+                    <button
+                      onClick={() => setOpenExample(open ? null : label)}
+                      aria-expanded={open}
+                      aria-label={`${label}: units and worked example`}
+                      title="Units and a worked example"
+                      className={`ml-auto flex-shrink-0 leading-none px-1 transition-colors ${
+                        open ? "text-indigo-500" : "text-gray-300 hover:text-indigo-500"
+                      }`}
+                    >
+                      ⓘ
+                    </button>
+                  )}
+                </div>
+                {open && (
+                  <div className="ml-28 mt-0.5 mb-1 pl-2 border-l-2 border-indigo-100 space-y-0.5 text-[10px] leading-relaxed">
+                    {units && (
+                      <p className="text-gray-500">
+                        <span className="font-medium text-gray-600">Units: </span>{units}
+                      </p>
+                    )}
+                    {example && (
+                      <p className="text-gray-500">
+                        <span className="font-medium text-gray-600">Example: </span>{example}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
     </div>

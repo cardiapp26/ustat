@@ -45,6 +45,34 @@ describe('ComputePanel', () => {
     expect(sii).toBeInTheDocument()
   })
 
+  it('Formula tab: Naples keeps the * 1 on every component', () => {
+    // The formula engine ORs bare booleans instead of adding them, so
+    // `(a < 4) + (b <= 180) + …` returns True rather than 3 and the column
+    // comes out boolean. Each `* 1` forces the arithmetic sum. Anyone
+    // "simplifying" them away breaks the score silently.
+    installSession(computeSession())
+    render(<ComputePanel />)
+    const naples = screen.getByRole('button', { name: /Albumin < 4/ })
+    expect(naples).toHaveTextContent(
+      '(Albumin < 4) * 1 + (Cholesterol <= 180) * 1 + (Neutrophils / Lymphocytes > 2.96) * 1 + (Lymphocytes / Monocytes <= 4.44) * 1',
+    )
+  })
+
+  it('Formula tab: an example exposes its units and a worked example', async () => {
+    // These indices are unit traps (CALLY against the wrong albumin unit is
+    // off by 10x and still looks like a plausible number), so the unit
+    // convention and a sanity-check magnitude travel with the formula.
+    installSession(computeSession())
+    const user = userEvent.setup()
+    render(<ComputePanel />)
+
+    expect(screen.queryByText(/do not add it back/)).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /CALLY: units and worked example/ }))
+
+    expect(screen.getByText(/lymphocytes 10³\/µL, CRP mg\/L/)).toBeInTheDocument()
+    expect(screen.getByText(/4\.0 × 1\.8 \/ 5 = 1\.44/)).toBeInTheDocument()
+  })
+
   it('renders nothing without an active session', () => {
     clearSession()
     const { container } = render(<ComputePanel />)
