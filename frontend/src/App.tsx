@@ -619,7 +619,7 @@ export default function App() {
     at?: number;
   }>({ state: "idle" });
   // Stream every session change to IndexedDB (debounced + periodic +
-  // beforeunload flush). Surfaces "Autosaved · …" next to the
+  // beforeunload flush). Surfaces the autosave status dot next to the
   // header Save menu when the user has an open session.
   useAutoSession({
     onStatus: (state, at) => setAutoSaveStatus({ state, at }),
@@ -883,12 +883,16 @@ export default function App() {
             >
               <Info size={16} />
             </button>
-            {/* Auto-save status pill — sits to the LEFT of the Save menu
-                so the user always sees that work is being mirrored to
-                local IndexedDB (and can hit Save explicitly if not). */}
+            {/* Auto-save status dot: sits to the LEFT of the Save menu so the
+                user always sees that work is being mirrored to local
+                IndexedDB (and can hit Save explicitly if not). A dot only,
+                not a text label: the label's width changed with its content
+                (e.g. "Auto-saved · 09:55 AM" vs "Auto-save"), which reflowed
+                the whole toolbar every autosave tick. The tooltip carries the
+                same detail on hover instead. */}
             {session && (
               <div
-                className="flex items-center gap-1 text-[10px] text-gray-400 px-2"
+                className="flex items-center justify-center p-1.5"
                 title={
                   autoSaveStatus.state === "saving" ? "Autosaving…"
                   : autoSaveStatus.state === "saved" && autoSaveStatus.at
@@ -905,13 +909,6 @@ export default function App() {
                     : "bg-gray-300"
                   }`}
                 />
-                <span className="hidden md:inline">
-                  {autoSaveStatus.state === "saving"  ? "Kaydediliyor…"
-                   : autoSaveStatus.state === "saved" && autoSaveStatus.at
-                     ? `Auto-saved · ${new Date(autoSaveStatus.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
-                   : autoSaveStatus.state === "error" ? "Auto-save hata"
-                   : "Auto-save"}
-                </span>
               </div>
             )}
             <CloudSyncBar />
