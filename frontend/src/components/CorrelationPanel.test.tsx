@@ -295,6 +295,48 @@ describe('CorrelationPanel', () => {
     for (const b of exports()) expect(b).toBeEnabled()
   })
 
+  it('Partial tab: sends the controls and renders the adjusted r with CI', async () => {
+    installSession(numericSession())
+    let sent: Record<string, unknown> | null = null
+    server.use(
+      http.post('/api/stats/partial_correlation', async ({ request }) => {
+        sent = (await request.json()) as Record<string, unknown>
+        return HttpResponse.json({
+          test: 'Partial correlation (Pearson)',
+          method: 'pearson', label: 'r', n: 3, df: 0,
+          controls: ['BP'], r: 0.041, statistic: 0.1, p: 0.91,
+          significant: false, ci_low: -0.2, ci_high: 0.27,
+          interpretation: 'No significant partial correlation',
+          result_text: 'A Pearson partial correlation was computed between AGE and LDL, controlling for BP.',
+          r_code: 'library(ppcor)',
+        })
+      }),
+    )
+
+    const user = userEvent.setup()
+    render(<CorrelationPanel />)
+    await user.click(screen.getByRole('button', { name: 'Partial' }))
+    await user.selectOptions(screen.getByLabelText('Controlling for'), 'BP')
+    await user.click(screen.getByRole('button', { name: 'Compute' }))
+
+    await waitFor(() => expect(sent).not.toBeNull())
+    expect(sent!.var1).toBe('AGE')
+    expect(sent!.var2).toBe('LDL')
+    expect(sent!.controls).toEqual(['BP'])
+    expect(await screen.findByText('0.041')).toBeInTheDocument()
+    expect(screen.getByText('[-0.200, 0.270]')).toBeInTheDocument()
+    expect(screen.getByText(/controlling for BP/)).toBeInTheDocument()
+  })
+
+  it('Partial tab: requires a control variable before running', async () => {
+    installSession(numericSession())
+    const user = userEvent.setup()
+    render(<CorrelationPanel />)
+    await user.click(screen.getByRole('button', { name: 'Partial' }))
+    await user.click(screen.getByRole('button', { name: 'Compute' }))
+    expect(await screen.findByText('Select at least one control variable')).toBeInTheDocument()
+  })
+
   it('ICC tab: shows the backend error message on failure', async () => {
     installSession(numericSession())
     server.use(

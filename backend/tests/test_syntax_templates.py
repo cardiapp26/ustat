@@ -115,6 +115,8 @@ REQUESTS = [
           level_order=["Low", "Mid", "High"]),
     # association and agreement
     _post("/api/stats/correlation_pair", var1="age", var2="sbp", method="spearman"),
+    _post("/api/stats/partial_correlation", var1="age", var2="sbp",
+          controls=["bmi", "sex"], method="pearson"),
     _post("/api/stats/correlation_matrix", variables=["age", "sbp", "bmi"], method="kendall"),
     {"method": "GET", "url": "/api/stats/0b9f2c4e-1234-4abc-9def-0123456789ab/correlation?method=spearman"},
     _post("/api/stats/icc", rater1_col="reader_a", rater2_col="reader_b"),

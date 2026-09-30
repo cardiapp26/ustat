@@ -54,6 +54,32 @@ def correlation_pair(b: dict) -> dict:
     }
 
 
+def partial_correlation(b: dict) -> dict:
+    x = field(b, "var1", default="x")
+    y = field(b, "var2", default="y")
+    controls = columns(b, "controls") or ["z"]
+    m = (b.get("method") or "pearson").lower()
+    m = m if m in ("pearson", "spearman") else "pearson"
+    note = imputation_note(b.get("imputation"))
+    cols = [x, y] + list(controls)
+    return {
+        "title": f"Partial correlation: {x} and {y} | {', '.join(controls)}",
+        "python": (
+            "import pingouin as pg\n\n" + note
+            + f"d = df[{plist(cols)}].dropna()\n"
+            "# Same construction as uSTAT: correlation of the OLS residuals after\n"
+            "# regressing each variable on the controls; t on n - 2 - k df,\n"
+            "# Fisher z CI with se = 1 / sqrt(n - 3 - k).\n"
+            f"pg.partial_corr(data=d, x={lit(x)}, y={lit(y)}, covar={plist(list(controls))}, method=\"{m}\")"
+        ),
+        "r": (
+            "library(ppcor)\n\n" + note
+            + f"d <- df[complete.cases(df[, {rvec(cols)}]), ]\n"
+            f'pcor.test({rcol(x, "d")}, {rcol(y, "d")}, d[, {rvec(list(controls))}], method = "{m}")'
+        ),
+    }
+
+
 def _matrix(cols_py: str, cols_r: str, method: str, complete: bool) -> dict:
     """Pairwise r and p. `complete` drops rows missing any variable first
     (the POST endpoint); otherwise each pair uses its own complete rows."""
@@ -149,6 +175,7 @@ def cronbach(b: dict) -> dict:
 
 ENDPOINTS = {
     "/api/stats/correlation_pair": correlation_pair,
+    "/api/stats/partial_correlation": partial_correlation,
     "/api/stats/correlation_matrix": correlation_matrix,
     "/api/stats/{sid}/correlation": correlation_all_numeric,
     "/api/stats/icc": icc,

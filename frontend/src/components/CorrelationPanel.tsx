@@ -13,6 +13,7 @@ import ThreeCol from "./ThreeCol";
 import { Tip, LabelTip, InfoBanner } from "./Tip";
 import {
   runCorrelationPair,
+  runPartialCorrelation,
   runCorrelationMatrix,
   runICC,
   runCohensKappa,
@@ -43,7 +44,7 @@ function usePlotBg(): Record<string, unknown> {
   };
 }
 
-const TABS = ["Pairwise", "Matrix", "ICC", "Cohen's κ"] as const;
+const TABS = ["Pairwise", "Partial", "Matrix", "ICC", "Cohen's κ"] as const;
 type Tab = (typeof TABS)[number];
 
 function sig(p: number) {
@@ -1140,6 +1141,184 @@ function ICCTab({ sessionId, columns }: { sessionId: string; columns: string[] }
   );
 }
 
+interface PartialResult {
+  test: string;
+  method: string;
+  label: string;
+  n: number;
+  df: number;
+  controls: string[];
+  r: number;
+  statistic: number | null;
+  p: number;
+  significant: boolean;
+  ci_low: number;
+  ci_high: number;
+  interpretation: string;
+  result_text?: string;
+  r_code?: string;
+}
+
+// ── PartialTab ────────────────────────────────────────────────────────────────
+// SPSS Correlate > Partial: r between two variables with one or more
+// covariates partialled out, instead of detouring through regression.
+function PartialTab({ sessionId, columns }: { sessionId: string; columns: string[] }) {
+  const [var1, setVar1] = usePersistedPanelState<string>("correlation_partial", "var1", columns[0] ?? "");
+  const [var2, setVar2] = usePersistedPanelState<string>("correlation_partial", "var2", columns[1] ?? "");
+  const [controls, setControls] = usePersistedPanelState<string[]>("correlation_partial", "controls", []);
+  const [method, setMethod] = usePersistedPanelState<string>("correlation_partial", "method", "pearson");
+  const runParams = { var1, var2, controls, method };
+  const {
+    result: data, setResult: setData, stale, staleReasons: staleWhy,
+  } = useStampedResult<PartialResult>("correlation_partial", runParams);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const run = async () => {
+    if (!var1 || !var2 || var1 === var2) { setError("Select two different variables"); return; }
+    if (controls.length === 0) { setError("Select at least one control variable"); return; }
+    setError("");
+    setLoading(true);
+    try {
+      const res = await runPartialCorrelation({
+        session_id: sessionId, var1, var2, controls, method, imputation: "listwise",
+      });
+      setData(res.data as PartialResult);
+    } catch (e: unknown) {
+      setError(getErrorDetail(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const exportPartial = () => {
+    if (!data) return;
+    downloadCSV("partial_correlation.csv", [
+      ["Variable 1", "Variable 2", "Controls", "Method", data.label, "95% CI Low", "95% CI High", "df", "p", "n"],
+      [var1, var2, data.controls.join("; "), data.method, data.r.toFixed(4),
+       data.ci_low.toFixed(4), data.ci_high.toFixed(4), String(data.df), fmtP(data.p), String(data.n)],
+    ]);
+  };
+
+  const leftCol = (
+    <div className="panel space-y-3">
+      <h3 className="text-sm font-semibold text-gray-700">
+        Partial correlation
+        <Tip text="Correlation between two variables after removing the linear influence of the control variables from both (e.g. age-adjusted correlation). Computed from the OLS residuals; t test on n - 2 - k df." wide />
+      </h3>
+      <div className="space-y-1">
+        <label className="text-xs text-gray-500 font-medium">Variable 1</label>
+        <select className="select w-full text-xs" value={var1} onChange={(e) => setVar1(e.target.value)}>
+          {columns.map((c) => <option key={c}>{c}</option>)}
+        </select>
+      </div>
+      <div className="space-y-1">
+        <label className="text-xs text-gray-500 font-medium">Variable 2</label>
+        <select className="select w-full text-xs" value={var2} onChange={(e) => setVar2(e.target.value)}>
+          {columns.map((c) => <option key={c}>{c}</option>)}
+        </select>
+      </div>
+      <div className="space-y-1">
+        <label className="text-xs text-gray-500 font-medium">Controlling for</label>
+        <select multiple className="select w-full text-xs h-24" aria-label="Controlling for" value={controls}
+          onChange={(e) => setControls(Array.from(e.target.selectedOptions, (o) => o.value))}>
+          {columns.filter((c) => c !== var1 && c !== var2).map((c) => <option key={c}>{c}</option>)}
+        </select>
+        <p className="text-[10px] text-gray-400">{controls.length} selected · hold Ctrl/Cmd for multiple</p>
+      </div>
+      <div className="space-y-1">
+        <label className="text-xs text-gray-500 font-medium">Method</label>
+        <select className="select w-full text-xs" value={method} onChange={(e) => setMethod(e.target.value)}>
+          <option value="pearson">Pearson</option>
+          <option value="spearman">Spearman (rank)</option>
+        </select>
+      </div>
+      <button className="btn-primary w-full mt-2" onClick={run} disabled={loading}>
+        {loading ? "Computing…" : "Compute"}
+      </button>
+      {error && <p className="text-xs text-red-500">{error}</p>}
+    </div>
+  );
+
+  const rightCol = data ? (
+    <div className="panel space-y-3 text-xs">
+      <div className="flex items-center justify-between">
+        <p className="text-gray-400 text-[10px] font-semibold uppercase tracking-wide">{data.test}</p>
+        <CsvButton onClick={exportPartial} className="text-[10px] px-1.5 py-0.5 rounded border border-gray-300 text-gray-500 hover:bg-gray-50 hover:text-indigo-600 hover:border-indigo-300 transition-colors">↓ CSV</CsvButton>
+      </div>
+      <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-3.5 text-center">
+        <p className="text-[10px] font-semibold text-indigo-900 uppercase">Partial {data.label} | {data.controls.join(", ")}</p>
+        <p className="text-3xl font-bold font-mono text-indigo-700 mt-1">{data.r.toFixed(3)}</p>
+      </div>
+      <div className="space-y-1.5 bg-gray-50 p-3 rounded-xl border border-gray-100">
+        <p className="text-gray-500 flex justify-between">
+          <span>95% Confidence Interval:</span>
+          <span className="font-semibold font-mono text-gray-700">[{data.ci_low.toFixed(3)}, {data.ci_high.toFixed(3)}]</span>
+        </p>
+        <p className="text-gray-500 flex justify-between">
+          <span>t (df = {data.df}):</span>
+          <span className="font-semibold font-mono text-gray-700">{data.statistic?.toFixed(3) ?? "—"}</span>
+        </p>
+        <p className="text-gray-500 flex justify-between">
+          <span>Significance (<i>p</i>-value):</span>
+          <span className={`font-semibold font-mono ${sig(data.p)}`}>{fmtP(data.p)}</span>
+        </p>
+        <p className="text-gray-400 text-[10px] font-mono text-right mt-1"><i>n</i> = {data.n} complete rows</p>
+      </div>
+      {data.result_text && (
+        <div className="bg-gray-50 border border-gray-200 rounded-xl px-3 py-2">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[10px] font-semibold text-gray-400 uppercase">Results Paragraph</span>
+            <CopyTextButton text={data.result_text} />
+          </div>
+          <p className="text-[11px] text-gray-700 leading-relaxed">{data.result_text}</p>
+        </div>
+      )}
+      {data.r_code && (
+        <div className="bg-gray-900 rounded-xl px-3 py-2">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[10px] font-semibold text-gray-500 uppercase">R replication</span>
+            <CopyTextButton text={data.r_code} />
+          </div>
+          <pre className="text-[10px] text-emerald-300 font-mono whitespace-pre-wrap">{data.r_code}</pre>
+        </div>
+      )}
+    </div>
+  ) : (
+    <div className="panel p-6 flex items-center justify-center text-gray-400 text-xs text-center border-dashed border-2">
+      <div>
+        <p className="text-2xl mb-2">🎛️</p>
+        <p className="font-semibold text-gray-500">Partial correlation</p>
+        <p className="text-[11px] text-gray-400 mt-1 max-w-xs">Pick two variables and at least one control (e.g. age), then Compute. The adjusted correlation, CI and p-value appear here.</p>
+      </div>
+    </div>
+  );
+
+  return (
+    <StampedLayout
+      stale={stale}
+      reason={describeStale(staleWhy)}
+      notice={data && stale && (
+        <StaleResultNotice reasons={staleWhy} onRecompute={run} busy={loading} what="This partial correlation" />
+      )}
+    >
+      <ThreeCol
+        storageKey="CorrelationPanel.Partial"
+        left={leftCol}
+        middle={rightCol}
+        right={
+          <div className="panel p-4 text-[11px] text-gray-500 leading-relaxed space-y-2">
+            <p className="font-semibold text-gray-600 text-xs">When to use</p>
+            <p>The SPSS Correlate &gt; Partial workflow: report the association between two continuous variables with confounders (age, BMI, disease duration) partialled out, without switching to a regression table.</p>
+            <p className="font-semibold text-gray-600 text-xs pt-1">Reading it</p>
+            <p>Compare with the unadjusted Pairwise value: a raw correlation that collapses after controlling suggests the association ran through the controls.</p>
+          </div>
+        }
+      />
+    </StampedLayout>
+  );
+}
+
 interface KappaResult {
   kappa: number;
   ci_low: number;
@@ -1366,6 +1545,7 @@ function CorrelationPanelBody({ session }: { session: Session }) {
 
       <div className="flex-1 min-h-0">
         {activeTab === "Pairwise"  && <PairwiseTab sessionId={session.session_id} columns={numColumns} />}
+        {activeTab === "Partial"   && <PartialTab  sessionId={session.session_id} columns={numColumns} />}
         {activeTab === "Matrix"    && <MatrixTab   sessionId={session.session_id} columns={numColumns} />}
         {activeTab === "ICC"       && <ICCTab      sessionId={session.session_id} columns={numColumns} />}
         {activeTab === "Cohen's κ" && <KappaTab    sessionId={session.session_id} columns={allColumns} />}

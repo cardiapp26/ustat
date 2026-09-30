@@ -262,6 +262,125 @@ def correlation_pair(req: CorrelationPairRequest):
     }
 
 
+# ── 2b. POST Partial Correlation ───────────────────────────────────────────────
+
+class PartialCorrelationRequest(BaseModel):
+    session_id: str
+    var1: str
+    var2: str
+    controls: List[str]
+    method: Optional[str] = "pearson"     # pearson | spearman
+    imputation: Optional[str] = "listwise"
+
+
+@router.post("/partial_correlation")
+def partial_correlation(req: PartialCorrelationRequest):
+    """Partial correlation of var1 and var2 controlling for one or more
+    covariates (the SPSS Correlate > Partial dialog). Computed as the
+    correlation of the two OLS residual vectors after regressing each
+    variable on the controls; Spearman applies the same construction to
+    rank-transformed data. t test on n − 2 − k df; Fisher-z CI with
+    SE = 1/sqrt(n − 3 − k)."""
+    if not req.controls:
+        raise HTTPException(status_code=422, detail="Need at least one control variable.")
+    method = (req.method or "pearson").lower()
+    if method not in ("pearson", "spearman"):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown method '{req.method}'. Partial correlation supports pearson or spearman.",
+        )
+    overlap = {req.var1, req.var2} & set(req.controls)
+    if overlap or req.var1 == req.var2:
+        raise HTTPException(
+            status_code=422,
+            detail="var1, var2 and the controls must be distinct columns.",
+        )
+    df_full = _get_df(req.session_id)
+    cols = [req.var1, req.var2] + list(req.controls)
+    for c in cols:
+        if c not in df_full.columns:
+            raise HTTPException(status_code=400, detail=f"Column '{c}' not found.")
+    df = apply_imputation(df_full, cols, req.imputation or "listwise")
+    for c in cols:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df = df.dropna(subset=cols)
+    n = len(df)
+    k = len(req.controls)
+    if n < k + 4:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Need at least {k + 4} complete rows for {k} control(s); have {n}.",
+        )
+
+    data = df[cols].astype(float)
+    if method == "spearman":
+        data = data.rank()
+
+    Z = np.column_stack([np.ones(n)] + [data[c].values for c in req.controls])
+    resid = {}
+    for v in (req.var1, req.var2):
+        y = data[v].values
+        beta, *_ = np.linalg.lstsq(Z, y, rcond=None)
+        resid[v] = y - Z @ beta
+    rx, ry = resid[req.var1], resid[req.var2]
+    denom = float(np.sqrt(np.sum(rx ** 2) * np.sum(ry ** 2)))
+    if denom == 0:
+        raise HTTPException(status_code=400, detail="A variable is constant after adjusting for the controls.")
+    r = float(np.sum(rx * ry) / denom)
+
+    df_t = n - 2 - k
+    if abs(r) < 1.0:
+        t_stat = r * np.sqrt(df_t / (1 - r ** 2))
+        p = float(2 * scipy_stats.t.sf(abs(t_stat), df_t))
+    else:
+        t_stat, p = float("inf") if r > 0 else float("-inf"), 0.0
+    ci_low = ci_high = float(r)
+    if abs(r) < 1.0 and n - 3 - k > 0:
+        z = np.arctanh(r)
+        se = 1.0 / np.sqrt(n - 3 - k)
+        z_crit = float(scipy_stats.norm.ppf(0.975))
+        ci_low = float(np.tanh(z - z_crit * se))
+        ci_high = float(np.tanh(z + z_crit * se))
+
+    label = "r" if method == "pearson" else "ρ"
+    p_str = "<0.001" if p < 0.001 else f"{p:.3f}"
+    strength = ("strong" if abs(r) >= 0.7 else "moderate" if abs(r) >= 0.4
+                else "weak" if abs(r) >= 0.2 else "negligible")
+    ctrl_list = ", ".join(req.controls)
+    sig = bool(p < 0.05)
+    return _sanitize({
+        "test": f"Partial correlation ({method.capitalize()})",
+        "method": method,
+        "label": label,
+        "n": n,
+        "df": df_t,
+        "controls": req.controls,
+        "r": round(r, 4),
+        "statistic": round(float(t_stat), 4) if np.isfinite(t_stat) else None,
+        "p": float(p),
+        "significant": sig,
+        "ci_low": round(ci_low, 4),
+        "ci_high": round(ci_high, 4),
+        "interpretation": (
+            f"{'Significant' if sig else 'No significant'} {strength} partial correlation between "
+            f"{req.var1} and {req.var2} after controlling for {ctrl_list} "
+            f"({label} = {r:.3f}, p = {p_str})"
+        ),
+        "result_text": (
+            f"A {method.capitalize()} partial correlation was computed between {req.var1} and {req.var2}, "
+            f"controlling for {ctrl_list}. The partial correlation was "
+            f"{'statistically significant' if sig else 'not statistically significant'} "
+            f"({label} = {r:.3f}, 95% CI: {ci_low:.3f}–{ci_high:.3f}, df = {df_t}, p = {p_str}, n = {n})."
+        ),
+        "r_code": (
+            f'library(ppcor)\n'
+            f'pcor.test(data${req.var1}, data${req.var2}, '
+            f'data[, c({", ".join(chr(34) + c + chr(34) for c in req.controls)})], '
+            f'method = "{method}")'
+        ),
+    })
+
+
 # ── 3. POST Correlation Matrix ─────────────────────────────────────────────────
 
 class CorrelationMatrixRequest(BaseModel):
