@@ -196,6 +196,25 @@ if (requireNamespace("ordinal", quietly = TRUE)) {
     kv("aic", num(AIC(fclm))))
 }
 
+# ── 9b. Multinomial (nnet::multinom) ─────────────────────────────────────────
+# Baseline category "I"; terms named "<category>:<term>" so each equation's
+# rows stay distinct. Tight tolerance: the default reltol leaves the
+# coefficients about 1e-7 from the optimum.
+d$stage_f <- factor(d$stage)
+fmn <- nnet::multinom(stage_f ~ age + bmi + arm + sex, data = d, trace = FALSE,
+                      reltol = 1e-14, maxit = 2000)
+smn <- summary(fmn)
+mn_terms <- character(0)
+for (cat_ in rownames(smn$coefficients)) for (tm in colnames(smn$coefficients)) {
+  b <- smn$coefficients[cat_, tm]; se <- smn$standard.errors[cat_, tm]
+  mn_terms <- c(mn_terms, term_obj(paste0(cat_, ":", tm), b, se, b / se, 2 * pnorm(-abs(b / se))))
+}
+models$multinomial <- obj(
+  kv("terms", arr(mn_terms)),
+  kv("aic", num(AIC(fmn))), kv("log_likelihood", num(as.numeric(logLik(fmn)))),
+  kv("n", num(nrow(d))),
+  kv("note", str_("summary.multinom gives no p-value; computed here as 2*pnorm(-|b/se|)")))
+
 # ── 10. Cox ──────────────────────────────────────────────────────────────────
 fcx <- coxph(Surv(time, status) ~ age + arm + sex, data = d)
 scx <- summary(fcx)
@@ -387,7 +406,7 @@ if (requireNamespace("rms", quietly = TRUE)) {
 }
 
 # ── write ────────────────────────────────────────────────────────────────────
-pkgs <- obj(vapply(c("survival", "MASS", "lme4", "logistf", "ordinal"), function(p)
+pkgs <- obj(vapply(c("survival", "MASS", "lme4", "logistf", "ordinal", "nnet"), function(p)
   kv(p, str_(if (requireNamespace(p, quietly = TRUE))
     as.character(packageVersion(p)) else "absent")), character(1)))
 meta <- obj(kv("r_version", str_(R.version.string)), kv("packages", pkgs))

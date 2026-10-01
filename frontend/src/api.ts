@@ -469,6 +469,7 @@ export interface TOSTRequest {
 export const runTOST = (data: TOSTRequest) => api.post("/api/stats/tost", data);
 export const runGEE            = (data: object) => api.post("/api/models/gee", data);
 export const runOrdinal        = (data: object) => api.post("/api/models/ordinal", data);
+export const runMultinomial     = (data: object) => api.post("/api/models/multinomial", data);
 export const runCoxTV          = (data: object) => api.post("/api/models/survival/cox_tv", data);
 export const runStepwise       = (data: object) => api.post("/api/models/stepwise", data);
 export const runForest         = (data: object) => api.post("/api/charts/forest", data);

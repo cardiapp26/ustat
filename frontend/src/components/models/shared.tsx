@@ -1,5 +1,6 @@
 /* eslint-disable react-refresh/only-export-components -- shared helpers + small components bundled by design */
 // Shared presentational helpers for the model result views.
+import type { MultinomialResultData } from "./MultinomialResult";
 
 // ── Shared model result types ────────────────────────────────────────────────
 // These describe the (loosely-typed) JSON returned by the regression endpoints.
@@ -134,7 +135,12 @@ export interface HRRow {
  * compatible with the narrower result types each child view consumes
  * (PredictionResult / ForestResult).
  */
-export interface ModelResult {
+/** Multinomial-only fields; the rest of ModelResult already covers n, AIC... */
+type MultinomialFields = Pick<MultinomialResultData,
+  "categories" | "reference" | "category_counts" | "equations" | "lr_tests"
+  | "model_lr_chi2" | "model_lr_df" | "model_lr_p" | "classification_table">;
+
+export interface ModelResult extends MultinomialFields {
   model?: string;
   outcome?: string;
   n?: number;

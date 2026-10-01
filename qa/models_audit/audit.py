@@ -204,6 +204,22 @@ def main() -> None:
             "raw_keys": sorted(j.keys()),
         }
 
+    # ── Multinomial ───────────────────────────────────────────────────────
+    j = call("multinomial", "/api/models/multinomial", {
+        "session_id": SID, "outcome": "stage", "predictors": ["age", "bmi", "arm", "sex"],
+        "reference": "I"})
+    if j:
+        rows = [
+            {**c, "variable": f"{eq['category']}:{c['variable']}"}
+            for eq in j.get("equations", []) for c in eq["coefficients"]
+        ]
+        models["multinomial"] = {
+            "terms": _terms(rows, "variable", "log_rrr", "se", "z", "p"),
+            "aic": _f(j.get("aic")),
+            "log_likelihood": _f(j.get("log_likelihood")),
+            "raw_keys": sorted(j.keys()),
+        }
+
     # ── Cox ───────────────────────────────────────────────────────────────
     j = call("cox", "/api/models/survival/cox", {
         "session_id": SID, "duration_col": "time", "event_col": "status",

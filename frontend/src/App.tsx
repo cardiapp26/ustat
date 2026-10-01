@@ -198,6 +198,7 @@ const TEST_CATALOG: TestEntry[] = [
   { name: "Gamma GLM", tab: "models" },
   { name: "Polynomial", tab: "models", aliases: ["polynomial regression"] },
   { name: "Ordinal Logistic", tab: "models", aliases: ["proportional odds"] },
+  { name: "Multinomial Logistic", tab: "models", aliases: ["multinomial", "mnlogit", "polytomous", "nominal outcome", "relative risk ratio", "çok kategorili lojistik"] },
   { name: "Mixed-effects (LMM)", tab: "models", aliases: ["lmm", "linear mixed"] },
   { name: "GEE", tab: "models", aliases: ["generalized estimating equations"] },
   { name: "Stepwise selection", tab: "models", aliases: ["forward backward stepwise"] },

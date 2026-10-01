@@ -207,6 +207,46 @@ def ordinal(b: dict) -> dict:
     }
 
 
+def multinomial(b: dict) -> dict:
+    y = field(b, "outcome", default="outcome")
+    preds = columns(b, "predictors")
+    ref = b.get("reference")
+    r_rhs = rhs([rname(p) for p in preds])
+    py_ref = (
+        f"ref = {lit(ref)}\n" if ref is not None else
+        "ref = cats[0]  # uSTAT's default: first in dictionary / numeric / alphabetical order\n"
+    )
+    r_ref = lit(ref) if ref is not None else f"levels(factor(df${rname(y)}))[1]"
+    return {
+        "title": f"Multinomial logistic regression: {y} ~ {r_rhs}",
+        "python": (
+            "import numpy as np\n"
+            "import pandas as pd\n"
+            "import statsmodels.api as sm\n\n"
+            f"d = df[{plist([y] + preds)}].dropna()\n"
+            f"cats = sorted(d[{lit(y)}].astype(str).unique())\n"
+            + py_ref
+            + "order = [ref] + [c for c in cats if c != ref]  # MNLogit's baseline is code 0\n"
+            f"y = pd.Categorical(d[{lit(y)}].astype(str), categories=order).codes\n"
+            f"X = sm.add_constant(pd.get_dummies(d[{plist(preds)}], drop_first=True).astype(float))\n"
+            'fit = sm.MNLogit(y, X).fit(method="newton", maxiter=200, disp=False)\n'
+            "fit.summary()\n"
+            "np.exp(fit.params)  # relative risk ratios, one column per non-reference category"
+        ),
+        "r": (
+            "library(nnet)\n\n"
+            f"df${rname(y)} <- relevel(factor(df${rname(y)}), ref = {r_ref})\n"
+            f"fit <- multinom({rname(y)} ~ {r_rhs}, data = df, reltol = 1e-12, maxit = 1000)\n"
+            "s <- summary(fit)\n"
+            "z <- s$coefficients / s$standard.errors\n"
+            "list(RRR = exp(s$coefficients), p = 2 * pnorm(-abs(z)))\n"
+            "# Each predictor's likelihood-ratio test, as uSTAT reports it:\n"
+            f"lapply(c({', '.join(lit(p) for p in preds)}), function(term)\n"
+            "  anova(update(fit, as.formula(paste('. ~ . -', term)), trace = FALSE), fit))"
+        ),
+    }
+
+
 def firth(b: dict) -> dict:
     _, r_f = _formulas(b, scale=True)
     return {
@@ -233,5 +273,6 @@ ENDPOINTS = {
     "/api/models/negbinom": negbinom,
     "/api/models/gamma": gamma,
     "/api/models/ordinal": ordinal,
+    "/api/models/multinomial": multinomial,
     "/api/models/firth_logistic": firth,
 }

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useStore } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
-import { runLinear, runLogistic, runFirthLogistic, runKM, runCox, runLogisticTable, runPoisson, runCoxUniMulti, runOrdinal, runMultiOutcomeRegression } from "../api";
+import { runLinear, runLogistic, runFirthLogistic, runKM, runCox, runLogisticTable, runPoisson, runCoxUniMulti, runOrdinal, runMultinomial, runMultiOutcomeRegression } from "../api";
 import { Tip, InfoBanner } from "./Tip";
 import StaleResultNotice from "./StaleResultNotice";
 import StaleGuard from "./StaleGuard";
@@ -18,6 +18,7 @@ import type { ModelResult } from "./models/shared";
 import { MODEL_GUIDANCE, MODEL_FOREST_TITLE } from "./models/guidance";
 import { CiMethodNote, ForestBuilderButton, OutcomeOrderNote, SparklineMini } from "./models/widgets";
 import MultiOutcomeResult from "./models/MultiOutcomeResult";
+import MultinomialResult from "./models/MultinomialResult";
 
 export default function ModelsPanel() {
   const session  = useStore((s) => s.session);
@@ -58,6 +59,9 @@ export default function ModelsPanel() {
   const [eventCol, setEventCol] = usePersistedPanelState<string>("models", "eventCol", binaryCols[0] ?? numCols[1] ?? "");
   const [groupCol, setGroupCol] = usePersistedPanelState<string>("models", "groupCol", "");
   const [stratifyCol, setStratifyCol] = usePersistedPanelState<string>("models", "stratifyCol", "");
+  // Multinomial: the baseline category every other outcome category is
+  // compared with. Empty = the server's default (first in dictionary order).
+  const [mnReference, setMnReference] = usePersistedPanelState<string>("models", "mnReference", "");
   const setForestHandoff = useStore((s) => s.setForestHandoff);
   const setActiveTab = useStore((s) => s.setActiveTab);
   const setVisualSubTab = useStore((s) => s.setVisualSubTab);
@@ -79,7 +83,7 @@ export default function ModelsPanel() {
   // model stale for clicking a row.
   const runParams = {
     model, outcome, predictors, parsimonious, references, glmInteractions,
-    selection, durationCol, eventCol, groupCol, stratifyCol,
+    selection, durationCol, eventCol, groupCol, stratifyCol, mnReference,
     imputation, robustSE, scaleFactors,
     moOutcomes, moPredictors, moCovariates, moStandardize, moRobust,
   };
@@ -92,6 +96,15 @@ export default function ModelsPanel() {
   if (!session) return null;
 
   const sid = session.session_id;
+
+  // Known levels of the outcome, for the multinomial reference picker: the
+  // dictionary order, else the value-label codes, else what the last fit saw.
+  const outcomeMeta = session.columns.find((c) => c.name === outcome);
+  const outcomeLevels: string[] = outcomeMeta?.level_order?.length
+    ? outcomeMeta.level_order
+    : outcomeMeta?.value_labels
+      ? Object.keys(outcomeMeta.value_labels).sort((a, b) => (Number(a) || 0) - (Number(b) || 0))
+      : result?.outcome === outcome && Array.isArray(result?.categories) ? result.categories : [];
 
   const run = async () => {
     setLoading(true); setError(null); setResult(null); setSelectedCoefIdx(null);
@@ -106,6 +119,13 @@ export default function ModelsPanel() {
       else if (model === "firth_ortable") res = await runLogisticTable({ session_id: sid, outcome, predictors, scale_factors: sf, selection, imputation, use_firth: true });
       else if (model === "poisson") res = await runPoisson({ session_id: sid, outcome, predictors, imputation, robust_se: robustSE });
       else if (model === "ordinal") res = await runOrdinal({ session_id: sid, outcome, predictors, imputation });
+      else if (model === "multinomial") {
+        // Send the reference whenever the levels are known, so the recorded
+        // request (and the R / Python it is translated to) names the same
+        // baseline the fit used.
+        const reference = mnReference && outcomeLevels.includes(mnReference) ? mnReference : outcomeLevels[0];
+        res = await runMultinomial({ session_id: sid, outcome, predictors, imputation, reference });
+      }
       else if (model === "multi_outcome") res = await runMultiOutcomeRegression({ session_id: sid, outcomes: moOutcomes, predictors: moPredictors, covariates: moCovariates, standardize: moStandardize, imputation, robust_se: moRobust });
       else if (model === "km") res = await runKM({ session_id: sid, duration_col: durationCol, event_col: eventCol, group_col: groupCol || undefined, stratify_col: stratifyCol || undefined, imputation });
       else if (model === "hrtable") {
@@ -249,6 +269,7 @@ export default function ModelsPanel() {
   const isORTable   = model === "ortable" || model === "firth_ortable";
   const isHRTable   = model === "hrtable";
   const isMultiOutcome = model === "multi_outcome";
+  const isMultinomial = model === "multinomial";
   // Ordinal outcome → proportional-odds model is the right choice.
   const outcomeIsOrdinal = session.columns.some((c) => c.name === outcome && c.kind === "ordinal");
   const suggestOrdinal = outcomeIsOrdinal && model !== "ordinal" && !isHRTable;
@@ -272,6 +293,7 @@ export default function ModelsPanel() {
             ["linear",   "Linear Regression",       "Predict a continuous outcome (e.g. blood pressure) from one or more predictors. Output: β coefficients, R², p-values."],
             ["multi_outcome", "Multi-outcome regression", "Simultaneous linear regression of ≥2 continuous outcomes on shared predictors/covariates. Produces consolidated table with B, SE, β, 95% CI, p per outcome (APA-style)."],
             ["logistic", "Logistic Regression",      "Predict a binary outcome (0/1, yes/no) — outputs Odds Ratios showing how each predictor changes the odds of the event."],
+            ["multinomial", "Multinomial Logistic", "For an unordered categorical outcome with ≥3 levels (cause of death, AF pattern, stent type), or an ordinal one whose proportional-odds assumption fails. One equation per category against a reference; reports relative risk ratios (RRR)."],
             ["ordinal",  "Ordinal Logistic (proportional odds)", "For an ordered categorical outcome with ≥3 levels (NYHA, Killip, none/mild/severe). Proportional-odds model: one OR per predictor shared across the cumulative thresholds. Mark the outcome 'Ordered Categorical' in the Data tab."],
             ["ortable",  "OR Table (Uni + Multi)",   "Run univariate logistic regression for each predictor separately, then all significant ones together in a multivariate model. Standard for clinical papers."],
             ["firth",    "Firth Logistic (penalized)", "Bias-corrected logistic regression (Firth 1993). Use when standard logistic fails or returns infinite ORs from rare events / separation. Same output shape as Logistic but with Jeffreys-prior penalty."],
@@ -618,6 +640,27 @@ export default function ModelsPanel() {
                 )}
               </div>
 
+              {isMultinomial && (
+                <div>
+                  <label className="text-xs text-gray-400 block mb-1">
+                    Reference category
+                    <Tip wide text="Every other outcome category is compared with this one. Pick the clinically natural baseline (e.g. 'no event', 'paroxysmal'). Changing it re-expresses the same model; the fit and the likelihood-ratio tests do not change." />
+                  </label>
+                  {outcomeLevels.length > 0 ? (
+                    <select className="select w-full text-xs" value={mnReference && outcomeLevels.includes(mnReference) ? mnReference : outcomeLevels[0]}
+                      onChange={(e) => setMnReference(e.target.value)}>
+                      {outcomeLevels.map((lv) => (
+                        <option key={lv} value={lv}>{outcomeMeta?.value_labels?.[lv] ?? lv}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <p className="text-[10px] text-gray-500 leading-snug">
+                      First category in dictionary or alphabetical order. Fit once to choose another, or set the order in the Data Dictionary.
+                    </p>
+                  )}
+                </div>
+              )}
+
               {isORTable && (
                 <div>
                   <label className="text-xs text-gray-400 block mb-1">Multivariate Selection</label>
@@ -815,6 +858,8 @@ export default function ModelsPanel() {
             </div>
           ) : isMultiOutcome ? (
             <MultiOutcomeResult result={result} standardize={moStandardize} stale={stale} staleReason={describeStale(staleWhy)} provenance={stamp?.provenance} />
+          ) : isMultinomial && result.equations ? (
+            <MultinomialResult result={result} valueLabels={colByName[result.outcome ?? ""]?.value_labels} stale={stale} staleReason={describeStale(staleWhy)} provenance={stamp?.provenance} />
           ) : (
           <div className="space-y-4">
             {/* Summary cards */}
@@ -894,6 +939,11 @@ export default function ModelsPanel() {
                         const bad = b.by_predictor.filter((x) => x.violation).map((x) => x.variable);
                         return bad.length ? <> Flagged predictor(s): <strong>{bad.join(", ")}</strong>.</> : null;
                       })()}
+                      {violated && (
+                        <button onClick={() => { setModel("multinomial"); setResult(null); }} className="ml-2 underline hover:text-amber-900">
+                          Fit a multinomial model instead
+                        </button>
+                      )}
                     </div>
                     {b.by_predictor && b.by_predictor.length > 0 && (
                       <table className="w-full text-xs mt-2">

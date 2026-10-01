@@ -18,6 +18,7 @@ ALIASES = {
     "Intercept": "(Intercept)",
     "arm_treat": "armtreat",
     "sex_M": "sexM",
+    "sex_Male": "sexM",
     "arm[T.treat]": "armtreat",
     "visit[T.v2]": "visitv2",
     "visit[T.v3]": "visitv3",
@@ -31,7 +32,11 @@ ABS_P = 1e-8  # absolute tolerance for p-values
 
 
 def canon(term: str) -> str:
-    return ALIASES.get(term, term)
+    if term in ALIASES:
+        return ALIASES[term]
+    # "II:arm_treat" (a multinomial equation) and "age:sex_M" (an
+    # interaction) alias part by part.
+    return ":".join(ALIASES.get(part, part) for part in term.split(":"))
 
 
 def close(a, b, rel=REL, abs_=0.0) -> bool:
@@ -56,6 +61,7 @@ def main() -> int:
         ("gamma", "gamma"),
         ("negbinom", "negbinom"),
         ("ordinal", "ordinal_polr"),
+        ("multinomial", "multinomial"),
         ("cox", "cox"),
         ("firth_logistic", "firth_logistic"),
         ("lmm", "lmm"),
@@ -118,6 +124,8 @@ def main() -> int:
         ("poisson", "poisson", "aic", "aic"),
         ("gamma", "gamma", "aic", "aic"),
         ("negbinom", "negbinom", "aic", "aic"),
+        ("multinomial", "multinomial", "aic", "aic"),
+        ("multinomial", "multinomial", "log_likelihood", "log_likelihood"),
         ("cox", "cox", "concordance", "concordance"),
         ("cox", "cox", "log_likelihood", "log_likelihood"),
     ]

@@ -129,6 +129,8 @@ REQUESTS = [
     _post("/api/models/poisson", outcome="visits", predictors=["age"], robust_se=True),
     _post("/api/models/negbinom", outcome="visits", predictors=["age", "sex"]),
     _post("/api/models/gamma", outcome="cost", predictors=["age"], link="log"),
+    _post("/api/models/multinomial", outcome="af_type", predictors=["age", "sex"],
+          reference="paroxysmal"),
     _post("/api/models/survival/cox", duration_col="t", event_col="died",
           predictors=["age", "arm"], imputation="mice"),
     _post("/api/models/survival/km", duration_col="t", event_col="died", group_col="arm",

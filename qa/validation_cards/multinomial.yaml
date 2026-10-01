@@ -1,0 +1,39 @@
+method: multinomial_logistic
+title: Multinomial (baseline-category) logistic regression
+panel: models
+endpoints: ["/api/models/multinomial"]
+covers: ["models:multinomial"]
+implementation:
+  library: statsmodels
+  entrypoint: statsmodels.discrete.discrete_model.MNLogit (Newton, BFGS fallback) via backend/routers/models/multinomial.py
+  version_source: /api/engine/identity (X-uStat-Packages)
+assumptions:
+  - Nominal outcome with 3 to 10 categories; independence of irrelevant alternatives
+  - Enough cases per category for the parameters of each equation (warned below 10 per parameter)
+unsupported:
+  - Interaction terms, robust or clustered SEs, case weights
+  - Hausman-McFadden IIA test
+behavior:
+  missing_data: Listwise deletion over outcome + predictors (or the requested imputation)
+  weights: Not supported
+  ties: Not applicable
+  category_coding: >-
+    Outcome levels ordered by services/level_order.py (request, Data Dictionary, numeric,
+    recognised labels) and alphabetically otherwise; the reference is the request's or the
+    first level. Predictors dummy-coded, first level reference. Per-predictor LR tests drop
+    all of a predictor's columns from every equation (anova of nested nnet::multinom fits).
+reference:
+  software: R (pinned image qa/r_reference)
+  entrypoint: nnet::multinom(reltol = 1e-14); p = 2 pnorm(-|b/se|); LR tests from nested fits
+  artifacts:
+    - {file: qa/models_audit/reference.json, key: models.multinomial}
+compared: [coefficients, standard_errors, p_values, aic, log_likelihood, lr_tests]
+tolerance:
+  rel: 1.0e-4
+  rationale: qa/models_audit/compare.py REL; backend/tests/test_multinomial_vs_r.py holds SEs to 1e-6 and LR statistics to 1e-6
+edge_cases:
+  - {case: two-category outcome refused with a pointer to logistic regression, status: covered, test: backend/tests/test_multinomial_vs_r.py::test_two_categories_point_to_logistic}
+  - {case: complete separation refused instead of served as blank estimates, status: covered, test: backend/tests/test_multinomial_vs_r.py::test_complete_separation_is_refused_not_served_as_blanks}
+  - {case: quasi-separation in one equation flagged, status: covered, test: backend/tests/test_multinomial_vs_r.py::test_quasi_separation_in_one_equation_is_flagged}
+  - {case: re-basing the reference leaves the fit unchanged, status: covered, test: backend/tests/test_multinomial_vs_r.py::test_reference_category_can_be_chosen}
+findings: []

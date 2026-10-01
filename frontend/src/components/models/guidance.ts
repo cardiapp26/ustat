@@ -49,6 +49,11 @@ export const MODEL_GUIDANCE: Record<string, { use: string; check: string; interp
     check: "Outcome must be an ordered categorical (mark it 'Ordered Categorical' in the Data tab). Proportional-odds assumption: each predictor's effect is constant across the category cut-points.",
     interpret: "OR > 1 = higher odds of being in a HIGHER category per unit increase. One OR per predictor (not one per category). Report OR (95% CI), p.",
   },
+  multinomial: {
+    use: "Unordered categorical outcome with 3 or more levels (cause of death, AF pattern, stent type), or an ordinal outcome whose proportional-odds assumption fails (Brant test).",
+    check: "At least about 10 cases per estimated parameter in every category. Very large coefficients or SEs signal separation: merge sparse categories. The model assumes independence of irrelevant alternatives.",
+    interpret: "One equation per category against the reference. RRR > 1 = higher odds of that category rather than the reference per unit increase. Judge each predictor overall by its likelihood-ratio test, then read the RRR rows.",
+  },
   hrtable: {
     use: "Publication HR table (Table 3): each predictor's univariable HR, its parsimonious-model HR (a subset you tick), and its fully-adjusted HR (all predictors together) side by side.",
     check: "Event column must be binary 0/1, duration positive. Tick which predictors enter the parsimonious column. Categorical predictors expand to one row per level vs the reference.",
