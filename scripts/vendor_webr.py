@@ -135,7 +135,13 @@ EXCLUDE_SUFFIXES = (".map",)
 #
 # nortest and moments are leaf packages -- nortest imports only stats, moments
 # nothing at all -- so neither drags a closure behind it.
-REQUIRED_PACKAGES = ["jsonlite", "moments", "nortest"]
+#   cmprsk    Gray's K-sample test of cumulative incidence (cmprsk::cuminc).
+#             Gray's variance has no published finite-sample form that
+#             reproduces cmprsk, and cmprsk is GPL while uSTAT is MIT, so the
+#             test runs in R or not at all. cmprsk Depends on survival, which
+#             pulls Matrix and lattice: about 11.8 MB, loaded only the first
+#             time an R session runs Gray's test.
+REQUIRED_PACKAGES = ["jsonlite", "moments", "nortest", "cmprsk"]
 
 USER_AGENT = "ustat-vendor-webr/1.0 (+scripts/vendor_webr.py)"
 

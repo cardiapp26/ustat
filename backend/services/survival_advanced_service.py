@@ -1056,7 +1056,8 @@ def fit_fine_gray(req):
                 "not_grays_test": (
                     "Compares cause-specific hazards, not cumulative incidence. "
                     "Gray's test (R cmprsk::cuminc) compares the CIFs and can give "
-                    "a different answer when competing-event rates differ by group."
+                    "a different answer when competing-event rates differ by group; "
+                    "uSTAT runs it in the R engine (Gray's test card below)."
                 ),
             }
         except Exception:

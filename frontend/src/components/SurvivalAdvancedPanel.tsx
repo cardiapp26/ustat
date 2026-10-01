@@ -19,6 +19,7 @@ import ThreeCol from "./ThreeCol";
 import { fmtP, fmtPubP, warningText } from "../lib/format";
 import { labelFor } from "../lib/valueLabels";
 import type { PlotData, PlotLayout, PlotCaptureHandle, PlotRef } from "../lib/plotTypes";
+import GrayTestCard from "./survival/GrayTestCard";
 
 // ── Loose result shapes for the survival API responses ────────────────────────
 // The /api/survival_advanced/* and /api/models/survival/* endpoints return wide,
@@ -1778,6 +1779,14 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
           }
         />
         </StaleGuard>
+        {/* Outside the guard: Gray's test is its own result, current or not
+            independently of the Fine-Gray fit above it. */}
+        {fgGroup && (
+          <div className="mt-3 max-w-xl">
+            <GrayTestCard sessionId={sid} durationCol={fgDuration} eventCol={fgEvent}
+              groupCol={fgGroup} eventOfInterest={fgInterest} />
+          </div>
+        )}
       </Section>
       )}
 

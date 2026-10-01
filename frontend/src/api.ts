@@ -267,6 +267,52 @@ export const runTTest = async (data: TTestRequest) => {
     frameColumns: [data.column, data.group_column].filter(Boolean) as string[],
   });
 };
+export interface GrayTestRequest {
+  session_id: string;
+  duration_col: string;
+  event_col: string;
+  group_col: string;
+  event_of_interest: number;
+}
+
+export interface GrayTestResult {
+  test: string;
+  statistic: number;
+  df: number;
+  p: number;
+  event_of_interest: number;
+  hypothesis: string;
+  groups: Array<{ group: string; n: number; event_of_interest: number; competing_events: number; censored: number }>;
+  by_cause: Array<{ event: number; statistic: number; p: number; df: number }>;
+  n: number;
+  n_excluded: number;
+  engine: string;
+  r_code: string;
+}
+
+/** Thrown when Gray's test is asked of an engine that cannot run it. */
+export class GrayNeedsREngine extends Error {
+  constructor() {
+    super(
+      "Gray's test runs in the R engine (cmprsk::cuminc) and could not run here. " +
+      "Switch the session to R, or run the R code below in your own R.",
+    );
+    this.name = "GrayNeedsREngine";
+  }
+}
+
+// Gray's K-sample test exists only in the R engine: the server has no
+// implementation that matches cmprsk (see backend/ustat_engine_r/analyses/
+// gray.R), so the "server" rung of the ladder refuses instead of answering.
+export const runGrayTest = async (data: GrayTestRequest) => {
+  const { localFirst } = await import("./lib/engine/localFirst");
+  return localFirst<GrayTestResult>(
+    "survival.gray",
+    data,
+    () => Promise.reject(new GrayNeedsREngine()),
+    { frameColumns: [data.duration_col, data.event_col, data.group_col] },
+  );
+};
 export const runChiSquare = (data: ChiSquareRequest) => api.post("/api/stats/chisquare", data);
 export const runAnova = (data: AnovaRequest) => api.post("/api/stats/anova", data);
 export const runMannWhitney = (data: MannWhitneyRequest) => api.post("/api/stats/mannwhitney", data);

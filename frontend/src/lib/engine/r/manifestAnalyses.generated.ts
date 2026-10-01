@@ -23,6 +23,11 @@ export interface RManifestAnalysis {
 
 export const R_MANIFEST_ANALYSES: readonly RManifestAnalysis[] = [
   {
+    id: "survival.gray",
+    needsFrame: true,
+    rPackages: ["cmprsk"],
+  },
+  {
     id: "stats.ttest",
     needsFrame: true,
     rPackages: ["moments", "nortest"],

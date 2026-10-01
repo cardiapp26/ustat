@@ -526,17 +526,18 @@ def test_the_bundle_reports_itself_in_shapes_javascript_can_read(tmp_path):
     identity = json.loads(out_path.read_text(encoding="utf-8"))
     assert identity["schema"] == "ustat.frame/1"
     assert isinstance(identity["analyses"], list)
-    assert identity["analyses"] == ["stats.ttest"]
+    assert identity["analyses"] == ["stats.ttest", "survival.gray"]
     assert isinstance(identity["packages"], list)
-    assert identity["packages"] == ["moments", "nortest"]
+    assert identity["packages"] == ["cmprsk", "moments", "nortest"]
     assert identity["r_version"].startswith("4.")
 
     # And the manifest the server serves says the same about the packages, since
     # that is what the browser's boot plan is built from.
     from ustat_engine_r.fingerprint import analyses as declared
 
-    ttest = next(a for a in declared() if a["id"] == "stats.ttest")
-    assert ttest["packages"] == identity["packages"]
+    # The bundle reports the union over every registered analysis.
+    union = sorted({pkg for a in declared() for pkg in a["packages"]})
+    assert union == identity["packages"]
 
 
 # ---------------------------------------------------------------------------

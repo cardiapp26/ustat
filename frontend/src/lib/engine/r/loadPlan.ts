@@ -31,14 +31,16 @@ export const R_BUNDLE_PACKAGES: readonly string[] = ["jsonlite"];
  * is not the same as having watched it produce the right numbers under webR,
  * and only the second earns a place here. `stats.ttest` is here because R1b
  * ran it in a browser against the server and against `qa/tests_audit/
- * reference.json` (R 4.5.2, native) and compared every field; nothing else has,
- * so nothing else is listed.
+ * reference.json` (R 4.5.2, native) and compared every field. `survival.gray`
+ * (cmprsk::cuminc) was run under webR 0.6.0 in a browser and its statistic and
+ * p compared with native cmprsk on the same rows; it has no server engine to
+ * fall back to, so the Fine-Gray panel offers to move the session to R.
  *
  * Intersected with the generated manifest copy rather than written out flat, so
  * that an id removed from the R sources leaves the allow-list automatically
  * instead of lingering as a name that boots webR and then 404s inside it.
  */
-const PROVEN_IN_BROWSER: readonly string[] = ["stats.ttest"];
+const PROVEN_IN_BROWSER: readonly string[] = ["stats.ttest", "survival.gray"];
 
 const DECLARED_IDS = new Set(R_MANIFEST_ANALYSES.map((a) => a.id));
 
