@@ -5,7 +5,7 @@ with prior/posterior curve coordinates and equivalent R code.
 """
 
 import math
-from typing import List, Optional
+from typing import List, Optional, Union
 import numpy as np
 import pandas as pd
 from fastapi import APIRouter, HTTPException
@@ -17,30 +17,34 @@ from services import store
 from services.category_health import clean_two_level
 from services.stat_utils import sorted_groups
 from services.impute import apply_imputation
+from services.bayes_anova import RSCALE_NAMED, jzs_oneway_bf
 
 
 def _bf_out(bf: float) -> float:
-    """A Bayes factor to five significant figures.
+    """A Bayes factor as computed, unrounded.
 
     These used to be rounded to four DECIMALS below 10,000, so any BF under
     5e-5 came back as exactly 0.0: BF01 = 1/BF10 for a strong effect read as
-    "no evidence for the null at all" instead of 1.3e-07. Significant
-    figures keep the magnitude at both ends.
+    "no evidence for the null at all" instead of 1.3e-07. Formatting is the
+    display layer's job (formatBF in the panel); the API keeps every digit so
+    a reader can compare it with BayesFactor directly.
     """
-    if not math.isfinite(bf) or bf == 0:
-        return bf
-    return float(f"{bf:.5g}")
+    return float(bf)
+
 
 router = APIRouter()
 
 
 class BayesianRequest(BaseModel):
     session_id: str
-    analysis_type: str                  # ttest_one | ttest_ind | ttest_paired | correlation | regression
+    analysis_type: str                  # ttest_one | ttest_ind | ttest_paired | correlation | regression | anova
     outcome: str                        # outcome variable or first variable
     predictor: Optional[str] = None     # grouping variable (ttest) or second variable (correlation)
     predictors: Optional[List[str]] = None # for multiple regression
     mu: float = 0.0                     # test value for one-sample t-test
+    # ANOVA prior scale on the standardised effects: BayesFactor's "medium"
+    # (0.5, its default), "wide" (0.707) or "ultrawide" (1), or a number.
+    rscale: Optional[Union[float, str]] = None
     imputation: str = "listwise"
 
 
@@ -433,6 +437,96 @@ def run_bayesian_regression(df: pd.DataFrame, req: BayesianRequest):
 
 # ── Route Entry Point ──
 
+def _anova_rscale(value) -> float:
+    if value is None:
+        return RSCALE_NAMED["medium"]
+    if isinstance(value, str):
+        if value in RSCALE_NAMED:
+            return RSCALE_NAMED[value]
+        raise HTTPException(422, f"Unknown prior scale '{value}'. Use {sorted(RSCALE_NAMED)} or a number.")
+    r = float(value)
+    if not (0 < r <= 10):
+        raise HTTPException(422, "The prior scale must be a positive number (BayesFactor default 0.5).")
+    return r
+
+
+def run_bayesian_anova(df: pd.DataFrame, req: BayesianRequest):
+    """One-way Bayesian ANOVA: the JZS Bayes factor of BayesFactor::anovaBF
+    for a single fixed factor (see services/bayes_anova.py)."""
+    if not req.predictor:
+        raise HTTPException(400, "Grouping variable required.")
+    rscale = _anova_rscale(req.rscale)
+    d = df[[req.outcome, req.predictor]].copy()
+    d[req.outcome] = pd.to_numeric(d[req.outcome], errors="coerce")
+    d = d.dropna()
+    d[req.predictor] = d[req.predictor].astype(str)
+    groups = sorted_groups(d[req.predictor])
+    if len(groups) < 2:
+        raise HTTPException(400, f"The grouping variable needs at least 2 groups. Found: {groups}")
+    if len(groups) > 20:
+        raise HTTPException(400, f"{len(groups)} groups: check the grouping variable is categorical.")
+    sizes = d[req.predictor].value_counts()
+    thin = [g for g in groups if sizes.get(g, 0) < 2]
+    if thin:
+        raise HTTPException(400, f"Every group needs at least 2 observations: {thin}")
+
+    y = d[req.outcome].to_numpy(dtype=float)
+    g = d[req.predictor].to_numpy()
+    try:
+        bf = jzs_oneway_bf(y, g, rscale)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    k, n = len(groups), len(y)
+    f_stat, f_p = sp.f_oneway(*[y[g == lv] for lv in groups])
+    grand = y.mean()
+    ss_between = sum(len(y[g == lv]) * (y[g == lv].mean() - grand) ** 2 for lv in groups)
+    ss_total = float(((y - grand) ** 2).sum())
+    eta_sq = ss_between / ss_total if ss_total > 0 else 0.0
+
+    # exp() overflows past ~709; the log is always reported.
+    bf10 = math.exp(bf.log_bf10) if bf.log_bf10 < 700 else None
+    bf01 = math.exp(-bf.log_bf10) if bf.log_bf10 > -700 else None
+    warnings = []
+    if bf10 is None:
+        warnings.append(f"BF10 exceeds 1e300; log10(BF10) = {bf.log_bf10 / math.log(10):.1f}.")
+    if bf.rel_error > 1e-4:
+        warnings.append(f"Numerical integration error about {100 * bf.rel_error:.2g}% of the Bayes factor.")
+
+    named = next((k_ for k_, v in RSCALE_NAMED.items() if abs(v - rscale) < 1e-12), None)
+    r_scale_arg = f'"{named}"' if named else repr(rscale)
+    r_code = (
+        "library(BayesFactor)\n"
+        f"data${req.predictor} <- factor(data${req.predictor})\n"
+        f"anovaBF({req.outcome} ~ {req.predictor}, data = data, rscaleFixed = {r_scale_arg})"
+    )
+    return {
+        "analysis": "Bayesian One-way ANOVA",
+        "statistic_label": "F",
+        "statistic_value": round(float(f_stat), 4),
+        "df": f"{k - 1}, {n - k}",
+        "n": n,
+        "effect_size_label": "η²",
+        "effect_size_value": round(eta_sq, 4),
+        "bf10": _bf_out(bf10) if bf10 is not None else None,
+        "bf01": _bf_out(bf01) if bf01 is not None else None,
+        "log_bf10": bf.log_bf10,
+        "bf_error_pct": 100 * bf.rel_error,
+        "prior_scale": rscale,
+        "groups": [
+            {
+                "group": lv, "n": int((g == lv).sum()),
+                "mean": float(y[g == lv].mean()), "sd": float(y[g == lv].std(ddof=1)),
+            }
+            for lv in groups
+        ],
+        "interpretation": interpret_bf(math.exp(max(min(bf.log_bf10, 700), -700))),
+        "plot_coords": [],
+        "warnings": warnings,
+        "r_code": r_code,
+    }
+
+
 @router.post("")
 def run_bayesian(req: BayesianRequest):
     df = store.get_filtered(req.session_id)
@@ -450,7 +544,7 @@ def run_bayesian(req: BayesianRequest):
     if missing:
         raise HTTPException(status_code=400, detail=f"Columns not found: {missing}")
         
-    if req.analysis_type == "ttest_ind" and req.predictor:
+    if req.analysis_type in ("ttest_ind", "anova") and req.predictor:
         numeric_cols = [req.outcome]
         df_sub = df[cols_to_check].copy()
         df_sub[req.outcome] = pd.to_numeric(df_sub[req.outcome], errors="coerce")
@@ -473,5 +567,10 @@ def run_bayesian(req: BayesianRequest):
         return run_bayesian_correlation(df_sub, req)
     elif req.analysis_type == "regression":
         return run_bayesian_regression(df_sub, req)
+    elif req.analysis_type == "anova":
+        if not req.predictor:
+            raise HTTPException(400, "Grouping variable required.")
+        df_sub[req.predictor] = df[req.predictor]
+        return run_bayesian_anova(df_sub, req)
     else:
         raise HTTPException(status_code=422, detail=f"Unknown analysis type: {req.analysis_type}")

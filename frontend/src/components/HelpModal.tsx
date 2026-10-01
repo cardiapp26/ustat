@@ -203,7 +203,7 @@ export default function HelpModal({ onClose }: { onClose: () => void }) {
                   <Block title="Linear / GLM family" body={
                     <>Linear (OLS) with robust HC0–HC4 standard errors, Logistic (binary), Firth penalized logistic for separation /
                     rare events, Poisson and Negative Binomial for counts (IRR with offset support), Gamma GLM, Ordinal (proportional
-                    odds). VIF / collinearity diagnostics, residual plots, influence (Cook's D, leverage), Box-Tidwell linearity check,
+                    odds), Multinomial (nominal outcomes, relative risk ratios with a likelihood-ratio test per predictor). VIF / collinearity diagnostics, residual plots, influence (Cook's D, leverage), Box-Tidwell linearity check,
                     and an <span className="font-semibold">OR table (Uni + Multi)</span> for one-click univariable → multivariable workflow.</>
                   } />
 
@@ -397,7 +397,8 @@ export default function HelpModal({ onClose }: { onClose: () => void }) {
                   } />
 
                   <Block title="Bayesian hypothesis tests" body={
-                    <>JZS Bayes Factor for t-tests (one-sample, independent, paired), correlation, and linear regression;
+                    <>JZS Bayes Factor for t-tests (one-sample, independent, paired), correlation, linear regression and one-way
+                    ANOVA (one fixed factor, as BayesFactor's anovaBF; medium / wide / ultrawide prior scale);
                     BF₁₀ / BF₀₁ with evidence categories and a prior (Cauchy, <em>r</em> = 0.707) vs posterior density overlay
                     with the Savage-Dickey ratio at zero.</>
                   } />
@@ -616,7 +617,7 @@ const TOUR_TABS: TourTab[] = [
     blurb: "Linear, logistic, Firth, Poisson, gamma, ordinal, polynomial — full coefficient tables.",
     steps: [
       "Go to Models → Regression.",
-      "Pick the model matching your outcome (Linear / Logistic / Firth / Poisson / NegBinom / Gamma / Ordinal).",
+      "Pick the model matching your outcome (Linear / Logistic / Firth / Poisson / NegBinom / Gamma / Ordinal / Multinomial).",
       "Choose the Outcome, then tick the Predictors.",
       "Optional: Robust SE, imputation, interactions, scale factors.",
       "Click Fit → coefficient table (β / OR / IRR) with 95% CI + p, model-fit (R², AIC), plain-English summary.",

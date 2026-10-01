@@ -11,22 +11,34 @@ import StaleGuard from "./StaleGuard";
 import { formatBF } from "../lib/format";
 import type { PlotData, PlotCaptureHandle } from "../lib/plotTypes";
 
-type AnalysisType = "ttest_one" | "ttest_ind" | "ttest_paired" | "correlation" | "regression";
+type AnalysisType = "ttest_one" | "ttest_ind" | "ttest_paired" | "correlation" | "regression" | "anova";
+type PriorScale = "medium" | "wide" | "ultrawide";
 
 interface PlotCoord {
   x: number;
   prior: number;
   posterior: number;
 }
+interface GroupSummary {
+  group: string;
+  n: number;
+  mean: number;
+  sd: number;
+}
 interface BayesianResult {
   analysis: string;
   n: number;
-  bf10: number;
-  bf01: number;
+  // null when the Bayes factor overflows a double; log_bf10 then carries it.
+  bf10: number | null;
+  bf01: number | null;
+  log_bf10?: number;
   interpretation: string;
   statistic_label: string;
   statistic_value: number;
-  df?: number;
+  df?: number | string;
+  groups?: GroupSummary[];
+  prior_scale?: number;
+  warnings?: string[];
   effect_size_label: string;
   effect_size_value: number;
   plot_coords?: PlotCoord[];
@@ -57,6 +69,7 @@ function BayesianPanelBody({ session }: { session: Session }) {
   // Persisted with the rest: the result now survives a tab switch, and a test
   // value reset to 0 beside it would date a one-sample result for nothing.
   const [mu, setMu] = usePersistedPanelState<number>("bayesian", "mu", 0.0);
+  const [priorScale, setPriorScale] = usePersistedPanelState<PriorScale>("bayesian", "priorScale", "medium");
   const [imputation, setImputation] = usePersistedPanelState<string>("bayesian", "imputation", "listwise");
 
   // The request less the session id, which is also what the result is stamped
@@ -67,7 +80,9 @@ function BayesianPanelBody({ session }: { session: Session }) {
     imputation,
     ...(analysisType === "ttest_one" ? { mu } : {}),
     ...(analysisType === "ttest_ind" || analysisType === "ttest_paired" || analysisType === "correlation"
+      || analysisType === "anova"
       ? { predictor } : {}),
+    ...(analysisType === "anova" ? { rscale: priorScale } : {}),
     ...(analysisType === "regression" ? { predictors } : {}),
   };
   const {
@@ -99,8 +114,8 @@ function BayesianPanelBody({ session }: { session: Session }) {
   };
 
   // Interpretation styling helper
-  const interpretationStyle = (bf10: number) => {
-    if (bf10 >= 10.0) return "bg-emerald-50 border-emerald-200 text-emerald-800";
+  const interpretationStyle = (bf10: number | null) => {
+    if (bf10 == null || bf10 >= 10.0) return "bg-emerald-50 border-emerald-200 text-emerald-800";
     if (bf10 <= 0.1) return "bg-blue-50 border-blue-200 text-blue-800";
     return "bg-amber-50 border-amber-200 text-amber-800";
   };
@@ -200,6 +215,7 @@ function BayesianPanelBody({ session }: { session: Session }) {
               <option value="ttest_paired">Bayesian Paired t-test</option>
               <option value="correlation">Bayesian Correlation (Pearson)</option>
               <option value="regression">Bayesian Multiple Regression</option>
+              <option value="anova">Bayesian One-way ANOVA</option>
             </select>
           </div>
 
@@ -235,7 +251,7 @@ function BayesianPanelBody({ session }: { session: Session }) {
             )}
 
             {/* Predictor for independent t-test (categorical) */}
-            {analysisType === "ttest_ind" && (
+            {(analysisType === "ttest_ind" || analysisType === "anova") && (
               <div>
                 <label className="text-xs font-medium text-gray-600 block mb-1">Grouping Variable</label>
                 <select
@@ -246,6 +262,18 @@ function BayesianPanelBody({ session }: { session: Session }) {
                   {[...catCols, ...numCols].map((c) => (
                     <option key={c}>{c}</option>
                   ))}
+                </select>
+              </div>
+            )}
+
+            {analysisType === "anova" && (
+              <div>
+                <label className="text-xs font-medium text-gray-600 block mb-1">Prior scale on effects</label>
+                <select className="select text-xs w-full" value={priorScale}
+                  onChange={(e) => setPriorScale(e.target.value as PriorScale)}>
+                  <option value="medium">Medium, r = 0.5 (BayesFactor default)</option>
+                  <option value="wide">Wide, r = 0.707</option>
+                  <option value="ultrawide">Ultrawide, r = 1</option>
                 </select>
               </div>
             )}
@@ -361,7 +389,7 @@ function BayesianPanelBody({ session }: { session: Session }) {
                       Bayes Factor BF₁₀
                     </p>
                     <p className="text-2xl font-bold font-mono text-indigo-700 mt-1">
-                      {formatBF(result.bf10)}
+                      {result.bf10 == null && result.log_bf10 != null ? `10^${(result.log_bf10 / Math.LN10).toFixed(1)}` : formatBF(result.bf10)}
                     </p>
                   </div>
                   <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 text-center">
@@ -369,7 +397,7 @@ function BayesianPanelBody({ session }: { session: Session }) {
                       Bayes Factor BF₀₁
                     </p>
                     <p className="text-2xl font-bold font-mono text-gray-600 mt-1">
-                      {formatBF(result.bf01)}
+                      {result.bf01 == null && result.log_bf10 != null ? `10^${(-result.log_bf10 / Math.LN10).toFixed(1)}` : formatBF(result.bf01)}
                     </p>
                   </div>
                 </div>
@@ -402,6 +430,41 @@ function BayesianPanelBody({ session }: { session: Session }) {
                 </div>
               </div>
             </div>
+
+            {(result.warnings ?? []).map((w) => (
+              <div key={w} className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1.5" role="status">{w}</div>
+            ))}
+
+            {result.groups && result.groups.length > 0 && (
+              <div className="panel">
+                <h5 className="font-semibold text-gray-900 mb-2 text-sm">
+                  Groups
+                  {result.prior_scale != null && (
+                    <span className="ml-2 text-xs font-normal text-gray-400">prior scale r = {result.prior_scale.toFixed(3)}</span>
+                  )}
+                </h5>
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-gray-500 border-b border-gray-200">
+                      <th className="text-left py-1 font-medium">Group</th>
+                      <th className="text-right py-1 font-medium">n</th>
+                      <th className="text-right py-1 font-medium">Mean</th>
+                      <th className="text-right py-1 font-medium">SD</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {result.groups.map((grp) => (
+                      <tr key={grp.group} className="border-b border-gray-100">
+                        <td className="py-1 text-gray-700">{grp.group}</td>
+                        <td className="py-1 text-right tabular-nums">{grp.n}</td>
+                        <td className="py-1 text-right tabular-nums">{grp.mean.toFixed(3)}</td>
+                        <td className="py-1 text-right tabular-nums">{grp.sd.toFixed(3)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
 
             {/* Prior vs Posterior chart */}
             {result.plot_coords && result.plot_coords.length > 0 && priorPosteriorPlot()}

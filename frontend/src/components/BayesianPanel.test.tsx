@@ -51,6 +51,38 @@ describe('BayesianPanel', () => {
     expect(screen.getByText(/Strong evidence for H1/)).toBeInTheDocument()
   })
 
+  it('runs a one-way Bayesian ANOVA with the chosen prior scale', async () => {
+    installSession()
+    let sent: Record<string, unknown> | null = null
+    server.use(
+      http.post('/api/bayesian', async ({ request }) => {
+        sent = (await request.json()) as Record<string, unknown>
+        return HttpResponse.json({
+          analysis: 'Bayesian One-way ANOVA',
+          n: 50, bf10: null, bf01: null, log_bf10: 506.0,
+          interpretation: 'Extreme evidence in favor of the alternative hypothesis (H₁)',
+          statistic_label: 'F', statistic_value: 12.3, df: '2, 47',
+          effect_size_label: 'η²', effect_size_value: 0.34, prior_scale: 0.7071,
+          groups: [{ group: 'A', n: 8, mean: 0.1, sd: 1 }, { group: 'B', n: 30, mean: 1.2, sd: 1 }],
+          warnings: [],
+        })
+      }),
+    )
+    const user = userEvent.setup()
+    render(<BayesianPanel />)
+    await user.selectOptions(screen.getByDisplayValue('Bayesian One-Sample t-test'), 'anova')
+    expect(screen.getByText('Grouping Variable')).toBeInTheDocument()
+    await user.selectOptions(screen.getByDisplayValue('Medium, r = 0.5 (BayesFactor default)'), 'wide')
+    await user.click(screen.getByRole('button', { name: /compute bayes factor/i }))
+
+    // An overflowing BF is shown from its log, not as a blank.
+    await waitFor(() => expect(screen.getByText('10^219.8')).toBeInTheDocument())
+    expect(screen.getByText('10^-219.8')).toBeInTheDocument()
+    expect(screen.getByText('2, 47')).toBeInTheDocument()
+    expect(screen.getByText('Groups')).toBeInTheDocument()
+    expect(sent).toMatchObject({ analysis_type: 'anova', rscale: 'wide' })
+  })
+
   it('shows the grouping-variable selector for independent t-test', async () => {
     installSession()
     const user = userEvent.setup()

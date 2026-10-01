@@ -265,6 +265,7 @@ const TEST_CATALOG: TestEntry[] = [
 
   // Bayesian
   { name: "Bayesian T-test", tab: "tests", aliases: ["bayes", "bayesian t test", "jzs", "bf10"] },
+  { name: "Bayesian ANOVA", tab: "tests", aliases: ["bayes anova", "anovabf", "bayes factor anova", "bayesian one-way"] },
   { name: "Bayesian Correlation", tab: "tests", aliases: ["bayesian pearson", "rho prior"] },
   { name: "Bayesian Regression", tab: "tests", aliases: ["bayesian multiple regression", "bic bf"] },
 ];
