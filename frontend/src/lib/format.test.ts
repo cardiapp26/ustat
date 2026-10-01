@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fmtP, fmtPFull, fmtPubP, fmtPubPHtml, pCellTitle, warningText } from './format'
+import { fmtP, fmtPFull, fmtPubP, fmtPubPHtml, formatBF, pCellTitle, warningText } from './format'
 
 describe('fmtP', () => {
   it('returns em-dash for null/undefined', () => {
@@ -111,5 +111,22 @@ describe('warningText', () => {
     expect(warningText(undefined)).toBe('')
     expect(warningText(42)).toBe('42')
     expect(typeof warningText({ nested: { deep: 1 } })).toBe('string')
+  })
+})
+
+describe('formatBF', () => {
+  it('keeps a tiny BF01 visible instead of printing 0.0000', () => {
+    expect(formatBF(1.2886e-7)).toBe('1.289e-7')
+  })
+  it('uses fixed decimals in the readable middle range', () => {
+    expect(formatBF(7.7614)).toBe('7.7614')
+    expect(formatBF(0.0123)).toBe('0.0123')
+  })
+  it('switches to scientific notation for very large values', () => {
+    expect(formatBF(7761400)).toBe('7.761e+6')
+  })
+  it('passes through non-numbers and empties', () => {
+    expect(formatBF(null)).toBe('')
+    expect(formatBF('n/a')).toBe('n/a')
   })
 })

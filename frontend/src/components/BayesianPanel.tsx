@@ -8,6 +8,7 @@ import { useStampedResult } from "../hooks/useStampedResult";
 import { describeStale } from "../lib/resultStamp";
 import StaleResultNotice from "./StaleResultNotice";
 import StaleGuard from "./StaleGuard";
+import { formatBF } from "../lib/format";
 import type { PlotData, PlotCaptureHandle } from "../lib/plotTypes";
 
 type AnalysisType = "ttest_one" | "ttest_ind" | "ttest_paired" | "correlation" | "regression";
@@ -360,7 +361,7 @@ function BayesianPanelBody({ session }: { session: Session }) {
                       Bayes Factor BF₁₀
                     </p>
                     <p className="text-2xl font-bold font-mono text-indigo-700 mt-1">
-                      {typeof result.bf10 === "number" ? result.bf10.toFixed(4) : result.bf10}
+                      {formatBF(result.bf10)}
                     </p>
                   </div>
                   <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 text-center">
@@ -368,7 +369,7 @@ function BayesianPanelBody({ session }: { session: Session }) {
                       Bayes Factor BF₀₁
                     </p>
                     <p className="text-2xl font-bold font-mono text-gray-600 mt-1">
-                      {typeof result.bf01 === "number" ? result.bf01.toFixed(4) : result.bf01}
+                      {formatBF(result.bf01)}
                     </p>
                   </div>
                 </div>

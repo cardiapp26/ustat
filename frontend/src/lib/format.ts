@@ -108,3 +108,12 @@ export function warningText(w: unknown): string {
   }
   return String(w);
 }
+
+/** A Bayes factor with its magnitude intact. toFixed(4) printed 1.3e-7 as
+ *  0.0000, which reads as "no evidence at all" rather than "overwhelming
+ *  evidence the other way"; scientific notation takes over at both ends. */
+export function formatBF(bf: number | string | null | undefined): string {
+  if (typeof bf !== "number") return bf == null ? "" : String(bf);
+  if (!Number.isFinite(bf) || bf === 0) return String(bf);
+  return bf >= 1e4 || bf < 1e-3 ? bf.toExponential(3) : bf.toFixed(4);
+}

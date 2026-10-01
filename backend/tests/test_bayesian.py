@@ -1,5 +1,6 @@
 """Tests for the Bayesian statistics endpoint (POST /api/bayesian)."""
 import numpy as np
+import pytest
 import pandas as pd
 from conftest import make_session
 
@@ -209,3 +210,21 @@ def test_missing_column(client):
 def test_session_not_found(client):
     r = _bayes(client, "nonexistent_session_id", analysis_type="ttest_one", outcome="x")
     assert r.status_code == 404, r.text
+
+
+def test_tiny_bf01_is_not_rounded_to_zero(client):
+    # A strong effect gives BF10 in the millions; BF01 = 1/BF10 was rounded
+    # to four decimals and came back as exactly 0.0.
+    rng = np.random.default_rng(11)
+    n = 150
+    df = pd.DataFrame({
+        "value": np.r_[rng.normal(0, 1, n), rng.normal(0.75, 1, n)],
+        "group": ["A"] * n + ["B"] * n,
+    })
+    sid = make_session(df, "bayes_tiny_bf01")
+    r = _bayes(client, sid, analysis_type="ttest_ind", outcome="value", predictor="group")
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["bf10"] > 1e4
+    assert 0 < d["bf01"] < 1e-4
+    assert d["bf01"] * d["bf10"] == pytest.approx(1.0, rel=1e-3)

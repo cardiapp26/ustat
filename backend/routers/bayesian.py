@@ -18,6 +18,19 @@ from services.category_health import clean_two_level
 from services.stat_utils import sorted_groups
 from services.impute import apply_imputation
 
+
+def _bf_out(bf: float) -> float:
+    """A Bayes factor to five significant figures.
+
+    These used to be rounded to four DECIMALS below 10,000, so any BF under
+    5e-5 came back as exactly 0.0: BF01 = 1/BF10 for a strong effect read as
+    "no evidence for the null at all" instead of 1.3e-07. Significant
+    figures keep the magnitude at both ends.
+    """
+    if not math.isfinite(bf) or bf == 0:
+        return bf
+    return float(f"{bf:.5g}")
+
 router = APIRouter()
 
 
@@ -150,8 +163,8 @@ def run_bayesian_ttest_one(df: pd.DataFrame, req: BayesianRequest):
         "n": n,
         "effect_size_label": "Cohen's d",
         "effect_size_value": round(cohen_d, 4),
-        "bf10": round(bf10, 4) if bf10 < 10000 else float(f"{bf10:.3e}"),
-        "bf01": round(bf01, 4) if bf01 < 10000 else float(f"{bf01:.3e}"),
+        "bf10": _bf_out(bf10),
+        "bf01": _bf_out(bf01),
         "interpretation": interpret_bf(bf10),
         "plot_coords": plot_coords,
         "r_code": r_code
@@ -214,8 +227,8 @@ def run_bayesian_ttest_paired(df: pd.DataFrame, req: BayesianRequest):
         "n": n,
         "effect_size_label": "Cohen's d_z",
         "effect_size_value": round(cohen_d, 4),
-        "bf10": round(bf10, 4) if bf10 < 10000 else float(f"{bf10:.3e}"),
-        "bf01": round(bf01, 4) if bf01 < 10000 else float(f"{bf01:.3e}"),
+        "bf10": _bf_out(bf10),
+        "bf01": _bf_out(bf01),
         "interpretation": interpret_bf(bf10),
         "plot_coords": plot_coords,
         "r_code": r_code
@@ -289,8 +302,8 @@ def run_bayesian_ttest_ind(df: pd.DataFrame, req: BayesianRequest):
         "n": n1 + n2,
         "effect_size_label": "Cohen's d",
         "effect_size_value": round(cohen_d, 4),
-        "bf10": round(bf10, 4) if bf10 < 10000 else float(f"{bf10:.3e}"),
-        "bf01": round(bf01, 4) if bf01 < 10000 else float(f"{bf01:.3e}"),
+        "bf10": _bf_out(bf10),
+        "bf01": _bf_out(bf01),
         "interpretation": interpret_bf(bf10),
         "plot_coords": plot_coords,
         "warnings": cleaned.warnings,
@@ -351,8 +364,8 @@ def run_bayesian_correlation(df: pd.DataFrame, req: BayesianRequest):
         "n": n,
         "effect_size_label": "r",
         "effect_size_value": round(r, 4),
-        "bf10": round(bf10, 4) if bf10 < 10000 else float(f"{bf10:.3e}"),
-        "bf01": round(bf01, 4) if bf01 < 10000 else float(f"{bf01:.3e}"),
+        "bf10": _bf_out(bf10),
+        "bf01": _bf_out(bf01),
         "interpretation": interpret_bf(bf10),
         "plot_coords": plot_coords,
         "r_code": r_code
@@ -410,8 +423,8 @@ def run_bayesian_regression(df: pd.DataFrame, req: BayesianRequest):
         "n": n,
         "effect_size_label": "Adjusted R²",
         "effect_size_value": round(r2 - (1 - r2) * (k_alt - 1) / (n - k_alt), 4),
-        "bf10": round(bf10, 4) if bf10 < 10000 else float(f"{bf10:.3e}"),
-        "bf01": round(bf01, 4) if bf01 < 10000 else float(f"{bf01:.3e}"),
+        "bf10": _bf_out(bf10),
+        "bf01": _bf_out(bf01),
         "interpretation": interpret_bf(bf10),
         "plot_coords": [],  # High dimensional model prior/posterior not simplified on 2D
         "r_code": r_code
