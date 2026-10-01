@@ -5,12 +5,12 @@ endpoints: ["/api/meta/analyze"]
 covers: ["parity:meta.json"]
 implementation:
   library: custom
-  entrypoint: Fixed and random effects (DerSimonian-Laird) implemented in-repo, backend/routers/meta.py + services
+  entrypoint: Fixed and random effects implemented in-repo (tau2 by DerSimonian-Laird, Paule-Mandel or REML; optional Hartung-Knapp CI), backend/ustat_engine/meta.py via backend/routers/meta.py
   version_source: /api/engine/identity (engine fingerprint)
 assumptions:
   - Study-level effect sizes with standard errors supplied or standardised upstream
 unsupported:
-  - REML/Paule-Mandel tau2 estimators; multivariate meta-analysis
+  - Multivariate, network, cumulative and leave-one-out meta-analysis
 behavior:
   missing_data: Studies missing effect or SE are excluded and counted
   weights: Inverse-variance weights, computed, not user-supplied
@@ -21,7 +21,7 @@ reference:
   entrypoint: per-fixture, recorded in each fixture's source field
   artifacts:
     - {file: qa/parity/meta.json, key: null}
-compared: [pooled_effect, ci, tau2, i2, q]
+compared: [pooled_effect, ci, tau2, i2, h2, q]
 tolerance:
   rel: 1.0e-8
   rationale: closed-form given weights; per-fixture bounds recorded in the fixture file
@@ -30,6 +30,10 @@ edge_cases:
   - {case: zero-variance study, status: covered, test: backend/tests/test_validation_card_edge_cases.py::test_meta_zero_variance_study}
 findings:
   - id: dl-only-tau2
-    summary: Only DerSimonian-Laird tau2 is offered; label says so, REML absent
-    status: open
-    evidence: unsupported list; roadmap modeling-depth row
+    summary: Only DerSimonian-Laird tau2 was offered, and any other tau2_method name was pooled with DL under the requested label; PM and REML are real estimators now, Hartung-Knapp is a separate flag, unknown names are a 422
+    status: fixed
+    evidence: "backend/tests/test_meta_analysis.py REML / Hartung-Knapp / tau2_method validation block"
+  - id: i2-ignores-tau2-estimator
+    summary: I2 and H2 were (Q - df)/Q and Q/df under every estimator, so PM and REML printed DL's I2 beside their own tau2; they now follow the estimator as in metafor rma.uni (100 tau2/(tau2 + typical v)), which reduces to the Q formula under DL
+    status: fixed
+    evidence: "backend/tests/test_meta_analysis.py::test_i2_and_h2_follow_the_tau2_estimator (base R reference: uniroot PM, optimize REML)"

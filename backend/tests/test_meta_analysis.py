@@ -15,6 +15,7 @@ transforms complicating the arithmetic.
 import math
 
 import numpy as np
+import pytest
 
 
 # ── 1. Homogeneous studies clustered around a known true effect ─────────────
@@ -424,3 +425,43 @@ def test_subgroup_accepts_reml_and_hk(client):
     assert len(d["subgroups"]) == 2
     for g in d["subgroups"]:
         assert g["ci_low"] < g["effect"] < g["ci_high"]
+
+
+# ── I² and H² follow the τ² estimator ───────────────────────────────────────
+#
+# Reference: base R 4.5.2, independent of uSTAT's algorithms. DL in closed
+# form, PM by uniroot on the generalised Q equation, REML by optimize on the
+# restricted log-likelihood; I² = 100 τ²/(τ² + ṽ) and H² = (τ² + ṽ)/ṽ with
+# metafor's typical within-study variance ṽ. I² used to be (Q - df)/Q under
+# every estimator, so PM and REML printed DL's 85.59%.
+_I2_STUDIES = [
+    {"label": f"s{i}", "effect": e, "se": s}
+    for i, (e, s) in enumerate(zip(
+        [0.2, 0.8, -0.1, 0.5, 0.05], [0.10, 0.15, 0.12, 0.20, 0.08]))
+]
+_I2_R = {
+    "DL": (0.08213115, 85.589350, 6.939312),
+    "PM": (0.11095793, 88.918341, 9.023920),
+    "REML": (0.10936465, 88.775021, 8.908702),
+}
+
+
+def test_i2_and_h2_follow_the_tau2_estimator(client):
+    for method, (tau2, i2, h2) in _I2_R.items():
+        r = client.post("/api/meta/analyze", json={
+            "studies": _I2_STUDIES, "measure": "generic", "tau2_method": method,
+        })
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert d["tau2"] == pytest.approx(tau2, abs=1e-5), method
+        assert d["I2_pct"] == pytest.approx(i2, abs=0.01), method
+        assert d["H2"] == pytest.approx(h2, abs=1e-3), method
+
+
+def test_dl_i2_equals_the_q_based_formula(client):
+    # Under DL the τ²-based I² is algebraically (Q - df)/Q.
+    r = client.post("/api/meta/analyze", json={
+        "studies": _I2_STUDIES, "measure": "generic", "tau2_method": "DL",
+    })
+    d = r.json()
+    assert d["I2_pct"] == pytest.approx(100 * (d["Q"] - d["Q_df"]) / d["Q"], abs=0.01)

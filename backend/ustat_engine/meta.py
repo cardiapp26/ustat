@@ -228,13 +228,34 @@ def _hk_se(y: np.ndarray, v: np.ndarray, tau2: float, mu: float) -> float:
     return math.sqrt(q / float(np.sum(w)))
 
 
-def _hetero(y: np.ndarray, v: np.ndarray) -> dict:
+def _typical_v(v: np.ndarray) -> float:
+    """The "typical" within-study variance of Higgins & Thompson (2002),
+    (k-1) sum(w) / (sum(w)^2 - sum(w^2)) with w = 1/v, as metafor uses it."""
+    w = 1.0 / v
+    sw = float(np.sum(w))
+    denom = sw ** 2 - float(np.sum(w ** 2))
+    return (len(v) - 1) * sw / denom if denom > 0 else float("nan")
+
+
+def _hetero(y: np.ndarray, v: np.ndarray, tau2: float) -> dict:
+    """Q, I² and H² for the chosen τ² estimator.
+
+    I² used to be (Q - df) / Q whatever the estimator. That is the DL
+    quantity: under PM or REML it ignored the τ² actually used for pooling,
+    so all three methods printed the same I² beside three different τ².
+    I² = τ² / (τ² + ṽ) and H² = (τ² + ṽ) / ṽ follow the estimator, match
+    metafor's rma.uni, and reduce exactly to (Q - df) / Q and Q / df under DL.
+    """
     w = 1.0 / v
     mu = np.sum(w * y) / np.sum(w)
     q = float(np.sum(w * (y - mu) ** 2))
     df = len(y) - 1
-    i2 = max(0.0, (q - df) / q * 100.0) if q > 0 else 0.0
-    h2 = (q / df) if df > 0 else None
+    vt = _typical_v(v) if df > 0 else float("nan")
+    if df > 0 and math.isfinite(vt) and vt > 0:
+        i2 = 100.0 * tau2 / (tau2 + vt)
+        h2 = (tau2 + vt) / vt
+    else:
+        i2, h2 = 0.0, None
     q_p = float(1 - st.chi2.cdf(q, df)) if df > 0 else 1.0
     return {"Q": round(q, 4), "Q_df": df, "Q_p": round(q_p, 5),
             "I2_pct": round(i2, 2), "H2": round(h2, 4) if h2 is not None else None}
@@ -279,7 +300,7 @@ def analyze(params: dict) -> dict:
     tau2 = _tau2_est(y, v, req.tau2_method)
     fe = _pool(y, v, 0.0)
     re = _pool(y, v, tau2)
-    het = _hetero(y, v)
+    het = _hetero(y, v, tau2)
 
     # Hartung-Knapp: replace the Wald z CI on the random-effects mean with
     # the HK variance estimator and a t distribution on k−1 df.
@@ -377,7 +398,7 @@ def subgroup(params: dict) -> dict:
         v = np.array([r["v"] for r in grp])
         tau2 = _tau2_est(y, v, req.tau2_method) if len(grp) >= 2 else 0.0
         pooled = _pool(y, v, tau2)
-        het = _hetero(y, v) if len(grp) >= 2 else {"Q": 0, "Q_df": 0, "Q_p": None, "I2_pct": 0, "H2": None}
+        het = _hetero(y, v, tau2) if len(grp) >= 2 else {"Q": 0, "Q_df": 0, "Q_p": None, "I2_pct": 0, "H2": None}
         # Q_between stays on the inverse-variance (Wald) SEs even under
         # Hartung-Knapp: the HK variance is a per-subgroup CI adjustment,
         # not part of the standard between-group heterogeneity statistic.
