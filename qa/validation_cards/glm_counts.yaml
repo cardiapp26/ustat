@@ -37,3 +37,7 @@ findings:
     summary: An all-zero count outcome made statsmodels' first deviance guess NaN and raised an uncaught ValueError, surfacing as a 500; now rejected with a 422 before the fit
     status: fixed
     evidence: "backend/routers/models/glm.py poisson_regression zero-sum guard; backend/tests/test_validation_card_edge_cases.py::test_poisson_all_zero_outcome"
+  - id: negbinom-se-joint-hessian
+    summary: Negative binomial coefficient SEs came from the observed Hessian of the joint (beta, alpha) fit and ran 0.3-2% above MASS::glm.nb (age p 3.4e-05 vs 2.3e-05); the table now comes from a GLM at the ML alpha, as glm.nb reports it, while alpha, its SE, AIC and BIC still come from the joint fit
+    status: fixed
+    evidence: "qa/models_audit/compare.py negbinom 9/9 within tolerance; backend/tests/test_models_vs_r.py::test_negbinom_standard_errors_match_glm_nb"

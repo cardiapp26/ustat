@@ -115,21 +115,25 @@ def negbinom(b: dict) -> dict:
         "title": f"Negative binomial regression: {r_f}" + (" (robust SE)" if robust else ""),
         "python": (
             "import numpy as np\n"
+            "import statsmodels.api as sm\n"
             "import statsmodels.formula.api as smf\n\n" + note
-            + "# NB2 with alpha estimated jointly by maximum likelihood; theta = 1 / alpha.\n"
+            + "# NB2: alpha by maximum likelihood (theta = 1 / alpha), then the\n"
+            "# coefficient table from a GLM at that alpha, as MASS::glm.nb reports it.\n"
+            + f'nb = smf.negativebinomial({lit(py_f)}, data=df).fit(maxiter=200, disp=0)\n'
+            + 'alpha = nb.params["alpha"]\n'
             + (_ROBUST_HC0 if robust else "")
-            + f'fit = smf.negativebinomial({lit(py_f)}, data=df).fit(maxiter=200, disp=0'
-            + (', cov_type="HC0")\n' if robust else ")\n")
+            + f'fit = smf.glm({lit(py_f)}, data=df,\n'
+            "              family=sm.families.NegativeBinomial(alpha=alpha)).fit("
+            + ('cov_type="HC0")\n' if robust else ")\n")
             + "fit.summary()\n"
-            "np.exp(fit.params.drop(\"alpha\")), np.exp(fit.conf_int().drop(\"alpha\"))  # IRRs"
+            "np.exp(fit.params), np.exp(fit.conf_int())  # IRRs"
         ),
         "r": (
             "library(MASS)\n\n" + note
             + f"fit <- glm.nb({r_f}, data = df)\n"
             "summary(fit)  # theta = 1 / uSTAT's alpha\n"
-            "# Coefficients and theta agree. glm.nb's SEs hold theta fixed and use the\n"
-            "# expected information; statsmodels (uSTAT) uses the observed information\n"
-            "# of the joint fit, so SEs and p can differ by a few percent.\n"
+            "# Coefficients, theta, SEs and p agree: uSTAT, like glm.nb, takes the SEs\n"
+            "# from the expected information at the ML theta, held fixed.\n"
             + ("# uSTAT's robust sandwich has no exact counterpart here either.\n" if robust else "")
             + "exp(cbind(IRR = coef(fit), confint.default(fit)))"
         ),

@@ -297,32 +297,40 @@ def negative_binomial_regression(req: NegBinomRequest):
     # it can only make results look more significant than they are. On the
     # audit frame the age coefficient carried p = 1.0e-05 where the correct
     # value is 2.3e-05.
+    #
+    # The coefficient table comes from a GLM refitted at that ML alpha, which
+    # is what glm.nb reports: beta and alpha are asymptotically orthogonal,
+    # so the coefficient SEs use the expected information for beta at
+    # alpha-hat. Taking them from the observed Hessian of the joint fit
+    # instead put every SE 0.3-2% above MASS (age p 3.4e-05 against R's
+    # 2.3e-05 on the audit frame), contradicting the paragraph above and the
+    # validation card. The joint fit still supplies alpha, its SE, AIC and BIC.
     try:
         model = sm.NegativeBinomial(y, X).fit(disp=0, maxiter=200)
-        if cov_type != "nonrobust":
-            model = sm.NegativeBinomial(y, X).fit(
-                disp=0, maxiter=200, cov_type=cov_type)
         alpha_est = float(model.params["alpha"])
         alpha_se = float(model.bse["alpha"])
         converged = bool(getattr(model.mle_retvals, "get", lambda *_: True)("converged", True))
+        beta_fit = sm.GLM(
+            y, X, family=sm.families.NegativeBinomial(alpha=alpha_est)
+        ).fit(cov_type=cov_type)
     except Exception as exc:
         raise HTTPException(
             status_code=422,
             detail=f"Negative binomial model did not converge: {exc}",
         )
-    ci = model.conf_int()
+    ci = beta_fit.conf_int()
     vifs = _compute_vif(X)
 
     coefs = []
-    for var in [v for v in model.params.index if v != "alpha"]:
-        b = float(model.params[var])
+    for var in beta_fit.params.index:
+        b = float(beta_fit.params[var])
         coefs.append({
             "variable": str(var),
             "log_irr": b,
             "irr": float(np.exp(b)),
-            "se": float(model.bse[var]),
-            "z": float(model.tvalues[var]),
-            "p": float(model.pvalues[var]),
+            "se": float(beta_fit.bse[var]),
+            "z": float(beta_fit.tvalues[var]),
+            "p": float(beta_fit.pvalues[var]),
             "ci_low": float(ci.loc[var, 0]),
             "ci_high": float(ci.loc[var, 1]),
             "irr_ci_low":  float(np.exp(ci.loc[var, 0])),

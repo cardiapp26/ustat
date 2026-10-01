@@ -199,16 +199,18 @@ def test_negbinom_estimates_the_dispersion_by_maximum_likelihood(client, sid):
     assert "alpha" not in got, "the dispersion is not a coefficient row"
 
 
-def test_negbinom_standard_errors_are_not_anticonservative(client, sid):
-    """The old fixed-dispersion fit gave SEs strictly smaller than R's. They
-    may now differ slightly the other way — the MLE propagates the uncertainty
-    in the dispersion where R's glm.nb conditions on it — but never smaller."""
+def test_negbinom_standard_errors_match_glm_nb(client, sid):
+    """The old fixed-dispersion fit used a moment theta and gave SEs about 4%
+    below R's. The next fit took SEs from the observed Hessian of the joint
+    (beta, alpha) fit and put them 0.3-2% above R's (age p 3.4e-05 vs
+    2.3e-05). With the coefficient table refitted at the ML alpha they now
+    equal glm.nb's: expected information at theta-hat."""
     got = _terms(client.post("/api/models/negbinom", json={
         "session_id": sid, "outcome": "visits",
         "predictors": ["age", "arm"]}).json())
-    for name, (_est, r_se, _p) in R_NB.items():
-        assert got[name]["se"] >= r_se * 0.999, name
-        assert got[name]["se"] == pytest.approx(r_se, rel=0.05), name
+    for name, (_est, r_se, r_p) in R_NB.items():
+        assert got[name]["se"] == pytest.approx(r_se, rel=1e-5), name
+        assert got[name]["p"] == pytest.approx(r_p, rel=1e-4), name
 
 
 def test_gamma_tests_coefficients_with_a_t_not_a_z(client, sid):

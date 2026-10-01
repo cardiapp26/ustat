@@ -242,7 +242,9 @@ def test_model_syntax_matches_ustats_intervals_and_robust_errors():
     assert "age:sex" in lin["r"]
     gam = _by_url("/gamma")
     assert "use_t=True" in gam["python"] and "df = df.residual(fit)" in gam["r"]
-    assert "observed information" in _by_url("/negbinom")["r"]
+    nb = _by_url("/negbinom")
+    assert "expected information at the ML theta" in nb["r"]
+    assert "NegativeBinomial(alpha=alpha)" in nb["python"]
 
 
 def test_survival_syntax_pins_the_lifelines_defaults():
