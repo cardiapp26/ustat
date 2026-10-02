@@ -15,6 +15,7 @@ from services.stat_utils import (
     looks_continuous,
 )
 from services.number_format import format_p, level_key
+from services.output_docx import OutputDocxError, OutputDocxRequest, build_output_docx
 
 try:
     from docx import Document
@@ -458,6 +459,30 @@ async def styled_table(req: StyledTableRequest):
         iter([buf.getvalue()]),
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+# ── Output document → Word ──────────────────────────────────────────────────
+
+@router.post("/output_docx")
+async def output_docx(req: OutputDocxRequest):
+    """The session's output document (frontend lib/outputDoc) as one .docx:
+    each item's title, note, headings, paragraphs, tables and figures, in the
+    order the user arranged them. See services/output_docx.py."""
+    if not HAS_DOCX:
+        raise HTTPException(
+            status_code=501,
+            detail="python-docx is not installed. Run: pip install python-docx",
+        )
+    try:
+        data = build_output_docx(req)
+    except OutputDocxError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    fname = "".join(ch for ch in (req.filename or "ustat_output") if ch.isalnum() or ch in "-_ .")[:120]
+    return StreamingResponse(
+        iter([data]),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{fname or "ustat_output"}.docx"'},
     )
 
 

@@ -793,6 +793,7 @@ export const deleteRow     = (sessionId: string, rowIndex: number) => api.delete
 // Publication export
 export const exportTableDocx = (data: object) => api.post("/api/pub_export/table_docx", data, { responseType: "blob" });
 export const exportStyledTable = (data: object) => api.post("/api/pub_export/styled_table", data, { responseType: "blob" });
+export const exportOutputDocx = (data: object) => api.post("/api/pub_export/output_docx", data, { responseType: "blob" });
 export const getFigureCaption = (data: object) => api.post("/api/pub_export/figure_caption", data);
 
 // Nomogram

@@ -4,6 +4,8 @@ import { useState } from "react";
 import { ArrowDown, ArrowUp, FileText, Printer, Trash2, X, Download } from "lucide-react";
 import { useOutputDoc } from "../lib/outputDoc";
 import { downloadOutputHtml, printOutput } from "../lib/outputExport";
+import { outputDocxPayload } from "../lib/outputBlocks";
+import { exportOutputDocx } from "../api";
 import { useStore } from "../store";
 
 export default function OutputViewer() {
@@ -12,6 +14,32 @@ export default function OutputViewer() {
   const datasetName = useStore((s) => s.session?.filename ?? "");
   const [open, setOpen] = useState(false);
   const [printBlocked, setPrintBlocked] = useState(false);
+  const [wordState, setWordState] = useState<{ busy: boolean; error: string | null }>({ busy: false, error: null });
+
+  const downloadWord = async () => {
+    setWordState({ busy: true, error: null });
+    try {
+      const payload = outputDocxPayload(items, datasetName);
+      const res = await exportOutputDocx(payload);
+      const url = URL.createObjectURL(res.data as Blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${payload.filename}.docx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      setWordState({ busy: false, error: null });
+    } catch (e: unknown) {
+      // The error body arrives as a Blob (responseType "blob"); read the detail out of it.
+      let message = "Word export failed.";
+      const data = (e as { response?: { data?: unknown } })?.response?.data;
+      if (data instanceof Blob) {
+        try { message = JSON.parse(await data.text()).detail ?? message; } catch { /* keep the generic text */ }
+      }
+      setWordState({ busy: false, error: message });
+    }
+  };
 
   return (
     <>
@@ -36,6 +64,10 @@ export default function OutputViewer() {
               <h2 className="font-semibold text-gray-900">Output document</h2>
               <span className="text-xs text-gray-400">{items.length} item{items.length === 1 ? "" : "s"}</span>
               <div className="ml-auto flex items-center gap-2">
+                <button disabled={!items.length || wordState.busy} onClick={downloadWord}
+                  className="text-xs px-2 py-1 rounded border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-40 flex items-center gap-1">
+                  <Download size={12} /> {wordState.busy ? "Word…" : "Word"}
+                </button>
                 <button disabled={!items.length} onClick={() => downloadOutputHtml(items, datasetName)}
                   className="text-xs px-2 py-1 rounded border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-40 flex items-center gap-1">
                   <Download size={12} /> HTML
@@ -54,6 +86,9 @@ export default function OutputViewer() {
                 </button>
               </div>
             </div>
+            {wordState.error && (
+              <p className="px-4 py-1.5 text-xs text-red-700 bg-red-50 border-b border-red-200" role="alert">{wordState.error}</p>
+            )}
             {printBlocked && (
               <p className="px-4 py-1.5 text-xs text-amber-800 bg-amber-50 border-b border-amber-200">
                 The browser blocked the print window. Allow pop-ups for this site, or export HTML and print that.
