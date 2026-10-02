@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo, type ReactNode, type RefObject } from "react";
 import type { Data, Annotations } from "plotly.js";
 import Plot from "../PlotComponent";
-import { useStore, analysisCols, isCategoricalKind, type Session } from "../store";
+import { analysisScope, useStore, analysisCols, isCategoricalKind, type Session } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
 import { useStampedResult } from "../hooks/useStampedResult";
 import { runFineGray, runEValue, runLandmark, runKM, runCox, runRMST, runRecurrentLWYY, runCoxHorizons, runCoxUniMulti, runCoxModelSpecs, runFrailty, runMultistate, runDynamicPrediction } from "../api";
@@ -1158,7 +1158,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
     // an edit or filter change while the fit runs would send rows computed
     // on data that is no longer on screen.
     const before = useStore.getState();
-    const beforeFilter = filterKey(before.caseFilter, before.caseWeight?.column);
+    const beforeFilter = filterKey(before.caseFilter, analysisScope(before));
     try {
       const meta = columns.find((c) => c.name === specExposure);
       const vlab = (code: string | null) => (code == null ? "" : labelFor(meta?.value_labels, code, String(code)));
@@ -1207,7 +1207,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
       }
       if (!rows.length) { setCoxError("No model fit — check exposure / covariates."); return; }
       const now = useStore.getState();
-      if (now.dataVersion !== before.dataVersion || filterKey(now.caseFilter, now.caseWeight?.column) !== beforeFilter) {
+      if (now.dataVersion !== before.dataVersion || filterKey(now.caseFilter, analysisScope(now)) !== beforeFilter) {
         setCoxError("The data changed while the models were fitting. Build the forest again.");
         return;
       }

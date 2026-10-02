@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { useStore, type Session } from "../store";
+import { analysisScope, useStore, type Session } from "../store";
 import api from "../api";
 import ResultExporter from "./ResultExporter";
 import StaleResultNotice from "./StaleResultNotice";
@@ -235,7 +235,7 @@ function Table1PanelBody({ session }: { session: Session }) {
   const setPanelCache = useStore((s) => s.setPanelCache);
   const dataVersion = useStore((s) => s.dataVersion);
   const caseFilter = useStore((s) => s.caseFilter);
-  const caseWeight = useStore((s) => s.caseWeight?.column ?? null);
+  const scope = useStore(analysisScope);
   const engine = useStore((s) => s.engine);
   // The stamp lives beside the form snapshot rather than in the table1Result
   // slice, because the slice is written by three row-level editors as well as
@@ -431,7 +431,7 @@ function Table1PanelBody({ session }: { session: Session }) {
   });
 
   const staleWhy = result
-    ? staleReasons(table1Stamp, makeStamp({ dataVersion, caseFilter, caseWeight, engine, params: runParams(), sessionId: session.session_id }))
+    ? staleReasons(table1Stamp, makeStamp({ dataVersion, caseFilter, scope, engine, params: runParams(), sessionId: session.session_id }))
     : [];
   const stale = staleWhy.length > 0;
 
@@ -542,7 +542,7 @@ function Table1PanelBody({ session }: { session: Session }) {
       }
 
       setResult(rawResult);
-      writeStamp(makeStamp({ dataVersion, caseFilter, caseWeight, engine, params: runParams(), sessionId: session.session_id }));
+      writeStamp(makeStamp({ dataVersion, caseFilter, scope, engine, params: runParams(), sessionId: session.session_id }));
     } catch (e: unknown) {
       const detail = (e as { response?: { data?: { detail?: string } } }).response?.data?.detail;
       const msg = e instanceof Error ? e.message : String(e);

@@ -25,8 +25,11 @@ export interface RecordedRequest {
 export interface SendContext {
   dataVersion: number;
   caseFilter: unknown;
-  /** Weight Cases column the request was sent under, or null. */
-  caseWeight: string | null;
+  /** Weight Cases and Split File level the request was sent under
+   *  (store analysisScope), or null. */
+  scope: string | null;
+  /** The Split File level on view when it was sent; null for the unsplit view. */
+  splitLevel: string | null;
   sessionId: string | null;
 }
 

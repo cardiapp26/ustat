@@ -99,7 +99,7 @@ export function stableStringify(value: unknown): string {
  * treating it as part of the filter would flag every result stale for a
  * reason no reader would recognise.
  */
-export function filterKey(filter: CaseFilter | null | undefined, weight?: string | null): string {
+export function filterKey(filter: CaseFilter | null | undefined, scope?: string | null): string {
   const base = !filter || !filter.conditions?.length
     ? "none"
     : stableStringify({
@@ -107,16 +107,17 @@ export function filterKey(filter: CaseFilter | null | undefined, weight?: string
         selected: filter.selected,
         total: filter.total,
       });
-  // Weight Cases changes which cases are counted as much as the filter does.
-  // Appended only when on, so every stamp made without weights keeps its key.
-  return weight ? `${base}|weight:${weight}` : base;
+  // Weight Cases and the Split File level change which cases are counted as
+  // much as the filter does (store analysisScope). Appended only when on, so
+  // every stamp made without them keeps its key.
+  return scope ? `${base}|${scope}` : base;
 }
 
 export interface StampInputs {
   dataVersion: number;
   caseFilter: CaseFilter | null;
-  /** The Weight Cases column, when on. */
-  caseWeight?: string | null;
+  /** Weight Cases / Split File level (store analysisScope), when on. */
+  scope?: string | null;
   engine: EngineKind;
   params: unknown;
   sessionId?: string | null;
@@ -131,7 +132,7 @@ export interface StampInputsWithProvenance extends StampInputs {
 export function makeStamp(inputs: StampInputsWithProvenance): ResultStamp {
   return {
     dataVersion: inputs.dataVersion,
-    filterKey: filterKey(inputs.caseFilter, inputs.caseWeight),
+    filterKey: filterKey(inputs.caseFilter, inputs.scope),
     paramsKey: stableStringify(inputs.params),
     engine: inputs.engine,
     engineVersion: appVersion(),

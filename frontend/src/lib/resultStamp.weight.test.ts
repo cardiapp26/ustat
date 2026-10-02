@@ -19,7 +19,7 @@ describe('filterKey with Weight Cases', () => {
   it('makes a result computed unweighted read as out of date after weighting', () => {
     const base = { dataVersion: 1, caseFilter: null, engine: 'python' as const, params: { x: 1 }, sessionId: 's' }
     const before = makeStamp(base)
-    const after = makeStamp({ ...base, caseWeight: 'count' })
+    const after = makeStamp({ ...base, scope: 'weight:count' })
     expect(staleReasons(before, after).length).toBeGreaterThan(0)
   })
 })

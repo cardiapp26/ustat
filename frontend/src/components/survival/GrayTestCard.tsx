@@ -30,6 +30,7 @@ export default function GrayTestCard({ sessionId, durationCol, eventCol, groupCo
   const engine = useStore((s) => s.engine);
   const setEngine = useStore((s) => s.setEngine);
   const caseWeight = useStore((s) => s.caseWeight);
+  const splitLevel = useStore((s) => s.splitFile?.level ?? null);
   const [result, setResult] = useState<GrayTestResult | null>(null);
   const [resultKey, setResultKey] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -70,10 +71,11 @@ export default function GrayTestCard({ sessionId, durationCol, eventCol, groupCo
 
       {!ready ? (
         <p className="text-[11px] text-gray-500">Choose a group column to compare cumulative incidence.</p>
-      ) : caseWeight ? (
+      ) : caseWeight || splitLevel != null ? (
         <p className="text-[11px] text-gray-600 leading-snug">
-          Gray&apos;s test does not use Weight Cases: it runs in the R engine, which receives the rows
-          unweighted. Turn weighting off to run it, or analyse the expanded data.
+          Gray&apos;s test runs in the R engine, which receives the selected rows as they are: it does not
+          apply Weight Cases or a Split File level. Turn {caseWeight ? "weighting" : "the split level"} off
+          to run it{splitLevel != null ? ", or use Select Cases for one group" : ""}.
         </p>
       ) : engine === "r" ? (
         <button onClick={run} disabled={busy}

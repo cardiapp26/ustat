@@ -103,6 +103,7 @@ import BayesianPanel from "./components/BayesianPanel";
 import CloudSyncBar from "./components/CloudSyncBar";
 import SavedAnalysesMenu from "./components/SavedAnalysesMenu";
 import OutputViewer from "./components/OutputViewer";
+import SplitFileBar from "./components/SplitFileBar";
 import CommandPalette from "./components/CommandPalette";
 import { cloudSync } from "./lib/cloudSync";
 import { purgeExpiredTrash, notifySessionsChanged, TRASH_PURGE_INTERVAL_MS } from "./lib/sessionDb";
@@ -1027,6 +1028,8 @@ export default function App() {
             </button>
           </div>
         )}
+
+        <SplitFileBar />
 
         {/* Weight Cases banner: weights change every N and every test. */}
         {caseWeight && (

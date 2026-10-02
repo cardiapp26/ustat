@@ -6,6 +6,7 @@ import type { LegendPosition, ThemePreset } from "./lib/plotPresets";
 import { locatePanel } from "./lib/panelRegistry";
 import { forSession, sentContextFor, setSendContextProvider } from "./lib/requestLog";
 import { makeStamp, type ResultStamp } from "./lib/resultStamp";
+import { setSplitProvider } from "./lib/splitHeader";
 
 export { runColumnStructureMutation } from "./lib/columnStructureLock";
 
@@ -201,6 +202,29 @@ export interface CaseWeight {
   error?: string;
 }
 
+/** Split File (SPSS SPLIT FILE): analyses run on one level of `column` at a
+ *  time. `level` null shows the unsplit data. The server is stateless about
+ *  it: each request states the level (lib/splitHeader, backend
+ *  services/split_scope). */
+export interface SplitFile {
+  column: string;
+  levels: Array<{ level: string; n: number }>;
+  level: string | null;
+}
+
+/** What, beyond the case filter, decides which cases an analysis counts:
+ *  Weight Cases and the Split File level on view. Part of every result's
+ *  stamp (lib/resultStamp filterKey); null when neither is on, so stamps
+ *  made before either existed keep their key. */
+export function analysisScope(
+  s: { caseWeight: CaseWeight | null; splitFile: SplitFile | null },
+): string | null {
+  const parts: string[] = [];
+  if (s.caseWeight) parts.push(`weight:${s.caseWeight.column}`);
+  if (s.splitFile?.level != null) parts.push(`split:${s.splitFile.column}=${s.splitFile.level}`);
+  return parts.length ? parts.join("|") : null;
+}
+
 export interface CaseFilter {
   conditions: CaseCondition[];
   selected: number;
@@ -352,6 +376,9 @@ interface AppState {
   caseFilter: CaseFilter | null;
   caseWeight: CaseWeight | null;
   setCaseWeight: (w: CaseWeight | null) => void;
+  splitFile: SplitFile | null;
+  setSplitFile: (split: SplitFile | null) => void;
+  setSplitLevel: (level: string | null) => void;
   setSession: (s: Session) => void;
   setOriginalSession: (s: Session | null) => void;
   /** Rename the active session. Updates the React store immediately and
@@ -637,7 +664,8 @@ export const useStore = create<AppState>((set, get) => ({
           .then((m) => m.flushAutoSession())
           .catch(() => { /* the debounced save still covers it */ });
       }
-      return { session: s };
+      // A refreshed payload says whether the weights are still valid.
+      return s.case_weight !== undefined ? { session: s, caseWeight: s.case_weight } : { session: s };
     }
     return {
       session: s,
@@ -650,6 +678,7 @@ export const useStore = create<AppState>((set, get) => ({
       ingestReport: null,
       caseFilter: s.case_filter ?? null,
       caseWeight: s.case_weight ?? null,
+      splitFile: null,
       panelCache: {},
       savedAnalyses: [],
       undoDepth: 0,
@@ -681,6 +710,11 @@ export const useStore = create<AppState>((set, get) => ({
     caseWeight: w,
     session: state.session ? { ...state.session, case_weight: w } : state.session,
   })),
+  splitFile: null,
+  setSplitFile: (split) => set({ splitFile: split }),
+  setSplitLevel: (level) => set((state) => (
+    state.splitFile ? { splitFile: { ...state.splitFile, level } } : state
+  )),
   toggleGrid: () => set((state) => {
     const next = !state.showGrid;
     localStorage.setItem("showGrid", String(next));
@@ -703,6 +737,7 @@ export const useStore = create<AppState>((set, get) => ({
     ingestReport: null,
     caseFilter: null,
     caseWeight: null,
+    splitFile: null,
     panelCache: {},
     savedAnalyses: [],
     undoDepth: 0,
@@ -792,6 +827,9 @@ export const useStore = create<AppState>((set, get) => ({
       const caseWeight = state.caseWeight?.column === oldName
         ? { ...state.caseWeight, column: newName }
         : state.caseWeight;
+      const splitFile = state.splitFile?.column === oldName
+        ? { ...state.splitFile, column: newName }
+        : state.splitFile;
       const after: ColumnDependentState = {
         columnDecimals,
         caseFilter,
@@ -814,6 +852,7 @@ export const useStore = create<AppState>((set, get) => ({
           case_weight: caseWeight,
         },
         ...after,
+        splitFile,
         columnMutationUndo: [...state.columnMutationUndo, snapshot].slice(-50),
         columnMutationRedo: [],
         dataVersion: state.dataVersion + 1,
@@ -855,6 +894,9 @@ export const useStore = create<AppState>((set, get) => ({
       const caseWeight = state.caseWeight && removedNames.has(state.caseWeight.column)
         ? null
         : state.caseWeight;
+      const splitFile = state.splitFile && removedNames.has(state.splitFile.column)
+        ? null
+        : state.splitFile;
       const after: ColumnDependentState = {
         columnDecimals,
         caseFilter,
@@ -880,6 +922,7 @@ export const useStore = create<AppState>((set, get) => ({
           case_weight: caseWeight,
         },
         ...after,
+        splitFile,
         columnMutationUndo: [...state.columnMutationUndo, snapshot].slice(-50),
         columnMutationRedo: [],
         dataVersion: state.dataVersion + 1,
@@ -1027,7 +1070,7 @@ export const useStore = create<AppState>((set, get) => ({
       ...makeStamp({
         dataVersion: sent?.dataVersion ?? now.dataVersion,
         caseFilter: sent ? (sent.caseFilter as CaseFilter | null) : now.caseFilter,
-        caseWeight: sent ? (sent.caseWeight as string | null) : now.caseWeight?.column ?? null,
+        scope: sent ? sent.scope : analysisScope(now),
         engine: now.engine,
         params: null, sessionId: sent?.sessionId ?? sessionId, request,
       }),
@@ -1213,10 +1256,17 @@ export const useStore = create<AppState>((set, get) => ({
 // Every API request records the data version, filter and session it is sent
 // under (lib/requestLog), so results are stamped with the data they were
 // computed on rather than the data when they happened to land.
+// Split File: every request states the level on view (lib/splitHeader).
+setSplitProvider(() => {
+  const split = useStore.getState().splitFile;
+  return split ? { column: split.column, level: split.level } : null;
+});
+
 setSendContextProvider(() => {
   const s = useStore.getState();
   return {
     dataVersion: s.dataVersion, caseFilter: s.caseFilter,
-    caseWeight: s.caseWeight?.column ?? null, sessionId: s.session?.session_id ?? null,
+    scope: analysisScope(s), splitLevel: s.splitFile?.level ?? null,
+    sessionId: s.session?.session_id ?? null,
   };
 });

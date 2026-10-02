@@ -23,7 +23,7 @@
  * Filter and params keys need no rebasing: they are content-derived
  * (`stableStringify`), and the restored filter/selections reproduce them.
  */
-import { useStore, type SavedAnalysis } from "../store";
+import { useStore, type SavedAnalysis, type SplitFile } from "../store";
 import type { ResultStamp } from "./resultStamp";
 import { restoreOutputItems, useOutputDoc, type OutputItem } from "./outputDoc";
 
@@ -38,6 +38,19 @@ export interface ProjectUiState {
   savedAnalyses?: SavedAnalysis[];
   /** The output document (lib/outputDoc), in order. */
   outputItems?: OutputItem[];
+  /** Split File: the variable, its levels and the level on view. */
+  splitFile?: SplitFile;
+}
+
+/** Per-level Split File results are recomputed on demand; saving them would
+ *  multiply the size of every snapshot by the number of levels. */
+function withoutSplitResults(panelCache: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(panelCache).map(([panel, entry]) => {
+    if (typeof entry !== "object" || entry === null || !("splitResults" in entry)) return [panel, entry];
+    const { splitResults: _dropped, ...rest } = entry as Record<string, unknown>;
+    void _dropped;
+    return [panel, rest];
+  }));
 }
 
 /** Snapshot the live store's panel state for ui/state.json. */
@@ -46,12 +59,13 @@ export function collectUiState(): ProjectUiState {
   const out: ProjectUiState = {
     dataVersion: s.dataVersion,
     activeTab: s.activeTab,
-    panelCache: s.panelCache,
+    panelCache: withoutSplitResults(s.panelCache),
   };
   if (s.table1Result != null) out.table1Result = s.table1Result;
   if (s.savedAnalyses.length > 0) out.savedAnalyses = s.savedAnalyses;
   const outputItems = useOutputDoc.getState().items;
   if (outputItems.length > 0) out.outputItems = outputItems;
+  if (s.splitFile) out.splitFile = s.splitFile;
   return out;
 }
 
@@ -114,9 +128,18 @@ export function applyUiState(raw: unknown): void {
     : [];
   // Sanitised again on the way in: a project file can come from anyone.
   useOutputDoc.getState().replaceAll(restoreOutputItems(ui.outputItems));
+  const split = ui.splitFile;
+  const splitFile = split && typeof split.column === "string" && Array.isArray(split.levels)
+    ? {
+        column: split.column,
+        levels: split.levels.filter((l) => typeof l?.level === "string").map((l) => ({ level: l.level, n: Number(l.n) || 0 })),
+        level: typeof split.level === "string" ? split.level : null,
+      }
+    : null;
   useStore.setState({
     panelCache,
     savedAnalyses,
+    splitFile,
     ...(ui.table1Result !== undefined ? { table1Result: ui.table1Result as never } : {}),
     ...(typeof ui.activeTab === "string" && ui.activeTab ? { activeTab: ui.activeTab } : {}),
   });

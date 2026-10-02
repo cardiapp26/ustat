@@ -56,6 +56,7 @@ const KIND_LABEL: Record<string, string> = {
 
 import { SelectCasesModal } from "./datatable/SelectCasesModal";
 import WeightCasesModal from "./datatable/WeightCasesModal";
+import SplitFileModal from "./datatable/SplitFileModal";
 import { DeduplicateModal } from "./datatable/DeduplicateModal";
 import { ValueLabelsModal } from "./datatable/ValueLabelsModal";
 import { FormulaFillModal } from "./datatable/FormulaFillModal";
@@ -284,6 +285,7 @@ function DataTableBody({ session }: { session: Session }) {
   const removeSessionColumns = useStore((s) => s.removeSessionColumns);
   const caseFilter       = useStore((s) => s.caseFilter);
   const caseWeight       = useStore((s) => s.caseWeight);
+  const splitFile        = useStore((s) => s.splitFile);
   // Set, not array: this is consulted once per rendered row.
   // Optional on the wire: a session restored from a saved file carries the
   // conditions without the counts the server computes when the filter runs.
@@ -321,6 +323,7 @@ function DataTableBody({ session }: { session: Session }) {
   const [showMissingOnly, setShowMissingOnly] = useState(false);
   const [showSelectCases, setShowSelectCases] = useState(false);
   const [showWeightCases, setShowWeightCases] = useState(false);
+  const [showSplitFile, setShowSplitFile] = useState(false);
   const [showDedupe,      setShowDedupe]      = useState(false);
   const [showDictionary,  setShowDictionary]  = useState(false);
 
@@ -1787,6 +1790,14 @@ function DataTableBody({ session }: { session: Session }) {
       className="relative flex flex-col gap-2 h-full focus:outline-none"
       style={{ minHeight: 0 }}
     >
+      {showSplitFile && session && (
+        <SplitFileModal
+          columns={columns}
+          sessionId={session.session_id}
+          current={splitFile}
+          onClose={() => setShowSplitFile(false)}
+        />
+      )}
       {showWeightCases && session && (
         <WeightCasesModal
           columns={columns}
@@ -1994,6 +2005,23 @@ function DataTableBody({ session }: { session: Session }) {
             {caseFilter && (
               <span className="bg-violet-600 text-white text-[9px] font-bold rounded-full px-1.5 py-0.5">
                 {caseFilter.selected.toLocaleString()}
+              </span>
+            )}
+          </button>
+
+          {/* Split File */}
+          <button
+            onClick={() => setShowSplitFile(true)}
+            title={splitFile ? `Split by ${splitFile.column}` : "Run analyses separately for each group of a variable"}
+            className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border transition-colors
+              ${splitFile
+                ? "bg-emerald-100 text-emerald-700 border-emerald-400"
+                : "text-gray-500 border-gray-300 hover:text-gray-700 hover:border-gray-400"}`}
+          >
+            ⫴ Split File
+            {splitFile && (
+              <span className="bg-emerald-600 text-white text-[9px] font-bold rounded-full px-1.5 py-0.5">
+                {splitFile.levels.length}
               </span>
             )}
           </button>

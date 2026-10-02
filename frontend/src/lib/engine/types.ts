@@ -40,6 +40,8 @@ export type LocalUnavailableReason =
   | "no-r-implementation"
   /** Weight Cases is on; the selected rows reach a browser engine unweighted. */
   | "weights-active"
+  /** A Split File level is on view; browser engines receive every level. */
+  | "split-active"
   /**
    * The R engine raised a condition it could not attribute to the request
    * (status_hint 500). Distinct from `engine-error` on purpose: a refusal is an

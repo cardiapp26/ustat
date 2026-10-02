@@ -18,6 +18,15 @@ export const OUTPUT_START_ATTR = "data-output-start";
 export const OUTPUT_END_ATTR = "data-output-end";
 /** Mark any element that must not be copied (toolbars, notices). */
 export const OUTPUT_SKIP_ATTR = "data-output-skip";
+/** On the start marker: whether the guarded result is out of date now. */
+export const OUTPUT_STALE_ATTR = "data-output-stale";
+
+/** Whether the guarded result is current right now (read off the DOM, so an
+ *  async loop can wait for a re-render it cannot observe through React). */
+export function guardIsCurrent(captureId: string): boolean {
+  const start = document.querySelector(`[${OUTPUT_START_ATTR}="${CSS.escape(captureId)}"]`);
+  return start?.getAttribute(OUTPUT_STALE_ATTR) === "false";
+}
 
 interface PlotlyLike {
   toImage: (gd: HTMLElement, opts: Record<string, unknown>) => Promise<string>;

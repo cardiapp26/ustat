@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from middleware.security_headers import SecurityHeadersMiddleware
 from middleware.prep_steps import PrepStepsMiddleware
 from middleware.provenance_headers import ProvenanceHeadersMiddleware
+from middleware.split_scope import SplitScopeMiddleware
 
 try:
     import psutil
@@ -77,6 +78,8 @@ app.add_middleware(ProvenanceHeadersMiddleware)
 # Every successful data-mutating request is appended to the session's prep
 # recipe (prep/steps.json in a saved project). See middleware/prep_steps.py.
 app.add_middleware(PrepStepsMiddleware)
+# Split File: the level a request states scopes store.get_filtered for it.
+app.add_middleware(SplitScopeMiddleware)
 
 # CORS: env-driven origin allow-list. Wildcard ("*") rejected by the OWASP
 # semgrep gate, and dangerous in production anyway because it disables

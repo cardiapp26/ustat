@@ -184,3 +184,14 @@ describe("Weight Cases", () => {
     expect(res.runtime).toBe("local");
   });
 });
+
+describe("Split File", () => {
+  afterEach(() => useStore.setState({ splitFile: null }));
+
+  it("sends a dataset-reading analysis to the server while a level is on view", async () => {
+    useStore.setState({ splitFile: { column: "sex", levels: [{ level: "F", n: 4 }], level: "F" } });
+    const res = await localFirst("stats.ttest", { column: "sbp" }, server, { frameColumns: ["sbp"] });
+    expect(res).toMatchObject({ runtime: "server", fellBackBecause: "split-active" });
+    expect(runLocalR).not.toHaveBeenCalled();
+  });
+});

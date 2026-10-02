@@ -5,6 +5,7 @@ import { runColumnStructureMutation } from "./lib/columnStructureLock";
 import { fromResponseHeaders, record as recordProvenance } from "./lib/engine/provenance";
 import { installSessionRecovery } from "./lib/sessionRecovery";
 import { annotateRequest, recordResponse } from "./lib/requestLog";
+import { withSplitHeader } from "./lib/splitHeader";
 
 const api = axios.create({ baseURL: "" });  // Vite proxy: /api → localhost:8000
 
@@ -17,7 +18,7 @@ const api = axios.create({ baseURL: "" });  // Vite proxy: /api → localhost:80
 // that lands after an edit is stamped with the data it was computed on.
 // Synchronous: axios otherwise runs request interceptors a microtask later,
 // after the caller's own code has already moved on.
-api.interceptors.request.use((config) => annotateRequest(config), null, { synchronous: true });
+api.interceptors.request.use((config) => withSplitHeader(annotateRequest(config)), null, { synchronous: true });
 
 api.interceptors.response.use((response) => {
   const url = response.config?.url;
@@ -807,6 +808,8 @@ export const setWeightCases = (sessionId: string, column: string) =>
   api.post(`/api/sessions/${sessionId}/weight_cases`, { column });
 export const clearWeightCases = (sessionId: string) =>
   api.delete(`/api/sessions/${sessionId}/weight_cases`);
+export const getSplitLevels = (sessionId: string, column: string) =>
+  api.get(`/api/sessions/${sessionId}/split_levels`, { params: { column } });
 
 export interface GridRowsRequest {
   sort: { col: string; dir: "asc" | "desc" }[];

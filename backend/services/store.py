@@ -20,6 +20,7 @@ from fastapi import HTTPException
 from ustat_engine import EngineError
 from services.missing_codes import apply_missing_codes
 from services import case_weights as _case_weights
+from services import split_scope as _split_scope
 from ustat_engine.frame import select as _select
 
 # Per-dataset size ceiling (rows × columns). Guards the in-memory store against
@@ -311,7 +312,8 @@ def get_filtered(session_id: str, weighted: bool = True) -> Optional[pd.DataFram
     applied, then Weight Cases (rows replicated by their frequency weight).
     The stored data keeps its codes; see services/missing_codes.
 
-    `weighted=False` is for counting rows (the Select Cases "n selected"),
+    `weighted=False` is the Select Cases view: no Split File level and no
+    weights. It is for counting rows (the "n selected" beside the filter),
     never for an analysis."""
     with _lock:
         entry = _store.get(session_id)
@@ -331,6 +333,13 @@ def get_filtered(session_id: str, weighted: bool = True) -> Optional[pd.DataFram
     # Codes before the filter, as SPSS does: "age > 50" must not select 999.
     df = apply_missing_codes(df, coded)
     df = _apply_conditions(df, conditions)
+    # Split File: the level this request was sent for (services/split_scope).
+    split = _split_scope.current_split.get() if weighted else None
+    if split is not None:
+        try:
+            df = _split_scope.apply_split(df, split)
+        except _split_scope.SplitScopeError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     # Weights last, as SPSS does: Select Cases picks rows, WEIGHT BY counts them.
     if weight and weighted:
         try:

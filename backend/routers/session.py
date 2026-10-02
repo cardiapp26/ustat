@@ -939,6 +939,12 @@ def session_frame(session_id: str, columns: Optional[str] = Query(None)):
             status_code=409,
             detail="Weight Cases is on, so this analysis runs on the server.",
         )
+    from services.split_scope import current_split
+    if current_split.get() is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Split File is on, so this analysis runs on the server.",
+        )
     df = store.get(session_id)
     if df is None:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -972,6 +978,40 @@ def clear_cases(session_id: str):
     store.clear_filter(session_id)
     store.log_action(session_id, "case_filter_cleared")
     return {"selected": len(df), "total": len(df)}
+
+
+# ── Split File ─────────────────────────────────────────────────────────────────
+
+MAX_SPLIT_LEVELS = 20
+
+
+@router.get("/{session_id}/split_levels")
+def split_levels(session_id: str, column: str = Query(...)):
+    """The levels Split File would run an analysis for, over the selected
+    cases, in the same order the analyses sort groups. Levels are reported as
+    `level_key` spellings, which is what X-Ustat-Split names."""
+    from services.number_format import level_key
+    from ustat_engine.frame.levels import sorted_groups
+    if store.get(session_id) is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    df = store.get_filtered(session_id, weighted=False)
+    if column not in df.columns:
+        raise HTTPException(status_code=422, detail=f"Column '{column}' not found.")
+    values = df[column].dropna()
+    groups = sorted_groups(values)
+    if len(groups) < 2:
+        raise HTTPException(status_code=422, detail=f"'{column}' has fewer than two groups to split by.")
+    if len(groups) > MAX_SPLIT_LEVELS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"'{column}' has {len(groups)} levels; Split File takes at most {MAX_SPLIT_LEVELS}.",
+        )
+    keys = values.map(level_key)
+    return {
+        "column": column,
+        "levels": [{"level": level_key(g), "n": int((keys == level_key(g)).sum())} for g in groups],
+        "n_missing": int(df[column].isna().sum()),
+    }
 
 
 # ── Weight Cases ───────────────────────────────────────────────────────────────

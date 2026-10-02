@@ -1,5 +1,5 @@
-import { useCallback, useMemo, useState } from "react";
-import { useStore } from "../store";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { analysisScope, useStore } from "../store";
 import {
   makeStamp,
   staleReasons,
@@ -7,11 +7,14 @@ import {
   type StaleOptions,
   type StaleReason,
 } from "../lib/resultStamp";
-import { requestFor, sentContextFor } from "../lib/requestLog";
+import { requestFor, sentContextFor, type RecordedRequest } from "../lib/requestLog";
+import { levelKeyOf, precomputeLevels, repeatable, type SplitResults } from "../lib/splitPrecompute";
 
 interface StampedCache<T> {
   result?: T | null;
   stamp?: ResultStamp | null;
+  /** Split File: the result for each level, keyed by lib/splitPrecompute levelKeyOf. */
+  splitResults?: SplitResults<T>;
   [key: string]: unknown;
 }
 
@@ -51,9 +54,12 @@ export function useStampedResult<T>(
   const setPanelCache = useStore((s) => s.setPanelCache);
   const dataVersion = useStore((s) => s.dataVersion);
   const caseFilter = useStore((s) => s.caseFilter);
-  const caseWeight = useStore((s) => s.caseWeight?.column ?? null);
+  const scope = useStore(analysisScope);
   const engine = useStore((s) => s.engine);
   const sessionId = useStore((s) => s.session?.session_id ?? null);
+  const splitLevel = useStore((s) => s.splitFile?.level ?? null);
+  // Bumped by every run, so a precompute for an older run stops writing.
+  const splitGeneration = useRef(0);
 
   // Read the cache once, on mount, for the same reason usePersistedPanelState
   // does: this hook owns the value afterwards and re-reading would fight it.
@@ -67,7 +73,7 @@ export function useStampedResult<T>(
     if (cached?.result != null) {
       const s = useStore.getState();
       return makeStamp({
-        dataVersion: -1, caseFilter: s.caseFilter, caseWeight: s.caseWeight?.column ?? null,
+        dataVersion: -1, caseFilter: s.caseFilter, scope: analysisScope(s),
         engine: s.engine, params, provenance: null,
         sessionId: s.session?.session_id ?? null,
       });
@@ -76,9 +82,39 @@ export function useStampedResult<T>(
   });
 
   const current = useMemo(
-    () => makeStamp({ dataVersion, caseFilter, caseWeight, engine, params, sessionId }),
-    [dataVersion, caseFilter, caseWeight, engine, params, sessionId],
+    () => makeStamp({ dataVersion, caseFilter, scope, engine, params, sessionId }),
+    [dataVersion, caseFilter, scope, engine, params, sessionId],
   );
+
+  // Split File: send this run's request again for every other level (and the
+  // unsplit view) and keep each answer, so switching levels is instant.
+  const startSplitPrecompute = useCallback((request: RecordedRequest, sentLevel: string | null, generation: number) => {
+    const s = useStore.getState();
+    const split = s.splitFile;
+    const sid = s.session?.session_id;
+    if (!split || !sid) return;
+    const targets = [null, ...split.levels.map((l) => l.level)].filter((l) => l !== sentLevel);
+    void import("../api").then(({ default: api }) => precomputeLevels<T>({
+      api, request, sessionId: sid, column: split.column, targets,
+      // Each level's request is sent now, so it is stamped with the state now.
+      stampFor: (level) => {
+        const now = useStore.getState();
+        return {
+          dataVersion: now.dataVersion,
+          caseFilter: now.caseFilter,
+          scope: analysisScope({ caseWeight: now.caseWeight, splitFile: now.splitFile ? { ...now.splitFile, level } : null }),
+          engine: now.engine,
+          params,
+          sessionId: now.session?.session_id ?? null,
+        };
+      },
+      cancelled: () => splitGeneration.current !== generation,
+      onLevel: (key, value) => {
+        const existing = (useStore.getState().panelCache[panel] ?? {}) as StampedCache<T>;
+        setPanelCache(panel, { ...existing, splitResults: { ...(existing.splitResults ?? {}), [key]: value } });
+      },
+    }));
+  }, [panel, params, setPanelCache]);
 
   const setResult = useCallback((r: T | null) => {
     const next = r == null
@@ -92,7 +128,7 @@ export function useStampedResult<T>(
           return makeStamp({
             dataVersion: sent?.dataVersion ?? now.dataVersion,
             caseFilter: sent ? (sent.caseFilter as typeof now.caseFilter) : now.caseFilter,
-            caseWeight: sent ? sent.caseWeight : now.caseWeight?.column ?? null,
+            scope: sent ? sent.scope : analysisScope(now),
             engine: now.engine,
             params,
             sessionId: sent?.sessionId ?? now.session?.session_id ?? null,
@@ -108,12 +144,30 @@ export function useStampedResult<T>(
     setLocalStamp(next);
     const existing = useStore.getState().panelCache[panel];
     const base = existing && typeof existing === "object" ? existing as Record<string, unknown> : {};
-    setPanelCache(panel, { ...base, result: r, stamp: next });
+    const sentLevel = r == null ? null : sentContextFor(r)?.splitLevel ?? useStore.getState().splitFile?.level ?? null;
+    // A new run starts a new set of per-level results (Split File).
+    const splitResults: SplitResults<T> = next ? { [levelKeyOf(sentLevel)]: { result: r as T, stamp: next } } : {};
+    setPanelCache(panel, { ...base, result: r, stamp: next, splitResults });
+    const generation = ++splitGeneration.current;
+    if (next && repeatable(next.request)) startSplitPrecompute(next.request, sentLevel, generation);
     // `params` belongs in the deps: the handler that calls this closes over
     // the render it was created in, which is the render whose params were sent
     // to the backend. Pinning them any other way would stamp a result with
     // settings it was not computed under.
-  }, [panel, params, setPanelCache]);
+  }, [panel, params, setPanelCache, startSplitPrecompute]);
+
+  // Split File: when the level on view changes, show that level's result if
+  // the background precompute already has a current one.
+  useEffect(() => {
+    if (result == null || staleReasons(stamp, current, opts).length === 0) return;
+    const entry = cached?.splitResults?.[levelKeyOf(splitLevel)];
+    if (!entry || entry.result === result || staleReasons(entry.stamp, current, opts).length > 0) return;
+    setLocalResult(entry.result);
+    setLocalStamp(entry.stamp);
+    const existing = useStore.getState().panelCache[panel];
+    const base = existing && typeof existing === "object" ? existing as Record<string, unknown> : {};
+    setPanelCache(panel, { ...base, result: entry.result, stamp: entry.stamp });
+  }, [current, splitLevel, cached, result, stamp, opts, panel, setPanelCache]);
 
   const reasons = result == null ? [] : staleReasons(stamp, current, opts);
 

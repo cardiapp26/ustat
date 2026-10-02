@@ -1,6 +1,6 @@
 import { useId, useMemo, type ReactNode } from "react";
 import { StaleGuardContext, useStaleGuard } from "../lib/staleGuard";
-import { OUTPUT_END_ATTR, OUTPUT_START_ATTR } from "../lib/outputCapture";
+import { OUTPUT_END_ATTR, OUTPUT_STALE_ATTR, OUTPUT_START_ATTR } from "../lib/outputCapture";
 
 interface StaleGuardProps {
   stale: boolean;
@@ -31,7 +31,9 @@ export default function StaleGuard({ stale, reason, children }: StaleGuardProps)
   );
   return (
     <StaleGuardContext.Provider value={value}>
-      {isOutermost && <span hidden {...{ [OUTPUT_START_ATTR]: captureId }} />}
+      {isOutermost && (
+        <span hidden {...{ [OUTPUT_START_ATTR]: captureId, [OUTPUT_STALE_ATTR]: value.stale ? "true" : "false" }} />
+      )}
       {children}
       {isOutermost && <span hidden {...{ [OUTPUT_END_ATTR]: captureId }} />}
     </StaleGuardContext.Provider>

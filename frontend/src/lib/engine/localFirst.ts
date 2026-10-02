@@ -185,14 +185,17 @@ function sessionEngine(): EngineKind {
   }
 }
 
-/** Weight Cases is on. In-browser engines are handed the selected rows
- *  unweighted, so a dataset-reading analysis has to run on the server, where
- *  the weights are applied (backend services/case_weights). */
-function caseWeightActive(): boolean {
+/** Why a dataset-reading analysis must run on the server: in-browser engines
+ *  are handed the selected rows as they are, without Weight Cases (backend
+ *  services/case_weights) or the Split File level (services/split_scope). */
+function scopeNeedsServer(): "weights-active" | "split-active" | null {
   try {
-    return Boolean(useStore.getState().caseWeight);
+    const s = useStore.getState();
+    if (s.caseWeight) return "weights-active";
+    if (s.splitFile?.level != null) return "split-active";
+    return null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -308,9 +311,8 @@ export async function localFirst<T>(
   server: () => Promise<{ data: T; status: number }>,
   options: LocalFirstOptions = {},
 ): Promise<AnalysisResponse<T>> {
-  if (options.frameColumns?.length && caseWeightActive()) {
-    return serverAnswer(analysisId, server, "weights-active");
-  }
+  const scoped = options.frameColumns?.length ? scopeNeedsServer() : null;
+  if (scoped) return serverAnswer(analysisId, server, scoped);
   if (sessionEngine() === "r") return rFirst(analysisId, params, server, options);
   return pythonFirst(analysisId, params, server, options);
 }
