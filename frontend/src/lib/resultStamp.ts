@@ -99,18 +99,24 @@ export function stableStringify(value: unknown): string {
  * treating it as part of the filter would flag every result stale for a
  * reason no reader would recognise.
  */
-export function filterKey(filter: CaseFilter | null | undefined): string {
-  if (!filter || !filter.conditions?.length) return "none";
-  return stableStringify({
-    conditions: filter.conditions,
-    selected: filter.selected,
-    total: filter.total,
-  });
+export function filterKey(filter: CaseFilter | null | undefined, weight?: string | null): string {
+  const base = !filter || !filter.conditions?.length
+    ? "none"
+    : stableStringify({
+        conditions: filter.conditions,
+        selected: filter.selected,
+        total: filter.total,
+      });
+  // Weight Cases changes which cases are counted as much as the filter does.
+  // Appended only when on, so every stamp made without weights keeps its key.
+  return weight ? `${base}|weight:${weight}` : base;
 }
 
 export interface StampInputs {
   dataVersion: number;
   caseFilter: CaseFilter | null;
+  /** The Weight Cases column, when on. */
+  caseWeight?: string | null;
   engine: EngineKind;
   params: unknown;
   sessionId?: string | null;
@@ -125,7 +131,7 @@ export interface StampInputsWithProvenance extends StampInputs {
 export function makeStamp(inputs: StampInputsWithProvenance): ResultStamp {
   return {
     dataVersion: inputs.dataVersion,
-    filterKey: filterKey(inputs.caseFilter),
+    filterKey: filterKey(inputs.caseFilter, inputs.caseWeight),
     paramsKey: stableStringify(inputs.params),
     engine: inputs.engine,
     engineVersion: appVersion(),

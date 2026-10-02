@@ -1,7 +1,7 @@
 import "./index.css";
 import { Component, useState, useRef, useEffect, useMemo, type ReactNode } from "react";
 import { BarChart2, Table2, FlaskConical, GitMerge, Brain, X, TrendingUp, ClipboardList, Calculator, Grid3x3, Grid2x2, Shapes, FolderOpen, Target, Filter, Info, Save, Search, Layers, Scale, HelpCircle, Command } from "lucide-react";
-import { clearCases, saveSession as saveSessionApi } from "./api";
+import { clearCases, clearWeightCases, saveSession as saveSessionApi } from "./api";
 import AboutModal from "./components/AboutModal";
 import HelpModal from "./components/HelpModal";
 import { useAutoSession } from "./hooks/useAutoSession";
@@ -593,6 +593,8 @@ function SessionNamePill() {
 
 export default function App() {
   const { session, activeTab, setActiveTab, clearSession, showGrid, toggleGrid, caseFilter, setCaseFilter, originalSession, setOriginalSession, setSession } = useStore();
+  const caseWeight = useStore((s) => s.caseWeight);
+  const setCaseWeight = useStore((s) => s.setCaseWeight);
   const caseFilterKey = caseFilter
     ? JSON.stringify([caseFilter.conditions, caseFilter.selected, caseFilter.total])
     : "all";
@@ -1022,6 +1024,30 @@ export default function App() {
               className="ml-auto flex items-center gap-1 px-2 py-0.5 rounded bg-violet-200 hover:bg-violet-300 text-violet-800 font-medium transition-colors"
             >
               <X size={10} /> Clear filter
+            </button>
+          </div>
+        )}
+
+        {/* Weight Cases banner: weights change every N and every test. */}
+        {caseWeight && (
+          <div className={`flex items-center gap-2 px-4 py-1 border-t text-xs ${caseWeight.error
+            ? "bg-red-50 border-red-200 text-red-700" : "bg-sky-50 border-sky-200 text-sky-800"}`} role="status">
+            <span className="font-semibold">
+              Weighted by {caseWeight.column}
+              {caseWeight.sum_weights != null && ` (N = ${caseWeight.sum_weights.toLocaleString()} from ${caseWeight.n_rows?.toLocaleString()} rows)`}
+            </span>
+            <span className={caseWeight.error ? "" : "text-sky-500"}>
+              {caseWeight.error ?? "all analyses count each row by its frequency weight"}
+            </span>
+            <button
+              onClick={async () => {
+                if (!session) return;
+                await clearWeightCases(session.session_id);
+                setCaseWeight(null);
+              }}
+              className="ml-auto flex items-center gap-1 px-2 py-0.5 rounded bg-sky-200 hover:bg-sky-300 text-sky-900 font-medium transition-colors"
+            >
+              <X size={10} /> Turn off
             </button>
           </div>
         )}

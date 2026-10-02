@@ -713,12 +713,18 @@ def method_appendix_docx(req: MethodAppendixRequest):
         df = store.get(req.session_id)
         if df is not None:
             n_rows, n_cols = df.shape
-            selected_df = store.get_filtered(req.session_id)
+            selected_df = store.get_filtered(req.session_id, weighted=False)
             selection_text = ""
             if selected_df is not None and len(selected_df) != n_rows:
                 selection_text = (
                     f" A prespecified case selection was applied, and all analyses were restricted "
                     f"to {len(selected_df)} of {n_rows} observations."
+                )
+            case_weight = store.get_weight(req.session_id)
+            if case_weight:
+                selection_text += (
+                    f" Cases were weighted by '{case_weight}' as frequency weights, so each "
+                    f"observation counted as many times as its weight."
                 )
             doc.add_paragraph(
                 f"The dataset comprised {n_rows} observations across {n_cols} variables."
@@ -730,7 +736,7 @@ def method_appendix_docx(req: MethodAppendixRequest):
     # ── Per-analysis methods bullets ───────────────────────────────────────
     para = doc.add_paragraph()
     para.add_run("Analyses performed").bold = True
-    excluded = {"data_updated", "metadata_updated", "kind_override", "case_filter", "case_filter_cleared", "row_added", "row_deleted", "column_renamed", "computed_column"}
+    excluded = {"data_updated", "metadata_updated", "kind_override", "case_filter", "case_filter_cleared", "case_weight", "case_weight_cleared", "row_added", "row_deleted", "column_renamed", "computed_column"}
     used_actions = [a for a in counts.keys() if a and a not in excluded]
     seen_methods = set()
     for action in used_actions:

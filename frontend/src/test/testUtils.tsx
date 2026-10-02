@@ -33,6 +33,7 @@ export function installSession(session: Session = makeSession()): void {
     activeTab: 'data',
     table1Result: null,
     caseFilter: null,
+    caseWeight: null,
     panelCache: {},
     undoDepth: 0,
     redoDepth: 0,

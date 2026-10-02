@@ -161,3 +161,26 @@ describe("a Python session", () => {
     expect(ensureREngineBooted).not.toHaveBeenCalled();
   });
 });
+
+describe("Weight Cases", () => {
+  afterEach(() => useStore.setState({ caseWeight: null }));
+
+  it("sends a dataset-reading analysis to the server, where the weights are applied", async () => {
+    useStore.setState({ caseWeight: { column: "count", n_rows: 6, sum_weights: 13 } });
+
+    const res = await localFirst("stats.ttest", { column: "sbp" }, server, { frameColumns: ["sbp", "group"] });
+
+    expect(res).toMatchObject({ runtime: "server", fellBackBecause: "weights-active" });
+    expect(runLocalR).not.toHaveBeenCalled();
+    expect(ensureREngineBooted).not.toHaveBeenCalled();
+  });
+
+  it("leaves analyses that read no dataset alone", async () => {
+    useStore.setState({ caseWeight: { column: "count" } });
+    runLocalR.mockResolvedValue({ power: 0.8 });
+
+    const res = await localFirst("stats.ttest", {}, server);
+
+    expect(res.runtime).toBe("local");
+  });
+});

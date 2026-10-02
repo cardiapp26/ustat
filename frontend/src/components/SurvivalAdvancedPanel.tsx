@@ -1158,7 +1158,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
     // an edit or filter change while the fit runs would send rows computed
     // on data that is no longer on screen.
     const before = useStore.getState();
-    const beforeFilter = filterKey(before.caseFilter);
+    const beforeFilter = filterKey(before.caseFilter, before.caseWeight?.column);
     try {
       const meta = columns.find((c) => c.name === specExposure);
       const vlab = (code: string | null) => (code == null ? "" : labelFor(meta?.value_labels, code, String(code)));
@@ -1207,7 +1207,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
       }
       if (!rows.length) { setCoxError("No model fit — check exposure / covariates."); return; }
       const now = useStore.getState();
-      if (now.dataVersion !== before.dataVersion || filterKey(now.caseFilter) !== beforeFilter) {
+      if (now.dataVersion !== before.dataVersion || filterKey(now.caseFilter, now.caseWeight?.column) !== beforeFilter) {
         setCoxError("The data changed while the models were fitting. Build the forest again.");
         return;
       }

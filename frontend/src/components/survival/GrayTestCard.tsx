@@ -29,6 +29,7 @@ function errorText(e: unknown): string {
 export default function GrayTestCard({ sessionId, durationCol, eventCol, groupCol, eventOfInterest }: Props) {
   const engine = useStore((s) => s.engine);
   const setEngine = useStore((s) => s.setEngine);
+  const caseWeight = useStore((s) => s.caseWeight);
   const [result, setResult] = useState<GrayTestResult | null>(null);
   const [resultKey, setResultKey] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -69,6 +70,11 @@ export default function GrayTestCard({ sessionId, durationCol, eventCol, groupCo
 
       {!ready ? (
         <p className="text-[11px] text-gray-500">Choose a group column to compare cumulative incidence.</p>
+      ) : caseWeight ? (
+        <p className="text-[11px] text-gray-600 leading-snug">
+          Gray&apos;s test does not use Weight Cases: it runs in the R engine, which receives the rows
+          unweighted. Turn weighting off to run it, or analyse the expanded data.
+        </p>
       ) : engine === "r" ? (
         <button onClick={run} disabled={busy}
           className="text-xs px-2.5 py-1 rounded border border-teal-300 text-teal-700 hover:bg-teal-100 disabled:opacity-50">

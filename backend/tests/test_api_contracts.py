@@ -20,7 +20,8 @@ DESCRIPTIVE_KEYS = {
 FREQUENCY_KEYS = {"n", "missing", "categories"}
 FREQUENCY_CATEGORY_KEYS = {"value", "count", "pct"}
 
-SESSION_INFO_KEYS = {"session_id", "filename", "rows", "columns", "preview"}
+# case_weight: the active Weight Cases column and weighted N, or null.
+SESSION_INFO_KEYS = {"session_id", "filename", "rows", "columns", "preview", "case_weight"}
 SESSION_COLUMN_REQUIRED_KEYS = {"name", "dtype", "kind"}
 
 

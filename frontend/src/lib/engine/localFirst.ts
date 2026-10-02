@@ -185,6 +185,17 @@ function sessionEngine(): EngineKind {
   }
 }
 
+/** Weight Cases is on. In-browser engines are handed the selected rows
+ *  unweighted, so a dataset-reading analysis has to run on the server, where
+ *  the weights are applied (backend services/case_weights). */
+function caseWeightActive(): boolean {
+  try {
+    return Boolean(useStore.getState().caseWeight);
+  } catch {
+    return false;
+  }
+}
+
 async function serverAnswer<T>(
   analysisId: string,
   server: () => Promise<{ data: T; status: number }>,
@@ -297,6 +308,9 @@ export async function localFirst<T>(
   server: () => Promise<{ data: T; status: number }>,
   options: LocalFirstOptions = {},
 ): Promise<AnalysisResponse<T>> {
+  if (options.frameColumns?.length && caseWeightActive()) {
+    return serverAnswer(analysisId, server, "weights-active");
+  }
   if (sessionEngine() === "r") return rFirst(analysisId, params, server, options);
   return pythonFirst(analysisId, params, server, options);
 }

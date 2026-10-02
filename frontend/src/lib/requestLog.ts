@@ -25,6 +25,8 @@ export interface RecordedRequest {
 export interface SendContext {
   dataVersion: number;
   caseFilter: unknown;
+  /** Weight Cases column the request was sent under, or null. */
+  caseWeight: string | null;
   sessionId: string | null;
 }
 

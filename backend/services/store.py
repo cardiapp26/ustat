@@ -19,6 +19,7 @@ from fastapi import HTTPException
 
 from ustat_engine import EngineError
 from services.missing_codes import apply_missing_codes
+from services import case_weights as _case_weights
 from ustat_engine.frame import select as _select
 
 # Per-dataset size ceiling (rows × columns). Guards the in-memory store against
@@ -28,6 +29,7 @@ MAX_SESSION_CELLS = int(os.environ.get("MAX_SESSION_CELLS", str(20_000_000)))
 
 _store: Dict[str, dict] = {}  # {session_id: {"df": DataFrame, "timestamp": float}}
 _filters: Dict[str, List[dict]] = {}
+_weights: Dict[str, str] = {}  # {session_id: frequency-weight column} (Weight Cases)
 _audit: Dict[str, list] = {}
 _metadata: Dict[str, dict] = {}
 _kinds: Dict[str, Dict[str, str]] = {}  # {session_id: {col: "numeric"|"categorical"|...}}
@@ -47,7 +49,7 @@ VALID_FILTER_OPERATORS = _select.VALID_FILTER_OPERATORS
 
 # Every per-session map, so cleanup/delete can drop a session completely
 # (a partial pop leaks the user's kinds/decimals/filename/filters after TTL).
-_SESSION_MAPS: tuple = (_store, _filters, _audit, _metadata, _kinds, _decimals, _filenames, _ingest, _steps, _undo, _redo)
+_SESSION_MAPS: tuple = (_store, _filters, _weights, _audit, _metadata, _kinds, _decimals, _filenames, _ingest, _steps, _undo, _redo)
 
 
 def _purge_locked(session_id: str) -> None:
@@ -264,6 +266,24 @@ def clear_filter(session_id: str) -> None:
         _dirty.add(session_id)
 
 
+def save_weight(session_id: str, column: str) -> None:
+    """Weight Cases by `column` (see services/case_weights). Validate first."""
+    with _lock:
+        _weights[session_id] = column
+        _dirty.add(session_id)
+
+
+def get_weight(session_id: str) -> Optional[str]:
+    with _lock:
+        return _weights.get(session_id)
+
+
+def clear_weight(session_id: str) -> None:
+    with _lock:
+        _weights.pop(session_id, None)
+        _dirty.add(session_id)
+
+
 def _adapt(fn, *args, **kwargs):
     """Report an EngineError as the HTTP status it asked for.
 
@@ -285,10 +305,14 @@ def _apply_conditions(df: pd.DataFrame, conditions: List[dict]) -> pd.DataFrame:
     return _select.apply_conditions(df, conditions)
 
 
-def get_filtered(session_id: str) -> Optional[pd.DataFrame]:
+def get_filtered(session_id: str, weighted: bool = True) -> Optional[pd.DataFrame]:
     """Return the session dataframe as analyses see it: declared missing codes
     (99, 999, "don't know") set to missing, then any active case filter
-    applied. The stored data keeps its codes; see services/missing_codes."""
+    applied, then Weight Cases (rows replicated by their frequency weight).
+    The stored data keeps its codes; see services/missing_codes.
+
+    `weighted=False` is for counting rows (the Select Cases "n selected"),
+    never for an analysis."""
     with _lock:
         entry = _store.get(session_id)
         if entry is None:
@@ -297,6 +321,7 @@ def get_filtered(session_id: str) -> Optional[pd.DataFrame]:
         # Update access timestamp
         entry["timestamp"] = time.time()
         conditions = _filters.get(session_id, [])
+        weight = _weights.get(session_id)
         coded = {
             col: meta for col, meta in (_metadata.get(session_id) or {}).items()
             if isinstance(meta, dict) and (
@@ -305,7 +330,17 @@ def get_filtered(session_id: str) -> Optional[pd.DataFrame]:
         }
     # Codes before the filter, as SPSS does: "age > 50" must not select 999.
     df = apply_missing_codes(df, coded)
-    return _apply_conditions(df, conditions)
+    df = _apply_conditions(df, conditions)
+    # Weights last, as SPSS does: Select Cases picks rows, WEIGHT BY counts them.
+    if weight and weighted:
+        try:
+            df = _case_weights.apply_weights(df, weight)
+        except _case_weights.CaseWeightError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{exc} Weight Cases is on; change the weights or turn it off.",
+            ) from exc
+    return df
 
 
 def fill_values_by_index(session_id: str, column: str, values: Dict[int, object]) -> bool:
@@ -352,6 +387,7 @@ def _undo_snapshot(
     if include_column_state:
         column_state = {
             "filters": deepcopy(_filters.get(session_id, [])),
+            "weight": _weights.get(session_id),
             "metadata": deepcopy(_metadata.get(session_id, {})),
             "kinds": deepcopy(_kinds.get(session_id, {})),
             "decimals": deepcopy(_decimals.get(session_id, {})),
@@ -368,6 +404,10 @@ def _restore_column_state(session_id: str, snapshot: dict) -> pd.DataFrame:
     column_state = snapshot.get("column_state")
     if column_state is not None:
         _filters[session_id] = column_state["filters"]
+        if column_state.get("weight"):
+            _weights[session_id] = column_state["weight"]
+        else:
+            _weights.pop(session_id, None)
         _metadata[session_id] = column_state["metadata"]
         _kinds[session_id] = column_state["kinds"]
         _decimals[session_id] = column_state["decimals"]
@@ -615,6 +655,8 @@ def _rename_column_key_locked(session_id: str, old: str, new: str) -> None:
         kinds[new] = kinds.pop(old)
     if session_id in _decimals and old in _decimals[session_id]:
         _decimals[session_id][new] = _decimals[session_id].pop(old)
+    if _weights.get(session_id) == old:
+        _weights[session_id] = new
     filters = _filters.get(session_id)
     if filters:
         _filters[session_id] = [
@@ -636,6 +678,8 @@ def _delete_column_key_locked(session_id: str, column: str) -> None:
     decimals = _decimals.get(session_id)
     if decimals:
         decimals.pop(column, None)
+    if _weights.get(session_id) == column:
+        _weights.pop(session_id, None)
     filters = _filters.get(session_id)
     if filters:
         remaining = [

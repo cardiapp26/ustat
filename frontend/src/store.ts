@@ -65,6 +65,7 @@ export interface Session {
   columns: ColMeta[];
   preview: Record<string, unknown>[];
   case_filter?: CaseFilter | null;
+  case_weight?: CaseWeight | null;
 }
 
 /** Chart sub-tabs of the Summary tab. Numeric columns get the first five;
@@ -189,6 +190,17 @@ export interface SessionRecoveryNotice {
   name: string;
 }
 
+/** Weight Cases (SPSS frequency weights), as the server reports it. `error`
+ *  is set instead of the counts when the weights stopped being valid after a
+ *  data edit; analyses then refuse until they are fixed or turned off. */
+export interface CaseWeight {
+  column: string;
+  n_rows?: number;
+  n_excluded?: number;
+  sum_weights?: number;
+  error?: string;
+}
+
 export interface CaseFilter {
   conditions: CaseCondition[];
   selected: number;
@@ -297,6 +309,7 @@ export interface SavedAnalysis {
 interface ColumnDependentState {
   columnDecimals: Record<string, number>;
   caseFilter: CaseFilter | null;
+  caseWeight: CaseWeight | null;
   panelCache: Record<string, unknown>;
   table1Result: unknown;
 }
@@ -337,6 +350,8 @@ interface AppState {
   showGrid: boolean;
   plotTheme: PlotTheme;
   caseFilter: CaseFilter | null;
+  caseWeight: CaseWeight | null;
+  setCaseWeight: (w: CaseWeight | null) => void;
   setSession: (s: Session) => void;
   setOriginalSession: (s: Session | null) => void;
   /** Rename the active session. Updates the React store immediately and
@@ -540,11 +555,12 @@ function updatePanelCacheColumn(
 }
 
 function dependentState(
-  state: Pick<AppState, "columnDecimals" | "caseFilter" | "panelCache" | "table1Result">,
+  state: Pick<AppState, "columnDecimals" | "caseFilter" | "caseWeight" | "panelCache" | "table1Result">,
 ): ColumnDependentState {
   return {
     columnDecimals: state.columnDecimals,
     caseFilter: state.caseFilter,
+    caseWeight: state.caseWeight,
     panelCache: state.panelCache,
     table1Result: state.table1Result,
   };
@@ -579,6 +595,7 @@ export const useStore = create<AppState>((set, get) => ({
   plotTheme: loadTheme(),
   table1Result: null,
   caseFilter: null,
+  caseWeight: null,
   dataVersion: 0,
   engine: loadSessionEngine(),
   engineSource: loadSessionEngineSource(),
@@ -632,6 +649,7 @@ export const useStore = create<AppState>((set, get) => ({
       table1Result: null,
       ingestReport: null,
       caseFilter: s.case_filter ?? null,
+      caseWeight: s.case_weight ?? null,
       panelCache: {},
       savedAnalyses: [],
       undoDepth: 0,
@@ -657,6 +675,12 @@ export const useStore = create<AppState>((set, get) => ({
     table1Result: null,
     panelCache: {},
   }),
+  // Results are kept, not cleared: each is stamped with the weighting it was
+  // computed under (lib/resultStamp filterKey) and reads as out of date.
+  setCaseWeight: (w) => set((state) => ({
+    caseWeight: w,
+    session: state.session ? { ...state.session, case_weight: w } : state.session,
+  })),
   toggleGrid: () => set((state) => {
     const next = !state.showGrid;
     localStorage.setItem("showGrid", String(next));
@@ -678,6 +702,7 @@ export const useStore = create<AppState>((set, get) => ({
     table1Result: null,
     ingestReport: null,
     caseFilter: null,
+    caseWeight: null,
     panelCache: {},
     savedAnalyses: [],
     undoDepth: 0,
@@ -764,9 +789,13 @@ export const useStore = create<AppState>((set, get) => ({
             ),
           } : null)
         : serverCaseFilter;
+      const caseWeight = state.caseWeight?.column === oldName
+        ? { ...state.caseWeight, column: newName }
+        : state.caseWeight;
       const after: ColumnDependentState = {
         columnDecimals,
         caseFilter,
+        caseWeight,
         panelCache: updatePanelCacheColumn(state.panelCache, oldName, newName),
         table1Result: null,
       };
@@ -782,6 +811,7 @@ export const useStore = create<AppState>((set, get) => ({
           columns,
           preview,
           case_filter: caseFilter,
+          case_weight: caseWeight,
         },
         ...after,
         columnMutationUndo: [...state.columnMutationUndo, snapshot].slice(-50),
@@ -822,9 +852,13 @@ export const useStore = create<AppState>((set, get) => ({
             : null)
           : null)
         : serverCaseFilter;
+      const caseWeight = state.caseWeight && removedNames.has(state.caseWeight.column)
+        ? null
+        : state.caseWeight;
       const after: ColumnDependentState = {
         columnDecimals,
         caseFilter,
+        caseWeight,
         panelCache: [...removedNames].reduce(
           (cache, name) => updatePanelCacheColumn(cache, name),
           state.panelCache,
@@ -843,6 +877,7 @@ export const useStore = create<AppState>((set, get) => ({
           columns,
           preview,
           case_filter: caseFilter,
+          case_weight: caseWeight,
         },
         ...after,
         columnMutationUndo: [...state.columnMutationUndo, snapshot].slice(-50),
@@ -992,6 +1027,7 @@ export const useStore = create<AppState>((set, get) => ({
       ...makeStamp({
         dataVersion: sent?.dataVersion ?? now.dataVersion,
         caseFilter: sent ? (sent.caseFilter as CaseFilter | null) : now.caseFilter,
+        caseWeight: sent ? (sent.caseWeight as string | null) : now.caseWeight?.column ?? null,
         engine: now.engine,
         params: null, sessionId: sent?.sessionId ?? sessionId, request,
       }),
@@ -1090,6 +1126,7 @@ export const useStore = create<AppState>((set, get) => ({
               columns: d.columns,
               preview: d.preview,
               case_filter: snapshot?.before.caseFilter ?? current.caseFilter,
+              case_weight: snapshot ? snapshot.before.caseWeight : current.caseWeight,
             },
             ...(snapshot?.before ?? {}),
             columnMutationUndo: snapshot
@@ -1131,6 +1168,7 @@ export const useStore = create<AppState>((set, get) => ({
               columns: d.columns,
               preview: d.preview,
               case_filter: snapshot?.after.caseFilter ?? current.caseFilter,
+              case_weight: snapshot ? snapshot.after.caseWeight : current.caseWeight,
             },
             ...(snapshot?.after ?? {}),
             columnMutationUndo: snapshot
@@ -1177,5 +1215,8 @@ export const useStore = create<AppState>((set, get) => ({
 // computed on rather than the data when they happened to land.
 setSendContextProvider(() => {
   const s = useStore.getState();
-  return { dataVersion: s.dataVersion, caseFilter: s.caseFilter, sessionId: s.session?.session_id ?? null };
+  return {
+    dataVersion: s.dataVersion, caseFilter: s.caseFilter,
+    caseWeight: s.caseWeight?.column ?? null, sessionId: s.session?.session_id ?? null,
+  };
 });

@@ -803,6 +803,10 @@ export const selectCases = (sessionId: string, conditions: object[], apply = tru
   api.post(`/api/sessions/${sessionId}/select_cases`, { conditions, apply });
 export const clearCases  = (sessionId: string) =>
   api.delete(`/api/sessions/${sessionId}/select_cases`);
+export const setWeightCases = (sessionId: string, column: string) =>
+  api.post(`/api/sessions/${sessionId}/weight_cases`, { column });
+export const clearWeightCases = (sessionId: string) =>
+  api.delete(`/api/sessions/${sessionId}/weight_cases`);
 
 export interface GridRowsRequest {
   sort: { col: string; dir: "asc" | "desc" }[];

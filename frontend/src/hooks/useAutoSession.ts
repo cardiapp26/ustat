@@ -87,6 +87,7 @@ export function useAutoSession({ onStatus }: AutoSaveDeps = {}): void {
   // place the choice is otherwise made.
   const engine    = useStore((s) => s.engine);
   const caseFilter = useStore((s) => s.caseFilter);
+  const caseWeight = useStore((s) => s.caseWeight);
   // Bumped on EVERY data mutation (incl. in-place edits that leave row/column
   // counts unchanged: cell edits, recode-in-place, find-replace, date parse).
   // Without this, such edits only got picked up by the 60 s periodic snapshot,
@@ -214,7 +215,7 @@ export function useAutoSession({ onStatus }: AutoSaveDeps = {}): void {
       clearTimeout(debounceTimer);
       if (liveSnapshot === snapshot) liveSnapshot = null;
     };
-  }, [sessionId, localId, filename, nRows, nCols, activeTab, engine, caseFilter, valueLabelSig, dataVersion, outputItems]);
+  }, [sessionId, localId, filename, nRows, nCols, activeTab, engine, caseFilter, valueLabelSig, dataVersion, outputItems, caseWeight]);
 
   // The periodic snapshot and the unload flush depend only on there being a
   // session. They used to live in the effect above, so every tracked change

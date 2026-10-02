@@ -119,6 +119,11 @@ def build_project(session_id: str, ui_state: Optional[dict] = None) -> bytes:
         s.get("op") in ("filter", "sessions/select_cases") for s in steps
     ):
         steps.append({"op": "filter", "params": {"conditions": case_filter}})
+    case_weight = store.get_weight(session_id)
+    if case_weight and not any(
+        s.get("op") in ("weight", "sessions/weight_cases") for s in steps
+    ):
+        steps.append({"op": "weight", "params": {"column": case_weight}})
 
     dataset_bytes = json.dumps(_dataset_records(df), allow_nan=False, default=str).encode("utf-8")
 
@@ -309,10 +314,16 @@ def restore_project(parsed: dict) -> str:
                 store.save_filter(session_id, conditions)
         elif step.get("op") == "sessions/clear_cases":
             store.clear_filter(session_id)
+        elif step.get("op") in ("weight", "sessions/weight_cases"):
+            column = (step.get("params") or {}).get("column")
+            if isinstance(column, str) and column in df.columns:
+                store.save_weight(session_id, column)
+        elif step.get("op") == "sessions/clear_weight_cases":
+            store.clear_weight(session_id)
     # Seed the restored session's recipe with the file's, so further work
     # appends to the history instead of restarting it.
     if steps:
-        store.set_steps(session_id, [s for s in steps if s.get("op") != "filter"])
+        store.set_steps(session_id, [s for s in steps if s.get("op") not in ("filter", "weight")])
 
     for entry in parsed.get("audit") or []:
         if isinstance(entry, dict) and entry.get("action"):

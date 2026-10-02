@@ -16,6 +16,7 @@ from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 
 from services import store
+from routers.session import _case_weight_payload
 from services.project_file import (
     ProjectFileError,
     build_project,
@@ -179,9 +180,10 @@ async def load_project(file: UploadFile = File(...)):
         "preview": preview,
         "case_filter": {
             "conditions": case_filter,
-            "selected": len(store.get_filtered(session_id)),
+            "selected": len(store.get_filtered(session_id, weighted=False)),
             "total": len(df),
         }
         if case_filter
         else None,
+        "case_weight": _case_weight_payload(session_id),
     }

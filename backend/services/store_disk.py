@@ -89,6 +89,7 @@ def flush_dirty_to_disk() -> None:
                     "filename": store._filenames.get(sid),
                     "metadata": deepcopy(store._metadata.get(sid, {})),
                     "filters": deepcopy(store._filters.get(sid, [])),
+                    "weight": store._weights.get(sid),
                 }
 
     if not snapshot:
@@ -116,6 +117,7 @@ def flush_dirty_to_disk() -> None:
                 "filename": state["filename"],
                 "metadata": state["metadata"],
                 "filters": state["filters"],
+                "weight": state["weight"],
             }
             with open(meta_path + ".tmp", "w") as f:
                 json.dump(meta, f)
@@ -190,6 +192,8 @@ def load_persisted_sessions() -> None:
                 store._metadata[sid] = meta["metadata"]
             if meta.get("filters"):
                 store._filters[sid] = meta["filters"]
+            if meta.get("weight"):
+                store._weights[sid] = meta["weight"]
 
 
 # Only spin up the disk-flush thread when the operator has opted in. Off by

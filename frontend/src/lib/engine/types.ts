@@ -38,6 +38,8 @@ export type LocalUnavailableReason =
   | "r-runtime-load-failed"
   /** The analysis has no R implementation to fall back to. */
   | "no-r-implementation"
+  /** Weight Cases is on; the selected rows reach a browser engine unweighted. */
+  | "weights-active"
   /**
    * The R engine raised a condition it could not attribute to the request
    * (status_hint 500). Distinct from `engine-error` on purpose: a refusal is an

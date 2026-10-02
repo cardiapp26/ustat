@@ -51,6 +51,7 @@ export function useStampedResult<T>(
   const setPanelCache = useStore((s) => s.setPanelCache);
   const dataVersion = useStore((s) => s.dataVersion);
   const caseFilter = useStore((s) => s.caseFilter);
+  const caseWeight = useStore((s) => s.caseWeight?.column ?? null);
   const engine = useStore((s) => s.engine);
   const sessionId = useStore((s) => s.session?.session_id ?? null);
 
@@ -66,7 +67,8 @@ export function useStampedResult<T>(
     if (cached?.result != null) {
       const s = useStore.getState();
       return makeStamp({
-        dataVersion: -1, caseFilter: s.caseFilter, engine: s.engine, params, provenance: null,
+        dataVersion: -1, caseFilter: s.caseFilter, caseWeight: s.caseWeight?.column ?? null,
+        engine: s.engine, params, provenance: null,
         sessionId: s.session?.session_id ?? null,
       });
     }
@@ -74,8 +76,8 @@ export function useStampedResult<T>(
   });
 
   const current = useMemo(
-    () => makeStamp({ dataVersion, caseFilter, engine, params, sessionId }),
-    [dataVersion, caseFilter, engine, params, sessionId],
+    () => makeStamp({ dataVersion, caseFilter, caseWeight, engine, params, sessionId }),
+    [dataVersion, caseFilter, caseWeight, engine, params, sessionId],
   );
 
   const setResult = useCallback((r: T | null) => {
@@ -90,6 +92,7 @@ export function useStampedResult<T>(
           return makeStamp({
             dataVersion: sent?.dataVersion ?? now.dataVersion,
             caseFilter: sent ? (sent.caseFilter as typeof now.caseFilter) : now.caseFilter,
+            caseWeight: sent ? sent.caseWeight : now.caseWeight?.column ?? null,
             engine: now.engine,
             params,
             sessionId: sent?.sessionId ?? now.session?.session_id ?? null,

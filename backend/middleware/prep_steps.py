@@ -35,8 +35,9 @@ _RULES: list = [
     ("DELETE", re.compile(r"^/api/compute/(?P<sid>[^/]+)/column/(?P<column>.+)$"), "compute/delete_column"),
     # Cell/structure edits and the case filter, on the sessions router.
     ("PATCH", re.compile(r"^/api/sessions/(?P<sid>[^/]+)/cell$"), "sessions/edit_cell"),
-    ("POST", re.compile(r"^/api/sessions/(?P<sid>[^/]+)/(?P<op>set_cells|clear_cells|swap_value_labels|reorder_columns|select_cases|undo|redo)$"), "sessions/{op}"),
+    ("POST", re.compile(r"^/api/sessions/(?P<sid>[^/]+)/(?P<op>set_cells|clear_cells|swap_value_labels|reorder_columns|select_cases|weight_cases|undo|redo)$"), "sessions/{op}"),
     ("DELETE", re.compile(r"^/api/sessions/(?P<sid>[^/]+)/select_cases$"), "sessions/clear_cases"),
+    ("DELETE", re.compile(r"^/api/sessions/(?P<sid>[^/]+)/weight_cases$"), "sessions/clear_weight_cases"),
     ("DELETE", re.compile(r"^/api/sessions/(?P<sid>[^/]+)/row/(?P<row_index>\d+)$"), "sessions/delete_row"),
     ("POST", re.compile(r"^/api/merge/apply$"), "merge/apply"),
     # The Data Dictionary: declared missing codes and category orders change

@@ -55,6 +55,7 @@ const KIND_LABEL: Record<string, string> = {
 };
 
 import { SelectCasesModal } from "./datatable/SelectCasesModal";
+import WeightCasesModal from "./datatable/WeightCasesModal";
 import { DeduplicateModal } from "./datatable/DeduplicateModal";
 import { ValueLabelsModal } from "./datatable/ValueLabelsModal";
 import { FormulaFillModal } from "./datatable/FormulaFillModal";
@@ -282,6 +283,7 @@ function DataTableBody({ session }: { session: Session }) {
   const reorderColumns   = useStore((s) => s.reorderColumns);
   const removeSessionColumns = useStore((s) => s.removeSessionColumns);
   const caseFilter       = useStore((s) => s.caseFilter);
+  const caseWeight       = useStore((s) => s.caseWeight);
   // Set, not array: this is consulted once per rendered row.
   // Optional on the wire: a session restored from a saved file carries the
   // conditions without the counts the server computes when the filter runs.
@@ -318,6 +320,7 @@ function DataTableBody({ session }: { session: Session }) {
   const [saving,         setSaving]        = useState(false);
   const [showMissingOnly, setShowMissingOnly] = useState(false);
   const [showSelectCases, setShowSelectCases] = useState(false);
+  const [showWeightCases, setShowWeightCases] = useState(false);
   const [showDedupe,      setShowDedupe]      = useState(false);
   const [showDictionary,  setShowDictionary]  = useState(false);
 
@@ -1784,6 +1787,14 @@ function DataTableBody({ session }: { session: Session }) {
       className="relative flex flex-col gap-2 h-full focus:outline-none"
       style={{ minHeight: 0 }}
     >
+      {showWeightCases && session && (
+        <WeightCasesModal
+          columns={columns}
+          sessionId={session.session_id}
+          current={caseWeight}
+          onClose={() => setShowWeightCases(false)}
+        />
+      )}
       {showSelectCases && session && (
         <SelectCasesModal
           columns={columns}
@@ -1983,6 +1994,23 @@ function DataTableBody({ session }: { session: Session }) {
             {caseFilter && (
               <span className="bg-violet-600 text-white text-[9px] font-bold rounded-full px-1.5 py-0.5">
                 {caseFilter.selected.toLocaleString()}
+              </span>
+            )}
+          </button>
+
+          {/* Weight Cases */}
+          <button
+            onClick={() => setShowWeightCases(true)}
+            title={caseWeight ? `Weighted by ${caseWeight.column}` : "Weight cases by a frequency column"}
+            className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border transition-colors
+              ${caseWeight
+                ? (caseWeight.error ? "bg-red-50 text-red-700 border-red-300" : "bg-sky-100 text-sky-700 border-sky-400")
+                : "text-gray-500 border-gray-300 hover:text-gray-700 hover:border-gray-400"}`}
+          >
+            ⚖ Weight Cases
+            {caseWeight?.sum_weights != null && (
+              <span className="bg-sky-600 text-white text-[9px] font-bold rounded-full px-1.5 py-0.5">
+                N={caseWeight.sum_weights.toLocaleString()}
               </span>
             )}
           </button>

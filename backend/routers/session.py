@@ -931,6 +931,14 @@ def session_frame(session_id: str, columns: Optional[str] = Query(None)):
     whole sheet, and the whole point of the exercise is to move as little of
     the patient's data as the question needs.
     """
+    # In-browser engines get the selected rows unweighted; with Weight Cases on
+    # they would compute an unweighted answer beside weighted server results.
+    # The client routes such runs to the server; this refuses if it does not.
+    if store.get_weight(session_id):
+        raise HTTPException(
+            status_code=409,
+            detail="Weight Cases is on, so this analysis runs on the server.",
+        )
     df = store.get(session_id)
     if df is None:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -964,6 +972,65 @@ def clear_cases(session_id: str):
     store.clear_filter(session_id)
     store.log_action(session_id, "case_filter_cleared")
     return {"selected": len(df), "total": len(df)}
+
+
+# ── Weight Cases ───────────────────────────────────────────────────────────────
+
+def _case_weight_payload(session_id: str) -> dict | None:
+    """What the frontend shows for Weight Cases: the column, the rows that carry
+    a positive weight among the selected cases, and the weighted N. Reports an
+    `error` instead of raising when the weights stopped being valid after a
+    data edit, so the session itself still loads."""
+    from services import case_weights
+    column = store.get_weight(session_id)
+    if not column:
+        return None
+    selected = store.get_filtered(session_id, weighted=False)
+    try:
+        summary = case_weights.summarize(selected, column)
+    except case_weights.CaseWeightError as exc:
+        return {"column": column, "error": str(exc)}
+    return {
+        "column": summary.column,
+        "n_rows": summary.n_rows,
+        "n_excluded": summary.n_excluded,
+        "sum_weights": summary.sum_weights,
+    }
+
+
+class WeightCasesRequest(BaseModel):
+    column: str
+
+
+@router.post("/{session_id}/weight_cases")
+def weight_cases(session_id: str, body: WeightCasesRequest):
+    """SPSS WEIGHT BY: every analysis from now on counts each selected row
+    `column` times (services/case_weights). Frequency weights only."""
+    from services import case_weights
+    df = store.get(session_id)
+    if df is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    selected = store.get_filtered(session_id, weighted=False)
+    try:
+        summary = case_weights.summarize(selected, body.column)
+    except case_weights.CaseWeightError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    store.save_weight(session_id, body.column)
+    store.log_action(session_id, "case_weight", {
+        "column": body.column,
+        "n_rows": summary.n_rows,
+        "sum_weights": summary.sum_weights,
+    })
+    return _case_weight_payload(session_id)
+
+
+@router.delete("/{session_id}/weight_cases")
+def clear_weight_cases(session_id: str):
+    if store.get(session_id) is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    store.clear_weight(session_id)
+    store.log_action(session_id, "case_weight_cleared")
+    return None
 
 
 # ── File Export ─────────────────────────────────────────────────────────────
@@ -1042,6 +1109,7 @@ async def save_session(session_id: str):
         "kind_overrides": kind_overrides,
         "decimals_overrides": store.get_decimals(session_id),
         "case_filter": store.get_filter(session_id),
+        "case_weight": store.get_weight(session_id),
         "audit": store.get_audit(session_id),
         "data": json.loads(
             df.replace([np.inf, -np.inf], np.nan).to_json(
@@ -1097,6 +1165,9 @@ async def load_session(file: UploadFile = File(...)):
     case_filter = payload.get("case_filter", [])
     if case_filter:
         store.save_filter(new_session_id, case_filter)
+    case_weight = payload.get("case_weight")
+    if isinstance(case_weight, str) and case_weight in df.columns:
+        store.save_weight(new_session_id, case_weight)
 
     # Restore column metadata if present
     col_metadata = payload.get("col_metadata", {})
@@ -1168,9 +1239,10 @@ async def load_session(file: UploadFile = File(...)):
         "preview": preview,
         "case_filter": {
             "conditions": case_filter,
-            "selected": len(store.get_filtered(new_session_id)),
+            "selected": len(store.get_filtered(new_session_id, weighted=False)),
             "total": len(df),
         } if case_filter else None,
+        "case_weight": _case_weight_payload(new_session_id),
     }
 
 
@@ -1246,7 +1318,7 @@ def _session_preview(df: pd.DataFrame, session_id: str | None = None) -> dict:
         if conditions:
             case_filter = {
                 "conditions": conditions,
-                "selected": len(store.get_filtered(session_id)),
+                "selected": len(store.get_filtered(session_id, weighted=False)),
                 "total": len(df),
             }
     return {
@@ -1254,6 +1326,7 @@ def _session_preview(df: pd.DataFrame, session_id: str | None = None) -> dict:
         "columns": columns,
         "preview": preview,
         "case_filter": case_filter,
+        "case_weight": _case_weight_payload(session_id) if session_id else None,
     }
 
 
@@ -1450,4 +1523,5 @@ async def get_session_info(session_id: str):
         "rows": len(df),
         "columns": columns,
         "preview": preview,
+        "case_weight": _case_weight_payload(session_id),
     }

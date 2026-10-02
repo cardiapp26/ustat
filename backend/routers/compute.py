@@ -1589,7 +1589,7 @@ def delete_column(session_id: str, col_name: str):
     df = store.delete_dataframe_columns(session_id, [col_name])
     store.log_action(session_id, "delete_column", {"column": col_name})
     conditions = store.get_filter(session_id)
-    filtered = store.get_filtered(session_id)
+    filtered = store.get_filtered(session_id, weighted=False)
     case_filter = {
         "conditions": conditions,
         "selected": len(filtered),
@@ -1694,7 +1694,7 @@ def delete_columns(session_id: str, req: DeleteColumnsRequest):
     df = store.delete_dataframe_columns(session_id, unique_cols)
     store.log_action(session_id, "delete_columns", {"n_deleted": len(unique_cols)})
     conditions = store.get_filter(session_id)
-    filtered = store.get_filtered(session_id)
+    filtered = store.get_filtered(session_id, weighted=False)
     case_filter = {
         "conditions": conditions,
         "selected": len(filtered),
@@ -2187,7 +2187,7 @@ def rename_column(session_id: str, req: RenameRequest):
     df = store.rename_dataframe_column(session_id, req.old_name, new)
     store.log_action(session_id, "rename_column", {"old": req.old_name, "new": new})
     conditions = store.get_filter(session_id)
-    filtered = store.get_filtered(session_id)
+    filtered = store.get_filtered(session_id, weighted=False)
     case_filter = {
         "conditions": conditions,
         "selected": len(filtered),
