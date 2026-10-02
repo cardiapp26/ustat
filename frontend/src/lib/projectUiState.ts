@@ -25,6 +25,7 @@
  */
 import { useStore, type SavedAnalysis } from "../store";
 import type { ResultStamp } from "./resultStamp";
+import { restoreOutputItems, useOutputDoc, type OutputItem } from "./outputDoc";
 
 export interface ProjectUiState {
   /** The saving session's data counter, so restore can tell fresh from stale. */
@@ -35,6 +36,8 @@ export interface ProjectUiState {
   /** Named analyses. The backend lifts these out of ui/state.json into the
    *  project's analyses/ and results/ parts and merges them back on load. */
   savedAnalyses?: SavedAnalysis[];
+  /** The output document (lib/outputDoc), in order. */
+  outputItems?: OutputItem[];
 }
 
 /** Snapshot the live store's panel state for ui/state.json. */
@@ -47,6 +50,8 @@ export function collectUiState(): ProjectUiState {
   };
   if (s.table1Result != null) out.table1Result = s.table1Result;
   if (s.savedAnalyses.length > 0) out.savedAnalyses = s.savedAnalyses;
+  const outputItems = useOutputDoc.getState().items;
+  if (outputItems.length > 0) out.outputItems = outputItems;
   return out;
 }
 
@@ -107,6 +112,8 @@ export function applyUiState(raw: unknown): void {
         )
         .map((a) => ({ ...a, snapshot: rebaseEntry(a.snapshot, savedDataVersion) }))
     : [];
+  // Sanitised again on the way in: a project file can come from anyone.
+  useOutputDoc.getState().replaceAll(restoreOutputItems(ui.outputItems));
   useStore.setState({
     panelCache,
     savedAnalyses,

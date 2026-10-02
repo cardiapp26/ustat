@@ -18,6 +18,7 @@ import { withRegisteredPlotCapture } from "../lib/plotCapture";
 import type { PlotRef, PlotCaptureHandle } from "../lib/plotTypes";
 import { provenanceLines, type Provenance } from "../lib/engine/provenance";
 import { staleExportTitle, useStaleGuard } from "../lib/staleGuard";
+import AddToOutputButton from "./AddToOutputButton";
 
 /** Minimal shape of the Plotly module / graph-div fields we call. */
 interface PlotlyToImage {
@@ -287,7 +288,8 @@ export default function ResultExporter({
   if (!hasTable && !hasPlot) return null;
 
   return (
-    <div className={`flex items-center gap-1 ${className}`}>
+    <div className={`flex items-center gap-1 ${className}`} data-output-skip="">
+      <AddToOutputButton fallbackTitle={title} />
       <span
         className={`text-[10px] mr-0.5 flex items-center gap-0.5 ${stale ? "text-amber-600" : "text-gray-400"}`}
         title={stale ? blockedTitle : undefined}

@@ -102,6 +102,7 @@ import FactorPCAPanel from "./components/FactorPCAPanel";
 import BayesianPanel from "./components/BayesianPanel";
 import CloudSyncBar from "./components/CloudSyncBar";
 import SavedAnalysesMenu from "./components/SavedAnalysesMenu";
+import OutputViewer from "./components/OutputViewer";
 import CommandPalette from "./components/CommandPalette";
 import { cloudSync } from "./lib/cloudSync";
 import { purgeExpiredTrash, notifySessionsChanged, TRASH_PURGE_INTERVAL_MS } from "./lib/sessionDb";
@@ -915,6 +916,7 @@ export default function App() {
             )}
             <CloudSyncBar />
             <SavedAnalysesMenu />
+            <OutputViewer />
             <div className="relative" ref={headerSaveMenuRef}>
               <button
                 onClick={() => setShowHeaderSaveMenu(v => !v)}

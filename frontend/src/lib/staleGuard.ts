@@ -17,6 +17,9 @@ export interface StaleGuardState {
   stale: boolean;
   /** Why, for tooltips: "the data changed and the case filter changed". */
   reason?: string;
+  /** The outermost guard's id: names the result area "Add to output" copies
+   *  (see lib/outputCapture). Absent outside any guard. */
+  captureId?: string;
 }
 
 export const StaleGuardContext = createContext<StaleGuardState>({ stale: false });

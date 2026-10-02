@@ -26,6 +26,7 @@ import { useStore } from "../store";
 import { upsertRecentSession, notifySessionsChanged } from "../lib/sessionDb";
 import { collectUiState } from "../lib/projectUiState";
 import { cloudSync } from "../lib/cloudSync";
+import { useOutputDoc } from "../lib/outputDoc";
 
 const DEBOUNCE_MS = 5_000;
 const PERIODIC_MS = 60_000;
@@ -102,6 +103,10 @@ export function useAutoSession({ onStatus }: AutoSaveDeps = {}): void {
       .filter(Boolean)
       .join(";")
   );
+
+  // The output document lives in its own store; adding, moving or annotating
+  // an item replaces the array, which is what retriggers the debounce.
+  const outputItems = useOutputDoc((s) => s.items);
 
   const lastSavedHashRef = useRef<string | null>(null);
   const inFlightRef = useRef<boolean>(false);
@@ -209,7 +214,7 @@ export function useAutoSession({ onStatus }: AutoSaveDeps = {}): void {
       clearTimeout(debounceTimer);
       if (liveSnapshot === snapshot) liveSnapshot = null;
     };
-  }, [sessionId, localId, filename, nRows, nCols, activeTab, engine, caseFilter, valueLabelSig, dataVersion]);
+  }, [sessionId, localId, filename, nRows, nCols, activeTab, engine, caseFilter, valueLabelSig, dataVersion, outputItems]);
 
   // The periodic snapshot and the unload flush depend only on there being a
   // session. They used to live in the effect above, so every tracked change
