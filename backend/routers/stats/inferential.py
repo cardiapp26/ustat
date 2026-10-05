@@ -69,6 +69,8 @@ def _two_level_work(df: pd.DataFrame, value_col: str, group_col: str) -> tuple[p
 
 
 def _clean_crosstab_work(df: pd.DataFrame, row_col: str, col_col: str) -> tuple[pd.DataFrame, list]:
+    if row_col == col_col:
+        raise HTTPException(status_code=400, detail="Row and column variables must be different columns.")
     work = df[[row_col, col_col]].copy()
     warnings = []
     for col in (row_col, col_col):
