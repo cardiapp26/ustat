@@ -17,6 +17,8 @@ DESCRIPTIVE_KEYS = {
     "cv", "cv_percent", "quartile_deviation", "harmonic_mean",
     "skew_se", "kurt_se", "skew_z", "kurt_z",
     "normality_p", "normality_test", "normal", "warnings", "display_decimals",
+    "geometric_mean", "geometric_sd", "geometric_mean_ci_lower",
+    "geometric_mean_ci_upper", "geometric_mean_note",
 }
 
 FREQUENCY_KEYS = {"n", "missing", "categories"}

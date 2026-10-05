@@ -1,10 +1,12 @@
-"""Categorical tests: binomial, proportion z-tests, McNemar, Cochran Q, Mantel-Haenszel."""
+"""Categorical tests: binomial, chi-square goodness of fit, proportion z-tests, McNemar, Cochran Q, Mantel-Haenszel."""
+import math
+
 import numpy as np
 import pandas as pd
 from scipy import stats as sp
 from fastapi import APIRouter, HTTPException
 from pydantic import AliasChoices, BaseModel, Field
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from services import store
 from services.level_order import SOURCE_RECOGNISED, resolve_level_order
@@ -154,6 +156,370 @@ def binomial_test(req: BinomialRequest):
         ],
         "r_code": f"binom.test({k}, {n}, p = {req.expected_proportion})",
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 1b. CHI-SQUARE GOODNESS OF FIT (one sample vs theoretical proportions)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Tests whether the category frequencies of ONE variable match a stated
+# distribution (Mendelian 9:3:3:1, a uniform split, a census mix). Pearson
+# chi-square with df = k - 1 (no parameters estimated from the data), plus an
+# exact multinomial p for small samples where the chi-square approximation
+# is not trustworthy.
+
+# Exact enumeration walks every way of splitting n observations over k
+# categories: C(n + k - 1, k - 1) outcomes. Above this size the call would be
+# slow and memory hungry, so the exact p is reported as unavailable instead.
+_GOF_EXACT_MAX_CATEGORIES = 4
+_GOF_EXACT_MAX_OUTCOMES = 2_000_000
+
+
+class ChiSquareGofRequest(BaseModel):
+    session_id: str
+    column: str
+    # Category label -> proportion or weight (9, 3, 3, 1 is as good as
+    # 0.5625, 0.1875, ...). None means equal proportions across the observed
+    # categories.
+    expected_proportions: Optional[Dict[str, float]] = Field(
+        default=None,
+        validation_alias=AliasChoices("expected_proportions", "proportions"),
+    )
+    alpha: float = Field(default=0.05, gt=0, lt=1)
+
+
+def _gof_label(value) -> str:
+    """Text label of a category, with 3.0 and 3 reading as the same level."""
+    if isinstance(value, (float, np.floating)) and float(value).is_integer():
+        return str(int(value))
+    return str(value).strip()
+
+
+def _gof_compositions(n: int, k: int) -> np.ndarray:
+    """Every k-tuple of non-negative integers summing to n, one per row."""
+    if k == 1:
+        return np.array([[n]], dtype=np.int32)
+    if k == 2:
+        first = np.arange(n + 1, dtype=np.int32)
+        return np.column_stack([first, n - first])
+    blocks = []
+    for first in range(n + 1):
+        rest = _gof_compositions(n - first, k - 1)
+        blocks.append(np.column_stack([np.full(len(rest), first, dtype=np.int32), rest]))
+    return np.vstack(blocks)
+
+
+def _exact_multinomial_p(observed: np.ndarray, probs: np.ndarray) -> dict:
+    """Exact multinomial goodness-of-fit p by full enumeration.
+
+    The p is the total probability of every outcome that is no more likely
+    than the observed one (the same ordering R's XNomial::xmulti uses with
+    its probability statistic). Returns ``{"p": None, "note": ...}`` when the
+    enumeration would be too large.
+    """
+    n = int(observed.sum())
+    k = len(observed)
+    n_outcomes = math.comb(n + k - 1, k - 1)
+    if k > _GOF_EXACT_MAX_CATEGORIES or n_outcomes > _GOF_EXACT_MAX_OUTCOMES:
+        return {
+            "p": None,
+            "n_outcomes": n_outcomes,
+            "note": (
+                f"The exact multinomial test was not computed: enumerating "
+                f"{n_outcomes:,} possible outcomes (n = {n}, k = {k}) exceeds the "
+                f"limit (k <= {_GOF_EXACT_MAX_CATEGORIES}, at most "
+                f"{_GOF_EXACT_MAX_OUTCOMES:,} outcomes)."
+            ),
+        }
+    outcomes = _gof_compositions(n, k)
+    log_pmf = sp.multinomial.logpmf(outcomes, n, probs)
+    log_obs = float(sp.multinomial.logpmf(observed, n, probs))
+    # Relative tolerance of 1e-7 on the probability, so outcomes that tie with
+    # the observed one up to floating-point noise are counted as tied.
+    p = float(np.exp(log_pmf[log_pmf <= log_obs + 1e-7]).sum())
+    return {"p": min(1.0, p), "n_outcomes": n_outcomes, "note": None}
+
+
+def _gof_magnitude(w: float) -> str:
+    """Cohen's (1988) conventions for w: .1 small, .3 medium, .5 large."""
+    if w < 0.10:
+        return "negligible"
+    if w < 0.30:
+        return "small"
+    if w < 0.50:
+        return "medium"
+    return "large"
+
+
+def _r_num(v: float) -> str:
+    return f"{float(v):.10g}"
+
+
+@router.post("/chisquare_gof")
+def chisquare_gof(req: ChiSquareGofRequest):
+    df = _get_df(req.session_id)
+    if req.column not in df.columns:
+        raise HTTPException(400, f"Column '{req.column}' not found.")
+
+    # Same missing-value handling as the sibling tests: blanks and
+    # missing-looking tokens drop out and are reported. The cleaned series is
+    # used only to decide which rows survive; the labels the user typed in
+    # expected_proportions are matched against the original text, not against
+    # the yes/no -> 1/0 recoding the two-level cleaner applies.
+    raw_col = df[req.column]
+    cleaned = clean_two_level(raw_col)
+    labels = raw_col[cleaned.series.notna()].map(_gof_label)
+    n_total_rows = int(len(raw_col))
+    n = int(len(labels))
+    n_excluded = n_total_rows - n
+    if n < 1:
+        raise HTTPException(400, f"No non-missing values in '{req.column}'.")
+
+    warnings: list = []
+    for item in cleaned.warnings:
+        warnings.append(item.get("note", str(item)) if isinstance(item, dict) else str(item))
+    if n_excluded:
+        warnings.append(
+            f"{n_excluded} of {n_total_rows} row(s) with a missing value in "
+            f"'{req.column}' were excluded; the test uses n = {n}."
+        )
+
+    counts = labels.value_counts()
+    observed_map = {str(lbl): int(c) for lbl, c in counts.items()}
+
+    supplied_sum = None
+    proportions_normalised = False
+    if req.expected_proportions is None:
+        categories = sorted(
+            observed_map,
+            key=lambda x: (0, float(x), x) if _is_number_text(x) else (1, 0.0, x),
+        )
+        weights = {c: 1.0 for c in categories}
+    else:
+        weights = {}
+        for key, value in req.expected_proportions.items():
+            label = str(key).strip()
+            if label in weights:
+                raise HTTPException(
+                    422, f"Category '{label}' appears more than once in expected_proportions."
+                )
+            if not np.isfinite(value) or value <= 0:
+                raise HTTPException(
+                    422,
+                    f"Expected proportion for '{label}' must be a positive finite "
+                    f"number (got {value}).",
+                )
+            weights[label] = float(value)
+        missing = [c for c in observed_map if c not in weights]
+        if missing:
+            shown = ", ".join(repr(m) for m in sorted(missing)[:10])
+            raise HTTPException(
+                422,
+                f"expected_proportions does not cover every observed category of "
+                f"'{req.column}'. Missing: {shown}"
+                + (", ..." if len(missing) > 10 else "")
+                + ". Give a proportion for each one (or recode the variable).",
+            )
+        categories = list(weights)
+        supplied_sum = float(sum(weights.values()))
+        proportions_normalised = not math.isclose(supplied_sum, 1.0, abs_tol=1e-9)
+
+    k = len(categories)
+    if k < 2:
+        raise HTTPException(
+            422,
+            f"'{req.column}' has only {k} category after dropping missing values; "
+            "a goodness-of-fit test needs at least 2.",
+        )
+
+    weight_arr = np.array([weights[c] for c in categories], dtype=float)
+    exp_prop = weight_arr / weight_arr.sum()
+    obs = np.array([observed_map.get(c, 0) for c in categories], dtype=float)
+    exp_count = exp_prop * n
+
+    unobserved = [c for c in categories if observed_map.get(c, 0) == 0]
+    if unobserved:
+        warnings.append(
+            "Category(ies) with an expected proportion but no observations: "
+            + ", ".join(repr(c) for c in unobserved)
+            + ". They are kept in the test with an observed count of 0."
+        )
+    if proportions_normalised:
+        warnings.append(
+            f"The supplied proportions summed to {supplied_sum:.6g}, not 1; they "
+            "were rescaled to sum to 1 (a ratio such as 9:3:3:1 is fine)."
+        )
+
+    chi2_stat, p_raw = sp.chisquare(obs, exp_count)
+    chi2_stat = float(chi2_stat)
+    p = float(p_raw)
+    dof = k - 1
+    sig = bool(p < req.alpha)
+    ps = _p_str(p)
+
+    w = float(np.sqrt(chi2_stat / n))
+    es = {
+        "name": "cohens_w",
+        "value": round(w, 4),
+        "ci_low": None,
+        "ci_high": None,
+        "magnitude": _gof_magnitude(w),
+    }
+
+    pearson = (obs - exp_count) / np.sqrt(exp_count)
+    adjusted = (obs - exp_count) / np.sqrt(exp_count * (1 - exp_prop))
+    table = [
+        {
+            "category": c,
+            "observed": int(obs[i]),
+            "expected_count": round(float(exp_count[i]), 4),
+            "expected_proportion": round(float(exp_prop[i]), 6),
+            "observed_proportion": round(float(obs[i] / n), 6),
+            "pearson_residual": round(float(pearson[i]), 4),
+            "adjusted_residual": round(float(adjusted[i]), 4),
+        }
+        for i, c in enumerate(categories)
+    ]
+
+    n_small = int((exp_count < 5).sum())
+    frac_small = n_small / k
+    assumption_met = n_small == 0
+    min_expected = float(exp_count.min())
+    assumptions = [{
+        "name": "Expected counts >= 5",
+        "met": assumption_met,
+        "detail": (
+            f"All {k} expected counts are at least 5 (minimum {min_expected:.2f})."
+            if assumption_met else
+            f"{n_small} of {k} expected counts ({100 * frac_small:.0f}%) are below 5 "
+            f"(minimum {min_expected:.2f})."
+        ),
+    }]
+    if not assumption_met:
+        extra = " More than 20% of the cells are affected." if frac_small > 0.20 else ""
+        warnings.append(
+            f"{n_small} of {k} expected counts are below 5 (minimum "
+            f"{min_expected:.2f}), so the chi-square approximation may be unreliable."
+            f"{extra} Prefer the exact multinomial test, or merge sparse categories "
+            "if that is meaningful."
+        )
+
+    exact = _exact_multinomial_p(obs.astype(int), exp_prop)
+    if exact["note"]:
+        if not assumption_met:
+            warnings.append(exact["note"])
+    exact_p = exact["p"]
+    exact_text = (
+        f" Exact multinomial p = {_p_str(exact_p)}." if exact_p is not None else ""
+    )
+
+    obs_ints = [int(v) for v in obs]
+    x_vec = ", ".join(str(v) for v in obs_ints)
+    cat_comment = "# categories (in order): " + ", ".join(
+        c.replace("\n", " ").replace("\r", " ") for c in categories
+    ) + "\n"
+    if req.expected_proportions is None:
+        r_code = cat_comment + f"chisq.test(x = c({x_vec}))"
+    elif proportions_normalised:
+        r_code = (
+            cat_comment
+            + f"chisq.test(x = c({x_vec}), p = c({', '.join(_r_num(weights[c]) for c in categories)}), "
+            "rescale.p = TRUE)"
+        )
+    else:
+        r_code = (
+            cat_comment
+            + f"chisq.test(x = c({x_vec}), p = c({', '.join(_r_num(v) for v in exp_prop)}))"
+        )
+    if not assumption_met:
+        r_code += (
+            "\n# Exact multinomial test (small expected counts):\n"
+            "# XNomial::xmulti(obs = c(" + x_vec + "), expr = c("
+            + ", ".join(_r_num(v) for v in exp_prop) + "), statName = \"Prob\")"
+        )
+
+    expected_desc = (
+        "equal proportions across the observed categories"
+        if req.expected_proportions is None
+        else "the stated expected proportions"
+    )
+    methods_text = (
+        f"The distribution of {req.column} across {k} categories was compared with "
+        f"{expected_desc} using Pearson's chi-square goodness-of-fit test "
+        f"(df = {dof}). Effect size was expressed as Cohen's w."
+        + (
+            " Because one or more expected counts were below 5, an exact multinomial "
+            "test is also reported." if not assumption_met else
+            " All expected counts were 5 or greater."
+        )
+    )
+
+    return sanitize_nonfinite({
+        "test": "Chi-square goodness-of-fit test",
+        "chi2": round(chi2_stat, 6),
+        "df": dof,
+        "p": p,
+        "significant": sig,
+        "n": n,
+        "k": k,
+        "n_excluded": n_excluded,
+        "categories": table,
+        "proportions_normalised": proportions_normalised,
+        "supplied_proportion_sum": supplied_sum,
+        "exact_multinomial": exact,
+        "effect_sizes": [es],
+        "assumptions": assumptions,
+        "summary": {
+            "column": req.column,
+            "n": n, "k": k, "df": dof,
+            "n_excluded": n_excluded,
+            "min_expected_count": round(min_expected, 4),
+            "n_cells_expected_below_5": n_small,
+            "expected": "uniform" if req.expected_proportions is None else "user-specified",
+        },
+        "warnings": warnings,
+        "interpretation": (
+            f"{'Significant' if sig else 'No significant'} departure from the expected "
+            f"distribution (chi-square({dof}) = {chi2_stat:.3f}, p = {ps}, "
+            f"Cohen's w = {es['value']:.3f} [{es['magnitude']}])"
+            + (f", exact multinomial p = {_p_str(exact_p)}" if exact_p is not None else "")
+        ),
+        "result_text": (
+            f"A chi-square goodness-of-fit test compared the distribution of {req.column} "
+            f"(n = {n}, {k} categories) with {expected_desc}. "
+            f"The result was {'statistically significant' if sig else 'not statistically significant'} "
+            f"(chi-square({dof}) = {chi2_stat:.3f}, p = {ps}). "
+            f"Cohen's w = {es['value']:.3f} [{es['magnitude']}]."
+            f"{exact_text}"
+        ),
+        "methods_text": methods_text,
+        "export_rows": [
+            ["Category", "Observed", "Expected", "Expected proportion",
+             "Observed proportion", "Pearson residual", "Adjusted residual"],
+            *[
+                [r["category"], r["observed"], r["expected_count"],
+                 r["expected_proportion"], r["observed_proportion"],
+                 r["pearson_residual"], r["adjusted_residual"]]
+                for r in table
+            ],
+            ["Statistic", "Value"],
+            ["Chi-square", round(chi2_stat, 4)],
+            ["df", dof],
+            ["p", round(p, 6)],
+            ["n", n],
+            ["Cohen's w", es["value"]],
+            ["Exact multinomial p",
+             round(exact_p, 6) if exact_p is not None else "N/A"],
+        ],
+        "r_code": r_code,
+    })
+
+
+def _is_number_text(text: str) -> bool:
+    try:
+        float(text)
+    except ValueError:
+        return False
+    return True
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

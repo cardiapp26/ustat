@@ -571,6 +571,7 @@ _ACTION_HUMAN: Dict[str, str] = {
     "kruskal": "Kruskal-Wallis H test with Dunn post-hoc",
     "friedman": "Friedman test with pairwise Wilcoxon (Holm-corrected)",
     "chisquare": "Chi-square test of independence",
+    "chisquare_gof": "Chi-square goodness of fit",
     "fisher": "Fisher's exact test",
     "mcnemar": "McNemar's test",
     "cochran_q": "Cochran's Q test",

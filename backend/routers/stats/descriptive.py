@@ -138,6 +138,48 @@ def _normality_test(s_clean: pd.Series) -> tuple[float, str]:
     return float(p), "Kolmogorov-Smirnov (Lilliefors)"
 
 
+def _geometric_stats(values) -> dict:
+    """Geometric mean, geometric SD (multiplicative, GSD) and 95% CI of the GM.
+
+    Defined only for strictly positive data with n >= 2. The CI is the
+    t-based interval (n - 1 df) of the mean of ln(x), back-transformed with
+    exp. Anything else yields nulls plus a short ``geometric_mean_note``.
+    """
+    arr = np.asarray(values, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    keys = (
+        "geometric_mean",
+        "geometric_sd",
+        "geometric_mean_ci_lower",
+        "geometric_mean_ci_upper",
+    )
+    if arr.size < 2:
+        return {
+            **dict.fromkeys(keys),
+            "geometric_mean_note": "Needs at least 2 values.",
+        }
+    if not (arr > 0).all():
+        return {
+            **dict.fromkeys(keys),
+            "geometric_mean_note": (
+                "Not defined: contains zero or negative values "
+                "(geometric mean needs strictly positive data)."
+            ),
+        }
+    logs = np.log(arr)
+    mean_log = float(logs.mean())
+    sd_log = float(logs.std(ddof=1))
+    se_log = sd_log / float(np.sqrt(arr.size))
+    t_crit = float(scipy_stats.t.ppf(0.975, df=arr.size - 1))
+    return {
+        "geometric_mean": float(scipy_stats.gmean(arr)),
+        "geometric_sd": float(np.exp(sd_log)),
+        "geometric_mean_ci_lower": float(np.exp(mean_log - t_crit * se_log)),
+        "geometric_mean_ci_upper": float(np.exp(mean_log + t_crit * se_log)),
+        "geometric_mean_note": None,
+    }
+
+
 @router.get("/{session_id}/descriptive")
 def descriptive(session_id: str, column: Optional[str] = None):
     df = _get_df(session_id)
@@ -185,6 +227,7 @@ def descriptive(session_id: str, column: Optional[str] = None):
             "cv": float(scipy_stats.variation(s, ddof=1)) if s.mean() != 0 else None,
             "cv_percent": float(100 * scipy_stats.variation(s, ddof=1)) if s.mean() != 0 else None,
             "harmonic_mean": float(scipy_stats.hmean(s)) if (s > 0).all() else None,
+            **_geometric_stats(s.to_numpy(dtype=float)),
             **distribution_shape(s.to_numpy(dtype=float)),
             "normality_p": float(p_norm),
             "normality_test": norm_test,
@@ -513,6 +556,7 @@ def column_summary(session_id: str, column: str, kind: Optional[str] = None):
             "cv": float(scipy_stats.variation(s_clean, ddof=1)) if mean_val != 0 else None,
             "cv_percent": float(100 * scipy_stats.variation(s_clean, ddof=1)) if mean_val != 0 else None,
             "harmonic_mean": float(scipy_stats.hmean(s_clean)) if (s_clean > 0).all() else None,
+            **_geometric_stats(s_clean.to_numpy(dtype=float)),
             "min": float(s_clean.min()),
             "max": float(s_clean.max()),
             **distribution_shape(s_clean.to_numpy(dtype=float)),
@@ -589,6 +633,8 @@ _STAT_LABELS: dict[str, str] = {
     "se": "SE of Mean",
     "ci95": "95% CI",
     "variance": "Variance",
+    "geometric_mean": "Geometric mean (GSD)",
+    "gm_ci": "Geometric mean [95% CI]",
     "min_max": "Min – Max",
     "n": "N (non-missing)",
     "missing": "Missing n (%)",
@@ -759,6 +805,17 @@ def _fmt_one_stat(
         return f"{fc(m)} [{fc(m - ci)}–{fc(m + ci)}]"
     if stat == "variance":
         return fc(a.var(), max(d, 3))
+    if stat in ("geometric_mean", "gm_ci"):
+        g = _geometric_stats(a.to_numpy(dtype=float))
+        if g["geometric_mean"] is None:
+            return _f(None)  # same missing-value placeholder as the other stats
+        if stat == "geometric_mean":
+            # GSD is a ratio (>= 1), so it keeps at least 2 decimals.
+            return f"{fc(g['geometric_mean'])} ({fc(g['geometric_sd'], max(d, 2))})"
+        return (
+            f"{fc(g['geometric_mean'])} "
+            f"[{fc(g['geometric_mean_ci_lower'])}–{fc(g['geometric_mean_ci_upper'])}]"
+        )
     if stat == "min_max":
         return f"{fc(a.min())} – {fc(a.max())}"
     if stat == "n":
@@ -946,6 +1003,15 @@ def table1(req: Table1Request):
             else:
                 normal = normal_overall
 
+            if (
+                any(st in ("geometric_mean", "gm_ci") for st in sel_stats)
+                and len(s_all) > 0
+                and not (s_all > 0).all()
+            ):
+                warnings.append(
+                    f"'{var}': geometric mean not shown, the variable contains "
+                    "zero or negative values."
+                )
             stat_rows = _build_stat_rows(
                 s,
                 group_series,
