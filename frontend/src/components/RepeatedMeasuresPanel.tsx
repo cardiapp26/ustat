@@ -5,6 +5,7 @@ import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
 import { useStampedResult } from "../hooks/useStampedResult";
 import { describeStale } from "../lib/resultStamp";
 import ResultExporter from "./ResultExporter";
+import HodgesLehmannLine, { type HodgesLehmann } from "./HodgesLehmannLine";
 import StaleResultNotice from "./StaleResultNotice";
 import StaleGuard from "./StaleGuard";
 import { fmtP, warningText } from "../lib/format";
@@ -91,6 +92,8 @@ interface RMResult {
   r_code?: string;
   effects?: AnovaEffect[];
   ranks?: { condition: string; n: number; mean_rank: number; rank_sum: number }[];
+  /** Paired Wilcoxon: Hodges-Lehmann median difference with a distribution-free CI. */
+  hodges_lehmann?: HodgesLehmann;
   [key: string]: unknown;
 }
 
@@ -156,6 +159,10 @@ function ResultCard({ result }: { result: RMResult }) {
             </div>
           ))}
         </div>
+      )}
+
+      {result.hodges_lehmann && (
+        <HodgesLehmannLine hl={result.hodges_lehmann} label="Hodges-Lehmann median difference" />
       )}
 
       {/* Assumptions */}

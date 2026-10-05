@@ -62,6 +62,8 @@ interface KMGroup {
   n?: number;
   events?: number;
   median_survival?: number | string | null;
+  median_survival_ci_low?: number | string | null;
+  median_survival_ci_high?: number | string | null;
   curve: CurvePoint[];
   censors?: CurvePoint[];
   at_risk?: (number | null)[];
@@ -729,6 +731,17 @@ function niceRiskTimes(xmax: number): number[] {
 }
 
 /**
+ * Format the 95% CI of a group's median survival as "[low, high]".
+ * A null bound is printed as "NR" (not reached), like a null median.
+ * Returns "" when the backend sent neither bound property at all.
+ */
+function fmtMedianCI(g: Pick<KMGroup, "median_survival_ci_low" | "median_survival_ci_high">): string {
+  if (g.median_survival_ci_low === undefined && g.median_survival_ci_high === undefined) return "";
+  const b = (v: number | string | null | undefined) => (v == null ? "NR" : String(v));
+  return `[${b(g.median_survival_ci_low)}, ${b(g.median_survival_ci_high)}]`;
+}
+
+/**
  * Compose a publication-style standard interpretation of a KM result
  * from the returned data: overall log-rank, landmark survival, pairwise
  * comparisons, and median survival. Returns "" when not enough is present.
@@ -808,12 +821,12 @@ function buildKmNarrative(
   }
 
   // 4. Median survival.
-  const meds = groups.map((g) => ({ g: lab(String(g.group)), m: g.median_survival }));
+  const meds = groups.map((g) => ({ g: lab(String(g.group)), m: g.median_survival, ci: fmtMedianCI(g) }));
   const reached = meds.filter((x) => x.m != null);
   if (reached.length === 0 && groups.length > 0) {
     parts.push("Median survival was not reached in any group.");
   } else if (reached.length) {
-    parts.push(`Median survival: ${reached.map((x) => `${x.m} (${x.g})`).join(", ")}.`);
+    parts.push(`Median survival: ${reached.map((x) => `${x.m}${x.ci ? ` 95% CI ${x.ci}` : ""} (${x.g})`).join(", ")}.`);
   }
 
   return parts.join(" ");
@@ -2891,6 +2904,10 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
                     Median ({kmCustomDurationTitle || kmDuration})
                     <span className="ml-1 font-normal text-gray-400 normal-case tracking-normal">(right-click to rename)</span>
                   </th>
+                  <th className="px-3 py-1.5 text-right text-[9px] font-bold text-gray-500 uppercase tracking-wider"
+                    title="95% confidence interval of the median survival; NR = not reached (bound undefined)">
+                    Median 95% CI
+                  </th>
                 </tr></thead>
                 <tbody className="divide-y divide-gray-100">
                   {kmResult.groups.map((g, i) => {
@@ -2917,6 +2934,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
                         <td className="px-3 py-1 text-[11px] font-medium text-gray-600 text-right">{g.n}</td>
                         <td className="px-3 py-1 text-[11px] font-medium text-gray-600 text-right">{g.events}</td>
                         <td className="px-3 py-1 text-[11px] font-medium text-gray-600 text-right">{g.median_survival ?? "NR"}</td>
+                        <td className="px-3 py-1 text-[11px] font-medium text-gray-600 text-right">{fmtMedianCI(g) || "-"}</td>
                       </tr>
                     );
                   })}

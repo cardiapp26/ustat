@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useStore } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
-import { runLinear, runLogistic, runFirthLogistic, runKM, runCox, runLogisticTable, runPoisson, runCoxUniMulti, runOrdinal, runMultinomial, runMultiOutcomeRegression } from "../api";
+import { runLinear, runLogistic, runFirthLogistic, runKM, runCox, runLogisticTable, runPoisson, runZeroInflatedPoisson, runZeroInflatedNegBinom, runCoxUniMulti, runOrdinal, runMultinomial, runMultiOutcomeRegression } from "../api";
 import { Tip, InfoBanner } from "./Tip";
 import StaleResultNotice from "./StaleResultNotice";
 import StaleGuard from "./StaleGuard";
@@ -20,6 +20,8 @@ import { MODEL_GUIDANCE, MODEL_FOREST_TITLE } from "./models/guidance";
 import { CiMethodNote, ForestBuilderButton, OutcomeOrderNote, SparklineMini } from "./models/widgets";
 import MultiOutcomeResult from "./models/MultiOutcomeResult";
 import MultinomialResult from "./models/MultinomialResult";
+import ZeroInflatedResult from "./models/ZeroInflatedResult";
+import { RateModelNote, OverdispersionWarning } from "./models/CountModelNotes";
 
 export default function ModelsPanel() {
   const session  = useStore((s) => s.session);
@@ -63,6 +65,10 @@ export default function ModelsPanel() {
   // Multinomial: the baseline category every other outcome category is
   // compared with. Empty = the server's default (first in dictionary order).
   const [mnReference, setMnReference] = usePersistedPanelState<string>("models", "mnReference", "");
+  // Count models: optional follow-up time / person-years column (offset), and
+  // the predictors of the zero-inflation (structural zero) part of ZIP / ZINB.
+  const [exposureCol, setExposureCol] = usePersistedPanelState<string>("models", "exposureCol", "");
+  const [inflationPredictors, setInflationPredictors] = usePersistedPanelState<string[]>("models", "inflationPredictors", []);
   const setForestHandoff = useStore((s) => s.setForestHandoff);
   const setActiveTab = useStore((s) => s.setActiveTab);
   const setVisualSubTab = useStore((s) => s.setVisualSubTab);
@@ -78,6 +84,17 @@ export default function ModelsPanel() {
   const [moStandardize, setMoStandardize] = useState(true);
   const [moRobust, setMoRobust] = useState(false);
 
+  // Only the count models take an exposure offset, and the persisted pick may
+  // belong to another session or be the current outcome: send neither.
+  const usesExposure = model === "poisson" || model === "zip" || model === "zinb";
+  const isZeroInflated = model === "zip" || model === "zinb";
+  const effectiveExposure = usesExposure && exposureCol !== outcome && numCols.includes(exposureCol) ? exposureCol : "";
+  // The exposure is an offset, never a predictor (the server rejects both).
+  const countPredictors = predictors.filter((c) => c !== effectiveExposure);
+  const effectiveInflation = isZeroInflated
+    ? inflationPredictors.filter((c) => c !== outcome && c !== effectiveExposure && allCols.includes(c))
+    : [];
+
   // Everything the fit depends on, and nothing that only affects how it is
   // displayed afterwards -- `selectedCoefIdx` and `nullHyp` are read off the
   // returned coefficients, so listing them here would mark a perfectly current
@@ -86,6 +103,7 @@ export default function ModelsPanel() {
     model, outcome, predictors, parsimonious, references, glmInteractions,
     selection, durationCol, eventCol, groupCol, stratifyCol, mnReference,
     imputation, robustSE, scaleFactors,
+    exposureCol: effectiveExposure, inflationPredictors: effectiveInflation,
     moOutcomes, moPredictors, moCovariates, moStandardize, moRobust,
   };
   const {
@@ -113,12 +131,20 @@ export default function ModelsPanel() {
       let res: { data: ModelResult };
       const sf = buildScaleFactors();
       const interactions = glmInteractions.length > 0 ? glmInteractions : undefined;
+      const exposureParam = effectiveExposure ? { exposure_col: effectiveExposure } : {};
       if (model === "linear") res = await runLinear({ session_id: sid, outcome, predictors, imputation, robust_se: robustSE, interactions });
       else if (model === "logistic") res = await runLogistic({ session_id: sid, outcome, predictors, scale_factors: sf, imputation, robust_se: robustSE, interactions });
       else if (model === "firth") res = await runFirthLogistic({ session_id: sid, outcome, predictors, scale_factors: sf, imputation, interactions });
       else if (model === "ortable") res = await runLogisticTable({ session_id: sid, outcome, predictors, scale_factors: sf, selection, imputation });
       else if (model === "firth_ortable") res = await runLogisticTable({ session_id: sid, outcome, predictors, scale_factors: sf, selection, imputation, use_firth: true });
-      else if (model === "poisson") res = await runPoisson({ session_id: sid, outcome, predictors, imputation, robust_se: robustSE });
+      else if (model === "poisson") res = await runPoisson({ session_id: sid, outcome, predictors: countPredictors, imputation, robust_se: robustSE, ...exposureParam });
+      else if (isZeroInflated) {
+        const body = {
+          session_id: sid, outcome, predictors: countPredictors, imputation, ...exposureParam,
+          ...(effectiveInflation.length > 0 ? { inflation_predictors: effectiveInflation } : {}),
+        };
+        res = await (model === "zinb" ? runZeroInflatedNegBinom(body) : runZeroInflatedPoisson(body));
+      }
       else if (model === "ordinal") res = await runOrdinal({ session_id: sid, outcome, predictors, imputation });
       else if (model === "multinomial") {
         // Send the reference whenever the levels are known, so the recorded
@@ -300,7 +326,9 @@ export default function ModelsPanel() {
             ["firth",    "Firth Logistic (penalized)", "Bias-corrected logistic regression (Firth 1993). Use when standard logistic fails or returns infinite ORs from rare events / separation. Same output shape as Logistic but with Jeffreys-prior penalty."],
             ["firth_ortable", "Firth OR Table (Uni + Multi)", "Same univariate + multivariate OR table as above but every cell is fitted via Firth's penalised likelihood — handles rare events and quasi-separation. Use for the LAR / albumin-style protective biomarker workflow when standard logistic returns ∞ or near-zero ORs."],
             ["hrtable",  "HR Table (Uni + Multi)",   "Cox survival version of the OR table (publication Table 3). Each predictor's univariable HR, its parsimonious-model HR (a subset you tick), and its fully-adjusted HR — side by side. Needs a duration + binary event column."],
-            ["poisson",  "Poisson Regression",       "Count outcome model (e.g. number of events). Outputs Incidence Rate Ratios (IRR = eβ). Use when the outcome is a non-negative integer (event counts, re-admissions, etc.)."],
+            ["poisson",  "Poisson Regression",       "Count outcome model (e.g. number of events). Outputs Incidence Rate Ratios (IRR = eβ). Use when the outcome is a non-negative integer (event counts, re-admissions, etc.). Optional follow-up time (offset) makes it a rate model."],
+            ["zip",      "Zero-Inflated Poisson",    "Count outcome with excess zeros: a count part (IRR) plus a logit part for structural zeros (OR). Vuong test against the standard Poisson tells you whether the extra part is needed."],
+            ["zinb",     "Zero-Inflated Negative Binomial", "Like zero-inflated Poisson, plus a dispersion parameter for overdispersed counts. Vuong test against the standard negative binomial."],
           ] as const).map(([v, l, desc]) => (
             <label key={v} className="flex items-start gap-2 cursor-pointer group">
               <input type="radio" name="model" value={v} checked={model === v} onChange={() => { setModel(v); setResult(null); setSelectedCoefIdx(null); }} className="accent-indigo-500 mt-0.5" />
@@ -674,9 +702,22 @@ export default function ModelsPanel() {
                   </select>
                 </div>
               )}
+              {usesExposure && (
+                <div>
+                  <label htmlFor="exposure-col" className="text-xs text-gray-400 block mb-1">
+                    Exposure / follow-up time (offset)
+                    <Tip wide text="Optional. A strictly positive numeric column (follow-up time or person-years). It enters the model as an offset, log(exposure), so the IRRs become rate ratios (events per unit of time) instead of ratios of raw counts. Leave on None when every row was observed for the same period." />
+                  </label>
+                  <select id="exposure-col" className="select w-full text-xs" value={effectiveExposure}
+                    onChange={(e) => setExposureCol(e.target.value)}>
+                    <option value="">None</option>
+                    {numCols.filter((c) => c !== outcome).map((c) => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+              )}
               <div>
                 <div className="flex items-center justify-between mb-1">
-                  <label className="text-xs text-gray-400">Predictors</label>
+                  <label className="text-xs text-gray-400">{isZeroInflated ? "Count-model predictors" : "Predictors"}</label>
                   <button onClick={() => { setPredictors([]); setResult(null); }} className="text-[10px] px-1.5 py-0.5 rounded border border-gray-300 text-gray-500 hover:bg-red-50 hover:text-red-500 hover:border-red-300 transition-colors">Clear all</button>
                 </div>
                 <input
@@ -687,7 +728,7 @@ export default function ModelsPanel() {
                   className="select w-full text-xs mb-1 py-1"
                 />
                 <div className="max-h-48 overflow-y-auto space-y-1">
-                  {allCols.filter((c) => c !== outcome && c.toLowerCase().includes(predFilter.toLowerCase())).map((c) => {
+                  {allCols.filter((c) => c !== outcome && c !== effectiveExposure && c.toLowerCase().includes(predFilter.toLowerCase())).map((c) => {
                     const checked = predictors.includes(c);
                     const showScale = checked && (model === "logistic" || model === "firth" || model === "ortable" || model === "firth_ortable");
                     const spk = sparklines[c];
@@ -723,6 +764,35 @@ export default function ModelsPanel() {
                   })}
                 </div>
               </div>
+              {isZeroInflated && (
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs text-gray-400" id="zi-predictors-label">
+                      Zero-inflation predictors (optional, default intercept only)
+                      <Tip wide text="Predictors of the structural-zero (logit) part. Leave empty for an intercept-only zero-inflation part, which is the most stable choice. Add a variable only when you have a reason to think it makes someone unable to have the event at all." />
+                    </label>
+                    {effectiveInflation.length > 0 && (
+                      <button onClick={() => { setInflationPredictors([]); setResult(null); }} className="text-[10px] px-1.5 py-0.5 rounded border border-gray-300 text-gray-500 hover:bg-red-50 hover:text-red-500 hover:border-red-300 transition-colors">Clear</button>
+                    )}
+                  </div>
+                  <div role="group" aria-labelledby="zi-predictors-label" className="max-h-32 overflow-y-auto space-y-1">
+                    {allCols.filter((c) => c !== outcome && c !== effectiveExposure).map((c) => (
+                      <label key={c} className="flex items-center gap-2 text-sm cursor-pointer">
+                        <input type="checkbox" className="accent-indigo-500"
+                          aria-label={`Zero-inflation predictor ${c}`}
+                          checked={effectiveInflation.includes(c)}
+                          onChange={() => setInflationPredictors(effectiveInflation.includes(c)
+                            ? effectiveInflation.filter((x) => x !== c)
+                            : [...effectiveInflation, c])} />
+                        <span className="text-gray-700 truncate flex-1">{c}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <p className="text-[10px] text-gray-400 mt-1">
+                    {effectiveInflation.length === 0 ? "Intercept only." : `${effectiveInflation.length} selected.`}
+                  </p>
+                </div>
+              )}
             </>
           )}
           {/* Pairwise interactions — linear / logistic / cox accept them
@@ -789,13 +859,13 @@ export default function ModelsPanel() {
               ? [durationCol, eventCol, ...(model === "cox" ? predictors : [])]
               : isMultiOutcome
               ? [...moOutcomes, ...moPredictors, ...moCovariates]
-              : [...predictors, outcome]}
+              : [...countPredictors, ...effectiveInflation, ...(effectiveExposure ? [effectiveExposure] : []), outcome]}
             imputation={imputation}
             onImputation={setImputation}
           >
             <button className="btn-primary w-full" onClick={run} disabled={
               loading ||
-              (isMultiOutcome ? (moOutcomes.length < 1 || moPredictors.length < 1) : (!isSurvival && predictors.length === 0) || (isORTable && predictors.length < 1))
+              (isMultiOutcome ? (moOutcomes.length < 1 || moPredictors.length < 1) : (!isSurvival && countPredictors.length === 0) || (isORTable && predictors.length < 1))
             }>
               {loading ? "Fitting…" : "Fit Model"}
             </button>
@@ -859,6 +929,8 @@ export default function ModelsPanel() {
             </div>
           ) : isMultiOutcome ? (
             <MultiOutcomeResult result={result} standardize={moStandardize} stale={stale} staleReason={describeStale(staleWhy)} provenance={stamp?.provenance} />
+          ) : isZeroInflated && result.count_coefficients ? (
+            <ZeroInflatedResult result={result} stale={stale} staleReason={describeStale(staleWhy)} provenance={stamp?.provenance} />
           ) : isMultinomial && result.equations ? (
             <MultinomialResult result={result} valueLabels={colByName[result.outcome ?? ""]?.value_labels} stale={stale} staleReason={describeStale(staleWhy)} provenance={stamp?.provenance} />
           ) : (
@@ -873,6 +945,7 @@ export default function ModelsPanel() {
                   result.adj_r_squared != null  && ["Adj R²",    result.adj_r_squared?.toFixed(4),  "R² adjusted for the number of predictors — penalises adding unhelpful variables. Prefer this over R² when comparing models."],
                   result.pseudo_r2 != null      && ["Pseudo R²", result.pseudo_r2?.toFixed(4),      "McFadden's Pseudo R² for logistic regression. Analogous to R² but not directly comparable. Values 0.2–0.4 indicate good fit."],
                   result.f_stat != null         && ["F-stat",    result.f_stat?.toFixed(3),         "F-test: tests whether the model as a whole explains significantly more variance than no predictors. Large F with small p = model is useful."],
+                  result.dispersion != null     && ["Dispersion (χ²/df)", result.dispersion?.toFixed(3), "Pearson chi-square divided by the residual degrees of freedom. About 1 means the Poisson variance assumption holds; well above 1 (over 1.5 is flagged) means overdispersion: the standard errors are too small and a negative binomial model or robust SE is safer."],
                   result.aic != null            && ["AIC",       result.aic?.toFixed(2),            "Akaike Information Criterion — lower is better. Used to compare models: the model with the lowest AIC balances fit and complexity best."],
                   result.bic != null            && ["BIC",       result.bic?.toFixed(2),            "Bayesian Information Criterion — similar to AIC but applies a larger penalty for extra parameters. Prefer the model with the lower BIC."],
                   result.concordance != null    && ["C-index",   result.concordance?.toFixed(4),    "Concordance index for Cox models — equivalent to AUC. Probability that the model ranks a higher-risk patient above a lower-risk patient."],
@@ -917,6 +990,9 @@ export default function ModelsPanel() {
                   </InfoBanner>
                 </div>
               )}
+
+              {model === "poisson" && <RateModelNote exposureCol={result.exposure_col} />}
+              {model === "poisson" && <OverdispersionWarning overdispersed={result.overdispersed} note={result.dispersion_note} />}
 
               {model === "ordinal" && (
                 <OutcomeOrderNote categories={result.categories_in_rank_order} source={result.level_order_source} />

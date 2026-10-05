@@ -23,6 +23,8 @@ const STAT_DEFS: StatDef[] = [
   { id: "auto",       label: "Auto (normality-based)",  group: "tendency" },
   { id: "mean_sd",    label: "Mean ± SD",               group: "tendency" },
   { id: "median_iqr", label: "Median [IQR]",            group: "tendency" },
+  { id: "geometric_mean", label: "Geometric mean (GSD)",  group: "tendency" },
+  { id: "gm_ci",      label: "Geometric mean [95% CI]", group: "tendency" },
   { id: "se",         label: "SE of Mean",              group: "dispersion" },
   { id: "ci95",       label: "95% CI",                  group: "dispersion" },
   { id: "variance",   label: "Variance",                group: "dispersion" },

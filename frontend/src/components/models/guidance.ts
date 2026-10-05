@@ -31,8 +31,18 @@ export const MODEL_GUIDANCE: Record<string, { use: string; check: string; interp
   },
   poisson: {
     use: "Model count outcomes (0, 1, 2, 3...) — e.g. number of events, hospital visits, complications. Returns Incidence Rate Ratios (IRR).",
-    check: "Outcome must be non-negative integers. Check for overdispersion: if variance >> mean, use Negative Binomial instead. Robust SE helps with mild overdispersion.",
-    interpret: "IRR > 1 = higher rate. IRR = 1.5 means 50% more events. Report: IRR (95% CI), p-value.",
+    check: "Outcome must be non-negative integers. Check the overdispersion warning (Pearson chi2/df well above 1): if variance >> mean, use Negative Binomial instead. Robust SE helps with mild overdispersion. If follow-up differs between rows, pick the follow-up time column as the exposure (offset).",
+    interpret: "IRR > 1 = higher rate. IRR = 1.5 means 50% more events. With an exposure column the IRR is a rate ratio (events per unit of follow-up time). Report: IRR (95% CI), p-value.",
+  },
+  zip: {
+    use: "Count outcome with more zeros than a Poisson model allows, where some zeros are 'structural' (the person could never have the event) and others are chance zeros. Fits a count part (IRR) and a zero-inflation part (OR of a structural zero).",
+    check: "Outcome must be non-negative integers with at least one zero. Read the Vuong test: only keep the zero-inflated model if it is preferred over the standard Poisson. Compare observed and expected zeros. Use few zero-inflation predictors (or intercept only) to keep the fit stable.",
+    interpret: "Count table: IRR is the rate ratio among rows that are not structural zeros. Zero-inflation table: OR above 1 means higher odds of a structural zero. Report both tables and the Vuong verdict.",
+  },
+  zinb: {
+    use: "Zero-inflated counts that are also overdispersed (variance well above the mean among the non-structural rows). Adds a negative-binomial dispersion alpha to the zero-inflated Poisson model.",
+    check: "Outcome must be non-negative integers with at least one zero. Check the Vuong test against the standard negative binomial and the alpha estimate: alpha near 0 means a zero-inflated Poisson would do. Keep the zero-inflation part small.",
+    interpret: "Count table: IRR among non-structural rows. Zero-inflation table: OR of a structural zero. alpha is the dispersion (theta = 1/alpha). Report both tables, alpha and the Vuong verdict.",
   },
   km: {
     use: "Visualise time-to-event data. The survival curve shows the probability of surviving beyond each time point. Log-rank test compares curves between groups.",

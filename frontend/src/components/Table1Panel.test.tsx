@@ -112,7 +112,7 @@ describe('Table1Panel', () => {
     // Open statistics selector and pick custom stats
     await user.click(screen.getByRole('button', { name: /statistics/i }))
     await user.click(screen.getByRole('checkbox', { name: /median \[iqr\]/i }))
-    await user.click(screen.getByRole('checkbox', { name: /95% ci/i }))
+    await user.click(screen.getByRole('checkbox', { name: '95% CI' }))
     // Deselect "Auto" (still leaves 2 selected, so it's allowed to uncheck)
     await user.click(screen.getByRole('checkbox', { name: /auto \(normality-based\)/i }))
 

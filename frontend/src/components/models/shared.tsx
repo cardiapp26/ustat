@@ -1,6 +1,7 @@
 /* eslint-disable react-refresh/only-export-components -- shared helpers + small components bundled by design */
 // Shared presentational helpers for the model result views.
 import type { MultinomialResultData } from "./MultinomialResult";
+import type { ZeroInflatedResultData } from "./ZeroInflatedResult";
 
 // ── Shared model result types ────────────────────────────────────────────────
 // These describe the (loosely-typed) JSON returned by the regression endpoints.
@@ -143,7 +144,13 @@ type MultinomialFields = Pick<MultinomialResultData,
   "categories" | "reference" | "category_counts" | "equations" | "lr_tests"
   | "model_lr_chi2" | "model_lr_df" | "model_lr_p" | "classification_table">;
 
-export interface ModelResult extends MultinomialFields {
+/** Zero-inflated-only fields (the shared ones, n / aic / bic / result_text, are below). */
+type ZeroInflatedFields = Pick<ZeroInflatedResultData,
+  "count_coefficients" | "inflation_coefficients" | "vuong" | "n_zeros" | "expected_zeros"
+  | "expected_zeros_standard" | "observed_zero_fraction" | "expected_zero_fraction"
+  | "inflation_predictors" | "standard_model_aic" | "standard_model_bic" | "loglik">;
+
+export interface ModelResult extends MultinomialFields, ZeroInflatedFields {
   model?: string;
   outcome?: string;
   n?: number;
@@ -181,6 +188,17 @@ export interface ModelResult extends MultinomialFields {
   method_note?: string;
   categories_in_rank_order?: string[];
   level_order_source?: string;
+  // Count models (Poisson / negative binomial / zero-inflated)
+  exposure_col?: string | null;
+  rate_model?: boolean;
+  dispersion?: number | null;
+  overdispersed?: boolean;
+  dispersion_note?: string | null;
+  alpha?: number | null;
+  alpha_se?: number | null;
+  theta?: number | null;
+  converged?: boolean;
+  warnings?: string[];
 }
 
 export interface BrantTest {

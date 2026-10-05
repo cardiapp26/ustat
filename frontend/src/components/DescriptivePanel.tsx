@@ -56,6 +56,11 @@ interface ColumnSummary {
   cv?: number | null;
   cv_percent?: number | null;
   harmonic_mean?: number | null;
+  geometric_mean?: number | null;
+  geometric_sd?: number | null;
+  geometric_mean_ci_lower?: number | null;
+  geometric_mean_ci_upper?: number | null;
+  geometric_mean_note?: string | null;
   whisker_low?: number;
   whisker_high?: number;
   skewness?: number;
@@ -70,6 +75,39 @@ interface ColumnSummary {
 }
 
 type ChartTab = DescriptiveTab;
+
+/** [label, value, optional hint]; a hint marks a muted "not defined" entry. */
+type StatEntry = [label: string, value: string, hint?: string];
+
+/**
+ * Geometric mean (95% CI) and geometric SD entries for the numeric statistics
+ * strip and its export. Defined values are always listed. When the geometric
+ * mean is missing, a muted hint entry is added only for non-negative columns
+ * that contain a zero (they look positive, so the user would wonder why the
+ * statistic is absent); for negative-valued or tiny columns nothing is shown.
+ */
+function geometricEntries(
+  s: ColumnSummary,
+  fv: (v: number) => string,
+  fsd: (v: number) => string,
+): StatEntry[] {
+  const gm = s.geometric_mean;
+  if (typeof gm === "number") {
+    const lo = s.geometric_mean_ci_lower;
+    const hi = s.geometric_mean_ci_upper;
+    const ci = typeof lo === "number" && typeof hi === "number" ? ` [${fv(lo)}, ${fv(hi)}]` : "";
+    return [
+      ["Geometric mean (95% CI)", `${fv(gm)}${ci}`],
+      ["Geometric SD", typeof s.geometric_sd === "number" ? fsd(s.geometric_sd) : "-"],
+    ];
+  }
+  if (s.min === 0) {
+    const note = s.geometric_mean_note
+      ?? "Not defined: contains zero values (geometric mean needs strictly positive data).";
+    return [["Geometric mean (95% CI)", "Not defined (zero values)", note]];
+  }
+  return [];
+}
 
 interface ScatterResult {
   points: Record<string, unknown>[];
@@ -1974,6 +2012,11 @@ export default function DescriptivePanel() {
                               ["CV (SD/mean)", summary.cv?.toFixed(4) ?? "Undefined"],
                               ["CV (%)", summary.cv_percent?.toFixed(2) ?? "Undefined"],
                               ["Harmonic mean", summary.harmonic_mean == null ? "Positive values required" : fix(summary.harmonic_mean)],
+                              ...geometricEntries(
+                                summary,
+                                (v) => v.toFixed(dExp),
+                                (v) => v.toFixed(Math.max(dExp, 2)),
+                              ).map(([label, value]) => [label, value]),
                               ["Min", fix(summary.min)],
                               ["Max", fix(summary.max)],
                               ["Skewness", summary.skewness?.toFixed(4) ?? ""],
@@ -2015,7 +2058,7 @@ export default function DescriptivePanel() {
                 {/* Stats strip (numeric) — inline single-line for max vertical space */}
                 {summary.type === "numeric" && (
                   <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 px-4 py-1.5 border-b border-gray-200 text-xs flex-shrink-0">
-                    {[
+                    {([
                       ["Mean", fmt(summary.mean)],
                       ["SD", fmt(summary.std)],
                       ["Median", fmt(summary.median)],
@@ -2025,21 +2068,26 @@ export default function DescriptivePanel() {
                       ["Quartile deviation", fmt(summary.quartile_deviation)],
                       ["CV (%)", summary.cv_percent == null ? "Undefined" : summary.cv_percent.toFixed(2)],
                       ["Harmonic mean", summary.harmonic_mean == null ? "Positive values required" : fmt(summary.harmonic_mean)],
+                      ...geometricEntries(
+                        summary,
+                        (v) => fmt(v),
+                        (v) => fmt(v, Math.max(colDecimals(selected), 2)),
+                      ),
                       ["Min", fmt(summary.min)],
                       ["Max", fmt(summary.max)],
                       ["Skew", fmt(summary.skewness)],
                       ["Skew SE", summary.skew_se?.toFixed(4) ?? "Undefined"],
                       ["Kurtosis SE", summary.kurt_se?.toFixed(4) ?? "Undefined"],
-                    ].map(([k, v], i) => (
-                      <span key={k as string} className="whitespace-nowrap">
+                    ] as StatEntry[]).map(([k, v, hint], i) => (
+                      <span key={k} className="whitespace-nowrap" title={hint}>
                         {i > 0 && <span className="text-gray-300 mr-3">·</span>}
                         <span className="text-gray-400">{k}</span>{" "}
-                        <span className="font-mono font-semibold text-gray-800">{v}</span>
+                        <span className={hint ? "font-mono text-gray-400 italic" : "font-mono font-semibold text-gray-800"}>{v}</span>
                       </span>
                     ))}
                   </div>
                 )}
-                {summary.type === "numeric" && <p className="px-4 py-1 text-[10px] text-gray-500">CV = sample SD / mean × 100%; zero mean is undefined. Interpret CV on positive ratio scales. Harmonic mean requires positive observations. Skewness and excess kurtosis use bias correction.</p>}
+                {summary.type === "numeric" && <p className="px-4 py-1 text-[10px] text-gray-500">CV = sample SD / mean × 100%; zero mean is undefined. Interpret CV on positive ratio scales. Harmonic mean requires positive observations. Geometric mean (95% CI, t-based on the log scale) and geometric SD (multiplicative) require strictly positive data. Skewness and excess kurtosis use bias correction.</p>}
                 {/* Interpretation guidance */}
                 {summary.type === "numeric" && (
                   <div className="px-4 py-1.5 border-b border-gray-100 bg-amber-50 flex-shrink-0">

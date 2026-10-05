@@ -1345,6 +1345,11 @@ interface KappaResult {
   ci_low: number | null;
   ci_high: number | null;
   se: number | null;
+  se_null?: number | null;
+  z?: number | null;
+  p?: number | null;
+  po?: number | null;
+  pe?: number | null;
   n: number;
   interpretation: string;
   confusion_matrix: number[][];
@@ -1392,7 +1397,9 @@ function KappaTab({ sessionId, columns }: { sessionId: string; columns: string[]
 
   const exportKappa = () => {
     if (!data) return;
-    const header = ["κ", "95% CI Low", "95% CI High", "SE", "n", "Interpretation"];
+    const weighted = !!data.weights && data.weights !== "none";
+    const header = ["κ", "95% CI Low", "95% CI High", "SE", "n", "Interpretation",
+      ...(weighted ? ["z", "p", "Observed agreement (po)", "Expected agreement (pe)"] : [])];
     const row = [
       data.kappa.toFixed(4),
       data.ci_low?.toFixed(4) ?? "",
@@ -1400,6 +1407,12 @@ function KappaTab({ sessionId, columns }: { sessionId: string; columns: string[]
       data.se?.toFixed(4) ?? "",
       String(data.n),
       data.interpretation,
+      ...(weighted ? [
+        data.z?.toFixed(3) ?? "",
+        data.p != null ? fmtP(data.p) : "",
+        data.po?.toFixed(4) ?? "",
+        data.pe?.toFixed(4) ?? "",
+      ] : []),
     ];
     downloadCSV("cohens_kappa_result.csv", [header, row]);
   };
@@ -1499,6 +1512,24 @@ function KappaTab({ sessionId, columns }: { sessionId: string; columns: string[]
           <span>Standard Error (SE):</span>
           <span className="font-semibold font-mono text-gray-700">{data.se?.toFixed(4) ?? "Not estimated"}</span>
         </p>
+        {data.weights && data.weights !== "none" && (
+          <>
+            <p className="text-gray-500 flex justify-between">
+              <span>Test of κ = 0 (<i>z</i>):</span>
+              <span className="font-semibold font-mono text-gray-700">{data.z != null && Number.isFinite(data.z) ? data.z.toFixed(3) : "Not estimated"}</span>
+            </p>
+            <p className="text-gray-500 flex justify-between">
+              <span><i>p</i>-value:</span>
+              <span className="font-semibold font-mono text-gray-700">{data.p != null ? fmtP(data.p) : "Not estimated"}</span>
+            </p>
+            {data.po != null && data.pe != null && (
+              <p className="text-gray-500 flex justify-between">
+                <span>Observed / expected agreement:</span>
+                <span className="font-semibold font-mono text-gray-700">{data.po.toFixed(3)} / {data.pe.toFixed(3)}</span>
+              </p>
+            )}
+          </>
+        )}
         <p className="text-gray-500 flex justify-between border-t border-gray-200/60 pt-1 mt-1">
           <span>Agreement Strength:</span>
           <span className={interpColor(data.interpretation)}>{data.interpretation}</span>

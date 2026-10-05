@@ -38,6 +38,7 @@ const RULES: Rule[] = [
   { prefix: "reliability", label: "Reliability", tab: "tests", combo: tests("reliability") },
   { prefix: "noninferiority", label: "Non-inferiority", tab: "tests", combo: tests("noninferiority") },
   { prefix: "gatekeeping", label: "Gatekeeping", tab: "tests", combo: tests("gatekeeping") },
+  { prefix: "epidemiology", label: "Epidemiology", tab: "tests", combo: tests("epidemiology") },
   { prefix: "factor_pca", label: "Factor analysis / PCA", tab: "tests", combo: tests("factor") },
   { prefix: "bayesian", label: "Bayesian test", tab: "tests", combo: tests("bayesian") },
   { prefix: "descriptive", label: "Descriptive", tab: "summary", combo: summary("descriptive") },

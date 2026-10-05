@@ -17,6 +17,14 @@ import type { PlotData, PlotCaptureHandle } from "../lib/plotTypes";
 // ── Result shapes (loose views over the untyped API responses) ──────────────
 /** A single point on an ROC curve. */
 interface CurvePoint { fpr: number; tpr: number; }
+/** A 95% confidence interval as the backend returns it: [low, high] or null. */
+type CI = [number, number] | null;
+/** Fagan post-test probabilities, null/absent when no prevalence was sent. */
+interface PostTest {
+  pretest: number;
+  post_positive: number;
+  post_negative: number;
+}
 /** Sens/Spec/PPV/etc. block returned for a cutoff. */
 interface CutoffMetrics {
   cutoff?: number | null;
@@ -32,6 +40,13 @@ interface CutoffMetrics {
   tn?: number | null;
   fp?: number | null;
   fn?: number | null;
+  sensitivity_ci?: CI;
+  specificity_ci?: CI;
+  ppv_ci?: CI;
+  npv_ci?: CI;
+  accuracy_ci?: CI;
+  lr_pos_ci?: CI;
+  lr_neg_ci?: CI;
 }
 /** Loose view of the /roc single-result payload. */
 interface ROCResult {
@@ -44,6 +59,7 @@ interface ROCResult {
   curve: CurvePoint[];
   optimal?: CutoffMetrics;
   manual?: CutoffMetrics;
+  post_test?: PostTest | null;
   optimal_cutoff?: number | null;
   sensitivity?: number | null;
   specificity?: number | null;
@@ -156,6 +172,22 @@ const aucColor = (auc: number) =>
 const aucLabel = (auc: number) =>
   auc >= 0.9 ? "Excellent" : auc >= 0.8 ? "Good" : auc >= 0.7 ? "Fair" : "Poor";
 const fmtPct = (v?: number | null) => v == null ? "—" : `${(v * 100).toFixed(1)}%`;
+/** "value [low, high]" for a proportion (shown as percentages). */
+const fmtPctCI = (v?: number | null, ci?: CI) =>
+  v == null ? "n/a"
+    : ci ? `${fmtPct(v)} [${(ci[0] * 100).toFixed(1)}%, ${(ci[1] * 100).toFixed(1)}%]` : fmtPct(v);
+/** "value [low, high]" for a likelihood ratio (two decimals). */
+const fmtLRCI = (v?: number | null, ci?: CI) =>
+  v == null ? "n/a"
+    : ci ? `${v.toFixed(2)} [${ci[0].toFixed(2)}, ${ci[1].toFixed(2)}]` : v.toFixed(2);
+/** The disease prevalence typed, as a request carries it: a fraction in (0, 1), or null for none. */
+const parsePrevalence = (raw: string): number | null => {
+  const v = parseFloat(raw);
+  return Number.isFinite(v) && v > 0 && v < 1 ? v : null;
+};
+/** True when something is typed in the prevalence box but it is not a fraction in (0, 1). */
+const prevalenceInvalid = (raw: string): boolean =>
+  raw.trim() !== "" && parsePrevalence(raw) === null;
 const fmtAUC = (auc: number, lo?: number | null, hi?: number | null) =>
   lo != null && hi != null
     ? `AUC ${auc.toFixed(2)} (95% CI ${lo.toFixed(2)}–${hi.toFixed(2)})`
@@ -235,13 +267,13 @@ function MetricsBlock({ m, label }: { m: CutoffMetrics; label: string }) {
       <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold mt-2 mb-1">{label}</p>
       {[
         ["Cutoff",      m.cutoff],
-        ["Sensitivity", m.sensitivity != null ? fmtPct(m.sensitivity) : "—"],
-        ["Specificity", m.specificity != null ? fmtPct(m.specificity) : "—"],
-        ["PPV",         m.ppv       != null ? fmtPct(m.ppv)       : "—"],
-        ["NPV",         m.npv       != null ? fmtPct(m.npv)       : "—"],
-        ["Accuracy",    m.accuracy  != null ? fmtPct(m.accuracy)  : "—"],
-        ["LR+",         m.lr_pos    != null ? m.lr_pos.toFixed(2) : "—"],
-        ["LR−",         m.lr_neg    != null ? m.lr_neg.toFixed(2) : "—"],
+        ["Sensitivity", fmtPctCI(m.sensitivity, m.sensitivity_ci)],
+        ["Specificity", fmtPctCI(m.specificity, m.specificity_ci)],
+        ["PPV",         fmtPctCI(m.ppv, m.ppv_ci)],
+        ["NPV",         fmtPctCI(m.npv, m.npv_ci)],
+        ["Accuracy",    fmtPctCI(m.accuracy, m.accuracy_ci)],
+        ["LR+",         fmtLRCI(m.lr_pos, m.lr_pos_ci)],
+        ["LR−",         fmtLRCI(m.lr_neg, m.lr_neg_ci)],
         ["Youden J",    m.youden_j  != null ? m.youden_j.toFixed(2) : "—"],
         ["TP", m.tp], ["TN", m.tn], ["FP", m.fp], ["FN", m.fn],
       ].map(([k, v]) => {
@@ -359,6 +391,10 @@ function ROCPanelBody({ session }: { session: Session }) {
   const [scoreDirection, setScoreDirection]   = usePersistedPanelState<"auto" | "higher" | "lower">("roc", "scoreDirection", "auto");
   const [scoreDirection2, setScoreDirection2] = usePersistedPanelState<"auto" | "higher" | "lower">("roc", "scoreDirection2", "auto");
   const [useManual,    setUseManual]    = usePersistedPanelState<boolean>("roc", "useManual", false);
+  // Optional pre-test probability for the Fagan post-test card: a fraction in
+  // (0, 1) like the manual cutoff above is a plain number, not a percentage.
+  const [prevalence,   setPrevalence]   = usePersistedPanelState<string>("roc", "prevalence", "");
+  const prevalenceBad = prevalenceInvalid(prevalence);
   const [error,        setError]        = useState<string | null>(null);
   const [loading,      setLoading]      = useState(false);
   const [imputation,   setImputation]   = usePersistedPanelState<ImputationStrategy>("roc", "imputation", "listwise");
@@ -374,6 +410,7 @@ function ROCPanelBody({ session }: { session: Session }) {
   const singleParams = {
     scoreCol, outcomeCol, imputation, direction: scoreDirection,
     manualCutoff: parseCutoff(manualCutoff),
+    prevalence: parsePrevalence(prevalence),
   };
   const {
     result, setResult, stale: singleStale, staleReasons: singleWhy,
@@ -562,8 +599,10 @@ function ROCPanelBody({ session }: { session: Session }) {
   const run = async () => {
     if (!scoreCol || !outcomeCol) return;
     if (scoreCol === outcomeCol) { setError("Score and outcome columns must be different"); return; }
+    if (prevalenceBad) return;
     setLoading(true); setError(null); setResult(null); setCmpResult(null);
     const mc = useManual ? parseCutoff(manualCutoff) : null;
+    const pv = parsePrevalence(prevalence);
     try {
       const res = await runROC({
         session_id: session.session_id,
@@ -572,6 +611,7 @@ function ROCPanelBody({ session }: { session: Session }) {
         imputation,
         direction: scoreDirection,
         ...(mc != null ? { manual_cutoff: mc } : {}),
+        ...(pv != null ? { prevalence: pv } : {}),
       });
       setResult(res.data);
     } catch (e: unknown) {
@@ -645,6 +685,30 @@ function ROCPanelBody({ session }: { session: Session }) {
       ["FP", opt.fp ?? "—"],
       ["FN", opt.fn ?? "—"],
     ];
+    const ciRows = (m: CutoffMetrics): (string | number | null)[][] => {
+      const out: (string | number | null)[][] = [];
+      const add = (k: string, ci: CI | undefined, f: (x: number) => string) => {
+        if (ci) out.push([`${k} 95% CI`, `${f(ci[0])} to ${f(ci[1])}`]);
+      };
+      const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
+      const lr = (x: number) => x.toFixed(2);
+      add("Sensitivity", m.sensitivity_ci, pct);
+      add("Specificity", m.specificity_ci, pct);
+      add("PPV", m.ppv_ci, pct);
+      add("NPV", m.npv_ci, pct);
+      add("Accuracy", m.accuracy_ci, pct);
+      add("LR+", m.lr_pos_ci, lr);
+      add("LR-", m.lr_neg_ci, lr);
+      return out;
+    };
+    rows.push(...ciRows(opt));
+    if (result.post_test) {
+      rows.push(["", ""], ["Post-test probability (Fagan)", ""],
+        ["Pre-test probability", fmtPct(result.post_test.pretest)],
+        ["After a positive test", fmtPct(result.post_test.post_positive)],
+        ["After a negative test", fmtPct(result.post_test.post_negative)],
+      );
+    }
     if (result.manual) {
       rows.push(["", ""], ["Manual cutoff", ""],
         ["Cutoff", result.manual.cutoff ?? null],
@@ -653,6 +717,7 @@ function ROCPanelBody({ session }: { session: Session }) {
         ["PPV", fmtPct(result.manual.ppv)],
         ["NPV", fmtPct(result.manual.npv)],
         ["Accuracy", fmtPct(result.manual.accuracy)],
+        ...ciRows(result.manual),
       );
     }
     rows.push(["", ""], ["ROC Curve (FPR, TPR)", ""]);
@@ -819,6 +884,22 @@ function ROCPanelBody({ session }: { session: Session }) {
                 )}
               </div>
 
+              <div>
+                <label htmlFor="roc-prevalence" className="text-[10px] text-gray-400 flex items-center mb-1">
+                  Disease prevalence (for post-test probability)
+                  <Tip text="Optional pre-test probability as a fraction strictly between 0 and 1 (e.g. 0.15 for 15%). Adds a Fagan post-test probability card at the optimal cutoff." />
+                </label>
+                <input id="roc-prevalence" type="number" step="any" placeholder="optional, e.g. 0.15"
+                  className="select w-full text-xs" value={prevalence}
+                  aria-invalid={prevalenceBad}
+                  onChange={(e) => setPrevalence(e.target.value)} />
+                {prevalenceBad && (
+                  <p role="alert" className="text-red-600 text-[10px] mt-1">
+                    Prevalence must be a fraction between 0 and 1 (exclusive), e.g. 0.15.
+                  </p>
+                )}
+              </div>
+
               <MissingGuard
                 sessionId={session.session_id}
                 columns={[scoreCol, outcomeCol].filter(Boolean)}
@@ -826,7 +907,7 @@ function ROCPanelBody({ session }: { session: Session }) {
                 onImputation={setImputation}
               >
                 <button className="btn-primary w-full" onClick={run}
-                  disabled={loading || !scoreCol || !outcomeCol}>
+                  disabled={loading || !scoreCol || !outcomeCol || prevalenceBad}>
                   {loading ? "Computing…" : "Run ROC"}
                 </button>
               </MissingGuard>
@@ -1548,6 +1629,20 @@ function ROCPanelBody({ session }: { session: Session }) {
               {activeMetrics && (
                 <MetricsBlock m={activeMetrics}
                   label={useManual && result.manual ? "At manual cutoff" : "At optimal cutoff (Youden J)"} />
+              )}
+
+              {result.post_test && (
+                <div data-testid="roc-post-test" className="bg-indigo-50 border border-indigo-100 rounded-lg px-3 py-2 mt-2">
+                  <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold mb-1">
+                    Post-test probability (Fagan)
+                  </p>
+                  <p className="text-xs text-gray-700">
+                    Pre-test {fmtPct(result.post_test.pretest)}, after a positive test{" "}
+                    {fmtPct(result.post_test.post_positive)}, after a negative test{" "}
+                    {fmtPct(result.post_test.post_negative)}
+                  </p>
+                  <p className="text-[10px] text-gray-400 mt-0.5">Based on the optimal cutoff (Youden J).</p>
+                </div>
               )}
             </div>
             </StaleGuard>

@@ -7,6 +7,8 @@ import StaleResultNotice from "./StaleResultNotice";
 import StaleGuard from "./StaleGuard";
 import CopyTextButton from "./CopyTextButton";
 import ResultProvenanceLine from "./ResultProvenanceLine";
+import RiskMeasuresTable, { type RiskMeasures } from "./RiskMeasuresTable";
+import HodgesLehmannLine, { type HodgesLehmann } from "./HodgesLehmannLine";
 import { useStampedResult } from "../hooks/useStampedResult";
 import { describeStale } from "../lib/resultStamp";
 import type { Provenance } from "../lib/engine/provenance";
@@ -201,6 +203,10 @@ interface TestResult {
   table?: number[][];
   row_labels?: string[];
   col_labels?: string[];
+  /** 2x2 chi-square only: ARD, RR, RRR and NNT/NNH with their intervals. */
+  risk_measures?: RiskMeasures;
+  /** Mann-Whitney and one-sample Wilcoxon: location estimate with a CI. */
+  hodges_lehmann?: HodgesLehmann;
   [key: string]: unknown;
 }
 
@@ -218,6 +224,12 @@ function CellMatrix({ value, title }: { value: unknown; title: string }) {
       <td className="px-2 py-1">{row}</td>{labels.map((label) => <td key={label} className="px-2 py-1 text-right font-mono">{columns[label][row]?.toFixed(3) ?? "—"}</td>)}
     </tr>)}</tbody></table>
   </div>;
+}
+
+/** The estimate is a median of pairwise differences for two samples and a
+ *  pseudomedian (median of Walsh averages, not shifted by mu) for one sample. */
+function hodgesLehmannLabel(testName: string | undefined): string {
+  return /one-sample/i.test(testName ?? "") ? "Hodges-Lehmann pseudomedian" : "Hodges-Lehmann median difference";
 }
 
 function ResultCard({ result, stale = false, staleReason, provenance }: {
@@ -238,11 +250,32 @@ function ResultCard({ result, stale = false, staleReason, provenance }: {
                 "posthoc_note", "effects", "emms", "emm_marginal", "emm_note",
                 "simple_effects", "covariate_effects", "expected", "relative_risk_ci",
                 "anova_table", "anova_table_note", "standardized_residuals",
-                "result_text", "export_rows"];
+                "result_text", "export_rows", "risk_measures", "hodges_lehmann"];
 
   const statEntries = Object.entries(result).filter(([k]) => !skip.includes(k) && typeof result[k] !== "object");
   const exportHeaders = ["Statistic", "Value"];
-  const exportRows = statEntries.map(([k, v]) => [k, isPKey(k) ? fmtP(v as number | null | undefined) : fmt(v)]);
+  const exportRows: (string | number | null | undefined)[][] = statEntries.map(([k, v]) => [k, isPKey(k) ? fmtP(v as number | null | undefined) : fmt(v)]);
+  const hl = result.hodges_lehmann;
+  if (hl && typeof hl.estimate === "number") {
+    const hlLabel = hodgesLehmannLabel(result.test);
+    exportRows.push([hlLabel, hl.estimate.toFixed(4)]);
+    if (typeof hl.ci_low === "number" && typeof hl.ci_high === "number") {
+      exportRows.push([`${hlLabel} CI lower`, hl.ci_low.toFixed(4)], [`${hlLabel} CI upper`, hl.ci_high.toFixed(4)]);
+    }
+  }
+  const rm = result.risk_measures;
+  if (rm) {
+    const cell = (v: number | null | undefined) => (typeof v === "number" && Number.isFinite(v) ? v.toFixed(4) : "n/a");
+    exportRows.push(
+      ["ARD (exposed minus reference)", cell(rm.ard)],
+      ["ARD CI lower", cell(rm.ard_ci?.[0])], ["ARD CI upper", cell(rm.ard_ci?.[1])],
+      ["Risk ratio", cell(rm.rr)],
+      ["Risk ratio CI lower", cell(rm.rr_ci?.[0])], ["Risk ratio CI upper", cell(rm.rr_ci?.[1])],
+      ["Relative risk reduction", cell(rm.rrr)],
+      [rm.nnt_nnh?.kind ?? "NNT/NNH", typeof rm.nnt_nnh?.value === "number" ? rm.nnt_nnh.value : rm.ard === 0 ? "infinite" : "n/a"],
+      [`${rm.nnt_nnh?.kind ?? "NNT/NNH"} CI`, rm.nnt_nnh?.ci_text ?? "n/a"],
+    );
+  }
 
   return (
     <div className="panel space-y-3">
@@ -282,6 +315,12 @@ function ResultCard({ result, stale = false, staleReason, provenance }: {
 
       {Array.isArray(result.relative_risk_ci) && result.relative_risk_ci.length === 2 && (
         <p className="text-xs text-gray-600">Relative risk 95% CI: [{Number(result.relative_risk_ci[0]).toFixed(3)}, {Number(result.relative_risk_ci[1]).toFixed(3)}]</p>
+      )}
+
+      {result.risk_measures && <RiskMeasuresTable measures={result.risk_measures} />}
+
+      {result.hodges_lehmann && (
+        <HodgesLehmannLine hl={result.hodges_lehmann} label={hodgesLehmannLabel(result.test)} />
       )}
 
       {Array.isArray(result.groups) && result.groups.some((g) => typeof g.mean_rank === "number") && (

@@ -396,6 +396,8 @@ export const runPolynomial  = (data: object) => api.post("/api/models/polynomial
 export const runLMM         = (data: object) => api.post("/api/models/lmm", data);
 export const runGamma       = (data: object) => api.post("/api/models/gamma", data);
 export const runNegBinom    = (data: object) => api.post("/api/models/negbinom", data);
+export const runZeroInflatedPoisson = (data: object) => api.post("/api/models/zip", data);
+export const runZeroInflatedNegBinom = (data: object) => api.post("/api/models/zinb", data);
 export const runLinearDiag  = (data: object) => api.post("/api/models/linear_diag", data);
 export const runMelt          = (data: object) => api.post("/api/models/melt", data);
 
@@ -570,6 +572,7 @@ export const runMancova      = (data: object) => api.post("/api/advanced_anova/m
 
 // Categorical
 export const runBinomial     = (data: object) => api.post("/api/categorical/binomial", data);
+export const runChisquareGof   = (data: object) => api.post("/api/categorical/chisquare_gof", data);
 export const runOneProportion = (data: object) => api.post("/api/categorical/one_proportion", data);
 export const runTwoProportions = (data: object) => api.post("/api/categorical/two_proportions", data);
 export const runMcNemar      = (data: object) => api.post("/api/categorical/mcnemar", data);
@@ -581,6 +584,11 @@ export const runCochranArmitage = (data: object) => api.post("/api/categorical/c
 export const runBlandAltman  = (data: object) => api.post("/api/agreement/bland_altman", data);
 export const runDeming       = (data: object) => api.post("/api/agreement/deming", data);
 export const runPassingBablok = (data: object) => api.post("/api/agreement/passing_bablok", data);
+
+// Epidemiology (inline stratum tables, no session needed)
+export const runDirectStandardisation = (data: object) => api.post("/api/epidemiology/direct_standardisation", data);
+export const runIndirectStandardisation = (data: object) => api.post("/api/epidemiology/indirect_standardisation", data);
+export const runRateRatio = (data: object) => api.post("/api/epidemiology/rate_ratio", data);
 export const runConcordance  = (data: object) => api.post("/api/agreement/concordance", data);
 
 // Reliability

@@ -13,6 +13,7 @@ import {
   runPolynomial, runLMM, runGamma, runNegBinom, runLinearDiag, runMelt, refreshSession,
 } from "../api";
 import { Tip, InfoBanner } from "./Tip";
+import { RateModelNote, NegBinDispersion } from "./models/CountModelNotes";
 import { MissingGuard, type ImputationStrategy } from "./MissingGuard";
 import TitledPlot from "./TitledPlot";
 import StaleResultNotice from "./StaleResultNotice";
@@ -75,6 +76,13 @@ interface GLMResult {
   bic?: number;
   deviance?: number;
   scale?: number;
+  // Negative binomial
+  exposure_col?: string | null;
+  rate_model?: boolean;
+  alpha?: number | null;
+  alpha_se?: number | null;
+  theta?: number | null;
+  dispersion_note?: string | null;
   coefficients: Coefficient[];
 }
 
@@ -641,9 +649,13 @@ function GLMSection({ sessionId, allCols, numCols }: { sessionId: string; allCol
   const [predictors, setPredictors] = usePersistedPanelState<string[]>(P, "predictors", []);
   const [link,       setLink]       = usePersistedPanelState(P, "link", "log");
   const [robustSE,   setRobustSE]   = usePersistedPanelState(P, "robustSE", false);
+  const [exposureCol, setExposureCol] = usePersistedPanelState(P, "exposureCol", "");
   const [imputation, setImputation] = usePersistedPanelState<ImputationStrategy>(P, "imputation", "listwise");
+  // The exposure offset is a negative-binomial setting only, and a stale pick
+  // (another session's column, or the current outcome) is not sent.
+  const effectiveExposure = glmType === "negbinom" && exposureCol !== outcome && numCols.includes(exposureCol) ? exposureCol : "";
   // `link` only reaches a Gamma request, so it is not a setting of a NB fit.
-  const runParams = { glmType, outcome, predictors, imputation, robustSE, link: glmType === "gamma" ? link : undefined };
+  const runParams = { glmType, outcome, predictors, imputation, robustSE, link: glmType === "gamma" ? link : undefined, exposureCol: effectiveExposure };
   const { result, setResult, stale, staleReasons: staleWhy } = useStampedResult<GLMResult>(P, runParams);
   const [loading,    setLoading]    = useState(false);
   const [error,      setError]      = useState("");
@@ -651,10 +663,15 @@ function GLMSection({ sessionId, allCols, numCols }: { sessionId: string; allCol
   const toggle = (c: string) => setPredictors(p => p.includes(c) ? p.filter(x=>x!==c) : [...p,c]);
 
   const run = async () => {
-    if (predictors.length === 0) { setError("Select at least one predictor"); return; }
+    const fitPredictors = predictors.filter(c => c !== effectiveExposure);
+    if (fitPredictors.length === 0) { setError("Select at least one predictor"); return; }
     setLoading(true); setError(""); setResult(null);
     try {
-      const payload = { session_id: sessionId, outcome, predictors, imputation, robust_se: robustSE, ...(glmType === "gamma" ? { link } : {}) };
+      const payload = {
+        session_id: sessionId, outcome, predictors: fitPredictors, imputation, robust_se: robustSE,
+        ...(glmType === "gamma" ? { link } : {}),
+        ...(effectiveExposure ? { exposure_col: effectiveExposure } : {}),
+      };
       const fn = glmType === "gamma" ? runGamma : runNegBinom;
       const r = await fn(payload);
       setResult(r.data as GLMResult);
@@ -702,10 +719,22 @@ function GLMSection({ sessionId, allCols, numCols }: { sessionId: string; allCol
             {numCols.map(c => <option key={c}>{c}</option>)}
           </select>
         </div>
+        {glmType === "negbinom" && (
+          <div>
+            <label htmlFor="glm-exposure-col" className="text-xs text-gray-400 block mb-1">
+              Exposure / follow-up time (offset)
+              <Tip text="Optional. A strictly positive numeric column (follow-up time or person-years) entered as an offset, so the IRRs become rate ratios. Leave on None when every row was observed for the same period." wide />
+            </label>
+            <select id="glm-exposure-col" className="select w-full text-xs" value={effectiveExposure} onChange={e => setExposureCol(e.target.value)}>
+              <option value="">None</option>
+              {numCols.filter(c => c !== outcome).map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+        )}
         <div>
           <label className="text-xs text-gray-400 block mb-1">Predictors</label>
           <div className="max-h-40 overflow-y-auto space-y-0.5">
-            {allCols.filter(c => c !== outcome).map(c => (
+            {allCols.filter(c => c !== outcome && c !== effectiveExposure).map(c => (
               <label key={c} className="flex items-center gap-1.5 text-xs cursor-pointer">
                 <input type="checkbox" className="accent-indigo-500" checked={predictors.includes(c)} onChange={() => toggle(c)} />
                 <span className="text-gray-700 truncate">{c}</span>
@@ -717,8 +746,8 @@ function GLMSection({ sessionId, allCols, numCols }: { sessionId: string; allCol
           <input type="checkbox" checked={robustSE} onChange={e => setRobustSE(e.target.checked)} className="accent-indigo-500" />
           <span className="text-gray-600">Robust SE (HC3)</span>
         </label>
-        <MissingGuard sessionId={sessionId} columns={[outcome, ...predictors]} imputation={imputation} onImputation={setImputation}>
-          <button className="btn-primary w-full" onClick={run} disabled={loading || predictors.length === 0}>
+        <MissingGuard sessionId={sessionId} columns={[outcome, ...predictors.filter(c => c !== effectiveExposure), ...(effectiveExposure ? [effectiveExposure] : [])]} imputation={imputation} onImputation={setImputation}>
+          <button className="btn-primary w-full" onClick={run} disabled={loading || predictors.filter(c => c !== effectiveExposure).length === 0}>
             {loading ? "Fitting…" : "Fit GLM"}
           </button>
         </MissingGuard>
@@ -746,6 +775,10 @@ function GLMSection({ sessionId, allCols, numCols }: { sessionId: string; allCol
                 Estimates are on the <strong>log scale</strong>. exp(β) = multiplicative change in the outcome per 1-unit increase in the predictor.
                 E.g. exp(0.2) ≈ 1.22 means 22% higher mean outcome per unit increase.
               </InfoBanner>
+            )}
+            {glmType === "negbinom" && <RateModelNote exposureCol={result.exposure_col} />}
+            {glmType === "negbinom" && (
+              <NegBinDispersion alpha={result.alpha} alphaSe={result.alpha_se} theta={result.theta} note={result.dispersion_note} />
             )}
             {glmType === "negbinom" && (
               <InfoBanner>

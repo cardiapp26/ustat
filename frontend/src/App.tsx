@@ -87,6 +87,7 @@ import RepeatedMeasuresPanel from "./components/RepeatedMeasuresPanel";
 import CategoricalTestsPanel from "./components/CategoricalTestsPanel";
 import ReliabilityPanel from "./components/ReliabilityPanel";
 import GatekeepingPanel from "./components/GatekeepingPanel";
+import EpidemiologyPanel from "./components/EpidemiologyPanel";
 import NonInferiorityPanel from "./components/NonInferiorityPanel";
 import PlotThemeBar from "./components/PlotThemeBar";
 import RefreshAppButton from "./components/RefreshAppButton";
@@ -171,6 +172,9 @@ const TEST_CATALOG: TestEntry[] = [
   { name: "Mantel-Haenszel", tab: "tests", group: "Stratified", aliases: ["cmh", "common or"] },
   { name: "Cochran-Armitage trend", tab: "tests", group: "Trend", aliases: ["ca trend", "doz cevap"] },
   { name: "Gatekeeping (truncated Hochberg / Holm)", tab: "tests", group: "Multiplicity", aliases: ["gatekeeping", "hochberg", "holm", "multiplicity", "hierarchical", "çoklu test", "fwer", "endpoint hierarchy"] },
+  { name: "Direct standardisation (age-adjusted rate, Fay-Feuer CI)", tab: "tests", group: "Epidemiology", aliases: ["direct standardization", "age adjusted rate", "age standardised rate", "standard population", "dsr", "ageadjust", "epidemiology", "yaş standardizasyonu"] },
+  { name: "Indirect standardisation (SMR)", tab: "tests", group: "Epidemiology", aliases: ["indirect standardization", "standardized mortality ratio", "standardised incidence ratio", "smr", "sir", "observed expected", "byar", "reference rates"] },
+  { name: "Rate ratio / rate difference (incidence rates)", tab: "tests", group: "Epidemiology", aliases: ["incidence rate ratio", "irr", "rate difference", "person-time", "person years", "poisson rate", "mid-p", "epidemiology"] },
   { name: "Non-inferiority test (RR / RD / OR / mean, margin)", tab: "tests", group: "Trial design", aliases: ["non-inferiority", "noninferiority", "non inferiority", "margin", "equivalence", "üstünlük dışılık", "itt", "intention to treat", "90% ci"] },
 
   // Correlation
@@ -377,11 +381,11 @@ function SaveBeforeOpenModal({
 }
 
 function TestsCombo() {
-  const [sub, setSub] = usePersistedPanelState<"hypothesis" | "normality" | "repeated" | "categorical" | "reliability" | "noninferiority" | "gatekeeping" | "factor" | "bayesian">("combo_tests", "sub", "hypothesis");
+  const [sub, setSub] = usePersistedPanelState<"hypothesis" | "normality" | "repeated" | "categorical" | "reliability" | "noninferiority" | "gatekeeping" | "epidemiology" | "factor" | "bayesian">("combo_tests", "sub", "hypothesis");
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       <div className="flex gap-1 px-4 pt-2 pb-1 bg-tint border-b border-line flex-shrink-0">
-        {([["hypothesis", "Hypothesis"], ["normality", "Normality"], ["repeated", "Repeated Measures"], ["categorical", "Categorical"], ["reliability", "Reliability"], ["noninferiority", "Non-Inferiority"], ["gatekeeping", "Gatekeeping"], ["factor", "Factor Analysis"], ["bayesian", "Bayesian Statistics"]] as const).map(([id, label]) => (
+        {([["hypothesis", "Hypothesis"], ["normality", "Normality"], ["repeated", "Repeated Measures"], ["categorical", "Categorical"], ["reliability", "Reliability"], ["noninferiority", "Non-Inferiority"], ["gatekeeping", "Gatekeeping"], ["epidemiology", "Epidemiology"], ["factor", "Factor Analysis"], ["bayesian", "Bayesian Statistics"]] as const).map(([id, label]) => (
           <button key={id} onClick={() => setSub(id)}
             className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
               sub === id ? "bg-surface text-ink-600 shadow-card border border-line" : "text-slate-500 hover:text-slate-700 hover:bg-chip"
@@ -398,6 +402,7 @@ function TestsCombo() {
         {sub === "reliability" && <ReliabilityPanel />}
         {sub === "noninferiority" && <NonInferiorityPanel />}
         {sub === "gatekeeping" && <GatekeepingPanel />}
+        {sub === "epidemiology" && <EpidemiologyPanel />}
         {sub === "factor" && <div className="flex-1 overflow-y-auto"><FactorPCAPanel /></div>}
         {sub === "bayesian" && <div className="flex-1 overflow-y-auto"><BayesianPanel /></div>}
       </div>
