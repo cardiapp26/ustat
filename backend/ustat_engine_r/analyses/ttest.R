@@ -138,6 +138,12 @@ ustat_ttest_ind <- function(req, frame) {
     ),
     group1 = name1, n1 = length(g1), mean1 = mean(g1),
     group2 = name2, n2 = length(g2), mean2 = mean(g2),
+    mean_diff = unname(tt$estimate[[1]] - tt$estimate[[2]]),
+    se_diff = unname(tt$stderr),
+    eta_squared = unname(summary(stats::lm(c(g1, g2) ~ factor(c(rep(0, length(g1)), rep(1, length(g2))))))$r.squared),
+    eta_squared_note = "Classical two-group sums-of-squares effect size; descriptive when Welch's test is used.",
+    ci_diff_low = unname(tt$conf.int[[1]]),
+    ci_diff_high = unname(tt$conf.int[[2]]),
     t = stat,
     p = p,
     # df must match the test that produced t and p. t.test reports the

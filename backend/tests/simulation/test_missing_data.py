@@ -46,6 +46,7 @@ def test_mice_recovers_coefficients_under_mar(client):  # client comes from conf
     })
     assert r_mice.status_code == 200
     mice_data = r_mice.json()
+    assert all(np.isfinite(c["standardized_beta"]) for c in mice_data["coefficients"] if c["variable"] != "const")
 
     # Check that MICE was actually used
     assert mice_data.get("pooled_from_imputations") is True or "mice" in str(mice_data.get("imputation", "")).lower()

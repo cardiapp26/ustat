@@ -167,9 +167,10 @@ def wilcoxon_signed_rank(req: WilcoxonSRRequest):
     _, tie_counts = np.unique(np.abs(nonzero), return_counts=True)
     n_ties = int((tie_counts > 1).sum())
     p_method = (
-        "exact" if (len(nonzero) <= 25 and n_ties == 0) else "normal approximation"
+        "exact" if (len(nonzero) <= 50 and n_ties == 0 and n_zero == 0) else "normal approximation"
     )
-    w_stat, p = sp.wilcoxon(x1, x2, alternative="two-sided")
+    w_stat, p = sp.wilcoxon(d, alternative="two-sided",
+                           method="exact" if p_method == "exact" else "approx")
     sig = bool(p < req.alpha)
     # The two-sided SciPy statistic is min(W+, W-), which carries no
     # direction: differences that were all positive and differences that were
@@ -178,12 +179,17 @@ def wilcoxon_signed_rank(req: WilcoxonSRRequest):
     # POSITIVE signed ranks.
     abs_ranks = sp.rankdata(np.abs(nonzero))
     w_plus = float(abs_ranks[nonzero > 0].sum())
+    w_minus = float(abs_ranks[nonzero < 0].sum())
+    asymptotic = sp.wilcoxon(d, method="approx", alternative="two-sided")
     es = matched_rank_biserial(w_plus, len(nonzero))
     ps = _p_str(p)
 
     return sanitize_nonfinite({
         "test": "Wilcoxon signed-rank test",
         "W": round(float(w_stat), 4), "p": float(p), "n_nonzero": len(nonzero),
+        "W_plus": w_plus, "W_minus": w_minus,
+        "z_asymptotic": float(asymptotic.zstatistic),
+        "z_method": "SciPy normal approximation, no continuity correction",
         "significant": sig,
         "effect_sizes": [es],
         "p_method": p_method,
@@ -214,6 +220,8 @@ def wilcoxon_signed_rank(req: WilcoxonSRRequest):
         "export_rows": [
             ["Statistic", "Value"],
             ["W", round(float(w_stat), 4)],
+            ["W+", w_plus], ["W-", w_minus],
+            ["Asymptotic Z", float(asymptotic.zstatistic)],
             ["p", round(float(p), 6)],
             ["n (non-zero differences)", len(nonzero)],
             ["Rank-biserial r", es["value"]],
@@ -247,6 +255,9 @@ def friedman(req: FriedmanRequest):
     n = len(sub)
     k = len(req.columns)
 
+    condition_ranks = sp.rankdata(np.column_stack(arrays), axis=1)
+    ranks = [{"condition": c, "n": n, "mean_rank": float(condition_ranks[:, i].mean()),
+              "rank_sum": float(condition_ranks[:, i].sum())} for i, c in enumerate(req.columns)]
     chi2, p = sp.friedmanchisquare(*arrays)
     sig = bool(p < req.alpha)
     es = kendalls_w(float(chi2), n, k)
@@ -276,6 +287,7 @@ def friedman(req: FriedmanRequest):
 
     return sanitize_nonfinite({
         "test": "Friedman test",
+        "ranks": ranks,
         "chi2": round(float(chi2), 4), "df": k - 1, "p": float(p),
         "significant": sig,
         "effect_sizes": [es],
@@ -297,6 +309,8 @@ def friedman(req: FriedmanRequest):
             ["Kendall's W", es["value"]],
             ["n", n],
             ["k (conditions)", k],
+            *[[f"Mean rank ({r['condition']})", r["mean_rank"]] for r in ranks],
+            *[[f"Rank sum ({r['condition']})", r["rank_sum"]] for r in ranks],
         ],
         "r_code": 'friedman.test(y ~ timepoint | subject, data = data_long)',
     })

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useStore, isNumericKind, isCategoricalKind, type Session } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
 import { useStampedResult } from "../hooks/useStampedResult";
-import { runBinomial, runOneProportion, runTwoProportions, runMcNemar, runCochranQ, runMantelHaenszel, runCochranArmitage } from "../api";
+import { runBinomial, runOneProportion, runTwoProportions, runMcNemar, runCochranQ, runMantelHaenszel, runCochranArmitage, runPairedCategorical } from "../api";
 import { fmtP, warningText } from "../lib/format";
 import { describeStale } from "../lib/resultStamp";
 import StaleResultNotice from "./StaleResultNotice";
@@ -19,6 +19,8 @@ const TESTS = [
   { id: "one_prop",       label: "One proportion z-test", group: "One-sample" },
   { id: "two_prop",       label: "Two proportions z-test", group: "Two-sample" },
   { id: "mcnemar",        label: "McNemar test",          group: "Paired" },
+  { id: "bowker", label: "Bowker symmetry", group: "Paired" },
+  { id: "stuart_maxwell", label: "Stuart-Maxwell homogeneity", group: "Paired" },
   { id: "cochran_q",      label: "Cochran's Q",           group: "Paired" },
   { id: "mantel_haenszel", label: "Mantel-Haenszel",      group: "Stratified" },
   { id: "cochran_armitage", label: "Cochran-Armitage trend", group: "Trend" },
@@ -29,6 +31,8 @@ const GUIDANCE: Record<string, { when: string; reading: string }> = {
   one_prop:  { when: "z-test version of the binomial test, using normal approximation. Better for larger samples (n > 30).", reading: "Report: z, p, observed proportion, and 95% CI." },
   two_prop:  { when: "Compare proportions between two independent groups (e.g. treatment vs control event rates).", reading: "Cohen's h measures the effect size. Report proportions, z, p, and h." },
   mcnemar:   { when: "Test change in a binary outcome for paired data (e.g. before/after intervention on the same patients).", reading: "Tests whether discordant pairs (changed responses) are symmetric. OR of discordant pairs is the effect size." },
+  bowker: { when: "Test symmetry of paired categorical responses across two conditions.", reading: "Significant chi-square indicates asymmetric changes between categories." },
+  stuart_maxwell: { when: "Compare marginal category distributions across paired measurements.", reading: "Significant chi-square indicates changed marginal distributions." },
   cochran_q: { when: "Extension of McNemar for 3+ related binary measures. Tests whether proportions differ across conditions.", reading: "Significant Q means at least one proportion differs. Follow up with pairwise McNemar (Holm-corrected)." },
   mantel_haenszel: { when: "Test association between two binary variables while controlling for a stratifying variable (e.g. hospital site).", reading: "Common OR summarises the overall effect across strata. Homogeneity test checks whether the OR is consistent." },
   cochran_armitage: { when: "Test for a monotone linear trend in the proportion of a binary outcome across 3+ ordered groups (e.g. dose levels 0/1/2/3 vs adverse event).", reading: "Significant Z = the proportion changes linearly across the ordered groups. Sign of Z indicates direction (positive = increasing, negative = decreasing)." },
@@ -60,6 +64,8 @@ function runParamsFor(test: string, f: RunFields): Record<string, unknown> {
     case "binomial":
     case "one_prop": return { test, col: f.col, nullProp: f.nullProp };
     case "two_prop": return { test, col: f.col, groupCol: f.groupCol };
+    case "bowker":
+    case "stuart_maxwell":
     case "mcnemar": return { test, col: f.col, col2: f.col2 };
     case "cochran_q": return { test, friedmanCols: f.friedmanCols };
     case "mantel_haenszel": return { test, col: f.col, col2: f.col2, strataCol: f.strataCol };
@@ -93,6 +99,10 @@ interface CategoricalResult {
   posthoc_method?: string;
   r_code?: string;
   warnings?: unknown[];
+  table?: number[][];
+  row_labels?: string[];
+  col_labels?: string[];
+  ci_proportion?: { low: number; high: number; method?: string; confidence_level?: number };
   [key: string]: unknown;
 }
 
@@ -107,6 +117,8 @@ function ResultCard({ result }: { result: CategoricalResult }) {
         {"significant" in result && <span className={result.significant ? "badge-sig" : "badge-ns"}>{result.significant ? "Significant" : "Not significant"}</span>}
       </div>
       <p className="text-sm text-gray-500 italic">{result.interpretation}</p>
+      {result.table && result.row_labels && result.col_labels && <table className="w-full text-sm"><thead><tr><th>First / second</th>{result.col_labels.map(c => <th key={c}>{c}</th>)}</tr></thead><tbody>{result.table.map((row, i) => <tr key={i}><th>{result.row_labels?.[i]}</th>{row.map((v,j) => <td key={j}>{v}</td>)}</tr>)}</tbody></table>}
+      {result.ci_proportion && <p className="text-sm">{result.ci_proportion.method ?? "Exact"} proportion CI: [{result.ci_proportion.low.toFixed(4)}, {result.ci_proportion.high.toFixed(4)}]</p>}
       {/* Warnings can invert the reading of a result (e.g. an assumed level
           ordering flips the trend direction), so they sit above the numbers. */}
       {(result.warnings?.length ?? 0) > 0 && (
@@ -198,7 +210,7 @@ function CategoricalTestsPanelBody({ session }: { session: Session }) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const isPaired = test === "mcnemar";
+  const isPaired = ["mcnemar", "bowker", "stuart_maxwell"].includes(test);
   const isCochran = test === "cochran_q";
   const isMH = test === "mantel_haenszel";
   const isTwoProp = test === "two_prop";
@@ -217,6 +229,7 @@ function CategoricalTestsPanelBody({ session }: { session: Session }) {
       if (test === "binomial") res = await runBinomial({ session_id: sid, column: col, expected_proportion: +nullProp });
       else if (test === "one_prop") res = await runOneProportion({ session_id: sid, column: col, null_proportion: +nullProp });
       else if (test === "two_prop") res = await runTwoProportions({ session_id: sid, column: col, group_column: groupCol });
+      else if (test === "bowker" || test === "stuart_maxwell") res = await runPairedCategorical({ session_id: sid, col1: col, col2, method: test });
       else if (test === "mcnemar") res = await runMcNemar({ session_id: sid, col1: col, col2: col2 });
       else if (test === "cochran_q") res = await runCochranQ({ session_id: sid, columns: friedmanCols });
       else if (test === "mantel_haenszel") res = await runMantelHaenszel({ session_id: sid, row_col: col, col_col: col2, strata_col: strataCol });
@@ -267,7 +280,7 @@ function CategoricalTestsPanelBody({ session }: { session: Session }) {
         <div className="panel space-y-3">
           <h3 className="text-sm font-semibold text-gray-700">Variables</h3>
           <div>
-            <label className="text-xs text-gray-400 block mb-1">{isMH ? "Row variable" : isCA ? "Binary outcome (event)" : "Binary column"}</label>
+            <label className="text-xs text-gray-400 block mb-1">{isMH ? "Row variable" : isCA ? "Binary outcome (event)" : (test === "bowker" || test === "stuart_maxwell") ? "First categorical measurement" : "Binary column"}</label>
             <select className="select w-full" value={col} onChange={(e) => setCol(e.target.value)}>
               {binCols.map((c) => <option key={c}>{c}</option>)}
             </select>

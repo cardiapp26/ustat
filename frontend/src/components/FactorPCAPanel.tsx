@@ -48,7 +48,9 @@ interface FactorPCAResult {
   variance_explained: VarianceRow[];
   export_rows?: string[][];
   r_code?: string;
+  replication_note?: string | null;
   suitability: {
+    correlation_determinant?: number;
     bartlett_chi2: number;
     bartlett_df: number;
     bartlett_p: number;
@@ -306,7 +308,7 @@ function FactorPCAPanelBody({ session }: { session: Session }) {
               onChange={(e) => setExtraction(e.target.value as "pca" | "efa")}
             >
               <option value="pca">PCA (Principal Components)</option>
-              <option value="efa">EFA (Principal Axis Factoring)</option>
+              <option value="efa">EFA (Maximum Likelihood)</option>
             </select>
           </div>
 
@@ -468,6 +470,7 @@ function FactorPCAPanelBody({ session }: { session: Session }) {
             {/* Tab contents */}
             {resultTab === "suitability" && (
               <div className="space-y-4">
+                <p className="text-xs text-gray-600">Correlation determinant: {result.suitability.correlation_determinant?.toPrecision(5) ?? "Unavailable"}</p>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {/* Sphericity Sphericity card */}
                   <div className="panel space-y-2.5">
@@ -614,6 +617,7 @@ function FactorPCAPanelBody({ session }: { session: Session }) {
             )}
 
             {/* Equivalent R Replication Code details */}
+            {result.replication_note && <p className="text-xs text-gray-500">{result.replication_note}</p>}
             {result.r_code && (
               <details className="panel text-xs cursor-pointer">
                 <summary className="text-gray-400 font-semibold hover:text-indigo-600">

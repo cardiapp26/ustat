@@ -52,9 +52,15 @@ interface ColumnSummary {
   q1?: number;
   q3?: number;
   iqr?: number;
+  quartile_deviation?: number;
+  cv?: number | null;
+  cv_percent?: number | null;
+  harmonic_mean?: number | null;
   whisker_low?: number;
   whisker_high?: number;
   skewness?: number;
+  skew_se?: number | null;
+  kurt_se?: number | null;
   kurtosis?: number;
   normal?: boolean;
   normality_label?: string;
@@ -1964,9 +1970,15 @@ export default function DescriptivePanel() {
                               ["Q1", fix(summary.q1)],
                               ["Q3", fix(summary.q3)],
                               ["IQR", fix(summary.iqr)],
+                              ["Quartile deviation", fix(summary.quartile_deviation)],
+                              ["CV (SD/mean)", summary.cv?.toFixed(4) ?? "Undefined"],
+                              ["CV (%)", summary.cv_percent?.toFixed(2) ?? "Undefined"],
+                              ["Harmonic mean", summary.harmonic_mean == null ? "Positive values required" : fix(summary.harmonic_mean)],
                               ["Min", fix(summary.min)],
                               ["Max", fix(summary.max)],
                               ["Skewness", summary.skewness?.toFixed(4) ?? ""],
+                              ["Skewness SE", summary.skew_se?.toFixed(4) ?? "Undefined"],
+                              ["Kurtosis SE", summary.kurt_se?.toFixed(4) ?? "Undefined"],
                               ["Kurtosis", summary.kurtosis?.toFixed(4) ?? ""],
                               ["Normality test", summary.normality_test ?? ""],
                               ["Normality p",
@@ -2010,9 +2022,14 @@ export default function DescriptivePanel() {
                       ["Q1", fmt(summary.q1)],
                       ["Q3", fmt(summary.q3)],
                       ["IQR", fmt(summary.iqr)],
+                      ["Quartile deviation", fmt(summary.quartile_deviation)],
+                      ["CV (%)", summary.cv_percent == null ? "Undefined" : summary.cv_percent.toFixed(2)],
+                      ["Harmonic mean", summary.harmonic_mean == null ? "Positive values required" : fmt(summary.harmonic_mean)],
                       ["Min", fmt(summary.min)],
                       ["Max", fmt(summary.max)],
                       ["Skew", fmt(summary.skewness)],
+                      ["Skew SE", summary.skew_se?.toFixed(4) ?? "Undefined"],
+                      ["Kurtosis SE", summary.kurt_se?.toFixed(4) ?? "Undefined"],
                     ].map(([k, v], i) => (
                       <span key={k as string} className="whitespace-nowrap">
                         {i > 0 && <span className="text-gray-300 mr-3">·</span>}
@@ -2022,6 +2039,7 @@ export default function DescriptivePanel() {
                     ))}
                   </div>
                 )}
+                {summary.type === "numeric" && <p className="px-4 py-1 text-[10px] text-gray-500">CV = sample SD / mean × 100%; zero mean is undefined. Interpret CV on positive ratio scales. Harmonic mean requires positive observations. Skewness and excess kurtosis use bias correction.</p>}
                 {/* Interpretation guidance */}
                 {summary.type === "numeric" && (
                   <div className="px-4 py-1.5 border-b border-gray-100 bg-amber-50 flex-shrink-0">

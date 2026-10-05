@@ -10,6 +10,7 @@ from pydantic import AliasChoices, BaseModel, Field
 from loguru import logger
 
 from services import store
+from services.distribution_shape import distribution_shape
 from services.category_health import clean_two_level
 from services.dirty_value_guard import (
     coerce_numeric,
@@ -180,8 +181,11 @@ def descriptive(session_id: str, column: Optional[str] = None):
             "q1": float(q1),
             "q3": float(q3),
             "iqr": float(q3 - q1),
-            "skewness": float(scipy_stats.skew(s)),
-            "kurtosis": float(scipy_stats.kurtosis(s)),
+            "quartile_deviation": float((q3 - q1) / 2),
+            "cv": float(scipy_stats.variation(s, ddof=1)) if s.mean() != 0 else None,
+            "cv_percent": float(100 * scipy_stats.variation(s, ddof=1)) if s.mean() != 0 else None,
+            "harmonic_mean": float(scipy_stats.hmean(s)) if (s > 0).all() else None,
+            **distribution_shape(s.to_numpy(dtype=float)),
             "normality_p": float(p_norm),
             "normality_test": norm_test,
             "normal": bool(p_norm >= 0.05),
@@ -505,10 +509,13 @@ def column_summary(session_id: str, column: str, kind: Optional[str] = None):
             "q1": q1,
             "q3": q3,
             "iqr": float(iqr_val),
+            "quartile_deviation": float(iqr_val / 2),
+            "cv": float(scipy_stats.variation(s_clean, ddof=1)) if mean_val != 0 else None,
+            "cv_percent": float(100 * scipy_stats.variation(s_clean, ddof=1)) if mean_val != 0 else None,
+            "harmonic_mean": float(scipy_stats.hmean(s_clean)) if (s_clean > 0).all() else None,
             "min": float(s_clean.min()),
             "max": float(s_clean.max()),
-            "skewness": float(s_clean.skew()),
-            "kurtosis": float(s_clean.kurtosis()),
+            **distribution_shape(s_clean.to_numpy(dtype=float)),
             "whisker_low": whisker_low,
             "whisker_high": whisker_high,
             "outliers": outliers,

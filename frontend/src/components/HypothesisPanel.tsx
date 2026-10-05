@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useStore, isNumericKind, isCategoricalKind, type Session } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
-import { runTTest, runChiSquare, runAnova, runMannWhitney, runFisher, runKruskal, runAncova, runTwoWayAnova, runJonckheereTerpstra, runMancova } from "../api";
+import { runTTest, runChiSquare, runAnova, runMannWhitney, runFisher, runKruskal, runAncova, runTwoWayAnova, runJonckheereTerpstra, runMancova, runSignTest, runOrdinalAssociation, runOneSampleWilcoxon } from "../api";
 import ResultExporter from "./ResultExporter";
 import StaleResultNotice from "./StaleResultNotice";
 import StaleGuard from "./StaleGuard";
@@ -22,6 +22,9 @@ const TESTS = [
   { id: "ttest_2sample",  label: "Independent t-test",    group: "Parametric" },
   { id: "anova",          label: "One-way ANOVA",         group: "Parametric" },
   { id: "mannwhitney",    label: "Mann-Whitney U",        group: "Non-parametric" },
+  { id: "sign_1sample",   label: "One-sample sign test",  group: "Non-parametric" },
+  { id: "wilcoxon_1sample", label: "One-sample Wilcoxon", group: "Non-parametric" },
+  { id: "sign_paired",    label: "Paired sign test",      group: "Non-parametric" },
   { id: "kruskal",        label: "Kruskal-Wallis",        group: "Non-parametric" },
   { id: "jonckheere",     label: "Jonckheere-Terpstra trend", group: "Non-parametric" },
   { id: "ancova",          label: "ANCOVA",                group: "Parametric" },
@@ -29,6 +32,7 @@ const TESTS = [
   { id: "two_way",        label: "Two-way ANOVA",         group: "Parametric" },
   { id: "chisquare",      label: "Chi-square",            group: "Categorical" },
   { id: "fisher",         label: "Fisher's exact",        group: "Categorical" },
+  { id: "ordinal_association", label: "Gamma / Somers' D", group: "Categorical" },
 ];
 
 const TEST_GUIDANCE: Record<string, { when: string; assumptions: string; reading: string }> = {
@@ -51,6 +55,26 @@ const TEST_GUIDANCE: Record<string, { when: string; assumptions: string; reading
     when: "Non-parametric alternative to the independent t-test. Use when data are ordinal, heavily skewed, or n < 20 per group.",
     assumptions: "Both samples are independent. Tests whether one distribution is stochastically greater than the other (rank-based).",
     reading: "p < 0.05 means the groups' rank distributions differ significantly. Report U statistic and p-value. Effect size: r = Z / sqrt(N).",
+  },
+  sign_1sample: {
+    when: "Compare a sample median to a reference value without a symmetry assumption.",
+    assumptions: "Independent observations; zero differences are excluded.",
+    reading: "Exact binomial p tests whether positive and negative differences are equally likely.",
+  },
+  sign_paired: {
+    when: "Test direction of within-subject changes between two matched columns.",
+    assumptions: "Matched observations; zero differences are excluded.",
+    reading: "Positive means first column exceeds second column.",
+  },
+  wilcoxon_1sample: {
+    when: "Compare a sample's location to a reference value using signed ranks.",
+    assumptions: "Independent observations; differences around the reference must be symmetric. Zero differences excluded.",
+    reading: "W reports signed ranks. The primary p uses SciPy's automatic method; Z and its p are explicitly asymptotic.",
+  },
+  ordinal_association: {
+    when: "Measure association between two ordered categorical variables.",
+    assumptions: "Independent observations and a meaningful order for both variables.",
+    reading: "Gamma ignores tied pairs; Somers' D includes ties in its directional denominator.",
   },
   kruskal: {
     when: "Non-parametric alternative to one-way ANOVA. Use when comparing 3+ groups with non-normal or ordinal data.",
@@ -172,10 +196,28 @@ interface TestResult {
   simple_effects?: SimpleEffectRow[];
   covariate_effects?: unknown[];
   groups?: Record<string, unknown>[];
+  anova_table?: Array<{ source: string; ss: number; df: number; ms: number | null }>;
+  anova_table_note?: string | null;
   table?: number[][];
   row_labels?: string[];
   col_labels?: string[];
   [key: string]: unknown;
+}
+
+function CellMatrix({ value, title }: { value: unknown; title: string }) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const columns = value as Record<string, Record<string, number | null>>;
+  const labels = Object.keys(columns);
+  if (!labels.length) return null;
+  const rows = Object.keys(columns[labels[0]]);
+  return <div className="overflow-auto rounded border border-gray-200">
+    <p className="px-2 py-1 text-xs font-semibold text-gray-600">{title}</p>
+    <table className="w-full text-xs"><thead><tr><th className="px-2 py-1 text-left">Row / column</th>
+      {labels.map((label) => <th key={label} className="px-2 py-1 text-right">{label}</th>)}
+    </tr></thead><tbody>{rows.map((row) => <tr key={row} className="border-t border-gray-100">
+      <td className="px-2 py-1">{row}</td>{labels.map((label) => <td key={label} className="px-2 py-1 text-right font-mono">{columns[label][row]?.toFixed(3) ?? "—"}</td>)}
+    </tr>)}</tbody></table>
+  </div>;
 }
 
 function ResultCard({ result, stale = false, staleReason, provenance }: {
@@ -194,7 +236,8 @@ function ResultCard({ result, stale = false, staleReason, provenance }: {
                 "table", "row_labels", "col_labels", "curve", "effect_sizes",
                 "assumptions", "warnings", "summary", "posthoc", "posthoc_method",
                 "posthoc_note", "effects", "emms", "emm_marginal", "emm_note",
-                "simple_effects", "covariate_effects",
+                "simple_effects", "covariate_effects", "expected", "relative_risk_ci",
+                "anova_table", "anova_table_note", "standardized_residuals",
                 "result_text", "export_rows"];
 
   const statEntries = Object.entries(result).filter(([k]) => !skip.includes(k) && typeof result[k] !== "object");
@@ -214,6 +257,16 @@ function ResultCard({ result, stale = false, staleReason, provenance }: {
           )}
         </div>
       </div>
+
+      {result.anova_table && (
+        <div className="overflow-auto rounded border border-gray-200">
+          <p className="px-2 py-1 text-xs font-semibold text-gray-600">ANOVA variance table</p>
+          {result.anova_table_note && <p className="px-2 text-[11px] text-amber-700">{result.anova_table_note}</p>}
+          <table className="w-full text-xs"><thead><tr className="bg-gray-50"><th className="px-2 py-1 text-left">Source</th><th className="px-2 py-1 text-right">SS</th><th className="px-2 py-1 text-right">df</th><th className="px-2 py-1 text-right">MS</th></tr></thead><tbody>
+            {result.anova_table.map((row) => <tr key={row.source} className="border-t border-gray-100"><td className="px-2 py-1">{row.source}</td><td className="px-2 py-1 text-right">{row.ss.toFixed(3)}</td><td className="px-2 py-1 text-right">{row.df}</td><td className="px-2 py-1 text-right">{row.ms?.toFixed(3) ?? "—"}</td></tr>)}
+          </tbody></table>
+        </div>
+      )}
       <p className="text-sm text-gray-500 italic">{result.interpretation}</p>
 
       <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
@@ -226,6 +279,22 @@ function ResultCard({ result, stale = false, staleReason, provenance }: {
             </div>
           ))}
       </div>
+
+      {Array.isArray(result.relative_risk_ci) && result.relative_risk_ci.length === 2 && (
+        <p className="text-xs text-gray-600">Relative risk 95% CI: [{Number(result.relative_risk_ci[0]).toFixed(3)}, {Number(result.relative_risk_ci[1]).toFixed(3)}]</p>
+      )}
+
+      {Array.isArray(result.groups) && result.groups.some((g) => typeof g.mean_rank === "number") && (
+        <div className="overflow-auto rounded border border-gray-200">
+          <table className="w-full text-xs"><thead><tr className="bg-gray-50"><th className="px-2 py-1 text-left">Group</th><th className="px-2 py-1 text-right">Mean rank</th><th className="px-2 py-1 text-right">Rank sum</th></tr></thead>
+            <tbody>{result.groups.map((g, i) => <tr key={i} className="border-t border-gray-100"><td className="px-2 py-1">{String(Object.values(g)[0])}</td><td className="px-2 py-1 text-right">{Number(g.mean_rank).toFixed(2)}</td><td className="px-2 py-1 text-right">{Number(g.rank_sum).toFixed(2)}</td></tr>)}</tbody>
+          </table>
+        </div>
+      )}
+      <CellMatrix value={result.expected} title="Expected cell counts" />
+      {result.standardized_residuals != null && typeof result.standardized_residuals === "object" && (
+        <div><CellMatrix value={result.standardized_residuals} title="Adjusted standardized cell residuals" /><p className="text-xs text-gray-500 mt-1">Cell comparisons are exploratory and unadjusted for multiplicity.</p></div>
+      )}
 
       {/* ANOVA effects table (two-way) */}
       {(result.effects?.length ?? 0) > 0 && (
@@ -530,6 +599,10 @@ function HypothesisPanelBody({ session }: { session: Session }) {
   const [test, setTest] = usePersistedPanelState<string>("hypothesis", "test", "ttest_1sample");
   const [col, setCol] = usePersistedPanelState<string>("hypothesis", "col", numCols[0] ?? "");
   const [col2, setCol2] = usePersistedPanelState<string>("hypothesis", "col2", catCols[1] ?? catCols[0] ?? "");
+  const [pairedCol, setPairedCol] = usePersistedPanelState<string>("hypothesis", "pairedCol", numCols[1] ?? numCols[0] ?? "");
+  const [signAlternative, setSignAlternative] = usePersistedPanelState<"two-sided" | "greater" | "less">("hypothesis", "signAlternative", "two-sided");
+  const [rowOrderText, setRowOrderText] = usePersistedPanelState<string>("hypothesis", "rowOrderText", "");
+  const [colOrderText, setColOrderText] = usePersistedPanelState<string>("hypothesis", "colOrderText", "");
   const [groupCol, setGroupCol] = usePersistedPanelState<string>("hypothesis", "groupCol", catCols[0] ?? "");
   const [mu, setMu] = useState("0");
   const [covariates, setCovariates] = usePersistedPanelState<string[]>("hypothesis", "covariates", []);
@@ -542,20 +615,20 @@ function HypothesisPanelBody({ session }: { session: Session }) {
   const [posthocCorrection, setPosthocCorrection] = usePersistedPanelState<"holm" | "bonferroni" | "fdr" | "none">("hypothesis", "correction", "holm");
   // One-way ANOVA post-hoc: auto keeps the Levene-driven Tukey/Games-Howell
   // switch; Dunnett compares every arm to a control (the multi-arm default).
-  const [anovaPosthoc, setAnovaPosthoc] = usePersistedPanelState<"auto" | "tukey" | "games_howell" | "dunnett" | "none">("hypothesis", "anovaPosthoc", "auto");
+  const [anovaPosthoc, setAnovaPosthoc] = usePersistedPanelState<"auto" | "tukey" | "games_howell" | "dunnett" | "scheffe" | "bonferroni" | "none">("hypothesis", "anovaPosthoc", "auto");
   const [controlGroup, setControlGroup] = usePersistedPanelState<string>("hypothesis", "controlGroup", "");
   const [forcePosthoc, setForcePosthoc] = usePersistedPanelState<boolean>("hypothesis", "forcePosthoc", false);
   // Everything the test is computed from. `mu` is a string from the input and
   // is stamped as typed: "0" and "0.0" fit the same model, and re-running is
   // cheaper than a comparison that has to know which fields are numeric.
-  const runParams = { test, col, col2, groupCol, mu, covariates, outcomes, factor2, posthocCorrection, anovaPosthoc, controlGroup, forcePosthoc };
+  const runParams = { test, col, col2, pairedCol, signAlternative, rowOrderText, colOrderText, groupCol, mu, covariates, outcomes, factor2, posthocCorrection, anovaPosthoc, controlGroup, forcePosthoc };
   const {
     result, setResult, stale, staleReasons: staleWhy, stamp,
   } = useStampedResult<TestResult>("hypothesis", runParams);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const isCat = test === "chisquare" || test === "fisher";
+  const isCat = test === "chisquare" || test === "fisher" || test === "ordinal_association";
   // "two_way" belongs here: the request sends factor1: groupCol, but the test
   // was missing from this list, so the Group column selector never rendered
   // for it. Whatever groupCol happened to hold from the previous test was
@@ -593,6 +666,9 @@ function HypothesisPanelBody({ session }: { session: Session }) {
     try {
       let res: { data: unknown } | undefined;
       if (test === "ttest_1sample")  res = await runTTest({ session_id: sid, column: col, mu: +mu });
+      else if (test === "sign_1sample") res = await runSignTest({ session_id: sid, column: col, mu: +mu, alternative: signAlternative });
+      else if (test === "wilcoxon_1sample") res = await runOneSampleWilcoxon({ session_id: sid, column: col, mu: +mu, alternative: signAlternative });
+      else if (test === "sign_paired") res = await runSignTest({ session_id: sid, column: col, comparison_column: pairedCol, alternative: signAlternative });
       else if (test === "ttest_2sample") res = await runTTest({ session_id: sid, column: col, group_column: groupCol });
       else if (test === "anova")     res = await runAnova({
         session_id: sid, column: col, group_column: groupCol,
@@ -604,6 +680,9 @@ function HypothesisPanelBody({ session }: { session: Session }) {
       else if (test === "jonckheere") res = await runJonckheereTerpstra({ session_id: sid, column: col, group_column: groupCol });
       else if (test === "chisquare") res = await runChiSquare({ session_id: sid, row_column: col, col_column: col2 });
       else if (test === "fisher")    res = await runFisher({ session_id: sid, row_column: col, col_column: col2 });
+      else if (test === "ordinal_association") res = await runOrdinalAssociation({ session_id: sid, row_column: col, col_column: col2,
+        ...(rowOrderText.trim() ? { row_order: rowOrderText.split(",").map((s) => s.trim()) } : {}),
+        ...(colOrderText.trim() ? { col_order: colOrderText.split(",").map((s) => s.trim()) } : {}) });
       else if (test === "ancova")    res = await runAncova({ session_id: sid, outcome: col, group_col: groupCol, covariates });
       else if (test === "mancova")   res = await runMancova({ session_id: sid, outcomes, group_col: groupCol, covariates });
       else if (test === "two_way")   res = await runTwoWayAnova({ session_id: sid, outcome: col, factor1: groupCol, factor2 });
@@ -659,10 +738,36 @@ function HypothesisPanelBody({ session }: { session: Session }) {
             </div>
           )}
 
-          {test === "ttest_1sample" && (
+          {(test === "ttest_1sample" || test === "sign_1sample" || test === "wilcoxon_1sample") && (
             <div>
               <label className="text-xs text-gray-400 block mb-1">Test value (μ₀)</label>
               <input className="select w-full" type="number" value={mu} onChange={(e) => setMu(e.target.value)} />
+            </div>
+          )}
+
+          {test === "sign_paired" && (
+            <div>
+              <label className="text-xs text-gray-400 block mb-1">Matched comparison column</label>
+              <select className="select w-full" value={pairedCol} onChange={(e) => setPairedCol(e.target.value)}>
+                {numCols.filter((c) => c !== col).map((c) => <option key={c}>{c}</option>)}
+              </select>
+            </div>
+          )}
+
+          {(test === "sign_1sample" || test === "sign_paired" || test === "wilcoxon_1sample") && (
+            <div>
+              <label className="text-xs text-gray-400 block mb-1">Alternative</label>
+              <select className="select w-full" value={signAlternative} onChange={(e) => setSignAlternative(e.target.value as typeof signAlternative)}>
+                <option value="two-sided">Two-sided</option><option value="greater">Positive differences</option><option value="less">Negative differences</option>
+              </select>
+            </div>
+          )}
+
+          {test === "ordinal_association" && (
+            <div className="space-y-2">
+              <p className="text-[11px] text-gray-500">Use Data Dictionary order, numeric codes, or enter explicit levels low to high.</p>
+              <input className="select w-full" aria-label="Row level order" placeholder="Row order, comma-separated" value={rowOrderText} onChange={(e) => setRowOrderText(e.target.value)} />
+              <input className="select w-full" aria-label="Column level order" placeholder="Column order, comma-separated" value={colOrderText} onChange={(e) => setColOrderText(e.target.value)} />
             </div>
           )}
 
@@ -713,6 +818,8 @@ function HypothesisPanelBody({ session }: { session: Session }) {
                 <option value="tukey">Tukey HSD</option>
                 <option value="games_howell">Games-Howell</option>
                 <option value="dunnett">Dunnett (vs control)</option>
+                <option value="scheffe">Scheffé (all contrasts, equal variances)</option>
+                <option value="bonferroni">Bonferroni (pairwise pooled t-tests)</option>
                 <option value="none">None</option>
               </select>
               {anovaPosthoc === "dunnett" && (

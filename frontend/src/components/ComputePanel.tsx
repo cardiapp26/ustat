@@ -54,6 +54,9 @@ const TRANSFORMS = [
   { id: "exp",      label: "eˣ Exponential",         note: "Large values may overflow" },
   { id: "abs",      label: "|x| Absolute value",     note: "" },
   { id: "zscore",   label: "Z-score (standardise)",  note: "Mean=0, SD=1" },
+  { id: "tscore", label: "T-score", note: "Mean=50, sample SD=10" },
+  { id: "reciprocal", label: "Reciprocal (1/x)", note: "Zero values rejected" },
+  { id: "arcsin_sqrt", label: "Arcsine square root", note: "Proportions 0–1 only; output radians" },
   { id: "tertile",  label: "Tertile (3 groups)",     note: "Equal-sized groups: 1=low, 2=mid, 3=high" },
   { id: "quartile", label: "Quartile (4 groups)",    note: "Equal-sized groups: 1=Q1, 2=Q2, 3=Q3, 4=Q4" },
   { id: "median_split", label: "Median split (2 groups)", note: "Below median=0, Above median=1" },
@@ -569,6 +572,7 @@ function TransformTab({
     const prefixMap: Record<string, string> = {
       ln: "Ln_", log10: "Log10_", sqrt: "Sqrt_",
       square: "Sq_", exp: "Exp_", abs: "Abs_", zscore: "Z_",
+      tscore: "T_", reciprocal: "Inv_", arcsin_sqrt: "Arcsin_",
       tertile: "Tert_", quartile: "Quart_", median_split: "MedSplit_",
     };
     const prefix = prefixMap[transform] ?? `${transform}_`;

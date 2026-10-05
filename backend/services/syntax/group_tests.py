@@ -23,6 +23,29 @@ def _variance_rule(b: dict) -> str:
     return "levene"
 
 
+def sign_test(b: dict) -> dict:
+    y = field(b, "column", default="outcome")
+    other = field(b, "comparison_column")
+    mu = number(b.get("mu"), 0)
+    alternative = b.get("alternative", "two-sided")
+    alpha = number(b.get("alpha"), 0.05)
+    selected = [y, other] if other else [y]
+    py_difference = f"d[{lit(y)}] - d[{lit(other)}]" if other else f"d[{lit(y)}] - {mu}"
+    r_difference = f"{rcol(y, 'd')} - {rcol(other, 'd')}" if other else f"{rcol(y, 'd')} - {mu}"
+    return {"title": "Exact sign test",
+            "python": "import pandas as pd\nfrom scipy import stats\n" + f"d = df[{plist(selected)}].apply(pd.to_numeric, errors='coerce').dropna()\ndifference = {py_difference}\ndifference = difference[difference != 0]\n" + f"res = stats.binomtest(int((difference > 0).sum()), len(difference), p=0.5, alternative={lit(alternative)})\nres.proportion_ci(confidence_level=1-{alpha}, method='exact')",
+            "r": f"d <- na.omit(df[, {rvec(selected)}, drop=FALSE])\ndifference <- {r_difference}\ndifference <- difference[difference != 0]\n" + f"binom.test(sum(difference > 0), length(difference), p=0.5, alternative={lit(alternative)}, conf.level=1-{alpha})"}
+
+
+def wilcoxon_onesample(b: dict) -> dict:
+    y = field(b, "column", default="outcome")
+    mu = number(b.get("mu"), 0)
+    alternative = b.get("alternative", "two-sided")
+    return {"title": "One-sample Wilcoxon signed-rank test",
+            "python": "import pandas as pd\nfrom scipy import stats\n" + f"x = pd.to_numeric(df[{lit(y)}], errors='coerce').dropna()\nstats.wilcoxon(x-{mu}, alternative={lit(alternative)})",
+            "r": f"x <- na.omit({rcol(y)})\nwilcox.test(x, mu={mu}, alternative={lit(alternative)}, correct=FALSE)"}
+
+
 _LEVENE_COMMENT = (
     "# uSTAT's rule: Levene's test (median-centred, the default in both SciPy\n"
     "# and car) at p < 0.05 switches to Welch.\n"
@@ -93,6 +116,12 @@ def anova(b: dict) -> dict:
                 + f"# DescTools::DunnettTest, control = the reference arm.\n"
                 f'DescTools::DunnettTest({rname(y)} ~ factor({rname(g)}), data = df'
                 + (f', control = "{control}"' if control is not None else "") + ")")
+    elif choice == "scheffe":
+        py_ph = gate + "import scikit_posthocs as sp\nsp.posthoc_scheffe(groups)"
+        r_ph = gate + f"DescTools::ScheffeTest(aov({rname(y)} ~ factor({rname(g)}), data = df))"
+    elif choice == "bonferroni":
+        py_ph = gate + "import scikit_posthocs as sp\nsp.posthoc_ttest(groups, pool_sd=True, p_adjust='bonferroni')"
+        r_ph = gate + f"pairwise.t.test(df[[{lit(y)}]], df[[{lit(g)}]], p.adjust.method='bonferroni', pool.sd=TRUE)"
     elif choice == "games_howell":
         py_ph = gate + "# Games-Howell (not in SciPy; see the R comment).\n"
         r_ph = gate + f"rstatix::games_howell_test(df, {rname(y)} ~ {rname(g)})"
@@ -282,6 +311,8 @@ def normality(b: dict) -> dict:
 
 
 ENDPOINTS = {
+    "/api/stats/sign_test": sign_test,
+    "/api/stats/wilcoxon_onesample": wilcoxon_onesample,
     "/api/stats/ttest": ttest,
     "/api/repeated/paired_ttest": paired_ttest,
     "/api/stats/anova": anova,

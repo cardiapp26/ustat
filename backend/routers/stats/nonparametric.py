@@ -10,6 +10,7 @@ from pydantic import AliasChoices, BaseModel, Field
 
 from services import store
 from services.category_health import clean_two_level
+from services.diagnostic_ci import fagan_post_test, simel_lr_ci, wilson_ci
 from services.impute import apply_imputation
 from services.level_order import SOURCE_RECOGNISED, resolve_level_order
 from services.text_generators import (
@@ -59,6 +60,92 @@ def _two_level_work(
     return work.dropna(), cleaned.warnings
 
 
+class SignTestRequest(BaseModel):
+    session_id: str
+    column: str
+    comparison_column: Optional[str] = None
+    mu: float = Field(default=0.0, allow_inf_nan=False)
+    alternative: str = "two-sided"
+    alpha: float = Field(default=0.05, gt=0, lt=1)
+
+
+class OneSampleWilcoxonRequest(BaseModel):
+    session_id: str
+    column: str
+    mu: float = Field(default=0.0, allow_inf_nan=False)
+    alternative: str = "two-sided"
+
+
+@router.post("/wilcoxon_onesample")
+def wilcoxon_onesample(req: OneSampleWilcoxonRequest):
+    source = _get_df(req.session_id)
+    if req.column not in source.columns:
+        raise HTTPException(400, "Selected column not found")
+    if req.alternative not in {"two-sided", "greater", "less"}:
+        raise HTTPException(422, "alternative must be two-sided, greater or less")
+    values = pd.to_numeric(source[req.column], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    differences = values.to_numpy(dtype=float) - req.mu
+    nonzero = differences[differences != 0]
+    if not len(nonzero):
+        raise HTTPException(400, "Need at least one nonzero difference")
+    result = scipy_stats.wilcoxon(differences, alternative=req.alternative)
+    asymptotic = scipy_stats.wilcoxon(differences, alternative=req.alternative, method="approx")
+    ranks = scipy_stats.rankdata(np.abs(nonzero))
+    return _sanitize({
+        "test": "One-sample Wilcoxon signed-rank test", "column": req.column,
+        "mu": req.mu, "n_complete": int(len(values)), "n_effective": int(len(nonzero)),
+        "zeros_excluded": int(len(values) - len(nonzero)), "W": float(result.statistic),
+        "w_plus": float(ranks[nonzero > 0].sum()), "w_minus": float(ranks[nonzero < 0].sum()),
+        "z_asymptotic": float(asymptotic.zstatistic), "p_asymptotic": float(asymptotic.pvalue),
+        "p": float(result.pvalue), "alternative": req.alternative,
+        "significant": bool(result.pvalue < 0.05),
+        "methods_text": "SciPy Wilcoxon signed-rank test; assumes a symmetric distribution of differences around the null location.",
+        "interpretation": f"Wilcoxon signed-rank test against {req.mu:g}: W = {result.statistic:g}, p = {result.pvalue:.4g}.",
+    })
+
+
+@router.post("/sign_test")
+def sign_test(req: SignTestRequest):
+    """Exact sign test; zero differences excluded from binomial trials."""
+    if req.comparison_column == req.column:
+        raise HTTPException(422, "Paired sign test needs two distinct columns")
+    df = _get_df(req.session_id)
+    columns = [req.column] + ([req.comparison_column] if req.comparison_column else [])
+    if any(col not in df.columns for col in columns):
+        raise HTTPException(400, "Selected column not found")
+    if req.alternative not in {"two-sided", "greater", "less"}:
+        raise HTTPException(422, "alternative must be two-sided, greater or less")
+    work = df[columns].apply(pd.to_numeric, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    if work.empty:
+        raise HTTPException(400, "Need at least one complete observation")
+    differences = (work[req.column] - work[req.comparison_column]
+                   if req.comparison_column else work[req.column] - req.mu)
+    positive = int((differences > 0).sum())
+    negative = int((differences < 0).sum())
+    ties = int((differences == 0).sum())
+    n_effective = positive + negative
+    if n_effective == 0:
+        raise HTTPException(400, "All differences are zero; sign test is undefined")
+    result = scipy_stats.binomtest(positive, n_effective, 0.5, alternative=req.alternative)
+    interval = result.proportion_ci(confidence_level=1 - req.alpha, method="exact")
+    p = float(result.pvalue)
+    return {
+        "test": "Paired sign test" if req.comparison_column else "One-sample sign test",
+        "column": req.column, "comparison_column": req.comparison_column,
+        "mu": None if req.comparison_column else req.mu,
+        "positive": positive, "negative": negative, "ties_excluded": ties,
+        "n_complete": int(len(work)), "n_effective": n_effective,
+        "positive_fraction": float(result.statistic),
+        "ci_low": float(interval.low), "ci_high": float(interval.high),
+        "confidence_level": float(1 - req.alpha),
+        "alternative": req.alternative, "p": p,
+        "significant": bool(p < req.alpha),
+        "interpretation": f"{positive} positive and {negative} negative differences; {ties} ties excluded (exact binomial p = {p:.4g}).",
+        "methods_text": "Exact sign test using scipy.stats.binomtest; zero differences excluded.",
+        "r_code": (f"binom.test({positive}, {n_effective}, p = 0.5, alternative = '{req.alternative}', conf.level = {1 - req.alpha})"),
+    }
+
+
 # ── 1. Mann-Whitney U ──────────────────────────────────────────────────────────
 
 
@@ -82,6 +169,14 @@ def mannwhitney(req: MannWhitneyRequest):
     g1 = work[work[req.group_column] == groups[0]][req.column].values.astype(float)
     g2 = work[work[req.group_column] == groups[1]][req.column].values.astype(float)
     stat, p = scipy_stats.mannwhitneyu(g1, g2, alternative="two-sided")
+    ranks = scipy_stats.rankdata(np.concatenate([g1, g2]), method="average")
+    rank_sum1 = float(ranks[:len(g1)].sum())
+    rank_sum2 = float(ranks[len(g1):].sum())
+    asym_p = float(scipy_stats.mannwhitneyu(
+        g1, g2, alternative="two-sided", method="asymptotic"
+    ).pvalue)
+    z_abs = float(scipy_stats.norm.isf(asym_p / 2))
+    z_asymptotic = float(np.sign(float(stat) - len(g1) * len(g2) / 2) * z_abs)
     sig = bool(p < 0.05)
     es = rank_biserial_r(float(stat), len(g1), len(g2))
     p_str = "<0.001" if p < 0.001 else f"{p:.4f}"
@@ -96,6 +191,9 @@ def mannwhitney(req: MannWhitneyRequest):
         "median2": float(np.median(g2)),
         "iqr2": float(np.percentile(g2, 75) - np.percentile(g2, 25)),
         "U": float(stat),
+        "z_asymptotic": z_asymptotic,
+        "rank_sum1": rank_sum1, "mean_rank1": rank_sum1 / len(g1),
+        "rank_sum2": rank_sum2, "mean_rank2": rank_sum2 / len(g2),
         "p": float(p),
         "significant": sig,
         "effect_sizes": [es],
@@ -136,6 +234,13 @@ def kruskal(req: KruskalRequest):
     if len(group_data) < 2:
         raise HTTPException(status_code=400, detail="Need at least 2 groups")
     stat, p = scipy_stats.kruskal(*group_data)
+    all_ranks = scipy_stats.rankdata(np.concatenate(group_data), method="average")
+    rank_stats = {}
+    offset = 0
+    for name, values in grp_dict.items():
+        rank_sum = float(all_ranks[offset:offset + len(values)].sum())
+        rank_stats[name] = {"rank_sum": rank_sum, "mean_rank": rank_sum / len(values)}
+        offset += len(values)
     sig = bool(p < 0.05)
     n_total = sum(len(g) for g in group_data)
     es = epsilon_squared(float(stat), n_total)
@@ -173,7 +278,7 @@ def kruskal(req: KruskalRequest):
             {
                 k: (float(v) if hasattr(v, "__float__") else str(v))
                 for k, v in row.items()
-            }
+            } | rank_stats[str(row[req.group_column])]
             for row in group_stats.to_dict(orient="records")
         ],
         "interpretation": f"{'Significant' if sig else 'No significant'} difference across groups (H = {stat:.2f}, p = {p_str}, ε² = {es['value']:.3f} [{es['magnitude']}])",
@@ -373,7 +478,22 @@ def jonckheere_terpstra(req: JonckheereRequest):
 # ── ROC Helpers ────────────────────────────────────────────────────────────────
 
 
-def _roc_metrics_at_cutoff(scores: np.ndarray, y: np.ndarray, threshold: float) -> dict:
+def _round_ci(ci) -> Optional[List[float]]:
+    if ci is None:
+        return None
+    return [round(float(ci[0]), 4), round(float(ci[1]), 4)]
+
+
+def _fmt_pct_ci(value: float, ci: Optional[List[float]]) -> str:
+    text = f"{value * 100:.1f}%"
+    if ci is not None:
+        text += f" (95% CI {ci[0] * 100:.1f}–{ci[1] * 100:.1f}%)"
+    return text
+
+
+def _roc_metrics_at_cutoff(
+    scores: np.ndarray, y: np.ndarray, threshold: float, with_ci: bool = False
+) -> dict:
     preds = (scores >= threshold).astype(int)
     tp = int(((preds == 1) & (y == 1)).sum())
     tn = int(((preds == 0) & (y == 0)).sum())
@@ -386,7 +506,7 @@ def _roc_metrics_at_cutoff(scores: np.ndarray, y: np.ndarray, threshold: float) 
     acc = (tp + tn) / (tp + tn + fp + fn) if (tp + tn + fp + fn) > 0 else 0.0
     lr_pos = sens / (1 - spec) if (1 - spec) > 0 else float("inf")
     lr_neg = (1 - sens) / spec if spec > 0 else float("inf")
-    return {
+    out = {
         "cutoff": round(float(threshold), 6),
         "tp": tp,
         "tn": tn,
@@ -401,6 +521,26 @@ def _roc_metrics_at_cutoff(scores: np.ndarray, y: np.ndarray, threshold: float) 
         "lr_neg": round(lr_neg, 4) if not np.isinf(lr_neg) else None,
         "youden_j": round(sens + spec - 1, 4),
     }
+    if with_ci:
+        # 95% CIs: Wilson score (proportions), Simel et al. 1991 log method (LRs).
+        out["sensitivity_ci"] = _round_ci(wilson_ci(tp, tp + fn))
+        out["specificity_ci"] = _round_ci(wilson_ci(tn, tn + fp))
+        out["ppv_ci"] = _round_ci(wilson_ci(tp, tp + fp))
+        out["npv_ci"] = _round_ci(wilson_ci(tn, tn + fn))
+        out["accuracy_ci"] = _round_ci(wilson_ci(tp + tn, tp + tn + fp + fn))
+        out["lr_pos_ci"] = _round_ci(simel_lr_ci(tp, fn, fp, tn, "pos"))
+        out["lr_neg_ci"] = _round_ci(simel_lr_ci(tp, fn, fp, tn, "neg"))
+    return out
+
+
+def _accuracy_ci_sentence(m: dict) -> str:
+    """Report sensitivity/specificity/PPV/NPV with 95% CIs where available."""
+    return (
+        f"sensitivity was {_fmt_pct_ci(m['sensitivity'], m.get('sensitivity_ci'))}, "
+        f"specificity was {_fmt_pct_ci(m['specificity'], m.get('specificity_ci'))}, "
+        f"PPV was {_fmt_pct_ci(m['ppv'], m.get('ppv_ci'))}, "
+        f"and NPV was {_fmt_pct_ci(m['npv'], m.get('npv_ci'))}."
+    )
 
 
 def _delong_placement_values(y: np.ndarray, scores: np.ndarray):
@@ -526,6 +666,8 @@ class ROCRequest(BaseModel):
     imputation: Optional[str] = "listwise"
     stratify_by: Optional[str] = None
     stratify_values: Optional[List[Any]] = None
+    # Optional pre-test probability (disease prevalence) for Fagan post-test probabilities.
+    prevalence: Optional[float] = Field(default=None, gt=0.0, lt=1.0)
 
 
 @router.post("/roc")
@@ -640,14 +782,14 @@ def _run_roc(req: ROCRequest, df_full: pd.DataFrame):
     j_scores = tpr - fpr
     best_idx = int(np.argmax(j_scores))
     best_thresh = float(thresholds[best_idx])
-    optimal = _roc_metrics_at_cutoff(scores_arr, y_arr, best_thresh)
+    optimal = _roc_metrics_at_cutoff(scores_arr, y_arr, best_thresh, with_ci=True)
     if flipped:
         optimal["cutoff"] = round(_to_user(best_thresh), 6)
 
     manual = None
     if req.manual_cutoff is not None:
         thr_internal = _from_user(float(req.manual_cutoff))
-        manual = _roc_metrics_at_cutoff(scores_arr, y_arr, thr_internal)
+        manual = _roc_metrics_at_cutoff(scores_arr, y_arr, thr_internal, with_ci=True)
         if flipped:
             manual["cutoff"] = round(float(req.manual_cutoff), 6)
 
@@ -676,6 +818,13 @@ def _run_roc(req: ROCRequest, df_full: pd.DataFrame):
             }
         )
 
+    post_test = None
+    if req.prevalence is not None:
+        post_test = fagan_post_test(
+            float(req.prevalence), optimal["tp"] / max(optimal["tp"] + optimal["fn"], 1),
+            optimal["tn"] / max(optimal["tn"] + optimal["fp"], 1),
+        )
+
     return _sanitize(
         {
             "test": "ROC Analysis",
@@ -701,6 +850,7 @@ def _run_roc(req: ROCRequest, df_full: pd.DataFrame):
             "fn": optimal["fn"],
             "optimal": optimal,
             "manual": manual,
+            "post_test": post_test,
             "curve": curve,
             "interpretation": (
                 f"AUC = {auc:.3f} — "
@@ -723,8 +873,8 @@ def _run_roc(req: ROCRequest, df_full: pd.DataFrame):
                     if flipped
                     else "(higher values predict the event). "
                 )
-                + f"At the optimal cutoff ({optimal['cutoff']:.2f}, Youden's J), sensitivity was {optimal['sensitivity'] * 100:.1f}% "
-                f"and specificity was {optimal['specificity'] * 100:.1f}%."
+                + f"At the optimal cutoff ({optimal['cutoff']:.2f}, Youden's J), "
+                + _accuracy_ci_sentence(optimal)
             ),
         }
     )
@@ -1141,7 +1291,7 @@ def roc_combined(req: ROCCombinedRequest):
     j_scores = tpr - fpr
     best_idx = int(np.argmax(j_scores))
     best_thresh = float(thresholds[best_idx])
-    optimal = _roc_metrics_at_cutoff(prob, y, best_thresh)
+    optimal = _roc_metrics_at_cutoff(prob, y, best_thresh, with_ci=True)
 
     n_pts = len(fpr)
     step = max(1, n_pts // 300)
@@ -1177,8 +1327,8 @@ def roc_combined(req: ROCCombinedRequest):
                 f"The AUC was {auc:.3f}, indicating "
                 f"{'excellent' if auc >= 0.9 else 'good' if auc >= 0.8 else 'fair' if auc >= 0.7 else 'poor'} discrimination. "
                 f"{flip_note}"
-                f"At the optimal cutoff ({optimal['cutoff']:.3f}), sensitivity was {optimal['sensitivity'] * 100:.1f}% "
-                f"and specificity was {optimal['specificity'] * 100:.1f}%."
+                f"At the optimal cutoff ({optimal['cutoff']:.3f}), "
+                + _accuracy_ci_sentence(optimal)
             ),
         }
     )

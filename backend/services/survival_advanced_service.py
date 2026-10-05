@@ -1562,6 +1562,7 @@ def fit_landmark(req):
     work[req.event_col] = pd.to_numeric(work[req.event_col], errors="coerce")
     n_total = len(work)
     from services.survival_validation import validate_survival_inputs
+    from services.km_median_ci import km_median_ci
     surv = validate_survival_inputs(work, req.duration_col, req.event_col, mode="drop_with_warning")
     work = surv.df
 
@@ -1617,10 +1618,13 @@ def fit_landmark(req):
         })
 
         median_surv = kmf.median_survival_time_
+        med_low, med_high = km_median_ci(kmf)
         km_summaries[str(group)] = {
             "n": len(g_df),
             "events": int(g_df[req.event_col].sum()),
             "median_survival": _safe(round(float(median_surv), 2)) if not math.isinf(median_surv) else None,
+            "median_survival_ci_low": _safe(round(med_low, 2)) if med_low is not None else None,
+            "median_survival_ci_high": _safe(round(med_high, 2)) if med_high is not None else None,
         }
 
     # Log-rank test between groups
@@ -1704,10 +1708,13 @@ def fit_landmark(req):
     if logrank_p is not None:
         result_text += f" Log-rank test p = {logrank_p}."
 
-    export_rows = [["Group", "N", "Events", "Median Survival"]]
+    export_rows = [["Group", "N", "Events", "Median Survival", "Median 95% CI low", "Median 95% CI high"]]
     for g in groups:
         s = km_summaries[str(g)]
-        export_rows.append([str(g), s["n"], s["events"], s["median_survival"]])
+        export_rows.append([
+            str(g), s["n"], s["events"], s["median_survival"],
+            s["median_survival_ci_low"], s["median_survival_ci_high"],
+        ])
 
     preds_str = " + ".join(req.predictors) if req.predictors else "group"
     r_code = (

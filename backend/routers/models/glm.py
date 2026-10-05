@@ -98,18 +98,71 @@ class PoissonRequest(BaseModel):
     predictors: List[str]
     imputation: Optional[str] = "listwise"
     robust_se: Optional[bool] = False
+    # Follow-up time / person-years. When given, the model is a rate model
+    # (log link with log(exposure) as an offset) and the IRR is a rate ratio.
+    exposure_col: Optional[str] = None
+
+
+# Pearson chi2 / df_resid above this flags overdispersion for a Poisson fit.
+POISSON_OVERDISPERSION_THRESHOLD = 1.5
+
+
+def _validate_exposure(df_full: pd.DataFrame, req: "PoissonRequest") -> Optional[str]:
+    """Check the exposure column up front (before any row is dropped).
+
+    The exposure must exist, be numeric with no stray text, strictly positive,
+    and must not double as the outcome or a predictor (an offset is not a
+    covariate; putting it on both sides would silently change the model).
+    """
+    col = req.exposure_col
+    if col is None or str(col).strip() == "":
+        return None
+    if col not in df_full.columns:
+        raise HTTPException(status_code=422, detail=f"Exposure column '{col}' not found.")
+    if col == req.outcome:
+        raise HTTPException(status_code=422, detail="The exposure column cannot be the outcome.")
+    if col in req.predictors:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Exposure column '{col}' is also listed as a predictor. The exposure enters the model "
+                   "as an offset, never as a predictor; remove it from the predictors.",
+        )
+    raw = df_full[col]
+    num = pd.to_numeric(raw, errors="coerce")
+    if (num.isna() & raw.notna()).any():
+        raise HTTPException(status_code=422, detail=f"Exposure column '{col}' must be numeric (follow-up time or person-years).")
+    if num.notna().sum() == 0:
+        raise HTTPException(status_code=422, detail=f"Exposure column '{col}' has no numeric values.")
+    if not np.isfinite(num.dropna().to_numpy(dtype=float)).all():
+        raise HTTPException(status_code=422, detail=f"Exposure column '{col}' contains infinite values.")
+    if (num.dropna() <= 0).any():
+        raise HTTPException(status_code=422, detail=f"Exposure column '{col}' must be strictly positive (> 0); zero or negative follow-up time was found.")
+    return col
 
 
 @router.post("/poisson")
 def poisson_regression(req: PoissonRequest):
     df_full = _get_df(req.session_id)
     n_total = len(df_full)
-    df = apply_imputation(df_full, [req.outcome] + req.predictors, req.imputation or "listwise")
+    exposure_col = _validate_exposure(df_full, req)
+    impute_cols = [req.outcome] + req.predictors + ([exposure_col] if exposure_col else [])
+    df = apply_imputation(df_full, impute_cols, req.imputation or "listwise")
     df, cat_warnings = _clean_predictor_categories(df, req.predictors)
+    if exposure_col:
+        # Imputation could in principle have produced a non-positive value;
+        # re-check on the rows that will actually be fitted.
+        df = df[pd.to_numeric(df[exposure_col], errors="coerce").notna()]
     n_excluded = n_total - len(df)
     X = pd.get_dummies(df[req.predictors], drop_first=True)
     X, dropped_const = design_with_constant(X)
     y = pd.to_numeric(df[req.outcome], errors="coerce")
+    exposure = None
+    if exposure_col:
+        # A plain array, not a Series: statsmodels 0.14 mis-aligns a Series
+        # exposure inside IRLS and returns NaN coefficients.
+        exposure = pd.to_numeric(df[exposure_col], errors="coerce").to_numpy(dtype=float)
+        if (exposure <= 0).any():
+            raise HTTPException(status_code=422, detail=f"Exposure column '{exposure_col}' must be strictly positive (> 0) after imputation.")
     if y.isna().all():
         raise HTTPException(status_code=422, detail="Outcome column has no numeric values.")
     if (y.dropna() < 0).any():
@@ -124,11 +177,25 @@ def poisson_regression(req: PoissonRequest):
         raise HTTPException(status_code=422, detail="Poisson regression needs at least one non-zero count; the outcome is zero for every row.")
     cov_type = "HC3" if req.robust_se else "nonrobust"
     try:
-        model = sm.GLM(y, X, family=sm.families.Poisson()).fit(cov_type=cov_type)
+        model = sm.GLM(y, X, family=sm.families.Poisson(), exposure=exposure).fit(cov_type=cov_type)
     except (ValueError, np.linalg.LinAlgError) as exc:
         raise HTTPException(status_code=400, detail=f"Poisson model did not fit: {exc}")
+    if not np.isfinite(np.asarray(model.params, dtype=float)).all():
+        raise HTTPException(status_code=400, detail="Poisson model did not fit: the estimates are not finite. Check the exposure and predictors.")
     ci = model.conf_int()
     vifs = _compute_vif(X)
+    # Pearson overdispersion check: chi2 / df_resid is about 1 when the Poisson
+    # variance assumption holds; well above 1 means the SEs are too small.
+    df_resid = float(model.df_resid)
+    dispersion = float(model.pearson_chi2 / df_resid) if df_resid > 0 else float("nan")
+    overdispersed = bool(np.isfinite(dispersion) and dispersion > POISSON_OVERDISPERSION_THRESHOLD)
+    dispersion_note = None
+    if overdispersed:
+        dispersion_note = (
+            f"Pearson chi2 / df = {dispersion:.2f} (> {POISSON_OVERDISPERSION_THRESHOLD}) indicates overdispersion: "
+            "the Poisson standard errors are likely too small. Consider negative binomial regression "
+            "or robust (sandwich) standard errors."
+        )
     coefs = []
     for var in model.params.index:
         est = float(model.params[var])
@@ -153,15 +220,27 @@ def poisson_regression(req: PoissonRequest):
         "imputation": req.imputation or "listwise",
         "aic": float(model.aic),
         "bic": float(model.bic),
+        "exposure_col": exposure_col,
+        "rate_model": bool(exposure_col),
+        "dispersion": dispersion,
+        "overdispersed": overdispersed,
+        "dispersion_note": dispersion_note,
         "warnings": cat_warnings + constant_column_warnings(dropped_const),
         "coefficients": coefs,
-        "result_text": _poisson_results_text(req.outcome, coefs),
+        "result_text": _poisson_results_text(req.outcome, coefs, exposure_col, dispersion, overdispersed),
     })
 
 
-def _poisson_results_text(outcome, coefs):
+def _poisson_results_text(outcome, coefs, exposure_col=None, dispersion=None, overdispersed=False):
     sig = [c for c in coefs if c["variable"] != "const" and c["p"] < 0.05]
-    parts = [f"Poisson regression was performed to model {outcome}."]
+    if exposure_col:
+        parts = [
+            f"Poisson rate regression was performed to model {outcome} "
+            f"with {exposure_col} as the exposure (follow-up time) offset; "
+            "incidence rate ratios (IRR) are rate ratios."
+        ]
+    else:
+        parts = [f"Poisson regression was performed to model {outcome}."]
     if sig:
         preds = []
         for c in sig:
@@ -170,6 +249,14 @@ def _poisson_results_text(outcome, coefs):
         parts.append("Significant predictors: " + "; ".join(preds) + ".")
     else:
         parts.append("No predictor reached statistical significance.")
+    if dispersion is not None and np.isfinite(dispersion):
+        if overdispersed:
+            parts.append(
+                f"Overdispersion was present (Pearson chi2/df = {dispersion:.2f}); "
+                "negative binomial regression or robust standard errors are recommended."
+            )
+        else:
+            parts.append(f"No marked overdispersion was detected (Pearson chi2/df = {dispersion:.2f}).")
     return " ".join(parts)
 
 

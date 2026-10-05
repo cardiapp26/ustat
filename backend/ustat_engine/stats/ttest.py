@@ -132,7 +132,16 @@ def run_ttest(frame, params: dict) -> dict:
             use_welch, chosen_by = (not req.equal_var), "request (equal_var)"
         else:
             use_welch, chosen_by = (not assumptions[2]["met"]), "auto (Levene)"
-        stat, p = scipy_stats.ttest_ind(g1, g2, equal_var=not use_welch)
+        test_result = scipy_stats.ttest_ind(g1, g2, equal_var=not use_welch)
+        stat, p = test_result.statistic, test_result.pvalue
+        ci_diff = test_result.confidence_interval(confidence_level=0.95)
+        import numpy as np
+        from statsmodels.regression.linear_model import OLS
+        from statsmodels.stats.weightstats import CompareMeans, DescrStatsW
+        comparison = CompareMeans(DescrStatsW(g1), DescrStatsW(g2))
+        se_diff = comparison.std_meandiff_separatevar if use_welch else comparison.std_meandiff_pooledvar
+        group_design = np.column_stack([np.ones(len(g1) + len(g2)), np.r_[np.zeros(len(g1)), np.ones(len(g2))]])
+        classical_eta_squared = OLS(np.r_[g1, g2], group_design).fit().rsquared
         sig = bool(p < 0.05)
         es = cohen_d(g1, g2)
         p_str = '<0.001' if p < 0.001 else f'{p:.4f}'
@@ -141,6 +150,11 @@ def run_ttest(frame, params: dict) -> dict:
             "test": f"Independent samples t-test{' (Welch)' if use_welch else ''}",
             "group1": str(groups[0]), "n1": len(g1), "mean1": float(g1.mean()),
             "group2": str(groups[1]), "n2": len(g2), "mean2": float(g2.mean()),
+            "mean_diff": float(g1.mean() - g2.mean()),
+            "se_diff": float(se_diff),
+            "eta_squared": float(classical_eta_squared),
+            "eta_squared_note": "Classical two-group sums-of-squares effect size; descriptive when Welch's test is used.",
+            "ci_diff_low": float(ci_diff.low), "ci_diff_high": float(ci_diff.high),
             # df must match the test that produced t and p. Welch uses the
             # fractional Satterthwaite df; only the pooled test uses n1+n2-2.
             "t": float(stat), "p": float(p),

@@ -90,6 +90,7 @@ interface RMResult {
   export_rows?: (string | number | null | undefined)[][];
   r_code?: string;
   effects?: AnovaEffect[];
+  ranks?: { condition: string; n: number; mean_rank: number; rank_sum: number }[];
   [key: string]: unknown;
 }
 
@@ -101,7 +102,7 @@ function ResultCard({ result }: { result: RMResult }) {
   };
   const skip = new Set(["test", "interpretation", "result_text", "significant", "effect_sizes",
     "assumptions", "warnings", "summary", "posthoc", "posthoc_method", "export_rows",
-    "r_code", "effects"]);
+    "r_code", "effects", "ranks"]);
 
   const statEntries = Object.entries(result).filter(([k, v]) => !skip.has(k) && typeof v !== "object");
   const exportHeaders = (result.export_rows?.[0] ?? ["Statistic", "Value"]).map((h) => String(h ?? ""));
@@ -131,6 +132,8 @@ function ResultCard({ result }: { result: RMResult }) {
           </div>
         ))}
       </div>
+
+      {result.ranks && <table className="w-full text-sm"><thead><tr><th>Condition</th><th>n</th><th>Mean rank</th><th>Rank sum</th></tr></thead><tbody>{result.ranks.map(r => <tr key={r.condition}><td>{r.condition}</td><td>{r.n}</td><td>{r.mean_rank.toFixed(4)}</td><td>{r.rank_sum.toFixed(4)}</td></tr>)}</tbody></table>}
 
       {/* Effect Sizes */}
       {(result.effect_sizes?.length ?? 0) > 0 && (

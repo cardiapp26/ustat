@@ -46,12 +46,12 @@ export function CoefTable({
       ? ["Variable", "Log-Odds", "SE", "z", "p-value", "OR", "CI_low", "CI_high"]
       : hrMode
         ? ["Variable", "HR", "SE", "z", "p-value", "CI_low", "CI_high"]
-        : ["Variable", "Estimate", "SE", "t", "p-value", "CI_low", "CI_high"];
+        : ["Variable", "Estimate", "Standardized beta", "VIF", "Tolerance", "SE", "t", "p-value", "CI_low", "CI_high"];
   const coefExportRows = coefs.map((c: Coefficient) => {
     if (isPoisson) return [c.variable, c.log_irr?.toFixed(4) ?? "", c.se?.toFixed(4) ?? "", c.z?.toFixed(3) ?? "", fmtP(c.p), c.irr?.toFixed(3) ?? "", c.irr_ci_low?.toFixed(3) ?? "", c.irr_ci_high?.toFixed(3) ?? ""];
     if (isLogistic) return [c.variable, c.log_odds?.toFixed(4) ?? "", c.se?.toFixed(4) ?? "", c.z?.toFixed(3) ?? "", fmtP(c.p), c.odds_ratio?.toFixed(3) ?? "", c.or_ci_low?.toFixed(3) ?? "", c.or_ci_high?.toFixed(3) ?? ""];
     if (hrMode) return [c.variable, c.hr?.toFixed(4) ?? "", c.se?.toFixed(4) ?? "", (c.t ?? c.z)?.toFixed(3) ?? "", fmtP(c.p), c.hr_ci_low?.toFixed(3) ?? "", c.hr_ci_high?.toFixed(3) ?? ""];
-    return [c.variable, c.estimate?.toFixed(4) ?? "", c.se?.toFixed(4) ?? "", (c.t ?? c.z)?.toFixed(3) ?? "", fmtP(c.p), c.ci_low?.toFixed(3) ?? "", c.ci_high?.toFixed(3) ?? ""];
+    return [c.variable, c.estimate?.toFixed(4) ?? "", c.standardized_beta?.toFixed(4) ?? "", c.vif?.toFixed(4) ?? "", c.tolerance?.toFixed(4) ?? "", c.se?.toFixed(4) ?? "", (c.t ?? c.z)?.toFixed(3) ?? "", fmtP(c.p), c.ci_low?.toFixed(3) ?? "", c.ci_high?.toFixed(3) ?? ""];
   });
   const coefTitle = isPoisson ? "Poisson_Coefficients" : isLogistic ? "Logistic_Coefficients" : hrMode ? "Cox_Coefficients" : "Linear_Coefficients";
 
@@ -188,6 +188,8 @@ export function CoefTable({
           <tr>
             <th className={hd}>Variable</th>
             {hrMode ? <th className={hd}>HR</th> : <th className={hd}>Estimate</th>}
+            {!hrMode && coefs.some((c) => c.standardized_beta != null) && <th className={hd}>Standardized β</th>}
+            {!hrMode && coefs.some((c) => c.tolerance != null) && <><th className={hd}>VIF</th><th className={hd}>Tolerance</th></>}
             <th className={hd}>SE</th>
             {hrMode ? <th className={hd}>Z</th> : <th className={hd}>t / z</th>}
             <th className={hd}><i>p</i>-value</th>
@@ -209,6 +211,8 @@ export function CoefTable({
               <tr key={c.variable} className={rowCls(i, adjP)} onClick={() => onSelect?.(i)}>
                 <td className="font-mono text-xs text-gray-900 pr-2">{c.variable}</td>
                 <td className="pr-2">{typeof est === "number" ? est.toFixed(4) : est}</td>
+                {!hrMode && coefs.some((row) => row.standardized_beta != null) && <td className="pr-2">{c.standardized_beta?.toFixed(4) ?? "—"}</td>}
+                {!hrMode && coefs.some((row) => row.tolerance != null) && <><td className="pr-2">{c.vif?.toFixed(3) ?? "—"}</td><td className="pr-2">{c.tolerance?.toFixed(3) ?? "—"}</td></>}
                 <td className="pr-2">{c.se?.toFixed(4)}</td>
                 <td className="pr-2">{(c.t ?? c.z)?.toFixed(3)}</td>
                 <td className="pr-2"><span className={adjP < 0.05 ? "badge-sig" : "badge-ns"}>{fmtP(adjP)}</span></td>
@@ -348,3 +352,20 @@ export function ORTable({ rows, outcome, selectionMethod, nMulti, nTotal }: {
   );
 }
 
+export function RegressionAnovaTable({ rows, note }: {
+  rows?: { source: string; ss: number; df: number; ms: number | null }[] | null;
+  note?: string | null;
+}) {
+  if (!rows?.length && !note) return null;
+  return <div className="card">
+    <h4 className="text-sm font-semibold mb-2">Regression ANOVA</h4>
+    {rows?.length ? <>
+      <ResultExporter title="Regression_ANOVA" headers={["Source", "SS", "df", "MS"]}
+        rows={rows.map((r) => [r.source, r.ss.toFixed(4), r.df, r.ms?.toFixed(4) ?? ""])} />
+      <table><thead><tr><th>Source</th><th>SS</th><th>df</th><th>MS</th></tr></thead>
+        <tbody>{rows.map((r) => <tr key={r.source}><td>{r.source}</td><td>{r.ss.toFixed(4)}</td>
+          <td>{r.df}</td><td>{r.ms?.toFixed(4) ?? "—"}</td></tr>)}</tbody></table>
+    </> : null}
+    {note && <p className="text-xs text-gray-500 mt-2">{note}</p>}
+  </div>;
+}

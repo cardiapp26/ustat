@@ -236,6 +236,62 @@ def test_icc(client, sid):
     assert isinstance(b, dict)
 
 
+def test_icc_three_raters_and_model_options(client, sid):
+    base = {"session_id": sid, "rater_cols": ["rater1", "rater2", "rater3"]}
+    results = {}
+    for agreement in ("absolute", "consistency"):
+        for unit in ("single", "average"):
+            response = client.post("/api/stats/icc", json={**base, "agreement": agreement, "unit": unit})
+            assert response.status_code == 200, response.text
+            results[(agreement, unit)] = response.json()
+            assert response.json()["k"] == 3
+    for agreement in ("absolute", "consistency"):
+        single = results[(agreement, "single")]["icc"]
+        average = results[(agreement, "average")]["icc"]
+        assert average == pytest.approx(3 * single / (1 + 2 * single))
+    assert all(np.isfinite(result["icc"]) for result in results.values())
+
+
+def test_icc_three_raters_matches_r_irr(client):
+    # R 4.5.2 irr::icc(x, model="twoway", type=..., unit=...).
+    values = [[12, 11, 13], [18, 20, 19], [7, 8, 7],
+              [15, 16, 14], [21, 22, 20], [9, 10, 11]]
+    sid = make_session(pd.DataFrame(values, columns=["a", "b", "c"]), "icc_r_three")
+    reference = {
+        ("absolute", "single"): (0.9687988, 0.8853256, 0.9951327),
+        ("absolute", "average"): (0.9893787, 0.9586009, 0.9983723),
+        ("consistency", "single"): (0.9699336, 0.8803944, 0.9953790),
+        ("consistency", "average"): (0.9897729, 0.9566770, 0.9984549),
+    }
+    for (agreement, unit), expected in reference.items():
+        response = client.post("/api/stats/icc", json={
+            "session_id": sid, "rater_cols": ["a", "b", "c"],
+            "agreement": agreement, "unit": unit,
+        })
+        assert response.status_code == 200, response.text
+        got = response.json()
+        assert (got["icc"], got["ci_low"], got["ci_high"]) == pytest.approx(expected, abs=1e-7)
+
+
+def test_new_reporting_fields(client, sid):
+    t = client.post("/api/stats/ttest", json={"session_id": sid, "column": "age", "group_column": "sex"}).json()
+    assert t["mean_diff"] == pytest.approx(t["mean1"] - t["mean2"])
+    assert t["ci_diff_low"] < t["mean_diff"] < t["ci_diff_high"]
+
+    mw = client.post("/api/stats/mannwhitney", json={"session_id": sid, "column": "age", "group_column": "sex"}).json()
+    assert mw["rank_sum1"] + mw["rank_sum2"] == pytest.approx(200 * 201 / 2)
+    assert mw["mean_rank1"] == pytest.approx(mw["rank_sum1"] / mw["n1"])
+    assert np.isfinite(mw["z_asymptotic"])
+
+    kw = client.post("/api/stats/kruskal", json={"session_id": sid, "column": "age", "group_column": "tertile"}).json()
+    assert sum(g["rank_sum"] for g in kw["groups"]) == pytest.approx(200 * 201 / 2)
+
+    chi = client.post("/api/stats/chisquare", json={"session_id": sid, "row_column": "cat_a", "col_column": "cat_b"}).json()
+    assert chi["yates_chi2"] <= chi["chi2"]
+    assert chi["relative_risk"] > 0
+    assert sum(sum(row.values()) for row in chi["expected"].values()) == pytest.approx(200)
+
+
 # ── Cohen's kappa ────────────────────────────────────────────────────────────
 
 def test_cohens_kappa(client, sid):

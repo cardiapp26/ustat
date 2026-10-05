@@ -70,7 +70,9 @@ pytestmark = pytest.mark.skipif(
 # The headroom is one order of magnitude on each. Anything larger is not
 # floating-point noise, it is a different computation.
 TOL = {"t": 1e-14, "p": 1e-12, "std": 1e-14, "mean1": 1e-15, "mean2": 1e-15,
-       "mean": 1e-15, "df": 1e-15}
+       "mean": 1e-15, "df": 1e-15, "mean_diff": 1e-14,
+       "ci_diff_low": 1e-12, "ci_diff_high": 1e-12,
+       "se_diff": 1e-14, "eta_squared": 1e-13}
 
 # scipy's Lilliefors p comes from an interpolated table of simulated critical
 # values; nortest::lillie.test uses the Dallal-Wilkinson analytic form with

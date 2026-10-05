@@ -7,6 +7,7 @@ from scipy import stats as scipy_stats
 from fastapi import APIRouter, HTTPException
 from pydantic import AliasChoices, BaseModel, Field
 from loguru import logger
+from statsmodels.stats.contingency_tables import Table
 
 from ustat_engine.stats import power as engine_power
 from ustat_engine.stats import ttest as engine_ttest
@@ -14,6 +15,7 @@ from routers.engine_adapter import adapt
 from services import store
 from services.category_health import clean_two_level, rare_level_warnings
 from services.impute import apply_imputation
+from services.risk_measures import compute_risk_measures
 from services.text_generators import (
     methods_chisquare, methods_fisher, methods_anova,
     results_chisquare,
@@ -117,6 +119,9 @@ class ChiSqRequest(BaseModel):
     col_column: str = Field(
         validation_alias=AliasChoices("col_column", "col_col"),
     )
+    # Confidence level of the risk-measure intervals only; the test itself
+    # still reports its p against whatever threshold the caller applies.
+    alpha: float = Field(default=0.05, gt=0, lt=1)
 
 
 @router.post("/chisquare")
@@ -180,6 +185,12 @@ def chisquare(req: ChiSqRequest):
         "test": reason if exact else "Chi-square test of independence",
         "chi2": float(chi2), "p": p, "dof": int(dof), "n": int(n),
         "p_chisquare": float(p_chisquare),
+        "expected": pd.DataFrame(_expected, index=ct.index, columns=ct.columns).to_dict(),
+        "standardized_residuals": pd.DataFrame(
+            Table(ct.values, shift_zeros=False).standardized_resids,
+            index=ct.index, columns=ct.columns,
+        ).to_dict(),
+        "contingency_coefficient": float(scipy_stats.contingency.association(ct.values, method="pearson", correction=False)),
         "exact_test": reason if exact else None,
         "significant": sig,
         "effect_sizes": effect_sizes,
@@ -203,6 +214,26 @@ def chisquare(req: ChiSqRequest):
             req.row_column, req.col_column, reason if exact else None
         ),
     }
+    if ct.shape == (2, 2):
+        yates_chi2, yates_p, _, _ = scipy_stats.chi2_contingency(ct, correction=True)
+        ret["yates_chi2"] = float(yates_chi2)
+        ret["yates_p"] = float(yates_p)
+        # First displayed column is event; row labels define exposure order.
+        from statsmodels.stats.contingency_tables import Table2x2
+        rr = Table2x2(ct.values, shift_zeros=True).riskratio
+        ret["relative_risk"] = float(rr)
+        ret["relative_risk_ci"] = [float(v) for v in Table2x2(ct.values, shift_zeros=True).riskratio_confint()]
+        ret["risk_event"] = str(ct.columns[0])
+        ret["risk_exposed"] = str(ct.index[0])
+        ret["risk_reference"] = str(ct.index[1])
+        cells = ct.values
+        ret["risk_measures"] = compute_risk_measures(
+            int(cells[0, 0]), int(cells[0].sum()),
+            int(cells[1, 0]), int(cells[1].sum()),
+            alpha=req.alpha,
+            event=str(ct.columns[0]),
+            exposed=str(ct.index[0]), reference=str(ct.index[1]),
+        )
     ret["result_text"] = results_chisquare(ret)
     return _sanitize(ret)
 
@@ -304,7 +335,7 @@ class AnovaRequest(BaseModel):
     )
     # "auto" keeps the Levene-driven Tukey/Games-Howell switch. "dunnett"
     # compares every arm to `control_group` (the multi-arm-trial default).
-    posthoc: str = "auto"          # auto | tukey | games_howell | dunnett | none
+    posthoc: str = "auto"          # auto | tukey | games_howell | dunnett | scheffe | none
     control_group: Optional[str] = None
     # Post-hoc normally only runs after a significant omnibus; planned
     # comparisons (Dunnett against placebo above all) are legitimate
@@ -348,11 +379,25 @@ def anova(req: AnovaRequest):
     df_between = k - 1
     df_within = n_total - k
 
-    ss_within = sum(np.sum((g - g.mean())**2) for g in group_arrays)
-    ms_within = ss_within / df_within if df_within > 0 else 1
+    from statsmodels.formula.api import ols
+    from statsmodels.stats.anova import anova_lm
+    anova_frame = pd.DataFrame({
+        "_value": np.concatenate(group_arrays),
+        "_group": np.repeat(group_names, [len(g) for g in group_arrays]),
+    })
+    classical_model = ols("_value ~ C(_group)", data=anova_frame).fit()
+    classical_table = anova_lm(classical_model, typ=1)
+    ss_between = float(classical_table.iloc[0]["sum_sq"])
+    ss_within = float(classical_table.iloc[1]["sum_sq"])
+    ms_within = float(classical_table.iloc[1]["mean_sq"])
+    anova_table = [
+        {"source": "Between groups", "ss": ss_between, "df": int(classical_table.iloc[0]["df"]), "ms": float(classical_table.iloc[0]["mean_sq"])},
+        {"source": "Within groups", "ss": ss_within, "df": int(classical_table.iloc[1]["df"]), "ms": ms_within},
+        {"source": "Total", "ss": ss_between + ss_within, "df": n_total - 1, "ms": None},
+    ]
 
-    es_eta = eta_squared(float(stat), df_between, df_within)
-    es_omega = omega_squared(float(stat), df_between, df_within, ms_within)
+    es_eta = eta_squared(float(classical_model.fvalue), df_between, df_within)
+    es_omega = omega_squared(float(classical_model.fvalue), df_between, df_within, ms_within)
 
     assumptions = [levene]
     for name, arr in grp_dict.items():
@@ -360,11 +405,11 @@ def anova(req: AnovaRequest):
 
     # Post-hoc tests
     choice = (req.posthoc or "auto").lower()
-    if choice not in ("auto", "tukey", "games_howell", "dunnett", "none"):
+    if choice not in ("auto", "tukey", "games_howell", "dunnett", "scheffe", "bonferroni", "none"):
         raise HTTPException(
             status_code=422,
             detail=(f"Unknown posthoc '{req.posthoc}'. "
-                    "Use auto, tukey, games_howell, dunnett or none."),
+                    "Use auto, tukey, games_howell, dunnett, scheffe, bonferroni or none."),
         )
     posthoc = []
     posthoc_method = None
@@ -385,6 +430,21 @@ def anova(req: AnovaRequest):
             if not equal_var:
                 posthoc_note = ("Levene indicates unequal variances; Dunnett assumes "
                                 "equal variances; interpret with caution or use Games-Howell.")
+        elif choice in ("scheffe", "bonferroni"):
+            import scikit_posthocs as sp_posthoc
+            p_matrix = (sp_posthoc.posthoc_scheffe(group_arrays, sort=False) if choice == "scheffe"
+                        else sp_posthoc.posthoc_ttest(group_arrays, pool_sd=True, p_adjust="bonferroni", sort=False))
+            posthoc = [
+                {"group1": group_names[i], "group2": group_names[j],
+                 "p_adj": float(p_matrix.iloc[i, j]),
+                 "significant": bool(p_matrix.iloc[i, j] < 0.05),
+                 "mean_diff": float(group_arrays[i].mean() - group_arrays[j].mean()),
+                 "correction": choice}
+                for i in range(k) for j in range(i + 1, k)
+            ]
+            posthoc_method = "Scheffé" if choice == "scheffe" else "Pairwise pooled t-tests (Bonferroni)"
+            if not equal_var:
+                posthoc_note = f"{posthoc_method} assumes equal variances; Levene suggests Games-Howell instead."
         elif choice == "tukey" or (choice == "auto" and equal_var):
             posthoc = tukey_hsd(grp_dict)
             posthoc_method = "Tukey HSD"
@@ -412,10 +472,13 @@ def anova(req: AnovaRequest):
         "variance_assumption": "welch" if use_welch else "equal",
         "significant": sig,
         "effect_sizes": [es_eta, es_omega],
+        "effect_size_note": "Eta-squared and omega-squared describe the classical sums-of-squares decomposition, including when Welch's omnibus is used.",
         "assumptions": assumptions,
         "posthoc": posthoc,
         "posthoc_method": posthoc_method,
         "posthoc_note": posthoc_note,
+        "anova_table": anova_table,
+        "anova_table_note": "Classical equal-variance sums of squares; Welch's F uses separate variance weighting." if use_welch else None,
         "groups": [
             {k: (float(v) if isinstance(v, (int, float)) else str(v)) for k, v in row.items()}
             for row in group_stats.to_dict(orient="records")

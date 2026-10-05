@@ -14,6 +14,8 @@ from conftest import make_session
 DESCRIPTIVE_KEYS = {
     "n", "missing", "mean", "std", "se", "min", "max", "median",
     "q1", "q3", "iqr", "skewness", "kurtosis",
+    "cv", "cv_percent", "quartile_deviation", "harmonic_mean",
+    "skew_se", "kurt_se", "skew_z", "kurt_z",
     "normality_p", "normality_test", "normal", "warnings", "display_decimals",
 }
 

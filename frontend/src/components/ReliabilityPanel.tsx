@@ -26,7 +26,13 @@ interface ScaleSummary {
 
 interface ReliabilityResult {
   alpha: number;
+  standardized_alpha?: number | null;
+  split_half?: { method: string; half1_items: string[]; half2_items: string[]; r: number | null; spearman_brown: number | null; guttman: number | null; note?: string | null };
+  kr20?: number | null;
+  kr21?: number | null;
+  kr_note?: string;
   omega?: number | null;
+  omega_note?: string;
   interpretation?: string;
   k?: number;
   n?: number;
@@ -104,8 +110,28 @@ function ReliabilityPanelBody({ session }: { session: Session }) {
             <div className="panel">
               <div className="flex items-center justify-between mb-3">
                 <h4 className="font-semibold text-gray-900">Scale Reliability Report</h4>
-                <ResultExporter title="Reliability_Analysis" headers={result.export_rows?.[0]} rows={result.export_rows?.slice(1)} />
+                <div className="flex gap-2">
+                  <ResultExporter title="Reliability_Report" headers={["Item or coefficient", "Mean or coefficient value", "SD", "Item-Total r", "Alpha if Deleted"]} rows={[
+                    ...(result.export_rows?.slice(1) ?? []),
+                    ["Cronbach alpha", result.alpha, "", "", ""], ["Standardized alpha", result.standardized_alpha ?? "", "", "", ""],
+                    ["Split-half Spearman-Brown", result.split_half?.spearman_brown ?? "", "", "", ""],
+                    ["Split-half Guttman", result.split_half?.guttman ?? "", "", "", ""],
+                    ["KR-20", result.kr20 ?? "", "", "", ""], ["KR-21", result.kr21 ?? "", "", "", ""],
+                  ]} />
+                </div>
               </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-4 text-xs">
+                {[["Standardized α", result.standardized_alpha], ["Split-half Spearman-Brown", result.split_half?.spearman_brown],
+                  ["Split-half Guttman", result.split_half?.guttman], ["KR-20", result.kr20], ["KR-21", result.kr21]].map(([label, value]) => (
+                  <div key={String(label)} className="rounded border border-gray-200 bg-gray-50 px-2 py-1.5">
+                    <p className="text-gray-500">{label}</p><p className="font-mono font-semibold">{typeof value === "number" ? value.toFixed(3) : "—"}</p>
+                  </div>
+                ))}
+              </div>
+              {result.split_half && <p className="text-[11px] text-gray-500 mb-2">Odd/even split: {result.split_half.half1_items.join(", ")} vs {result.split_half.half2_items.join(", ")}. {result.split_half.note}</p>}
+              {result.kr_note && <p className="text-[11px] text-gray-500 mb-2">{result.kr_note}</p>}
+              {result.omega_note && <p className="text-[11px] text-gray-500 mb-2">{result.omega_note}</p>}
 
               <div className="flex flex-wrap items-center gap-4 mb-4">
                 <div className={`text-2xl font-bold px-4 py-2 rounded-xl ${alphaColor(result.alpha)}`}>

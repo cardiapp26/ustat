@@ -184,6 +184,16 @@ def check_linear_assumptions(
     # 4. Multicollinearity (VIF) - computed separately; only commented on here
     # Kept separate because VIF is already returned by the endpoint.
 
+    from statsmodels.stats.stattools import durbin_watson
+    dw = float(durbin_watson(residuals))
+    checks.append(AssumptionCheck(
+        name="residual_autocorrelation",
+        passed=None,
+        statistic=dw if np.isfinite(dw) else None,
+        message="Durbin-Watson statistic; values near 2 suggest little first-order autocorrelation. Interpret only when row order is meaningful.",
+        details={"method": "Durbin-Watson", "row_order_required": True},
+    ))
+
     # Overall assessment
     critical_count = sum(1 for c in checks if c.severity == "critical")
     warning_count = sum(1 for c in checks if c.severity == "warning")

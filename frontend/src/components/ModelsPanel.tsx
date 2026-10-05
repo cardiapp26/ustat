@@ -12,6 +12,7 @@ import { describeStale } from "../lib/resultStamp";
 import { MissingGuard, type ImputationStrategy } from "./MissingGuard";
 import { type ColMeta } from "../store";
 import { CoefTable, ORTable, ForestPlot, PredictionPanel, CoefDetailPanel, ModelSummaryTable } from "./models/resultViews";
+import { RegressionAnovaTable } from "./models/CoefTables";
 import CoxHRTable from "./models/CoxHRTable";
 import { useModelData } from "./models/useModelData";
 import type { ModelResult } from "./models/shared";
@@ -1028,6 +1029,7 @@ export default function ModelsPanel() {
             )}
 
             {/* Prediction Panel — linear only */}
+            {model === "linear" && <RegressionAnovaTable rows={result.anova_table} note={result.anova_note} />}
             {model === "linear" && result.predictor_info && Object.keys(result.predictor_info).length > 0 && (
               <PredictionPanel result={result} />
             )}

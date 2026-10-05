@@ -252,11 +252,11 @@ function PairwiseTab({ sessionId, columns }: { sessionId: string; columns: strin
         <Tip text="Auto: tests each variable's normality (Shapiro-Wilk for n<50, Lilliefors-corrected KS for 50–2000, skewness/CLT for n>2000) and picks Pearson when both are normal (p ≥ 0.05), or Spearman if either is not. Prevents the common mistake of running Pearson on skewed data." wide />
       </h3>
       <div className="space-y-1.5">
-        {(["auto", "pearson", "spearman"] as const).map((m) => (
+        {(["auto", "pearson", "spearman", "kendall", "pointbiserial"] as const).map((m) => (
           <label key={m} className="flex items-center gap-2 cursor-pointer">
             <input type="radio" name="pw-method" value={m} checked={method === m}
               onChange={() => setMethod(m)} className="accent-indigo-500" />
-            <span className="text-xs text-gray-700">{m === "auto" ? "Auto (by normality)" : m === "pearson" ? "Pearson r" : "Spearman ρ"}</span>
+            <span className="text-xs text-gray-700">{({ auto: "Auto (by normality)", pearson: "Pearson r", spearman: "Spearman ρ", kendall: "Kendall τ", pointbiserial: "Point-biserial (one binary numeric variable)" })[m]}</span>
           </label>
         ))}
       </div>
@@ -936,11 +936,16 @@ function MatrixTab({ sessionId, columns }: { sessionId: string; columns: string[
 
 interface ICCResult {
   icc: number;
-  ci_low: number;
-  ci_high: number;
-  f_stat: number;
+  ci_low: number | null;
+  ci_high: number | null;
+  f_stat: number | null;
   f_p: number;
+  f_test_note?: string;
+  interval_note?: string | null;
   n: number;
+  k?: number;
+  agreement?: "absolute" | "consistency";
+  unit?: "single" | "average";
   interpretation: string;
   bland_altman: {
     means: number[];
@@ -960,7 +965,11 @@ function ICCTab({ sessionId, columns }: { sessionId: string; columns: string[] }
   // first two columns would read as settings-changed and mislabel its plot.
   const [rater1, setRater1] = usePersistedPanelState<string>("correlation_icc", "rater1", columns[0] ?? "");
   const [rater2, setRater2] = usePersistedPanelState<string>("correlation_icc", "rater2", columns[1] ?? "");
-  const runParams = { rater1, rater2 };
+  const [extraRaters, setExtraRaters] = usePersistedPanelState<string[]>("correlation_icc", "extraRaters", []);
+  const [agreement, setAgreement] = usePersistedPanelState<"absolute" | "consistency">("correlation_icc", "agreement", "absolute");
+  const [unit, setUnit] = usePersistedPanelState<"single" | "average">("correlation_icc", "unit", "single");
+  const raterCols = [rater1, rater2, ...extraRaters];
+  const runParams = { rater1, rater2, extraRaters, agreement, unit };
   const {
     result: data, setResult: setData, stale, staleReasons: staleWhy,
   } = useStampedResult<ICCResult>("correlation_icc", runParams);
@@ -968,11 +977,11 @@ function ICCTab({ sessionId, columns }: { sessionId: string; columns: string[] }
   const [error, setError] = useState("");
 
   const run = async () => {
-    if (!rater1 || !rater2 || rater1 === rater2) { setError("Select two different columns"); return; }
+    if (raterCols.some((c) => !c) || new Set(raterCols).size !== raterCols.length) { setError("Select distinct rater columns"); return; }
     setError("");
     setLoading(true);
     try {
-      const res = await runICC({ session_id: sessionId, rater1_col: rater1, rater2_col: rater2 });
+      const res = await runICC({ session_id: sessionId, rater_cols: raterCols, agreement, unit });
       setData(res.data as ICCResult);
     } catch (e: unknown) {
       setError(getErrorDetail(e));
@@ -987,14 +996,15 @@ function ICCTab({ sessionId, columns }: { sessionId: string; columns: string[] }
 
   const exportICC = () => {
     if (!data) return;
-    const header = ["ICC(2,1)", "95% CI Low", "95% CI High", "F stat", "p", "n", "Interpretation"];
+    const header = ["ICC", "95% CI Low", "95% CI High", "F stat", "p", "n", "k", "Agreement", "Unit", "Interpretation"];
     const row = [
       data.icc.toFixed(4),
-      data.ci_low.toFixed(4),
-      data.ci_high.toFixed(4),
-      data.f_stat.toFixed(4),
+      data.ci_low?.toFixed(4) ?? "",
+      data.ci_high?.toFixed(4) ?? "",
+      data.f_stat?.toFixed(4) ?? "",
       fmtP(data.f_p),
       String(data.n),
+      String(data.k ?? 2), data.agreement ?? "absolute", data.unit ?? "single",
       data.interpretation,
     ];
     downloadCSV("icc_result.csv", [header, row]);
@@ -1003,21 +1013,29 @@ function ICCTab({ sessionId, columns }: { sessionId: string; columns: string[] }
   const leftCol = (
     <div className="panel space-y-3">
       <h3 className="text-sm font-semibold text-gray-700">
-        ICC(2,1) — Absolute Agreement
-        <Tip text="Intraclass Correlation Coefficient measures how consistently two raters measure the same subjects. ICC(2,1) is a two-way mixed model that tests both whether raters agree AND whether their absolute values match — stricter than consistency." wide />
+        ICC — Inter-rater Reliability
+        <Tip text="ICC compares measurements from the selected raters. Absolute agreement penalizes systematic rater differences; consistency does not. Single assesses one rater; average assesses their mean." wide />
       </h3>
       <p className="text-[11px] text-gray-400 leading-normal bg-indigo-50/50 p-2 rounded border border-indigo-100/50">
-        Two-way mixed model for continuous inter-observer agreement (Shrout &amp; Fleiss, 1979).
+        Two-way crossed-rater ICC for continuous measurements. Subjects with any missing rater value are excluded.
       </p>
       <div className="space-y-1">
         <label className="text-xs text-gray-500 font-medium">Rater 1 Column</label>
-        <select className="select w-full text-xs" value={rater1} onChange={(e) => setRater1(e.target.value)}>
+        <select className="select w-full text-xs" value={rater1} onChange={(e) => { setRater1(e.target.value); setExtraRaters(extraRaters.filter((c) => c !== e.target.value)); }}>
           {columns.map((c) => <option key={c}>{c}</option>)}
         </select>
       </div>
       <div className="space-y-1">
+        <label className="text-xs text-gray-500 font-medium">Additional raters</label>
+        {columns.filter((c) => c !== rater1 && c !== rater2).map((c) => (
+          <label key={c} className="flex items-center gap-1 text-xs"><input type="checkbox" checked={extraRaters.includes(c)} onChange={() => setExtraRaters(extraRaters.includes(c) ? extraRaters.filter((v) => v !== c) : [...extraRaters, c])} />{c}</label>
+        ))}
+      </div>
+      <select className="select w-full text-xs" value={agreement} onChange={(e) => setAgreement(e.target.value as typeof agreement)}><option value="absolute">Absolute agreement</option><option value="consistency">Consistency</option></select>
+      <select className="select w-full text-xs" value={unit} onChange={(e) => setUnit(e.target.value as typeof unit)}><option value="single">Single rater</option><option value="average">Average of raters</option></select>
+      <div className="space-y-1">
         <label className="text-xs text-gray-500 font-medium">Rater 2 Column</label>
-        <select className="select w-full text-xs" value={rater2} onChange={(e) => setRater2(e.target.value)}>
+        <select className="select w-full text-xs" value={rater2} onChange={(e) => { setRater2(e.target.value); setExtraRaters(extraRaters.filter((c) => c !== e.target.value)); }}>
           {columns.map((c) => <option key={c}>{c}</option>)}
         </select>
       </div>
@@ -1030,6 +1048,7 @@ function ICCTab({ sessionId, columns }: { sessionId: string; columns: string[] }
 
   const middleCol = data ? (
     <div className="panel">
+      {(data.k ?? 2) > 2 && <p className="text-xs text-gray-500 mb-2">Bland-Altman plot compares first two selected raters only; ICC uses all {data.k} raters.</p>}
       <TitledPlot
         plotRefOut={blandAltmanRef}
         storageKey="corr:icc:bland-altman"
@@ -1078,7 +1097,7 @@ function ICCTab({ sessionId, columns }: { sessionId: string; columns: string[] }
   const rightCol = data ? (
     <div className="panel space-y-3 text-xs">
       <div className="flex items-center justify-between">
-        <p className="text-gray-400 text-[10px] font-semibold uppercase tracking-wide">ICC(2,1) Result</p>
+        <p className="text-gray-400 text-[10px] font-semibold uppercase tracking-wide">ICC ({data.k ?? 2} raters, {data.agreement ?? "absolute"}, {data.unit ?? "single"})</p>
         <CsvButton onClick={exportICC} className="text-[10px] px-1.5 py-0.5 rounded border border-gray-300 text-gray-500 hover:bg-gray-50 hover:text-indigo-600 hover:border-indigo-300 transition-colors">↓ CSV</CsvButton>
       </div>
       <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-3.5 text-center">
@@ -1088,16 +1107,18 @@ function ICCTab({ sessionId, columns }: { sessionId: string; columns: string[] }
       <div className="space-y-1.5 bg-gray-50 p-3 rounded-xl border border-gray-100">
         <p className="text-gray-500 flex justify-between">
           <span>95% Confidence Interval:</span>
-          <span className="font-semibold font-mono text-gray-700">[{data.ci_low.toFixed(3)}, {data.ci_high.toFixed(3)}]</span>
+          <span className="font-semibold font-mono text-gray-700">{data.ci_low != null && data.ci_high != null ? `[${data.ci_low.toFixed(3)}, ${data.ci_high.toFixed(3)}]` : "Not estimated"}</span>
         </p>
         <p className="text-gray-500 flex justify-between">
           <span>F-Statistic:</span>
-          <span className="font-semibold font-mono text-gray-700">F({data.n - 1}, {data.n - 1}) = {data.f_stat.toFixed(2)}</span>
+          <span className="font-semibold font-mono text-gray-700">{data.f_stat != null ? `F(${data.n - 1}, ${(data.n - 1) * ((data.k ?? 2) - 1)}) = ${data.f_stat.toFixed(2)}` : "No finite estimate"}</span>
         </p>
         <p className="text-gray-500 flex justify-between">
-          <span>Significance (<i>p</i>-value):</span>
+          <span>Subject-effect F test (<i>p</i>):</span>
           <span className="font-semibold font-mono text-gray-700">{fmtP(data.f_p)}</span>
         </p>
+        {data.f_test_note && <p className="text-[10px] text-gray-400">{data.f_test_note}</p>}
+        {data.interval_note && <p className="text-[10px] text-gray-500">{data.interval_note}</p>}
         <p className="text-gray-500 flex justify-between border-t border-gray-200/60 pt-1 mt-1">
           <span>Agreement Level:</span>
           <span className={interpColor(data.interpretation)}>{data.interpretation}</span>
@@ -1106,7 +1127,7 @@ function ICCTab({ sessionId, columns }: { sessionId: string; columns: string[] }
       </div>
       <InfoBanner>
         ICC = {data.icc.toFixed(3)} — {data.interpretation} agreement.{" "}
-        {data.icc >= 0.75 ? "These two raters can be used interchangeably." : data.icc >= 0.5 ? "Agreement is acceptable but consider rater training." : "Poor agreement — do not treat the two raters as equivalent."}
+        {data.agreement === "consistency" ? "Consistency does not assess systematic rater bias." : "Interpret with selected rater set and measurement context."}
       </InfoBanner>
       <div className="text-[10px] text-gray-400 pt-2 leading-tight border-t border-gray-100">
         <p className="font-semibold uppercase mb-1">Standard Criteria</p>
@@ -1321,13 +1342,15 @@ function PartialTab({ sessionId, columns }: { sessionId: string; columns: string
 
 interface KappaResult {
   kappa: number;
-  ci_low: number;
-  ci_high: number;
-  se: number;
+  ci_low: number | null;
+  ci_high: number | null;
+  se: number | null;
   n: number;
   interpretation: string;
   confusion_matrix: number[][];
   labels: string[];
+  weights?: "none" | "linear" | "quadratic";
+  uncertainty_note?: string | null;
 }
 
 // ── KappaTab ──────────────────────────────────────────────────────────────────
@@ -1338,7 +1361,9 @@ function KappaTab({ sessionId, columns }: { sessionId: string; columns: string[]
   // Persisted with the result, as in the ICC tab.
   const [rater1, setRater1] = usePersistedPanelState<string>("correlation_kappa", "rater1", columns[0] ?? "");
   const [rater2, setRater2] = usePersistedPanelState<string>("correlation_kappa", "rater2", columns[1] ?? "");
-  const runParams = { rater1, rater2 };
+  const [weights, setWeights] = usePersistedPanelState<"none" | "linear" | "quadratic">("correlation_kappa", "weights", "none");
+  const [levelOrderText, setLevelOrderText] = usePersistedPanelState<string>("correlation_kappa", "levelOrderText", "");
+  const runParams = { rater1, rater2, weights, levelOrderText };
   const {
     result: data, setResult: setData, stale, staleReasons: staleWhy,
   } = useStampedResult<KappaResult>("correlation_kappa", runParams);
@@ -1350,7 +1375,9 @@ function KappaTab({ sessionId, columns }: { sessionId: string; columns: string[]
     setError("");
     setLoading(true);
     try {
-      const res = await runCohensKappa({ session_id: sessionId, rater1_col: rater1, rater2_col: rater2 });
+      const res = await runCohensKappa({ session_id: sessionId, rater1_col: rater1, rater2_col: rater2,
+        ...(weights !== "none" ? { weights } : {}),
+        ...(levelOrderText.trim() ? { level_order: levelOrderText.split(",").map((s) => s.trim()) } : {}) });
       setData(res.data as KappaResult);
     } catch (e: unknown) {
       setError(getErrorDetail(e));
@@ -1368,9 +1395,9 @@ function KappaTab({ sessionId, columns }: { sessionId: string; columns: string[]
     const header = ["κ", "95% CI Low", "95% CI High", "SE", "n", "Interpretation"];
     const row = [
       data.kappa.toFixed(4),
-      data.ci_low.toFixed(4),
-      data.ci_high.toFixed(4),
-      data.se.toFixed(4),
+      data.ci_low?.toFixed(4) ?? "",
+      data.ci_high?.toFixed(4) ?? "",
+      data.se?.toFixed(4) ?? "",
       String(data.n),
       data.interpretation,
     ];
@@ -1398,6 +1425,13 @@ function KappaTab({ sessionId, columns }: { sessionId: string; columns: string[]
           {columns.map((c) => <option key={c}>{c}</option>)}
         </select>
       </div>
+      <div className="space-y-1">
+        <label className="text-xs text-gray-500 font-medium">Weighting</label>
+        <select className="select w-full text-xs" value={weights} onChange={(e) => setWeights(e.target.value as typeof weights)}>
+          <option value="none">None (nominal)</option><option value="linear">Linear</option><option value="quadratic">Quadratic</option>
+        </select>
+      </div>
+      {weights !== "none" && <input className="select w-full text-xs" aria-label="Ordered kappa levels" placeholder="Levels low to high, comma-separated" value={levelOrderText} onChange={(e) => setLevelOrderText(e.target.value)} />}
       <button className="btn-primary w-full mt-2" onClick={run} disabled={loading}>
         {loading ? "Computing…" : "Compute"}
       </button>
@@ -1453,17 +1487,17 @@ function KappaTab({ sessionId, columns }: { sessionId: string; columns: string[]
         <CsvButton onClick={exportKappa} className="text-[10px] px-1.5 py-0.5 rounded border border-gray-300 text-gray-500 hover:bg-gray-50 hover:text-indigo-600 hover:border-indigo-300 transition-colors">↓ CSV</CsvButton>
       </div>
       <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-3.5 text-center">
-        <p className="text-[10px] font-semibold text-indigo-900 uppercase">Cohen's Kappa (κ)</p>
+        <p className="text-[10px] font-semibold text-indigo-900 uppercase">{data.weights && data.weights !== "none" ? `${data.weights} weighted` : "Cohen's"} Kappa (κ)</p>
         <p className="text-3xl font-bold font-mono text-indigo-700 mt-1">{data.kappa.toFixed(3)}</p>
       </div>
       <div className="space-y-1.5 bg-gray-50 p-3 rounded-xl border border-gray-100">
         <p className="text-gray-500 flex justify-between">
           <span>95% Confidence Interval:</span>
-          <span className="font-semibold font-mono text-gray-700">[{data.ci_low.toFixed(3)}, {data.ci_high.toFixed(3)}]</span>
+          <span className="font-semibold font-mono text-gray-700">{data.ci_low != null && data.ci_high != null ? `[${data.ci_low.toFixed(3)}, ${data.ci_high.toFixed(3)}]` : "Not estimated"}</span>
         </p>
         <p className="text-gray-500 flex justify-between">
           <span>Standard Error (SE):</span>
-          <span className="font-semibold font-mono text-gray-700">{data.se.toFixed(4)}</span>
+          <span className="font-semibold font-mono text-gray-700">{data.se?.toFixed(4) ?? "Not estimated"}</span>
         </p>
         <p className="text-gray-500 flex justify-between border-t border-gray-200/60 pt-1 mt-1">
           <span>Agreement Strength:</span>
@@ -1471,6 +1505,7 @@ function KappaTab({ sessionId, columns }: { sessionId: string; columns: string[]
         </p>
         <p className="text-gray-400 text-[10px] font-mono text-right mt-1"><i>n</i> = {data.n} subjects</p>
       </div>
+      {data.uncertainty_note && <p className="text-[10px] text-gray-500">{data.uncertainty_note}</p>}
       <InfoBanner>
         κ = {data.kappa.toFixed(3)} ({data.interpretation}).{" "}
         {data.kappa > 0.8 ? "Excellent inter-rater reliability." : data.kappa > 0.6 ? "Good reliability — raters agree beyond chance most of the time." : data.kappa > 0.4 ? "Moderate reliability — training may help." : "Low reliability — review classification criteria."}

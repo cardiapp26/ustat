@@ -128,6 +128,14 @@ export interface DescriptiveStats {
   q1: number;
   q3: number;
   iqr: number;
+  cv?: number | null;
+  cv_percent?: number | null;
+  quartile_deviation?: number;
+  harmonic_mean?: number | null;
+  skew_se?: number | null;
+  kurt_se?: number | null;
+  skew_z?: number | null;
+  kurt_z?: number | null;
   skewness: number;
   kurtosis: number;
   normality_p: number;
@@ -199,7 +207,7 @@ export interface AnovaRequest {
   session_id: string;
   column: string;
   group_column: string;
-  posthoc?: "auto" | "tukey" | "games_howell" | "dunnett" | "none";
+  posthoc?: "auto" | "tukey" | "games_howell" | "dunnett" | "scheffe" | "bonferroni" | "none";
   control_group?: string;
   force_posthoc?: boolean;
 }
@@ -208,6 +216,22 @@ export interface MannWhitneyRequest {
   session_id: string;
   column: string;
   group_column: string;
+}
+
+export interface SignTestRequest {
+  session_id: string;
+  column: string;
+  comparison_column?: string;
+  mu?: number;
+  alternative?: "two-sided" | "greater" | "less";
+}
+
+export interface OrdinalAssociationRequest {
+  session_id: string;
+  row_column: string;
+  col_column: string;
+  row_order?: string[];
+  col_order?: string[];
 }
 
 export interface KruskalRequest extends MannWhitneyRequest {
@@ -317,6 +341,10 @@ export const runGrayTest = async (data: GrayTestRequest) => {
 export const runChiSquare = (data: ChiSquareRequest) => api.post("/api/stats/chisquare", data);
 export const runAnova = (data: AnovaRequest) => api.post("/api/stats/anova", data);
 export const runMannWhitney = (data: MannWhitneyRequest) => api.post("/api/stats/mannwhitney", data);
+export const runSignTest = (data: SignTestRequest) => api.post("/api/stats/sign_test", data);
+export const runOneSampleWilcoxon = (data: Omit<SignTestRequest, "comparison_column">) => api.post("/api/stats/wilcoxon_onesample", data);
+export const runPairedCategorical = (data: { session_id: string; col1: string; col2: string; method: "bowker" | "stuart_maxwell" }) => api.post("/api/categorical/paired_categorical", data);
+export const runOrdinalAssociation = (data: OrdinalAssociationRequest) => api.post("/api/stats/ordinal_association", data);
 export const runFisher = (data: FisherRequest) => api.post("/api/stats/fisher", data);
 export const runKruskal = (data: KruskalRequest) => api.post("/api/stats/kruskal", data);
 export const runJonckheereTerpstra = (data: JonckheereRequest) => api.post("/api/stats/jonckheere_terpstra", data);
@@ -456,14 +484,19 @@ export const runPartialCorrelation = (data: object) => api.post("/api/stats/part
 export const runCorrelationMatrix = (data: object) => api.post("/api/stats/correlation_matrix", data);
 export interface ICCRequest {
   session_id: string;
-  rater1_col: string;
-  rater2_col: string;
+  rater1_col?: string;
+  rater2_col?: string;
+  rater_cols?: string[];
+  agreement?: "absolute" | "consistency";
+  unit?: "single" | "average";
 }
 
 export interface KappaRequest {
   session_id: string;
   rater1_col: string;
   rater2_col: string;
+  weights?: "linear" | "quadratic";
+  level_order?: string[];
 }
 
 export interface FleissKappaRequest {

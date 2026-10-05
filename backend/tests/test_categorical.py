@@ -176,6 +176,14 @@ def test_two_proportions(client):
     d = r.json()
     assert "effect_sizes" in d
     assert d["effect_sizes"][0]["name"] == "cohens_h"
+    assert d["diff_prop"] == pytest.approx(0.3)
+    assert d["ci_diff_low"] < d["diff_prop"] < d["ci_diff_high"]
+    narrower_alpha = client.post("/api/categorical/two_proportions", json={
+        "session_id": sid, "column": "outcome", "group_column": "group", "alpha": 0.01,
+    }).json()
+    assert narrower_alpha["ci_confidence_level"] == pytest.approx(0.99)
+    assert narrower_alpha["ci_diff_low"] < d["ci_diff_low"]
+    assert narrower_alpha["ci_diff_high"] > d["ci_diff_high"]
     assert "r_code" in d
 
 

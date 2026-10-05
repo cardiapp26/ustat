@@ -9,6 +9,9 @@ from typing import List, Optional
 from services import store
 from services.level_order import SOURCE_RECOGNISED, resolve_level_order
 from services.category_health import clean_two_level
+from services.risk_measures import (
+    compute_risk_measures, risk_measures_export_rows, risk_measures_text,
+)
 from services.stat_utils import (
     cohens_h, adjust_pvalues, kendalls_w, sorted_groups, sanitize_nonfinite,
 )
@@ -160,15 +163,15 @@ class OneProportionRequest(BaseModel):
     session_id: str
     column: str
     null_proportion: float = Field(
-        default=0.5,
+        default=0.5, gt=0, lt=1,
         validation_alias=AliasChoices("null_proportion", "p0"),
     )
-    alpha: float = 0.05
+    alpha: float = Field(default=0.05, gt=0, lt=1)
 
 
 @router.post("/one_proportion")
 def one_proportion_ztest(req: OneProportionRequest):
-    from statsmodels.stats.proportion import proportions_ztest
+    from statsmodels.stats.proportion import proportions_ztest, proportion_confint
 
     df = _get_df(req.session_id)
     if req.column not in df.columns:
@@ -180,7 +183,7 @@ def one_proportion_ztest(req: OneProportionRequest):
     n = len(col)
     k, success_label, binary_warnings = _binary_success(col, req.column)
 
-    z_stat, p = proportions_ztest(k, n, value=req.null_proportion)
+    z_stat, p = proportions_ztest(k, n, value=req.null_proportion, prop_var=req.null_proportion)
     z_stat = float(z_stat)
     p = float(p)
     sig = bool(p < req.alpha)
@@ -189,13 +192,12 @@ def one_proportion_ztest(req: OneProportionRequest):
 
     es = cohens_h(observed_prop, req.null_proportion)
 
-    # Wald CI
-    se = np.sqrt(observed_prop * (1 - observed_prop) / n) if n > 0 else 0
-    ci_low = round(max(0, observed_prop - 1.96 * se), 4)
-    ci_high = round(min(1, observed_prop + 1.96 * se), 4)
+    ci_low, ci_high = proportion_confint(k, n, alpha=req.alpha, method="wilson")
+    ci_low, ci_high = float(ci_low), float(ci_high)
 
     return {
         "test": "One-sample proportion z-test",
+        "ci_proportion": {"low": ci_low, "high": ci_high, "method": "Wilson", "confidence_level": 1 - req.alpha},
         "z": round(z_stat, 4), "p": p,
         "significant": sig,
         "effect_sizes": [es],
@@ -215,7 +217,7 @@ def one_proportion_ztest(req: OneProportionRequest):
             f"({k}/{n} = {observed_prop:.3f}) against the null proportion of {req.null_proportion:.3f}. "
             f"The result was {'statistically significant' if sig else 'not statistically significant'} "
             f"(z = {z_stat:.3f}, p = {ps}). "
-            f"95% CI for the proportion: [{ci_low:.3f}, {ci_high:.3f}]. "
+            f"{100 * (1 - req.alpha):g}% Wilson CI for the proportion: [{ci_low:.3f}, {ci_high:.3f}]. "
             f"Cohen's h = {es['value']:.3f} [{es['magnitude']}]."
         ),
         "export_rows": [
@@ -226,11 +228,11 @@ def one_proportion_ztest(req: OneProportionRequest):
             ["n (total)", n],
             ["Observed proportion", round(observed_prop, 4)],
             ["Null proportion", req.null_proportion],
-            ["95% CI lower", ci_low],
-            ["95% CI upper", ci_high],
+            [f"{100 * (1 - req.alpha):g}% Wilson CI lower", ci_low],
+            [f"{100 * (1 - req.alpha):g}% Wilson CI upper", ci_high],
             ["Cohen's h", es["value"]],
         ],
-        "r_code": f"prop.test({k}, {n}, p = {req.null_proportion})",
+        "r_code": f"prop.test({k}, {n}, p = {req.null_proportion}, correct = FALSE, conf.level = {1 - req.alpha})",
     }
 
 
@@ -244,12 +246,12 @@ class TwoProportionsRequest(BaseModel):
     group_column: str = Field(
         validation_alias=AliasChoices("group_column", "group_col")
     )
-    alpha: float = 0.05
+    alpha: float = Field(default=0.05, gt=0, lt=1)
 
 
 @router.post("/two_proportions")
 def two_proportions_ztest(req: TwoProportionsRequest):
-    from statsmodels.stats.proportion import proportions_ztest
+    from statsmodels.stats.proportion import proportions_ztest, confint_proportions_2indep
 
     df = _get_df(req.session_id)
     for c in [req.column, req.group_column]:
@@ -280,6 +282,7 @@ def two_proportions_ztest(req: TwoProportionsRequest):
     p1, p2 = k1 / n1 if n1 > 0 else 0, k2 / n2 if n2 > 0 else 0
 
     z_stat, p = proportions_ztest([k1, k2], [n1, n2])
+    ci_low, ci_high = confint_proportions_2indep(k1, n1, k2, n2, method="newcomb", alpha=req.alpha)
     z_stat = float(z_stat)
     p = float(p)
     sig = bool(p < req.alpha)
@@ -287,9 +290,24 @@ def two_proportions_ztest(req: TwoProportionsRequest):
 
     es = cohens_h(p1, p2)
 
-    return {
+    # Clinical measures for group[0] (exposed) against group[1] (reference),
+    # reusing the Newcombe interval above for the absolute risk difference.
+    risk_measures = compute_risk_measures(
+        k1, n1, k2, n2, alpha=req.alpha,
+        event=str(success_label),
+        exposed=str(groups[0]), reference=str(groups[1]),
+        ard_ci=(float(ci_low), float(ci_high)),
+    )
+
+    return sanitize_nonfinite({
         "test": "Two-sample proportion z-test",
         "z": round(z_stat, 4), "p": p,
+        "diff_prop": float(p1 - p2),
+        "arr": risk_measures["arr"],
+        "risk_measures": risk_measures,
+        "ci_diff_low": float(ci_low), "ci_diff_high": float(ci_high),
+        "ci_diff_method": "Newcombe (unpooled score)",
+        "ci_confidence_level": float(1 - req.alpha),
         "significant": sig,
         "effect_sizes": [es],
         "assumptions": [],
@@ -309,7 +327,8 @@ def two_proportions_ztest(req: TwoProportionsRequest):
             f"{groups[0]} ({k1}/{n1} = {p1:.3f}) and {groups[1]} ({k2}/{n2} = {p2:.3f}). "
             f"The difference was {'statistically significant' if sig else 'not statistically significant'} "
             f"(z = {z_stat:.3f}, p = {ps}). "
-            f"Cohen's h = {es['value']:.3f} [{es['magnitude']}]."
+            f"Cohen's h = {es['value']:.3f} [{es['magnitude']}]. "
+            f"{risk_measures_text(risk_measures)}"
         ),
         "export_rows": [
             ["Statistic", "Value"],
@@ -320,9 +339,15 @@ def two_proportions_ztest(req: TwoProportionsRequest):
             [f"{groups[1]}: k/n", f"{k2}/{n2}"],
             [f"{groups[1]}: proportion", round(p2, 4)],
             ["Cohen's h", es["value"]],
+            *risk_measures_export_rows(risk_measures),
         ],
-        "r_code": f"prop.test(c({k1}, {k2}), c({n1}, {n2}))",
-    }
+        "r_code": (f"prop.test(c({k1}, {k2}), c({n1}, {n2}), correct = FALSE, conf.level = {1 - req.alpha})\n"
+                   "# Replicate the unpooled Newcombe interval reported by uSTAT:\n"
+                   f"DescTools::BinomDiffCI({k1}, {n1}, {k2}, {n2}, method = 'score', conf.level = {1 - req.alpha})\n"
+                   "# Risk ratio (Katz log CI), RRR = 1 - RR, NNT/NNH = 1 / |ARD| rounded up (Altman 1998):\n"
+                   f"DescTools::RelRisk(matrix(c({k1}, {n1 - k1}, {k2}, {n2 - k2}), 2, byrow = TRUE), "
+                   f"conf.level = {1 - req.alpha}, method = 'wald')"),
+    })
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -487,21 +512,12 @@ def cochran_q_test(req: CochranQRequest):
         )
     n, k = mat.shape
 
-    # Manual Cochran's Q calculation
-    # Gj = column sums, Li = row sums, T = grand total
-    Gj = mat.sum(axis=0)  # column sums (k values)
-    Li = mat.sum(axis=1)  # row sums (n values)
-    T = mat.sum()
-
-    numerator = (k - 1) * (k * np.sum(Gj ** 2) - T ** 2)
-    denominator = k * T - np.sum(Li ** 2)
-
-    if denominator == 0:
+    from statsmodels.stats.contingency_tables import cochrans_q
+    Gj = mat.sum(axis=0)
+    if np.all(np.ptp(mat, axis=1) == 0):
         raise HTTPException(400, "Cannot compute Q: all rows are identical.")
-
-    Q = numerator / denominator
-    df_q = k - 1
-    p = float(1 - sp.chi2.cdf(Q, df_q))
+    q_result = cochrans_q(mat)
+    Q, df_q, p = float(q_result.statistic), int(q_result.df), float(q_result.pvalue)
     sig = bool(p < req.alpha)
     ps = _p_str(p)
 
@@ -514,7 +530,8 @@ def cochran_q_test(req: CochranQRequest):
         raw_ps = []
         pairs = [(i, j) for i in range(k) for j in range(i + 1, k)]
         for i, j in pairs:
-            ct = pd.crosstab(sub[req.columns[i]], sub[req.columns[j]])
+            ct = pd.crosstab(sub[req.columns[i]], sub[req.columns[j]]).reindex(
+                index=[0, 1], columns=[0, 1], fill_value=0)
             # Ensure 2x2
             if ct.shape == (2, 2):
                 table = ct.values
@@ -698,6 +715,55 @@ def mantel_haenszel_test(req: MantelHaenszelRequest):
         or_ci_low = None
         or_ci_high = None
 
+    # Breslow-Day test of homogeneity of the stratum odds ratios with Tarone's
+    # adjustment. A significant result means the effect differs across strata
+    # (effect modification), so one pooled OR can mislead. Singular strata
+    # (zero margins) can make the statistic undefined; that must not sink the
+    # CMH result, so the failure is reported as a note instead.
+    homogeneity_test = None
+    homogeneity_note = None
+    with np.errstate(all="ignore"):
+        try:
+            bd = st.test_equal_odds(adjust=True)
+            bd_stat = float(bd.statistic)
+            bd_p = float(bd.pvalue)
+            if np.isfinite(bd_stat) and np.isfinite(bd_p):
+                homogeneity_test = {
+                    "name": "Breslow-Day test (Tarone adjusted)",
+                    "statistic": round(bd_stat, 4),
+                    "df": int(len(tables) - 1),
+                    "p": bd_p,
+                    "adjusted": True,
+                    "homogeneous": bool(bd_p >= req.alpha),
+                }
+            else:
+                homogeneity_note = (
+                    "The Breslow-Day homogeneity test is undefined for these "
+                    "strata (a stratum has a zero margin or a degenerate table)."
+                )
+        except Exception as exc:
+            homogeneity_note = (
+                f"The Breslow-Day homogeneity test could not be computed: {exc}"
+            )
+    if homogeneity_test is not None and not homogeneity_test["homogeneous"]:
+        warnings.append(
+            f"The odds ratios differ across strata of {req.strata_col} "
+            f"(Breslow-Day test, Tarone adjusted, p = {_p_str(homogeneity_test['p'])}). "
+            "A single pooled odds ratio may be misleading because of effect "
+            "modification; report the stratum-specific odds ratios as well."
+        )
+    if homogeneity_note is not None:
+        warnings.append(homogeneity_note)
+    if homogeneity_test is not None:
+        homogeneity_text = (
+            f" Homogeneity of odds ratios (Breslow-Day, Tarone adjusted): "
+            f"chi-square({homogeneity_test['df']}) = {homogeneity_test['statistic']:.3f}, "
+            f"p = {_p_str(homogeneity_test['p'])}"
+            f" ({'homogeneous' if homogeneity_test['homogeneous'] else 'heterogeneous, interpret the pooled OR with caution'})."
+        )
+    else:
+        homogeneity_text = " Homogeneity of odds ratios could not be assessed (Breslow-Day test unavailable)."
+
     confidence_pct = 100 * (1 - req.alpha)
     confidence_label = f"{confidence_pct:g}% CI"
     or_str = f"{common_or:.3f}" if common_or is not None else "N/A"
@@ -720,6 +786,8 @@ def mantel_haenszel_test(req: MantelHaenszelRequest):
                           "ci_level": round(1 - req.alpha, 6),
                           "magnitude": ""}],
         "assumptions": [],
+        "homogeneity_test": homogeneity_test,
+        "homogeneity_note": homogeneity_note,
         "summary": {
             "n_strata": len(strata),
             "n_total": int(len(sub)),
@@ -738,6 +806,7 @@ def mantel_haenszel_test(req: MantelHaenszelRequest):
             f"The result was {'statistically significant' if sig else 'not statistically significant'} "
             f"(CMH statistic = {stat:.3f}, p = {ps}). "
             f"Common odds ratio = {or_str} ({confidence_label} [{or_ci_str}])."
+            f"{homogeneity_text}"
         ),
         "export_rows": [
             ["Statistic", "Value"],
@@ -750,8 +819,22 @@ def mantel_haenszel_test(req: MantelHaenszelRequest):
              round(or_ci_high, 4) if or_ci_high is not None else "N/A"],
             ["Number of strata", len(strata)],
             ["Total n", int(len(sub))],
+            *(
+                [
+                    ["Breslow-Day statistic (Tarone adjusted)", homogeneity_test["statistic"]],
+                    ["Breslow-Day df", homogeneity_test["df"]],
+                    ["Breslow-Day p", round(homogeneity_test["p"], 6)],
+                    ["Odds ratios homogeneous", "yes" if homogeneity_test["homogeneous"] else "no"],
+                ]
+                if homogeneity_test is not None
+                else [["Breslow-Day test (Tarone adjusted)", "unavailable"]]
+            ),
         ],
-        "r_code": "mantelhaen.test(table_array)",
+        "r_code": (
+            "mantelhaen.test(table_array)\n"
+            "# Homogeneity of odds ratios (Breslow-Day with Tarone adjustment):\n"
+            "DescTools::BreslowDayTest(table_array, correct = TRUE)"
+        ),
     })
 
 
@@ -970,3 +1053,43 @@ def cochran_armitage(req: CochranArmitageRequest):
             f"prop.trend.test(c{tuple(int(s) for s in s_k)}, c{tuple(int(n) for n in n_k)})"
         ),
     }
+
+
+class PairedCategoricalRequest(BaseModel):
+    session_id: str
+    col1: str
+    col2: str
+    method: str = "bowker"
+    alpha: float = Field(default=0.05, gt=0, lt=1)
+
+
+@router.post("/paired_categorical")
+def paired_categorical(req: PairedCategoricalRequest):
+    """Symmetry or marginal homogeneity for paired multicategory observations."""
+    from statsmodels.stats.contingency_tables import SquareTable
+    if req.method not in {"bowker", "stuart_maxwell"}:
+        raise HTTPException(422, "Method must be bowker or stuart_maxwell.")
+    df = _get_df(req.session_id)
+    if req.col1 == req.col2 or any(c not in df for c in [req.col1, req.col2]):
+        raise HTTPException(422, "Select two distinct existing columns.")
+    from services.number_format import level_key
+    pair = df[[req.col1, req.col2]].dropna().apply(lambda col: col.map(level_key))
+    levels = sorted(set(pair[req.col1]) | set(pair[req.col2]))
+    if len(pair) < 2 or len(levels) < 2:
+        raise HTTPException(422, "Need complete pairs and at least two categories.")
+    table = pd.crosstab(pair[req.col1], pair[req.col2]).reindex(index=levels, columns=levels, fill_value=0)
+    square = SquareTable(table.to_numpy(), shift_zeros=False)
+    try:
+        result = square.symmetry() if req.method == "bowker" else square.homogeneity()
+    except np.linalg.LinAlgError:
+        raise HTTPException(422, "Marginal homogeneity covariance is singular; combine sparse categories.")
+    statistic, p = float(result.statistic), float(result.pvalue)
+    if not np.isfinite(statistic) or not np.isfinite(p):
+        raise HTTPException(422, "Test is undefined for this paired table; combine sparse categories.")
+    name = "Bowker symmetry test" if req.method == "bowker" else "Stuart-Maxwell marginal homogeneity test"
+    return {"test": name, "chi2": statistic, "df": int(result.df), "p": p,
+            "significant": p < req.alpha, "n": len(pair), "table": table.values.tolist(),
+            "row_labels": levels, "col_labels": levels, "effect_sizes": [], "assumptions": [],
+            "interpretation": f"{name}: chi-square({int(result.df)}) = {statistic:.4f}, p = {_p_str(p)}.",
+            "result_text": f"{name} assessed {len(pair)} complete paired observations across {len(levels)} categories.",
+            "export_rows": [["Statistic", "Value"], ["Chi-square", statistic], ["df", int(result.df)], ["p", p], ["Complete pairs", len(pair)]]}

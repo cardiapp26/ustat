@@ -392,6 +392,9 @@ TRANSFORMS = {
     "exp":          "eˣ Exponential",
     "abs":          "|x| Absolute value",
     "zscore":       "Z-score",
+    "tscore":       "T-score (mean 50, SD 10)",
+    "reciprocal":   "Reciprocal (1/x)",
+    "arcsin_sqrt":  "Arcsine square root (proportion)",
     "tertile":      "Tertile (3 groups)",
     "quartile":     "Quartile (4 groups)",
     "median_split": "Median split (2 groups)",
@@ -455,11 +458,21 @@ def transform_compute(session_id: str, req: TransformRequest):
         df[new_col] = np.exp(col)
     elif req.transform == "abs":
         df[new_col] = col.abs()
-    elif req.transform == "zscore":
+    elif req.transform == "reciprocal":
+        if (col.dropna() == 0).any():
+            raise HTTPException(status_code=422, detail="Reciprocal requires nonzero values")
+        df[new_col] = np.reciprocal(col.astype(float))
+    elif req.transform == "arcsin_sqrt":
+        if not col.dropna().between(0, 1).all():
+            raise HTTPException(status_code=422, detail="Arcsine square root requires proportions between 0 and 1, inclusive")
+        df[new_col] = np.arcsin(np.sqrt(col))
+    elif req.transform in {"zscore", "tscore"}:
         mu, sd = col.mean(), col.std()
-        if sd == 0:
+        if pd.isna(sd) or sd == 0:
             raise HTTPException(status_code=422, detail="Standard deviation is 0 — cannot compute Z-score for a constant column")
         df[new_col] = (col - mu) / sd
+        if req.transform == "tscore":
+            df[new_col] = 50 + 10 * df[new_col]
     elif req.transform == "tertile":
         df[new_col], cut_points = _quantile_groups(col, 3)
         n_groups = 3

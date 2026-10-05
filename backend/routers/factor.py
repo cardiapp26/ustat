@@ -275,7 +275,7 @@ def factor_pca(req: FactorPCARequest):
         fa.fit(z.values)
         # sklearn stores as (n_components, n_features), transpose to (n_features, n_components)
         unrotated = fa.components_.T
-        method_label = "Exploratory Factor Analysis (EFA — Principal Axis)"
+        method_label = "Exploratory Factor Analysis (EFA, Maximum Likelihood)"
         
     # Apply rotation
     rot_label = "Unrotated"
@@ -331,7 +331,7 @@ def factor_pca(req: FactorPCARequest):
         r_rot = "none" if req.rotation == "none" else req.rotation
         r_code = (
             f"library(psych)\n"
-            f"fit <- fa(data[, c({items_str})], nfactors = {n_fac}, rotate = \"{r_rot}\", fm = \"pa\")\n"
+            f"fit <- fa(data[, c({items_str})], nfactors = {n_fac}, rotate = \"{r_rot}\", fm = \"ml\")\n"
             f"print(fit$loadings, cutoff = 0.3)"
         )
         
@@ -344,6 +344,7 @@ def factor_pca(req: FactorPCARequest):
         "extraction_method": method_label,
         "rotation_method": rot_label,
         "suitability": {
+            "correlation_determinant": float(np.linalg.det(corr_matrix)),
             "overall_kmo": overall_kmo,
             "kmo_rating": kmo_rating,
             "item_kmo": item_kmo,
@@ -357,6 +358,7 @@ def factor_pca(req: FactorPCARequest):
         "scree_coords": scree_coords,
         "biplot": biplot,
         "r_code": r_code,
+        "replication_note": ("EFA uses sklearn maximum likelihood. R psych::fa(fm=ml) uses different optimization and rotation conventions; loadings may differ." if req.extraction == "efa" else None),
         "export_rows": _generate_export_rows(loadings_list, factors)
     }
 

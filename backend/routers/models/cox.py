@@ -30,6 +30,7 @@ from services.rcs_basis import (
     rcs_basis as _rcs_basis,
     resolve_knots as _resolve_knots,
 )
+from services.km_median_ci import km_median_ci
 from services.survival_validation import validate_survival_inputs
 
 router = APIRouter()
@@ -197,11 +198,14 @@ def _km_fit_groups(
             {"time": _safe_float(row["time"]), "survival": _safe_float(row["survival"])}
             for _, row in sf.iterrows()
         ]
+        med_low, med_high = km_median_ci(kmf)
         row_out = {
             "group": str(grp) if grp is not None else "All",
             "n": int(len(subset)),
             "events": int(subset[event_col].sum()),
             "median_survival": _safe_float(kmf.median_survival_time_),
+            "median_survival_ci_low": _safe_float(med_low),
+            "median_survival_ci_high": _safe_float(med_high),
             "curve": curve,
         }
         if survival_times:

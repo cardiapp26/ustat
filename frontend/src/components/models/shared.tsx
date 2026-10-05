@@ -12,6 +12,9 @@ import type { MultinomialResultData } from "./MultinomialResult";
 export interface Coefficient {
   variable: string;
   estimate?: number;
+  standardized_beta?: number | null;
+  vif?: number | null;
+  tolerance?: number | null;
   se?: number;
   t?: number;
   z?: number;
@@ -162,6 +165,8 @@ export interface ModelResult extends MultinomialFields {
   bic?: number;
   concordance?: number;
   result_text?: string;
+  anova_table?: { source: string; ss: number; df: number; ms: number | null }[] | null;
+  anova_note?: string | null;
   coefficients?: Coefficient[];
   predictor_info?: Record<string, PredictorInfo>;
   residual_se?: number;

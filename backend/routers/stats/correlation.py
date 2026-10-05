@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional, List
+from typing import Optional, List, Literal
 import numpy as np
 import pandas as pd
 from scipy import stats as scipy_stats
@@ -10,8 +10,64 @@ from loguru import logger
 
 from services import store
 from services.impute import apply_imputation
+from services.level_order import dictionary_order, resolve_level_order
+from services.number_format import level_key
 
 router = APIRouter()
+
+
+class OrdinalAssociationRequest(BaseModel):
+    session_id: str
+    row_column: str
+    col_column: str
+    row_order: Optional[List[str]] = None
+    col_order: Optional[List[str]] = None
+
+
+@router.post("/ordinal_association")
+def ordinal_association(req: OrdinalAssociationRequest):
+    if req.row_column == req.col_column:
+        raise HTTPException(422, "Select two distinct ordinal variables")
+    source = _get_df(req.session_id)
+    for col in (req.row_column, req.col_column):
+        if col not in source.columns:
+            raise HTTPException(400, f"Column '{col}' not found")
+    work = source[[req.row_column, req.col_column]].dropna()
+    row_order = resolve_level_order(work[req.row_column], req.row_column,
+                                    session_id=req.session_id, explicit=req.row_order)
+    col_order = resolve_level_order(work[req.col_column], req.col_column,
+                                    session_id=req.session_id, explicit=req.col_order)
+    if row_order is None or col_order is None:
+        raise HTTPException(422, "Ordinal association needs ordered levels. Set level order in Data Dictionary or request.")
+    table = pd.crosstab(work[req.row_column], work[req.col_column]).reindex(
+        index=row_order.levels, columns=col_order.levels, fill_value=0
+    ).to_numpy(dtype=int)
+    if min(table.shape) < 2:
+        raise HTTPException(400, "Need at least two observed levels in each variable")
+    d_y_given_x = scipy_stats.somersd(table)
+    d_x_given_y = scipy_stats.somersd(table.T)
+    n = int(table.sum())
+    choose2 = lambda counts: float(np.sum(counts * (counts - 1) / 2))
+    total_pairs = n * (n - 1) / 2
+    row_ties = choose2(table.sum(axis=1))
+    col_ties = choose2(table.sum(axis=0))
+    cell_ties = choose2(table)
+    comparable = total_pairs - row_ties - col_ties + cell_ties
+    gamma = (float(d_y_given_x.statistic) * (total_pairs - row_ties) / comparable
+             if comparable > 0 else None)
+    return _sanitize({
+        "test": "Ordinal association (Goodman-Kruskal gamma and Somers' D)",
+        "n": n, "gamma": gamma,
+        "somers_d_col_given_row": float(d_y_given_x.statistic),
+        "somers_d_row_given_col": float(d_x_given_y.statistic),
+        "p": float(d_y_given_x.pvalue),
+        "p_method": "SciPy Somers' D asymptotic test of zero ordinal association",
+        "row_order": list(row_order.keys), "col_order": list(col_order.keys),
+        "row_labels": list(row_order.keys), "col_labels": list(col_order.keys),
+        "row_order_source": row_order.source, "col_order_source": col_order.source,
+        "table": table.tolist(),
+        "interpretation": "Positive coefficients indicate concordance; negative coefficients indicate discordance. Somers' D is directional.",
+    })
 
 
 def _get_df(session_id: str) -> pd.DataFrame:
@@ -178,11 +234,11 @@ def correlation_pair(req: CorrelationPairRequest):
     # endpoint then answered with Spearman's rho: 0.372 against Kendall's tau
     # of 0.242 on this data, a different statistic under the requested name.
     # A misspelling was answered the same way.
-    if method not in ("auto", "pearson", "spearman", "kendall"):
+    if method not in ("auto", "pearson", "spearman", "kendall", "pointbiserial"):
         raise HTTPException(
             status_code=422,
             detail=(f"Unknown correlation method '{req.method}'. "
-                    "Use auto, pearson, spearman or kendall."),
+                    "Use auto, pearson, spearman, kendall or pointbiserial."),
         )
     if method == "auto":
         method = "pearson" if (normal1 and normal2) else "spearman"
@@ -190,6 +246,15 @@ def correlation_pair(req: CorrelationPairRequest):
     if method == "pearson":
         r, p = scipy_stats.pearsonr(x, y)
         method_used, label = "pearson", "r"
+    elif method == "pointbiserial":
+        if len(np.unique(x)) == 2:
+            binary, continuous = x == np.max(x), y
+        elif len(np.unique(y)) == 2:
+            binary, continuous = y == np.max(y), x
+        else:
+            raise HTTPException(422, "Point-biserial correlation needs one variable with exactly two numeric levels")
+        r, p = scipy_stats.pointbiserialr(binary, continuous)
+        method_used, label = "pointbiserial", "r_pb"
     elif method == "kendall":
         r, p = scipy_stats.kendalltau(x, y)
         method_used, label = "kendall", "τ"
@@ -254,7 +319,7 @@ def correlation_pair(req: CorrelationPairRequest):
             "y_lower": (y_line - ci_band).tolist(),
         },
         "result_text": (
-            f"{'Pearson' if method_used == 'pearson' else 'Spearman'} correlation analysis revealed a "
+            f"{ {'pearson': 'Pearson', 'spearman': 'Spearman', 'kendall': 'Kendall', 'pointbiserial': 'Point-biserial'}[method_used]} correlation analysis revealed a "
             f"{strength} {direction} {'correlation' if p < 0.05 else 'but non-significant correlation'} "
             f"between {req.var1} and {req.var2} ({label} = {r:.3f}, 95% CI: {ci_low:.3f}–{ci_high:.3f}, "
             f"p = {p_str}, n = {n})."
@@ -455,32 +520,42 @@ def correlation_matrix_post(req: CorrelationMatrixRequest):
 
 class ICCRequest(BaseModel):
     session_id: str
-    rater1_col: str = Field(
+    rater1_col: Optional[str] = Field(default=None,
         validation_alias=AliasChoices("rater1_col", "rater1_column"),
     )
-    rater2_col: str = Field(
+    rater2_col: Optional[str] = Field(default=None,
         validation_alias=AliasChoices("rater2_col", "rater2_column"),
     )
+    rater_cols: Optional[List[str]] = None
+    agreement: Literal["absolute", "consistency"] = "absolute"
+    unit: Literal["single", "average"] = "single"
 
 
 @router.post("/icc")
 def icc_endpoint(req: ICCRequest):
-    df = _get_df(req.session_id).dropna(subset=[req.rater1_col, req.rater2_col])
-    r1 = df[req.rater1_col].astype(float).values
-    r2 = df[req.rater2_col].astype(float).values
-    n = len(r1)
-    k = 2
+    cols = req.rater_cols if req.rater_cols is not None else [req.rater1_col, req.rater2_col]
+    if len(cols) < 2 or any(c is None for c in cols) or len(set(cols)) != len(cols):
+        raise HTTPException(status_code=422, detail="Select at least two distinct rater columns")
+    source = _get_df(req.session_id)
+    if any(c not in source.columns for c in cols):
+        raise HTTPException(status_code=422, detail="Rater column not found")
+    df = source[cols].apply(pd.to_numeric, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    scores = df.to_numpy(dtype=float)
+    r1, r2 = scores[:, 0], scores[:, 1]
+    n, k = scores.shape
     if n < 2:
         raise HTTPException(status_code=400, detail="Need at least 2 observations")
+    if np.all(np.ptp(scores, axis=0) == 0):
+        raise HTTPException(400, "ICC is undefined when every rater is constant across subjects")
 
-    grand_mean = np.mean(np.stack([r1, r2]))
-    subject_means = (r1 + r2) / 2.0
-    rater_means = np.array([r1.mean(), r2.mean()])
+    grand_mean = scores.mean()
+    subject_means = scores.mean(axis=1)
+    rater_means = scores.mean(axis=0)
 
     SS_b = k * np.sum((subject_means - grand_mean) ** 2)
     SS_r = n * np.sum((rater_means - grand_mean) ** 2)
-    SS_total = np.sum((r1 - grand_mean) ** 2) + np.sum((r2 - grand_mean) ** 2)
-    SS_e = SS_total - SS_b - SS_r
+    residual_matrix = scores - subject_means[:, None] - rater_means[None, :] + grand_mean
+    SS_e = float(np.sum(residual_matrix ** 2))
 
     df_b = n - 1
     df_r = k - 1
@@ -490,10 +565,11 @@ def icc_endpoint(req: ICCRequest):
     MS_r = SS_r / df_r if df_r > 0 else 0.0
     MS_e = SS_e / df_e if df_e > 0 else 1e-9
 
-    icc_val = (MS_b - MS_e) / (MS_b + (k - 1) * MS_e + k * (MS_r - MS_e) / n)
+    denominator = (MS_b + (k - 1) * MS_e + k * (MS_r - MS_e) / n) if req.agreement == "absolute" else (MS_b + (k - 1) * MS_e)
+    icc_val = (MS_b - MS_e) / denominator if denominator else float("nan")
     icc_val = float(np.clip(icc_val, -1.0, 1.0))
 
-    F_obs = MS_b / MS_e if MS_e > 0 else 0.0
+    F_obs = MS_b / MS_e if MS_e > 0 else (float("inf") if MS_b > 0 else 0.0)
 
     # The interval has to belong to the same ICC as the estimate.
     #
@@ -509,7 +585,12 @@ def icc_endpoint(req: ICCRequest):
     #
     # McGraw & Wong (1996), Table 7, ICC(A,1).
     ci_low, ci_high = -1.0, 1.0
-    if MS_e > 0 and 0 < icc_val < 1 and n > 1 and k > 1:
+    if req.agreement == "consistency" and MS_e > 0:
+        lower_f = F_obs / scipy_stats.f.ppf(0.975, df_b, df_e)
+        upper_f = F_obs * scipy_stats.f.ppf(0.975, df_e, df_b)
+        ci_low = float((lower_f - 1) / (lower_f + k - 1))
+        ci_high = float((upper_f - 1) / (upper_f + k - 1))
+    elif MS_e > 0 and 0 < icc_val < 1 and n > 1 and k > 1:
         a = k * icc_val / (n * (1 - icc_val))
         b_coef = 1 + k * icc_val * (n - 1) / (n * (1 - icc_val))
         denom_v = (a * MS_r) ** 2 / df_r + (b_coef * MS_e) ** 2 / df_e
@@ -524,10 +605,36 @@ def icc_endpoint(req: ICCRequest):
                 ci_low = float(n * (MS_b - F_lower * MS_e) / lo_den)
             if hi_den != 0:
                 ci_high = float(n * (F_upper * MS_b - MS_e) / hi_den)
+            if req.unit == "average":
+                average_icc = k * icc_val / (1 + (k - 1) * icc_val)
+                avg_a = k * average_icc / (n * (1 - average_icc))
+                avg_b = 1 + k * average_icc * (n - 1) / (n * (1 - average_icc))
+                avg_v_den = (avg_a * MS_r) ** 2 / df_r + (avg_b * MS_e) ** 2 / df_e
+                avg_v = (avg_a * MS_r + avg_b * MS_e) ** 2 / avg_v_den
+                F_lower = scipy_stats.f.ppf(0.975, df_b, avg_v)
+                F_upper = scipy_stats.f.ppf(0.975, avg_v, df_b)
+                average_lo_den = F_lower * (MS_r - MS_e) + n * MS_b
+                average_hi_den = MS_r - MS_e + n * F_upper * MS_b
+                if average_lo_den != 0:
+                    ci_low = float(n * (MS_b - F_lower * MS_e) / average_lo_den)
+                if average_hi_den != 0:
+                    ci_high = float(n * (F_upper * MS_b - MS_e) / average_hi_den)
     ci_low = float(np.clip(ci_low, -1.0, 1.0))
     ci_high = float(np.clip(ci_high, -1.0, 1.0))
+    if req.unit == "average":
+        def to_average(value):
+            denominator = 1 + (k - 1) * value
+            return k * value / denominator if denominator > 0 else -1.0
+        icc_val = float(np.clip(to_average(icc_val), -1.0, 1.0))
+        if req.agreement == "consistency":
+            ci_low = float(np.clip(to_average(ci_low), -1.0, 1.0))
+            ci_high = float(np.clip(to_average(ci_high), -1.0, 1.0))
 
     f_p = float(scipy_stats.f.sf(F_obs, df_b, df_e))
+    interval_note = None
+    if MS_e == 0:
+        ci_low = ci_high = None
+        interval_note = "Zero residual variance; a finite F statistic and regular ICC confidence interval cannot be estimated."
 
     if icc_val >= 0.90:
         interp = "Excellent"
@@ -545,13 +652,20 @@ def icc_endpoint(req: ICCRequest):
     loa_upper = mean_diff + 1.96 * sd_diff
     loa_lower = mean_diff - 1.96 * sd_diff
 
-    return {
+    return _sanitize({
         "icc": icc_val,
+        "interval_note": interval_note,
         "ci_low": ci_low,
         "ci_high": ci_high,
         "f_stat": float(F_obs),
         "f_p": f_p,
+        "f_test_note": "F tests between-subject variation against residual variation; it does not test absolute agreement.",
         "n": n,
+        "k": k,
+        "model": "two-way crossed raters",
+        "rater_cols": cols,
+        "agreement": req.agreement,
+        "unit": req.unit,
         "interpretation": interp,
         "bland_altman": {
             "means": means,
@@ -561,7 +675,7 @@ def icc_endpoint(req: ICCRequest):
             "loa_upper": float(loa_upper),
             "loa_lower": float(loa_lower),
         },
-    }
+    })
 
 
 # ── 5. Cohen's Kappa ───────────────────────────────────────────────────────────
@@ -574,22 +688,41 @@ class KappaRequest(BaseModel):
     rater2_col: str = Field(
         validation_alias=AliasChoices("rater2_col", "rater2_column"),
     )
+    weights: Optional[Literal["linear", "quadratic"]] = None
+    level_order: Optional[List[str]] = None
 
 
 @router.post("/cohens_kappa")
 def cohens_kappa(req: KappaRequest):
     from sklearn.metrics import cohen_kappa_score, confusion_matrix as sk_confusion
 
-    df = _get_df(req.session_id).dropna(subset=[req.rater1_col, req.rater2_col])
+    source = _get_df(req.session_id)
+    if any(col not in source.columns for col in (req.rater1_col, req.rater2_col)):
+        raise HTTPException(400, "Selected rater column not found")
+    df = source.dropna(subset=[req.rater1_col, req.rater2_col])
     r1 = df[req.rater1_col].astype(str).values
     r2 = df[req.rater2_col].astype(str).values
     n = len(r1)
     if n < 2:
         raise HTTPException(status_code=400, detail="Need at least 2 observations")
 
-    kappa = float(cohen_kappa_score(r1, r2))
-
-    labels = sorted(set(r1) | set(r2))
+    if req.weights:
+        ordered = resolve_level_order(
+            pd.concat([df[req.rater1_col], df[req.rater2_col]], ignore_index=True),
+            req.rater1_col, session_id=req.session_id, explicit=req.level_order,
+        )
+        if ordered is None:
+            raise HTTPException(422, "Weighted kappa needs ordinal level order. Set Data Dictionary order or pass level_order.")
+        full_order = req.level_order if req.level_order is not None else dictionary_order(req.session_id, req.rater1_col)
+        labels = [level_key(value) for value in full_order] if full_order is not None else list(ordered.keys)
+    else:
+        labels = sorted(set(r1) | set(r2))
+    if len(set(r1) | set(r2)) < 2:
+        raise HTTPException(400, "Kappa needs at least two observed categories")
+    if req.weights:
+        r1 = df[req.rater1_col].map(level_key).to_numpy()
+        r2 = df[req.rater2_col].map(level_key).to_numpy()
+    kappa = float(cohen_kappa_score(r1, r2, labels=labels, weights=req.weights))
     cm = sk_confusion(r1, r2, labels=labels)
     po = float(np.trace(cm) / n)
     row_sums = cm.sum(axis=1)
@@ -631,8 +764,15 @@ def cohens_kappa(req: KappaRequest):
     else:
         interp = "Poor (< chance)"
 
+    if req.weights:
+        # Existing normal-theory SE/CI and H0 variance apply to nominal kappa
+        # only. Do not relabel those quantities as weighted-kappa intervals.
+        ci_low = ci_high = se = se_null = z_stat = p_value = None
     return {
         "kappa": kappa,
+        "weights": req.weights or "none",
+        "level_order": labels,
+        "uncertainty_note": "SE, CI and p for weighted kappa are not estimated." if req.weights else None,
         "ci_low": ci_low,
         "ci_high": ci_high,
         "se": se,
@@ -640,12 +780,12 @@ def cohens_kappa(req: KappaRequest):
         "z": z_stat,
         "p": p_value,
         "n": n,
-        "po": po,
+        "po": po if not req.weights else None,
         # This used to return `po` — the observed agreement, labelled as the
         # expected one. A reader comparing "observed 0.90" against "expected
         # 0.90" would conclude the raters agreed no better than chance, on
         # data where chance agreement is 0.33 and kappa is 0.85.
-        "pe": pe,
+        "pe": pe if not req.weights else None,
         "interpretation": interp,
         "labels": labels,
         "confusion_matrix": cm.tolist(),

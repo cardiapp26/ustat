@@ -83,6 +83,24 @@ def test_robust_se_is_hc3_on_the_residual_df_t(client, sid):
         assert _rel(got[name]["p"], p) < 1e-6, name
 
 
+def test_linear_standardized_beta_and_durbin_watson(client, sid, frames):
+    from statsmodels.stats.stattools import durbin_watson
+    result = client.post("/api/models/linear", json={
+        "session_id": sid, "outcome": "sbp", "predictors": ["age", "bmi"]
+    })
+    assert result.status_code == 200, result.text
+    body = result.json()
+    coefs = {row["variable"]: row for row in body["coefficients"]}
+    fitted = frames["wide"][["sbp", "age", "bmi"]].dropna()
+    expected_beta = coefs["age"]["estimate"] * fitted["age"].std() / fitted["sbp"].std()
+    assert coefs["age"]["standardized_beta"] == pytest.approx(expected_beta)
+    assert coefs["const"]["standardized_beta"] is None
+    dw = next(c for c in body["assumptions"]["checks"] if c["name"] == "residual_autocorrelation")
+    import statsmodels.api as sm
+    model = sm.OLS(fitted["sbp"], sm.add_constant(fitted[["age", "bmi"]])).fit()
+    assert dw["statistic"] == pytest.approx(durbin_watson(model.resid))
+
+
 # ── a predictor with no variance ─────────────────────────────────────────────
 
 @pytest.mark.parametrize("path,body,est_key", [

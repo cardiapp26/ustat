@@ -178,6 +178,7 @@ def linear_regression(req: LinearRequest):
         imputed_dfs = imp_result.imputed_datasets
 
         individual_results = []
+        imputed_scale_ratios = []
         for df_imp in imputed_dfs:
             X_enc = pd.get_dummies(df_imp[req.predictors], drop_first=True).astype(float)
             X_enc, _ = _add_pairwise_interactions(X_enc, req.interactions, req.predictors)
@@ -192,6 +193,11 @@ def linear_regression(req: LinearRequest):
             # distribution takes the correction back out. At n = 30 the
             # robust p for age read 0.016 where R's coeftest gives 0.025.
             m = sm.OLS(y_imp, X).fit(cov_type="HC3" if req.robust_se else "nonrobust", use_t=True)
+            y_imp_sd = float(y_imp.std(ddof=1))
+            imputed_scale_ratios.append({
+                str(var): float(X[var].std(ddof=1)) / y_imp_sd
+                for var in X.columns if var != "const" and y_imp_sd > 0
+            })
             individual_results.append({
                 "coefficients": [
                     {"variable": str(var), "estimate": float(m.params[var]), "se": float(m.bse[var])}
@@ -246,6 +252,22 @@ def linear_regression(req: LinearRequest):
                 "vif": vifs.get(str(var)),
             })
 
+    # Standardize each fitted design column on the same rows as the fit.
+    # Indicator and interaction terms use their actual encoded columns.
+    y_sd = float(y.std(ddof=1))
+    for c in coefs:
+        name = c["variable"]
+        vif = c.get("vif")
+        c["tolerance"] = float(1.0 / vif) if name != "const" and vif is not None and vif > 0 else None
+        x_sd = float(X[name].std(ddof=1)) if name in X else 0.0
+        if name == "const":
+            c["standardized_beta"] = None
+        elif use_mice_pooled:
+            ratios = [item[name] for item in imputed_scale_ratios if name in item]
+            c["standardized_beta"] = float(c["estimate"] * np.mean(ratios)) if ratios else None
+        else:
+            c["standardized_beta"] = float(c["estimate"] * x_sd / y_sd) if y_sd > 0 and x_sd > 0 else None
+
     predictor_info: dict = {}
     for col in req.predictors:
         if col not in df_full.columns:
@@ -295,6 +317,20 @@ def linear_regression(req: LinearRequest):
         "f_p": float(model.f_pvalue),
         "aic": _ic[0],
         "bic": _ic[1],
+        "anova_table": [
+            {"source": "Regression", "ss": float(model.ess), "df": float(model.df_model),
+             "ms": float(model.mse_model)},
+            {"source": "Residual", "ss": float(model.ssr), "df": float(model.df_resid),
+             "ms": float(model.mse_resid)},
+            {"source": "Total", "ss": float(model.centered_tss), "df": float(model.nobs - 1),
+             "ms": None},
+        ] if not use_mice_pooled else None,
+        "anova_note": (
+            "ANOVA sums of squares are not pooled across multiple imputations; no pooled ANOVA table is reported."
+            if use_mice_pooled else
+            "ANOVA decomposition uses ordinary sums of squares; the reported HC3 F-test uses robust covariance."
+            if req.robust_se else None
+        ),
         "coefficients": coefs,
         "residual_se": float(np.sqrt(model.mse_resid)),
         "df_resid": int(model.df_resid),

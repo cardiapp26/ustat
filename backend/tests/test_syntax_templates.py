@@ -97,6 +97,8 @@ REQUESTS = [
           level_order=["Poor", "Fair", "Good"]),
     _post("/api/models/firth_logistic", outcome="event", predictors=["age", "dm"]),
     # hypothesis tests
+    _post("/api/stats/sign_test", column="pain", mu=0),
+    _post("/api/stats/wilcoxon_onesample", column="pain", mu=0),
     _post("/api/stats/ttest", column="sbp", group_column="arm", method="auto"),
     _post("/api/stats/ttest", column="sbp", mu=120),
     _post("/api/repeated/paired_ttest", col1="sbp_pre", col2="sbp_post"),
@@ -113,6 +115,9 @@ REQUESTS = [
     _post("/api/categorical/cochran_q", columns=["resp_w0", "resp_w4", "resp_w12"]),
     _post("/api/categorical/cochran_armitage", ordinal_col="dose", event_col="ae",
           level_order=["Low", "Mid", "High"]),
+    _post("/api/categorical/paired_categorical", col1="before", col2="after", method="bowker"),
+    _post("/api/stats/cohens_kappa", rater1_col="a", rater2_col="b", weights="quadratic", level_order=["Low", "High"]),
+    _post("/api/stats/ordinal_association", row_column="x", col_column="y", row_order=["Low", "High"], col_order=["Low", "High"]),
     # association and agreement
     _post("/api/stats/correlation_pair", var1="age", var2="sbp", method="spearman"),
     _post("/api/stats/partial_correlation", var1="age", var2="sbp",

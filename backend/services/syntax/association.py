@@ -9,11 +9,12 @@ from __future__ import annotations
 
 from ._common import columns, field, imputation_note, lit, plist, rcol, rvec
 
-_METHODS = ("pearson", "spearman", "kendall")
-_PY_TEST = {"pearson": "pearsonr", "spearman": "spearmanr", "kendall": "kendalltau"}
-_R_EXACT = {"pearson": "", "spearman": ", exact = FALSE", "kendall": ", exact = FALSE"}
+_METHODS = ("pearson", "spearman", "kendall", "pointbiserial")
+_PY_TEST = {"pearson": "pearsonr", "spearman": "spearmanr", "kendall": "kendalltau", "pointbiserial": "pointbiserialr"}
+_R_EXACT = {"pearson": "", "spearman": ", exact = FALSE", "kendall": ", exact = FALSE", "pointbiserial": ""}
 _RANK_NOTE = {
     "pearson": "",
+    "pointbiserial": "# One variable must be binary; point-biserial equals Pearson on its 0/1 codes.\n",
     "spearman": "# exact = FALSE: SciPy's t approximation for rho.\n",
     "kendall": ("# exact = FALSE: SciPy's normal approximation for tau-b; SciPy itself goes\n"
                 "# exact below 34 pairs without ties, where R would up to 49.\n"),
@@ -34,6 +35,10 @@ def correlation_pair(b: dict) -> dict:
         "# method = \"auto\": uSTAT uses Pearson when both variables pass its normality\n"
         "# check (Shapiro-Wilk under n = 50, Lilliefors up to 2000), else Spearman.\n"
         "# The result names the one it used.\n" if method == "auto" else "")
+    if method == "pointbiserial":
+        return {"title": f"Point-biserial correlation: {x} and {y}",
+                "python": "from scipy import stats\n" + f"d = df[{plist([x,y])}].dropna()\n" + "binary_col = next(c for c in d if d[c].nunique() == 2)\ncontinuous_col = next(c for c in d if c != binary_col)\nlevels = sorted(d[binary_col].unique())\nbinary = d[binary_col] == levels[-1]\nstats.pointbiserialr(binary, d[continuous_col])",
+                "r": f"d <- na.omit(df[, {rvec([x,y])}])\n" + "binary_col <- names(d)[sapply(d, function(x) length(unique(x)) == 2)][1]\ncontinuous_col <- setdiff(names(d), binary_col)[1]\nlevels <- sort(unique(d[[binary_col]]))\nbinary <- as.numeric(d[[binary_col]] == tail(levels, 1))\ncor.test(binary, d[[continuous_col]], method = \"pearson\")"}
     ci_note = ("" if chosen == ["pearson"] else
                "# uSTAT puts the Fisher z interval (se = 1 / sqrt(n - 3)) on rho and tau as\n"
                "# well; neither library reports one for them.\n")
@@ -43,7 +48,7 @@ def correlation_pair(b: dict) -> dict:
         + ("  # .confidence_interval(): Fisher z, as uSTAT" if m == "pearson" else "")
         for m in chosen)
     r_calls = "".join(
-        _RANK_NOTE[m] + f'cor.test({rcol(x, "d")}, {rcol(y, "d")}, method = "{m}"{_R_EXACT[m]})\n'
+        _RANK_NOTE[m] + f'cor.test({rcol(x, "d")}, {rcol(y, "d")}, method = "{dict(pointbiserial="pearson").get(m, m)}"{_R_EXACT[m]})\n'
         for m in chosen)
     return {
         "title": f"Correlation: {x} and {y}",
@@ -137,19 +142,12 @@ def correlation_all_numeric(b: dict) -> dict:
 
 
 def icc(b: dict) -> dict:
-    r1 = field(b, "rater1_col", "rater1_column", default="rater1")
-    r2 = field(b, "rater2_col", "rater2_column", default="rater2")
-    return {
-        "title": f"Intraclass correlation ICC(A,1): {r1} and {r2}",
-        "python": ("# No intraclass correlation in scipy or statsmodels; see the R version.\n"
-                   "# uSTAT reports ICC(A,1) with McGraw and Wong's interval and F test."),
-        "r": (
-            "library(irr)\n\n"
-            "# Two-way random effects, absolute agreement, single rater: ICC(A,1),\n"
-            "# with McGraw and Wong's interval and F test, as uSTAT reports.\n"
-            f"icc(na.omit(df[, {rvec([r1, r2])}]), model = \"twoway\", type = \"agreement\", unit = \"single\")"
-        ),
-    }
+    raters = columns(b, "rater_cols") or [field(b, "rater1_col", "rater1_column", default="rater1"), field(b, "rater2_col", "rater2_column", default="rater2")]
+    agreement = "consistency" if b.get("agreement") == "consistency" else "agreement"
+    unit = "average" if b.get("unit") == "average" else "single"
+    return {"title": f"ICC ({agreement}, {unit}): {', '.join(raters)}",
+            "python": "# See R irr::icc for two-way ICC and its confidence interval.",
+            "r": "library(irr)\n" + f'icc(na.omit(df[, {rvec(raters)}]), model = "twoway", type = "{agreement}", unit = "{unit}")'}
 
 
 def cronbach(b: dict) -> dict:
@@ -162,15 +160,43 @@ def cronbach(b: dict) -> dict:
         "r": (
             "library(psych)\n\n"
             f"items <- na.omit(df[, {rvec(items)}])  # complete cases, as uSTAT\n"
-            "a <- alpha(items)\n"
+            "a <- alpha(items, check.keys = FALSE)\n"
             "a$total$raw_alpha     # Cronbach's alpha\n"
+            "a$total$std.alpha     # Standardized Cronbach's alpha\n"
             "a$item.stats$r.drop   # corrected item-total r\n"
             "a$alpha.drop$raw_alpha  # alpha if the item is dropped\n"
-            "# uSTAT's omega comes from a one-factor ML fit and the model-implied total\n"
-            "# variance; psych's omega total uses the observed one, so they differ a little.\n"
+            "# psych::omega uses its own factor model and keying defaults; this is\n"
+            "# an independent comparison, not exact replication of uSTAT omega.\n"
             'omega(items, nfactors = 1, fm = "ml", plot = FALSE)$omega.tot'
         ),
     }
+
+
+def cohens_kappa(b: dict) -> dict:
+    x = field(b, "rater1_col", "rater1_column", default="rater1")
+    y = field(b, "rater2_col", "rater2_column", default="rater2")
+    weights = b.get("weights") if b.get("weights") in ("linear", "quadratic") else None
+    order = columns(b, "level_order")
+    return {"title": "Cohen's kappa", "python": "from sklearn.metrics import cohen_kappa_score\nimport numbers\n" + f"d = df[{plist([x,y])}].dropna()\n" + "def level_key(v):\n    if isinstance(v, numbers.Real) and float(v).is_integer():\n        return str(int(v))\n    return str(v)\nd = d.apply(lambda col: col.map(level_key))\n" + (f"levels = {plist(order)}\n" if order else "# Set levels to the ordinal order shown in the uSTAT result.\nlevels = None\n") + f"cohen_kappa_score(d[{lit(x)}], d[{lit(y)}], labels=levels, weights={repr(weights)})",
+            "r": "library(irr)\n" + f"d <- na.omit(df[, {rvec([x,y])}])\n" + "d[] <- lapply(d, as.character)\n" + (f"d[] <- lapply(d, factor, levels = {rvec(order)}, ordered = TRUE)\n" if order else "# For weighted kappa, factor levels must match the order shown in uSTAT.\n") + f'kappa2(d, weight = "{dict(linear="equal", quadratic="squared").get(weights,"unweighted")}")'}
+
+
+def ordinal_association(b: dict) -> dict:
+    x = field(b, "row_column", default="x")
+    y = field(b, "col_column", default="y")
+    rows, cols = columns(b, "row_order"), columns(b, "col_order")
+    py_order = (f"row_levels = {plist(rows)}\n" if rows else "# Replace row_levels with the ordinal order shown in uSTAT.\nrow_levels = sorted(d.iloc[:, 0].unique())\n") + (f"col_levels = {plist(cols)}\n" if cols else "# Replace col_levels with the ordinal order shown in uSTAT.\ncol_levels = sorted(d.iloc[:, 1].unique())\n")
+    r_order = (f"rows <- {rvec(rows)}\n" if rows else "# Replace rows with the ordinal order shown in uSTAT.\nrows <- sort(unique(d[[1]]))\n") + (f"cols <- {rvec(cols)}\n" if cols else "# Replace cols with the ordinal order shown in uSTAT.\ncols <- sort(unique(d[[2]]))\n")
+    return {"title": "Ordinal association", "python": "import pandas as pd\nfrom scipy.stats import somersd\n" + f"d = df[{plist([x,y])}].dropna()\n" + py_order + f"table = pd.crosstab(d[{lit(x)}], d[{lit(y)}]).reindex(index=row_levels, columns=col_levels, fill_value=0)\n" + "somersd(table.to_numpy())  # D(column | row)\nsomersd(table.to_numpy().T)  # D(row | column)\n# Gamma: use the R reference below; SciPy has no gamma API.",
+            "r": "library(DescTools)\n" + f"d <- na.omit(df[, {rvec([x,y])}])\n" + r_order + f"tab <- table(factor({rcol(x,'d')}, rows), factor({rcol(y,'d')}, cols))\n" + 'GoodmanKruskalGamma(tab)\nSomersDelta(tab, direction = "column")\nSomersDelta(tab, direction = "row")'}
+
+
+def paired_categorical(b: dict) -> dict:
+    x = field(b, "col1", default="before")
+    y = field(b, "col2", default="after")
+    bowker = b.get("method", "bowker") == "bowker"
+    return {"title": "Paired categorical test", "python": "import pandas as pd\nfrom statsmodels.stats.contingency_tables import SquareTable\n" + f"d = df[{plist([x,y])}].dropna()\n" + f"levels = sorted(set(d[{lit(x)}]) | set(d[{lit(y)}]))\n" + f"table = pd.crosstab(d[{lit(x)}], d[{lit(y)}]).reindex(index=levels, columns=levels, fill_value=0)\n" + f"SquareTable(table, shift_zeros=False).{'symmetry' if bowker else 'homogeneity'}()",
+            "r": ("" if bowker else "library(DescTools)\n") + f"d <- na.omit(df[, {rvec([x,y])}])\n" + f"levels <- sort(unique(c({rcol(x,'d')}, {rcol(y,'d')})))\n" + f"tab <- table(factor({rcol(x,'d')}, levels), factor({rcol(y,'d')}, levels))\n" + ('mcnemar.test(tab, correct = FALSE) # Bowker extension for square tables' if bowker else 'StuartMaxwellTest(tab)')}
 
 
 ENDPOINTS = {
@@ -179,5 +205,8 @@ ENDPOINTS = {
     "/api/stats/correlation_matrix": correlation_matrix,
     "/api/stats/{sid}/correlation": correlation_all_numeric,
     "/api/stats/icc": icc,
+    "/api/stats/cohens_kappa": cohens_kappa,
+    "/api/stats/ordinal_association": ordinal_association,
+    "/api/categorical/paired_categorical": paired_categorical,
     "/api/reliability/cronbach": cronbach,
 }
