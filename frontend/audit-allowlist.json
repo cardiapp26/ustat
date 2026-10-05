@@ -34,6 +34,28 @@
         "Revisit when plotly.js ships a maplibre-gl above the advisory range, or",
         "if a map trace is ever added to the app, whichever comes first."
       ]
+    },
+    {
+      "id": "GHSA-vfj7-8cjw-p6xm",
+      "package": "braces",
+      "severity": "high",
+      "title": "braces vulnerable to stack-exhaustion denial of service through deeply nested patterns",
+      "reachedVia": "tailwindcss 3 (chokidar and micromatch) uses braces to expand build-time content globs",
+      "reviewBy": "2026-12-10",
+      "why": [
+        "No fixed version exists to upgrade to: braces 3.0.3 is the latest release",
+        "and it is inside the advisory range. npm's suggested 'fix' is a major",
+        "migration of tailwindcss from 3 to 4, which drops this dependency chain.",
+        "",
+        "The vulnerable behaviour is a stack overflow when braces expands a",
+        "deeply nested pattern. Here braces only runs inside tailwindcss's build",
+        "and watch tooling, on the content globs in tailwind.config, which are",
+        "written in this repo. It is not bundled into the shipped app and no",
+        "user-supplied pattern ever reaches it.",
+        "",
+        "Revisit when braces ships a patched release, when tailwindcss moves off",
+        "it, or when the app moves to tailwindcss 4, whichever comes first."
+      ]
     }
   ]
 }
