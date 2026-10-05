@@ -7,6 +7,7 @@ from pydantic import AliasChoices, BaseModel, Field
 from typing import List, Optional
 
 from services import store
+from services.hodges_lehmann import hl_paired
 from services.stat_utils import (
     cohen_d_paired, matched_rank_biserial, kendalls_w, partial_eta_squared,
     check_normality, group_summary, adjust_pvalues,
@@ -183,6 +184,21 @@ def wilcoxon_signed_rank(req: WilcoxonSRRequest):
     asymptotic = sp.wilcoxon(d, method="approx", alternative="two-sided")
     es = matched_rank_biserial(w_plus, len(nonzero))
     ps = _p_str(p)
+    hl_conf = 1.0 - req.alpha if 0.0 < req.alpha < 1.0 else 0.95
+    hl = hl_paired(x1, x2, hl_conf)
+    hl_pct = f"{hl_conf * 100:g}%"
+    hl_text = ""
+    hl_rows: list = []
+    if hl["estimate"] is not None:
+        hl_text = (
+            f" The Hodges-Lehmann pseudomedian of the differences ({req.col1} minus {req.col2}) "
+            f"was {hl['estimate']:.3g} ({hl_pct} CI [{hl['ci_low']:.3g}, {hl['ci_high']:.3g}])."
+        )
+        hl_rows = [
+            ["Hodges-Lehmann pseudomedian (diff)", round(hl["estimate"], 6)],
+            [f"Hodges-Lehmann {hl_pct} CI lower", round(hl["ci_low"], 6)],
+            [f"Hodges-Lehmann {hl_pct} CI upper", round(hl["ci_high"], 6)],
+        ]
 
     return sanitize_nonfinite({
         "test": "Wilcoxon signed-rank test",
@@ -216,6 +232,7 @@ def wilcoxon_signed_rank(req: WilcoxonSRRequest):
             f"{'significantly' if sig else 'not significantly'} different from {req.col1} scores "
             f"(W = {w_stat:.1f}, p = {ps}, r = {es['value']:.3f} [{es['magnitude']}]). "
             f"Median {req.col1} = {np.median(x1):.2f}, median {req.col2} = {np.median(x2):.2f}."
+            f"{hl_text}"
         ),
         "export_rows": [
             ["Statistic", "Value"],
@@ -227,8 +244,13 @@ def wilcoxon_signed_rank(req: WilcoxonSRRequest):
             ["Rank-biserial r", es["value"]],
             ["95% CI lower", es["ci_low"]],
             ["95% CI upper", es["ci_high"]],
+            *hl_rows,
         ],
-        "r_code": f'wilcox.test(data${req.col1}, data${req.col2}, paired = TRUE)',
+        "hodges_lehmann": hl,
+        "r_code": (
+            f'wilcox.test(data${req.col1}, data${req.col2}, paired = TRUE, '
+            f'conf.int = TRUE, conf.level = {hl_conf:g})'
+        ),
     })
 
 

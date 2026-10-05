@@ -22,7 +22,7 @@ from routers import (
     pub_tables, categorical, agreement, reliability, missing_data, decision_curve,
     model_compare, diagnostics, model_diagnostics, pub_export, nomogram,
     survival_advanced, article_parser, code_runner, ml, timeseries, meta,
-    multiplicity, factor, bayesian, causal, causal_sem, project
+    multiplicity, factor, bayesian, causal, causal_sem, project, epidemiology
 )
 
 # The agent router is optional: it needs httpx + openai, which a slim
@@ -137,6 +137,7 @@ app.include_router(ml.router, prefix="/api/ml", tags=["ml"])
 app.include_router(timeseries.router, prefix="/api/timeseries", tags=["timeseries"])
 app.include_router(meta.router, prefix="/api/meta", tags=["meta"])
 app.include_router(multiplicity.router, prefix="/api/multiplicity", tags=["multiplicity"])
+app.include_router(epidemiology.router, prefix="/api/epidemiology", tags=["epidemiology"])
 app.include_router(factor.router, prefix="/api/factor", tags=["factor"])
 app.include_router(bayesian.router, prefix="/api/bayesian", tags=["bayesian"])
 app.include_router(causal.router, prefix="/api/causal", tags=["causal"])

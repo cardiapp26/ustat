@@ -12,6 +12,7 @@ from services import store
 from services.impute import apply_imputation
 from services.level_order import dictionary_order, resolve_level_order
 from services.number_format import level_key
+from services.weighted_kappa import METHOD_NOTE as WEIGHTED_KAPPA_NOTE, weighted_kappa_stats
 
 router = APIRouter()
 
@@ -764,15 +765,24 @@ def cohens_kappa(req: KappaRequest):
     else:
         interp = "Poor (< chance)"
 
+    po_out, pe_out, note = po, pe, None
     if req.weights:
-        # Existing normal-theory SE/CI and H0 variance apply to nominal kappa
-        # only. Do not relabel those quantities as weighted-kappa intervals.
-        ci_low = ci_high = se = se_null = z_stat = p_value = None
+        # The nominal-kappa SE / H0 variance above do not apply to weighted
+        # kappa. Use the Fleiss-Cohen-Everitt (1969) variance with the same
+        # agreement weights as the kappa itself (sklearn's linear / quadratic
+        # weights are the complements of these agreement weights).
+        wk = weighted_kappa_stats(cm, req.weights)
+        ci_low, ci_high, se = wk["ci_low"], wk["ci_high"], wk["se"]
+        se_null, z_stat, p_value = wk["se_null"], wk["z"], wk["p"]
+        po_out, pe_out = wk["po"], wk["pe"]
+        note = WEIGHTED_KAPPA_NOTE + (
+            " po and pe are the weighted observed and expected agreement."
+        )
     return {
         "kappa": kappa,
         "weights": req.weights or "none",
         "level_order": labels,
-        "uncertainty_note": "SE, CI and p for weighted kappa are not estimated." if req.weights else None,
+        "uncertainty_note": note,
         "ci_low": ci_low,
         "ci_high": ci_high,
         "se": se,
@@ -780,12 +790,12 @@ def cohens_kappa(req: KappaRequest):
         "z": z_stat,
         "p": p_value,
         "n": n,
-        "po": po if not req.weights else None,
+        "po": po_out,
         # This used to return `po` — the observed agreement, labelled as the
         # expected one. A reader comparing "observed 0.90" against "expected
         # 0.90" would conclude the raters agreed no better than chance, on
         # data where chance agreement is 0.33 and kappa is 0.85.
-        "pe": pe if not req.weights else None,
+        "pe": pe_out,
         "interpretation": interp,
         "labels": labels,
         "confusion_matrix": cm.tolist(),

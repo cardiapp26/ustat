@@ -63,7 +63,10 @@ def test_ordinal_association_and_weighted_kappa(client):
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["kappa"] == pytest.approx(cohen_kappa_score([r["x"] for r in rows], [r["y"] for r in rows], weights="quadratic"))
-    assert body["ci_low"] is None
+    # Fleiss-Cohen-Everitt (1969) SE / CI are now reported for weighted kappa.
+    assert body["se"] is not None and body["se"] > 0
+    assert body["ci_low"] < body["kappa"] < body["ci_high"] <= 1.0
+    assert body["p"] is not None
 
 
 def test_anova_scheffe_table(client):

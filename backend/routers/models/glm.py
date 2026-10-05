@@ -356,18 +356,33 @@ class NegBinomRequest(BaseModel):
     predictors: List[str]
     imputation: Optional[str] = "listwise"
     robust_se: Optional[bool] = False
+    # Follow-up time / person-years. When given, the model is a rate model
+    # (log link with log(exposure) as an offset) and the IRR is a rate ratio.
+    exposure_col: Optional[str] = None
 
 
 @router.post("/negbinom")
 def negative_binomial_regression(req: NegBinomRequest):
     df_full = _get_df(req.session_id)
     n_total = len(df_full)
-    df = apply_imputation(df_full, [req.outcome] + req.predictors, req.imputation or "listwise")
+    exposure_col = _validate_exposure(df_full, req)
+    impute_cols = [req.outcome] + req.predictors + ([exposure_col] if exposure_col else [])
+    df = apply_imputation(df_full, impute_cols, req.imputation or "listwise")
     df, cat_warnings = _clean_predictor_categories(df, req.predictors)
+    if exposure_col:
+        # Keep only rows with a usable exposure (listwise on the offset).
+        df = df[pd.to_numeric(df[exposure_col], errors="coerce").notna()]
     n_excluded = n_total - len(df)
     X = pd.get_dummies(df[req.predictors], drop_first=True)
     X, dropped_const = design_with_constant(X)
     y = pd.to_numeric(df[req.outcome], errors="coerce")
+    exposure = None
+    if exposure_col:
+        # A plain array, not a Series: statsmodels 0.14 mis-aligns a Series
+        # exposure and returns NaN coefficients.
+        exposure = pd.to_numeric(df[exposure_col], errors="coerce").to_numpy(dtype=float)
+        if (exposure <= 0).any():
+            raise HTTPException(status_code=422, detail=f"Exposure column '{exposure_col}' must be strictly positive (> 0) after imputation.")
     if (y.dropna() < 0).any():
         raise HTTPException(status_code=422, detail="Negative binomial requires non-negative integer counts.")
     if (y.dropna() % 1 != 0).any():
@@ -393,12 +408,13 @@ def negative_binomial_regression(req: NegBinomRequest):
     # 2.3e-05 on the audit frame), contradicting the paragraph above and the
     # validation card. The joint fit still supplies alpha, its SE, AIC and BIC.
     try:
-        model = sm.NegativeBinomial(y, X).fit(disp=0, maxiter=200)
+        model = sm.NegativeBinomial(y, X, exposure=exposure).fit(disp=0, maxiter=200)
         alpha_est = float(model.params["alpha"])
         alpha_se = float(model.bse["alpha"])
         converged = bool(getattr(model.mle_retvals, "get", lambda *_: True)("converged", True))
         beta_fit = sm.GLM(
-            y, X, family=sm.families.NegativeBinomial(alpha=alpha_est)
+            y, X, family=sm.families.NegativeBinomial(alpha=alpha_est),
+            exposure=exposure,
         ).fit(cov_type=cov_type)
     except Exception as exc:
         raise HTTPException(
@@ -432,6 +448,8 @@ def negative_binomial_regression(req: NegBinomRequest):
         "n_excluded": n_excluded,
         "aic": float(model.aic),
         "bic": float(model.bic),
+        "exposure_col": exposure_col,
+        "rate_model": bool(exposure_col),
         # The dispersion the model actually estimated, so the reader can see
         # how far the counts sit from Poisson. It was never reported at all.
         "alpha": alpha_est,
@@ -446,7 +464,31 @@ def negative_binomial_regression(req: NegBinomRequest):
         ),
         "warnings": cat_warnings + constant_column_warnings(dropped_const),
         "coefficients": coefs,
+        "result_text": _negbinom_results_text(req.outcome, coefs, exposure_col, alpha_est),
     })
+
+
+def _negbinom_results_text(outcome, coefs, exposure_col=None, alpha=None):
+    sig = [c for c in coefs if c["variable"] != "const" and c["p"] < 0.05]
+    if exposure_col:
+        parts = [
+            f"Negative binomial rate regression was performed to model {outcome} "
+            f"with {exposure_col} as the exposure (follow-up time) offset; "
+            "incidence rate ratios (IRR) are rate ratios."
+        ]
+    else:
+        parts = [f"Negative binomial regression was performed to model {outcome}."]
+    if alpha is not None and np.isfinite(alpha):
+        parts.append(f"The dispersion was estimated by maximum likelihood (alpha = {alpha:.3f}).")
+    if sig:
+        preds = []
+        for c in sig:
+            p_s = "<0.001" if c["p"] < 0.001 else f'{c["p"]:.3f}'
+            preds.append(f'{c["variable"]} (IRR = {c["irr"]:.2f}, 95% CI: {c["irr_ci_low"]:.2f}–{c["irr_ci_high"]:.2f}, p = {p_s})')
+        parts.append("Significant predictors: " + "; ".join(preds) + ".")
+    else:
+        parts.append("No predictor reached statistical significance.")
+    return " ".join(parts)
 
 
 # ── Standalone GEE (Generalized Estimating Equations) ──────────────────────────

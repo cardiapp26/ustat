@@ -3,6 +3,7 @@ from .linear import router as linear_router
 from .logistic import router as logistic_router
 from .cox import router as cox_router
 from .glm import router as glm_router
+from .count import router as count_router
 from .multi_outcome_regression import router as multi_outcome_regression_router
 from .multinomial import router as multinomial_router
 from .psm_iptw import router as psm_iptw_router
@@ -16,6 +17,7 @@ router.include_router(linear_router)
 router.include_router(logistic_router)
 router.include_router(cox_router)
 router.include_router(glm_router)
+router.include_router(count_router)
 router.include_router(multi_outcome_regression_router)
 router.include_router(multinomial_router)
 router.include_router(psm_iptw_router)

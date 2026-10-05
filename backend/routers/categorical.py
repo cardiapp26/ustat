@@ -9,6 +9,7 @@ from typing import List, Optional
 from services import store
 from services.level_order import SOURCE_RECOGNISED, resolve_level_order
 from services.category_health import clean_two_level
+from services.diagnostic_ci import wilson_ci
 from services.risk_measures import (
     compute_risk_measures, risk_measures_export_rows, risk_measures_text,
 )
@@ -354,6 +355,53 @@ def two_proportions_ztest(req: TwoProportionsRequest):
 # 4. McNEMAR'S TEST
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def newcombe_paired_ci(a: int, b: int, c: int, d: int, alpha: float = 0.05) -> dict:
+    """Newcombe (1998) method 10: score CI for a paired proportion difference.
+
+    Cells: a = both positive, b = column 1 positive and column 2 negative,
+    c = column 1 negative and column 2 positive, d = both negative.
+    p1 = (a + b) / n is the marginal positive proportion of column 1 and
+    p2 = (a + c) / n that of column 2, so the difference is
+    p1 - p2 = (b - c) / n. The two Wilson intervals are combined with the
+    phi correlation correction (phi = 0 when a margin is empty).
+    """
+    n = a + b + c + d
+    if n <= 0:
+        raise ValueError("empty table")
+    p1, p2 = (a + b) / n, (a + c) / n
+    diff = (b - c) / n
+    l1, u1 = wilson_ci(a + b, n, alpha)
+    l2, u2 = wilson_ci(a + c, n, alpha)
+    margins = float(a + b) * (c + d) * (a + c) * (b + d)
+    phi = (a * d - b * c) / np.sqrt(margins) if margins > 0 else 0.0
+    lo_gap = (p1 - l1, u2 - p2)
+    hi_gap = (u1 - p1, p2 - l2)
+    low = diff - np.sqrt(max(lo_gap[0] ** 2 + lo_gap[1] ** 2 - 2 * phi * lo_gap[0] * lo_gap[1], 0.0))
+    high = diff + np.sqrt(max(hi_gap[0] ** 2 + hi_gap[1] ** 2 - 2 * phi * hi_gap[0] * hi_gap[1], 0.0))
+    return {
+        "estimate": float(diff),
+        "ci_low": float(max(low, -1.0)),
+        "ci_high": float(min(high, 1.0)),
+        "proportion_col1": float(p1),
+        "proportion_col2": float(p2),
+        "phi": float(phi),
+    }
+
+
+def conditional_or_ci(b: int, c: int, alpha: float = 0.05) -> Optional[tuple[float, float]]:
+    """Exact conditional CI for the discordant odds ratio b / c.
+
+    Given b + c discordant pairs, b ~ Binomial(b + c, pi) with OR = pi / (1 - pi),
+    so the Clopper-Pearson interval for pi is transformed by p / (1 - p).
+    None when b + c == 0 or c == 0 (the odds ratio is undefined or infinite).
+    """
+    if b + c == 0 or c == 0:
+        return None
+    pi_low = 0.0 if b == 0 else float(sp.beta.ppf(alpha / 2, b, c + 1))
+    pi_high = float(sp.beta.ppf(1 - alpha / 2, b + 1, c))
+    return pi_low / (1 - pi_low), pi_high / (1 - pi_high)
+
+
 class McnemarRequest(BaseModel):
     session_id: str
     col1: str = Field(validation_alias=AliasChoices("col1", "column1"))
@@ -404,11 +452,41 @@ def mcnemar_test(req: McnemarRequest):
     # Odds of moving positive -> negative against negative -> positive.
     or_val = float(b / c) if c > 0 else float('inf')
     or_str = f"{or_val:.3f}" if np.isfinite(or_val) else "Inf"
+    ci_alpha = req.alpha if 0.0 < req.alpha < 1.0 else 0.05
+    conf_pct = f"{(1 - ci_alpha) * 100:g}%"
     es = {"name": "odds_ratio_discordant", "value": round(or_val, 4) if np.isfinite(or_val) else None,
           "ci_low": None, "ci_high": None, "magnitude": ""}
     if np.isfinite(or_val):
         from services.stat_utils import _es_magnitude
         es["magnitude"] = _es_magnitude("odds_ratio", or_val)
+    or_ci = conditional_or_ci(int(b), int(c), ci_alpha)
+    if or_ci is not None:
+        es["ci_low"], es["ci_high"] = round(or_ci[0], 4), round(or_ci[1], 4)
+    npc = newcombe_paired_ci(int(a), int(b), int(c), int(d), ci_alpha)
+    paired_difference = {
+        "estimate": npc["estimate"],
+        "ci_low": npc["ci_low"],
+        "ci_high": npc["ci_high"],
+        "method": "Newcombe (1998) method 10: Wilson score intervals with phi correlation correction",
+        "confidence_level": float(1 - ci_alpha),
+        "positive_level": pos_level,
+        "proportion_col1": npc["proportion_col1"],
+        "proportion_col2": npc["proportion_col2"],
+        "phi": npc["phi"],
+        "note": (
+            f"Difference = proportion '{pos_level}' in {req.col1} minus proportion "
+            f"'{pos_level}' in {req.col2} = (b - c) / n, with b = {req.col1} '{pos_level}' -> "
+            f"{req.col2} '{neg_level}' ({int(b)}) and c = {req.col1} '{neg_level}' -> "
+            f"{req.col2} '{pos_level}' ({int(c)})."
+        ),
+    }
+    pd_text = (
+        f" The paired difference in proportion '{pos_level}' ({req.col1} minus {req.col2}) was "
+        f"{npc['estimate']:.3f} ({conf_pct} Newcombe CI [{npc['ci_low']:.3f}, {npc['ci_high']:.3f}])."
+    )
+    or_ci_text = (
+        f" ({conf_pct} exact conditional CI [{or_ci[0]:.3f}, {or_ci[1]:.3f}])" if or_ci is not None else ""
+    )
 
     return sanitize_nonfinite({
         "test": "McNemar's test",
@@ -432,6 +510,7 @@ def mcnemar_test(req: McnemarRequest):
             "concordant_a": int(a), "concordant_d": int(d),
             "n": int(len(sub)),
         },
+        "paired_difference": paired_difference,
         "warnings": warnings,
         "interpretation": (
             f"{'Significant' if sig else 'No significant'} change between {req.col1} and {req.col2} "
@@ -445,7 +524,8 @@ def mcnemar_test(req: McnemarRequest):
             f"{req.col2} '{pos_level}' = {neg_to_pos}. "
             f"The result was {'statistically significant' if sig else 'not statistically significant'} "
             f"(statistic = {stat:.3f}, p = {ps}). "
-            f"Odds ratio of discordant pairs = {or_str}."
+            f"Odds ratio of discordant pairs = {or_str}{or_ci_text}."
+            f"{pd_text}"
         ),
         "export_rows": [
             ["Statistic", "Value"],
@@ -457,8 +537,27 @@ def mcnemar_test(req: McnemarRequest):
             [f"'{neg_level}' -> '{pos_level}'", neg_to_pos],
             [f"Both '{neg_level}'", both_neg],
             ["OR (discordant)", or_str],
+            *([[f"OR (discordant) {conf_pct} CI lower", round(or_ci[0], 4)],
+               [f"OR (discordant) {conf_pct} CI upper", round(or_ci[1], 4)]] if or_ci is not None else []),
+            [f"Paired difference in '{pos_level}' proportion ({req.col1} - {req.col2})", round(npc["estimate"], 6)],
+            [f"Paired difference {conf_pct} CI lower (Newcombe)", round(npc["ci_low"], 6)],
+            [f"Paired difference {conf_pct} CI upper (Newcombe)", round(npc["ci_high"], 6)],
         ],
-        "r_code": "mcnemar.test(table)",
+        "r_code": (
+            "mcnemar.test(table)\n"
+            "# Paired proportion difference (b - c) / n with the Newcombe (1998) method 10 score CI.\n"
+            "# DescTools::BinomDiffCI is for INDEPENDENT samples; for paired data compute it by hand:\n"
+            f"a <- {int(a)}; b <- {int(b)}; c <- {int(c)}; d <- {int(d)}; n <- a + b + c + d\n"
+            f"w1 <- prop.test(a + b, n, correct = FALSE, conf.level = {1 - ci_alpha:g})$conf.int  # P('{pos_level}') in {req.col1}\n"
+            f"w2 <- prop.test(a + c, n, correct = FALSE, conf.level = {1 - ci_alpha:g})$conf.int  # P('{pos_level}') in {req.col2}\n"
+            "p1 <- (a + b) / n; p2 <- (a + c) / n\n"
+            "phi <- if (min(a + b, c + d, a + c, b + d) > 0) (a * d - b * c) / sqrt((a + b) * (c + d) * (a + c) * (b + d)) else 0\n"
+            "c(diff = p1 - p2,\n"
+            "  lower = (p1 - p2) - sqrt((p1 - w1[1])^2 + (w2[2] - p2)^2 - 2 * phi * (p1 - w1[1]) * (w2[2] - p2)),\n"
+            "  upper = (p1 - p2) + sqrt((w1[2] - p1)^2 + (p2 - w2[1])^2 - 2 * phi * (w1[2] - p1) * (p2 - w2[1])))\n"
+            "# Conditional exact CI for the discordant odds ratio b / c (Clopper-Pearson on b / (b + c)):\n"
+            f"bt <- binom.test(b, b + c, conf.level = {1 - ci_alpha:g})$conf.int; bt / (1 - bt)"
+        ),
     })
 
 

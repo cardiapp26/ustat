@@ -11,6 +11,7 @@ from pydantic import AliasChoices, BaseModel, Field
 from services import store
 from services.category_health import clean_two_level
 from services.diagnostic_ci import fagan_post_test, simel_lr_ci, wilson_ci
+from services.hodges_lehmann import hl_one_sample, hl_two_sample
 from services.impute import apply_imputation
 from services.level_order import SOURCE_RECOGNISED, resolve_level_order
 from services.text_generators import (
@@ -60,6 +61,28 @@ def _two_level_work(
     return work.dropna(), cleaned.warnings
 
 
+def _hl_sentence(hl: dict, what: str) -> str:
+    """One result_text sentence for a Hodges-Lehmann block, "" when not computed."""
+    if hl.get("estimate") is None or hl.get("ci_low") is None:
+        return ""
+    pct = f"{hl['confidence_level'] * 100:g}%"
+    return (
+        f" The Hodges-Lehmann {what} was {hl['estimate']:.3g} "
+        f"({pct} CI [{hl['ci_low']:.3g}, {hl['ci_high']:.3g}])."
+    )
+
+
+def _hl_export_rows(hl: dict, label: str) -> list:
+    """export_rows lines for a Hodges-Lehmann block ([] when not computed)."""
+    if hl.get("estimate") is None:
+        return []
+    return [
+        [f"Hodges-Lehmann {label}", round(hl["estimate"], 6)],
+        [f"Hodges-Lehmann {hl['confidence_level'] * 100:g}% CI lower", round(hl["ci_low"], 6)],
+        [f"Hodges-Lehmann {hl['confidence_level'] * 100:g}% CI upper", round(hl["ci_high"], 6)],
+    ]
+
+
 class SignTestRequest(BaseModel):
     session_id: str
     column: str
@@ -91,6 +114,7 @@ def wilcoxon_onesample(req: OneSampleWilcoxonRequest):
     result = scipy_stats.wilcoxon(differences, alternative=req.alternative)
     asymptotic = scipy_stats.wilcoxon(differences, alternative=req.alternative, method="approx")
     ranks = scipy_stats.rankdata(np.abs(nonzero))
+    hl = hl_one_sample(values.to_numpy(dtype=float), req.mu)
     return _sanitize({
         "test": "One-sample Wilcoxon signed-rank test", "column": req.column,
         "mu": req.mu, "n_complete": int(len(values)), "n_effective": int(len(nonzero)),
@@ -101,6 +125,7 @@ def wilcoxon_onesample(req: OneSampleWilcoxonRequest):
         "significant": bool(result.pvalue < 0.05),
         "methods_text": "SciPy Wilcoxon signed-rank test; assumes a symmetric distribution of differences around the null location.",
         "interpretation": f"Wilcoxon signed-rank test against {req.mu:g}: W = {result.statistic:g}, p = {result.pvalue:.4g}.",
+        "hodges_lehmann": hl,
     })
 
 
@@ -180,6 +205,7 @@ def mannwhitney(req: MannWhitneyRequest):
     sig = bool(p < 0.05)
     es = rank_biserial_r(float(stat), len(g1), len(g2))
     p_str = "<0.001" if p < 0.001 else f"{p:.4f}"
+    hl = hl_two_sample(g1, g2)
     ret = {
         "test": "Mann-Whitney U test",
         "group1": str(groups[0]),
@@ -203,11 +229,26 @@ def mannwhitney(req: MannWhitneyRequest):
         },
         "interpretation": f"{'Significant' if sig else 'No significant'} difference (U = {stat:.1f}, p = {p_str}, r = {es['value']:.3f} [{es['magnitude']}])",
         "methods_text": methods_mannwhitney(req.column, req.group_column),
-        "r_code": r_mannwhitney(req.column, req.group_column),
+        "r_code": r_mannwhitney(req.column, req.group_column).replace(
+            "data = data)", "data = data, conf.int = TRUE)"
+        ),
+        "hodges_lehmann": hl,
     }
     if warnings:
         ret["warnings"] = warnings
-    ret["result_text"] = results_mannwhitney(ret)
+    ret["result_text"] = results_mannwhitney(ret) + _hl_sentence(
+        hl, f"location shift ({groups[0]} minus {groups[1]})"
+    )
+    ret["export_rows"] = [
+        ["Statistic", "Value"],
+        ["U", float(stat)],
+        ["Asymptotic Z", z_asymptotic],
+        ["p", round(float(p), 6)],
+        [f"n ({groups[0]})", int(len(g1))],
+        [f"n ({groups[1]})", int(len(g2))],
+        ["Rank-biserial r", es["value"]],
+        *_hl_export_rows(hl, f"shift ({groups[0]} minus {groups[1]})"),
+    ]
     return _sanitize(ret)
 
 
