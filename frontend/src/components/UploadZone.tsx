@@ -146,7 +146,7 @@ export default function UploadZone() {
   // manifest gives every launch a fresh window, which has no session yet, so
   // this screen is always what receives it.
   useEffect(() => {
-    consumeLaunchedFiles(handle, () => setError("Could not read the file the app was opened with."));
+    return consumeLaunchedFiles(handle, () => setError("Could not read the file the app was opened with."));
   }, [handle]);
 
   const startBlankWorkspace = useCallback(async () => {

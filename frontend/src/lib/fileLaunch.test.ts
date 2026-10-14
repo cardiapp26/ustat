@@ -74,3 +74,67 @@ describe("consumeLaunchedFiles", () => {
     expect(onFile).not.toHaveBeenCalled();
   });
 });
+
+describe("a launch that arrives before the welcome screen mounts", () => {
+  // Module state (the buffered launch, the launched-with-file flag) is what is
+  // under test, so each case loads its own copy.
+  async function freshModule() {
+    vi.resetModules();
+    return import("./fileLaunch");
+  }
+
+  it("is held until a listener asks for it", async () => {
+    const queue = installLaunchQueue();
+    const { watchFileLaunches, consumeLaunchedFiles: consume } = await freshModule();
+    watchFileLaunches();
+    const sav = new File(["x"], "cohort.sav");
+    queue.deliver({ files: [fileHandle(sav)] });
+
+    const onFile = vi.fn();
+    consume(onFile, vi.fn());
+    await vi.waitFor(() => expect(onFile).toHaveBeenCalledExactlyOnceWith(sav));
+  });
+
+  it("is delivered once, not again to a later listener", async () => {
+    const queue = installLaunchQueue();
+    const { watchFileLaunches, consumeLaunchedFiles: consume } = await freshModule();
+    watchFileLaunches();
+    queue.deliver({ files: [fileHandle(new File(["x"], "a.csv"))] });
+
+    const first = vi.fn();
+    const stop = consume(first, vi.fn());
+    await vi.waitFor(() => expect(first).toHaveBeenCalledTimes(1));
+    stop();
+    const second = vi.fn();
+    consume(second, vi.fn());
+    await Promise.resolve();
+    expect(second).not.toHaveBeenCalled();
+  });
+
+  it("stops delivering to a listener that unsubscribed", async () => {
+    const queue = installLaunchQueue();
+    const { consumeLaunchedFiles: consume } = await freshModule();
+    const onFile = vi.fn();
+    consume(onFile, vi.fn())();
+    queue.deliver({ files: [fileHandle(new File(["x"], "a.csv"))] });
+    await Promise.resolve();
+    expect(onFile).not.toHaveBeenCalled();
+  });
+
+  it("records that the app was launched with a file", async () => {
+    const queue = installLaunchQueue();
+    const { watchFileLaunches, wasLaunchedWithFile } = await freshModule();
+    watchFileLaunches();
+    expect(wasLaunchedWithFile()).toBe(false);
+    queue.deliver({ files: [] });
+    expect(wasLaunchedWithFile()).toBe(false);
+    queue.deliver({ files: [fileHandle(new File(["x"], "a.csv"))] });
+    expect(wasLaunchedWithFile()).toBe(true);
+  });
+
+  it("reports no file launch where the browser has no launchQueue", async () => {
+    const { watchFileLaunches, wasLaunchedWithFile } = await freshModule();
+    expect(() => watchFileLaunches()).not.toThrow();
+    expect(wasLaunchedWithFile()).toBe(false);
+  });
+});

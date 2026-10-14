@@ -26,28 +26,74 @@ function isFileHandle(handle: FileSystemHandle): handle is FileSystemFileHandle 
   return handle.kind === "file";
 }
 
+interface LaunchListener {
+  readonly onFile: (file: File) => void;
+  readonly onError: (error: unknown) => void;
+}
+
+let watchedQueue: LaunchQueue | null = null;
+let listener: LaunchListener | null = null;
+let heldHandle: FileSystemFileHandle | null = null;
+let launchedWithFile = false;
+
+function deliver(handle: FileSystemFileHandle, to: LaunchListener): void {
+  handle.getFile().then(to.onFile, to.onError);
+}
+
 /**
- * Deliver the file the app was launched with to `onFile`.
+ * Start receiving file launches. Called from main.tsx before React renders.
+ *
+ * The browser queues launch params until a consumer is set and hands them
+ * over as soon as one is, so taking them here, ahead of every component
+ * effect, is what lets `wasLaunchedWithFile` answer truthfully at startup. A
+ * launch that arrives before the welcome screen is listening is held for it.
  *
  * A session holds one dataset, so only the first file of a launch is opened.
  * The manifest asks for one window per file (`launch_type:
  * "multiple-clients"`), which means a multi-file selection normally never
  * reaches here as one launch; the guard covers browsers that ignore it.
+ */
+export function watchFileLaunches(): void {
+  const queue = (window as WindowWithLaunchQueue).launchQueue;
+  if (!queue || queue === watchedQueue) return;
+  watchedQueue = queue;
+  queue.setConsumer((params) => {
+    const handle = params.files.find(isFileHandle);
+    if (!handle) return;
+    launchedWithFile = true;
+    if (listener) deliver(handle, listener);
+    else heldHandle = handle;
+  });
+}
+
+/**
+ * Whether the OS started this page with a file.
  *
- * Launch params are queued by the browser until a consumer is set, so calling
- * this from a component's effect does not lose a launch that happened before
- * React mounted. Setting a new consumer replaces the old one and does not
- * re-deliver params already consumed.
+ * Startup code that would navigate away (the silent Drive re-auth redirect in
+ * cloudSync.init) must check this first: leaving the page unloads the
+ * document the launch belongs to, and the file is not delivered again.
+ */
+export function wasLaunchedWithFile(): boolean {
+  return launchedWithFile;
+}
+
+/**
+ * Deliver the file the app was launched with to `onFile`, now if it already
+ * arrived, otherwise when it does. Returns a function that stops delivery.
  */
 export function consumeLaunchedFiles(
   onFile: (file: File) => void,
   onError: (error: unknown) => void,
-): void {
-  const queue = (window as WindowWithLaunchQueue).launchQueue;
-  if (!queue) return;
-  queue.setConsumer((params) => {
-    const handle = params.files.find(isFileHandle);
-    if (!handle) return;
-    handle.getFile().then(onFile, onError);
-  });
+): () => void {
+  watchFileLaunches();
+  const mine: LaunchListener = { onFile, onError };
+  listener = mine;
+  if (heldHandle) {
+    const handle = heldHandle;
+    heldHandle = null;
+    deliver(handle, mine);
+  }
+  return () => {
+    if (listener === mine) listener = null;
+  };
 }

@@ -4,6 +4,11 @@ import './index.css'
 import App from './App.tsx'
 import UpdatePrompt from './components/UpdatePrompt'
 import SessionRecoveredNotice from './components/SessionRecoveredNotice'
+import { watchFileLaunches } from './lib/fileLaunch'
+
+// Before the first render: App's startup effects ask whether the OS launched
+// this page with a file, and the answer has to be in by then.
+watchFileLaunches()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

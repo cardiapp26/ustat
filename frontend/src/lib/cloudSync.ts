@@ -854,7 +854,15 @@ async function afterSignedIn(): Promise<void> {
 
 // ── Init ─────────────────────────────────────────────────────────────
 
-export async function init(): Promise<void> {
+export interface InitOptions {
+  /** Whether init may leave the page to restore an expired token (the silent
+   *  prompt=none redirect). False when the page holds something a navigation
+   *  would destroy, such as a file the OS launched it with; the user then
+   *  reconnects from the Drive strip instead. */
+  allowRedirect?: boolean;
+}
+
+export async function init({ allowRedirect = true }: InitOptions = {}): Promise<void> {
   if (initialized) return;
   initialized = true;
   userInfo = restoreUser();
@@ -887,6 +895,10 @@ export async function init(): Promise<void> {
   // 2. Restore a cached token or try silent refresh if expired but signed-in.
   let tokenRestored = restoreToken();
   if (!tokenRestored && cb !== "error" && userInfo && navigator.onLine) {
+    if (!allowRedirect) {
+      setStatus("idle", "Re-sign-in required");
+      return;
+    }
     try {
       setStatus("syncing", "Restoring session...");
       await refreshToken(true); // allow redirect since it is page load
@@ -906,7 +918,7 @@ export async function init(): Promise<void> {
     signedIn = true;
     setStatus("ok", "");
     try {
-      await driveFetch("/about?fields=user", undefined, true); // validates token
+      await driveFetch("/about?fields=user", undefined, allowRedirect); // validates token
       await afterSignedIn();
       return;
     } catch {
@@ -930,6 +942,7 @@ export async function init(): Promise<void> {
   //    callback fragment this load, so an error return falls through to the
   //    sign-in button.
   if (
+    allowRedirect &&
     cb === null &&
     !signedIn &&
     authMode === "redirect" &&

@@ -107,6 +107,7 @@ import OutputViewer from "./components/OutputViewer";
 import SplitFileBar from "./components/SplitFileBar";
 import CommandPalette from "./components/CommandPalette";
 import { cloudSync } from "./lib/cloudSync";
+import { wasLaunchedWithFile } from "./lib/fileLaunch";
 import { purgeExpiredTrash, notifySessionsChanged, TRASH_PURGE_INTERVAL_MS } from "./lib/sessionDb";
 
 const TABS = [
@@ -640,7 +641,11 @@ export default function App() {
   // sessions saved on another device appear in Recent Sessions. Safe to
   // call before sign-in — it just warms up the GIS client. (Idempotent.)
   useEffect(() => {
-    void cloudSync.init().catch((e) => console.warn("[cloud] init", e));
+    // A page the OS opened with a file must stay put: the silent re-auth is a
+    // full-page redirect, and the launched file does not survive it.
+    void cloudSync
+      .init({ allowRedirect: !wasLaunchedWithFile() })
+      .catch((e) => console.warn("[cloud] init", e));
     // Trash auto-expiry: purge trashed records older than 30 days on startup
     // and every 5 minutes while the app is open. Runs before any Drive push
     // so expired tombstones are removed locally AND remotely on the next sync.
