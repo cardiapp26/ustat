@@ -42,6 +42,7 @@ from services.rcs_inference import (
     joint_wald,
     knot_aic_comparison,
 )
+from services.rcs_glm import COUNT_MODEL_TYPES, GLM_MODEL_TYPES, fit_glm, nested_test
 from services.survival_validation import validate_survival_inputs
 
 router = APIRouter()
@@ -922,31 +923,42 @@ class RCSRequest(BaseModel):
     # Reference when ref_value is blank: "median" of the predictor, or
     # "nadir" = the value with the lowest predicted risk / mean.
     ref_strategy: str = "median"
+    # Poisson / quasi-Poisson only: person-time or other exposure. Enters as
+    # offset log(exposure), so the curve compares event rates.
+    exposure_col: Optional[str] = None
+
+
+_RCS_MODEL_TYPES = ("cox",) + GLM_MODEL_TYPES
 
 
 @router.post("/rcs")
 async def rcs_regression(req: RCSRequest):
-    import statsmodels.api as sm_api
     if req.n_knots not in _KNOT_PERCENTILES:
         raise HTTPException(status_code=422, detail=_knot_count_error(req.n_knots))
 
     model_type = (req.model_type or "logistic").lower()
-    if model_type not in ("logistic", "linear", "cox"):
-        raise HTTPException(status_code=422, detail=f"Unknown model_type: {req.model_type}")
+    if model_type not in _RCS_MODEL_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown model_type: {req.model_type}. Use one of {', '.join(_RCS_MODEL_TYPES)}.",
+        )
     ref_strategy = (req.ref_strategy or "median").lower()
     if ref_strategy not in ("median", "nadir"):
         raise HTTPException(status_code=422, detail=f"ref_strategy must be 'median' or 'nadir'. Got: {req.ref_strategy}")
 
     is_cox = model_type == "cox"
+    is_count = model_type in COUNT_MODEL_TYPES
+    if req.exposure_col and not is_count:
+        raise HTTPException(status_code=422, detail="exposure_col applies only to Poisson and quasi-Poisson models.")
 
     # A covariate that repeats the predictor or an outcome column would select
     # the same column twice; pandas then returns a frame where a Series is
     # expected and the request crashed with a 500. Drop such entries.
-    outcome_cols = {req.outcome, req.duration_col, req.event_col} - {None}
+    outcome_cols = {req.outcome, req.duration_col, req.event_col, req.exposure_col} - {None}
     if req.predictor in outcome_cols:
         raise HTTPException(
             status_code=422,
-            detail=f"Predictor '{req.predictor}' is also the outcome / duration / event column; pick a different predictor.",
+            detail=f"Predictor '{req.predictor}' is also the outcome / duration / event / exposure column; pick a different predictor.",
         )
     model_cols = outcome_cols | {req.predictor}
     covariates = [c for c in dict.fromkeys(req.covariates or []) if c not in model_cols]
@@ -957,8 +969,11 @@ async def rcs_regression(req: RCSRequest):
         cols_needed = list(dict.fromkeys([req.predictor, req.duration_col, req.event_col])) + covariates
     else:
         if not req.outcome:
-            raise HTTPException(status_code=422, detail="outcome is required when model_type is 'logistic' or 'linear'.")
-        cols_needed = list(dict.fromkeys([req.predictor, req.outcome])) + covariates
+            raise HTTPException(status_code=422, detail=f"outcome is required when model_type is '{model_type}'.")
+        if req.exposure_col == req.outcome:
+            raise HTTPException(status_code=422, detail="exposure_col must differ from the outcome column.")
+        base_cols = [req.predictor, req.outcome] + ([req.exposure_col] if req.exposure_col else [])
+        cols_needed = list(dict.fromkeys(base_cols)) + covariates
 
     df_full = _get_df(req.session_id)
     missing_cols = [c for c in cols_needed if c not in df_full.columns]
@@ -973,6 +988,8 @@ async def rcs_regression(req: RCSRequest):
         required_numeric += [req.duration_col, req.event_col]
     else:
         required_numeric += [req.outcome]
+        if req.exposure_col:
+            required_numeric.append(req.exposure_col)
     for c in required_numeric:
         df[c] = pd.to_numeric(df[c], errors="coerce")
 
@@ -1026,6 +1043,17 @@ async def rcs_regression(req: RCSRequest):
             unique_y = sorted(set(y.tolist()))
             if set(unique_y) - {0.0, 1.0}:
                 raise HTTPException(status_code=422, detail="Logistic RCS requires binary 0/1 outcome.")
+        elif is_count and (np.any(y < 0) or not np.allclose(y, np.round(y))):
+            raise HTTPException(
+                status_code=422,
+                detail=f"{'Quasi-Poisson' if model_type == 'quasipoisson' else 'Poisson'} RCS requires a count outcome (whole numbers ≥ 0).",
+            )
+        glm_offset = None
+        if req.exposure_col:
+            exposure = df[req.exposure_col].values.astype(float)
+            if np.any(exposure <= 0):
+                raise HTTPException(status_code=422, detail=f"exposure_col '{req.exposure_col}' must be > 0 in every row.")
+            glm_offset = np.log(exposure)
 
     try:
         knots = _resolve_knots(x_raw, req.n_knots, req.knot_positions, req.predictor)
@@ -1107,21 +1135,13 @@ async def rcs_regression(req: RCSRequest):
             if interaction_mat is not None:
                 X_parts.append(interaction_mat)
             X = np.column_stack(X_parts)
-            if model_type == "logistic":
-                result = await asyncio.to_thread(lambda: sm_api.Logit(y, X).fit(disp=0, maxiter=200))
-            else:
-                result = await asyncio.to_thread(lambda: sm_api.OLS(y, X).fit())
-            params = result.params
-            cov_params = result.cov_params()
-            try:
-                aic_val = aic_from_loglik(float(result.llf), X.shape[1], model_type)
-                if np.isnan(aic_val) or np.isinf(aic_val):
-                    aic_val = None
-            except Exception:
+            glm_fit = await asyncio.to_thread(fit_glm, model_type, y, X, glm_offset)
+            params = glm_fit.params
+            cov_params = glm_fit.cov_params
+            log_lik = glm_fit.log_lik
+            aic_val = aic_from_loglik(log_lik, glm_fit.n_coef, model_type) if log_lik is not None else None
+            if aic_val is not None and not np.isfinite(aic_val):
                 aic_val = None
-            log_lik = float(getattr(result, "llf", np.nan))
-            if np.isnan(log_lik) or np.isinf(log_lik):
-                log_lik = None
             concordance = None
             n_events = int(y.sum()) if model_type == "logistic" else None
     except Exception as exc:
@@ -1137,28 +1157,25 @@ async def rcs_regression(req: RCSRequest):
                 await asyncio.to_thread(cph_red.fit, reduced_df, duration_col="_dur_", event_col="_evt_")
                 ll_red = float(cph_red.log_likelihood_)
                 ll_full = float(log_lik)
+                lr_stat = 2.0 * (ll_full - ll_red)
+                df_lr = len(interaction_extra_names)
+                interaction_result = {
+                    "covariates": interaction_cov_names,
+                    "test": "chi2",
+                    "lr_stat": round(lr_stat, 4),
+                    "df": df_lr,
+                    "p": round(float(chi2.sf(lr_stat, df=df_lr)), 6),
+                    "log_lik_full": round(ll_full, 4),
+                    "log_lik_reduced": round(ll_red, 4),
+                }
             else:
+                # LR chi-square, or F for quasi-Poisson (R anova.glm).
                 X_red_parts = [np.ones(n), x_raw, spline_cols]
                 if cov_mat is not None:
                     X_red_parts.append(cov_mat)
                 X_red = np.column_stack(X_red_parts)
-                if model_type == "logistic":
-                    res_red = await asyncio.to_thread(lambda: sm_api.Logit(y, X_red).fit(disp=0, maxiter=200))
-                else:
-                    res_red = await asyncio.to_thread(lambda: sm_api.OLS(y, X_red).fit())
-                ll_red = float(getattr(res_red, "llf", np.nan))
-                ll_full = float(log_lik) if log_lik is not None else float(getattr(result, "llf", np.nan))
-            lr_stat = 2.0 * (ll_full - ll_red)
-            df_lr = len(interaction_extra_names)
-            p_lr = float(chi2.sf(lr_stat, df=df_lr))
-            interaction_result = {
-                "covariates": interaction_cov_names,
-                "lr_stat": round(lr_stat, 4),
-                "df": df_lr,
-                "p": round(p_lr, 6),
-                "log_lik_full": round(ll_full, 4),
-                "log_lik_reduced": round(ll_red, 4),
-            }
+                glm_red = await asyncio.to_thread(fit_glm, model_type, y, X_red, glm_offset)
+                interaction_result = {"covariates": interaction_cov_names, **nested_test(model_type, glm_fit, glm_red)}
         except Exception as exc:
             logger.exception("RCS Interaction LR test failed")
             interaction_result = {"covariates": interaction_cov_names, "error": str(exc)}
@@ -1201,11 +1218,11 @@ async def rcs_regression(req: RCSRequest):
         ref_used = "median"
         ref_val = float(np.clip(np.median(x_raw), x_lo, x_hi))
 
-    log_link = is_cox or model_type == "logistic"
+    log_link = model_type != "linear"
     curve = _relative_curve(X_syn, design_rows(np.array([ref_val]))[0], params, cov_params, log_link)
     or_vals, ci_low, ci_high = curve.estimate, curve.ci_low, curve.ci_high
 
-    effect_type = "HR" if is_cox else ("OR" if model_type == "logistic" else "mean_diff")
+    effect_type = {"cox": "HR", "logistic": "OR", "linear": "mean_diff"}.get(model_type, "IRR")
 
     absolute_risk_block = None
     if is_cox:
@@ -1224,7 +1241,7 @@ async def rcs_regression(req: RCSRequest):
             cov_summary.append({
                 "name": name,
                 "coef": round(beta, 6) if beta is not None else None,
-                "effect": round(float(np.exp(beta)), 4) if (is_cox or model_type == "logistic") and beta is not None else (round(beta, 4) if beta is not None else None),
+                "effect": round(float(np.exp(beta)), 4) if log_link and beta is not None else (round(beta, 4) if beta is not None else None),
                 "se": round(se, 6) if se is not None else None,
             })
 
@@ -1238,7 +1255,7 @@ async def rcs_regression(req: RCSRequest):
     ix_start = lin_idx + 1 + n_sp + len(cov_names)
     ix_idx = [ix_start + j for j in range(len(interaction_extra_meta))]
     ix_nl_idx = [ix_start + j for j, (_, spi) in enumerate(interaction_extra_meta) if spi > 0]
-    resid_df = float(result.df_resid) if model_type == "linear" else None
+    resid_df = None if is_cox else glm_fit.test_df_resid
     overall_test = joint_wald(params, cov_params, list(range(lin_idx, lin_idx + 1 + n_sp)) + ix_idx, resid_df)
     nonlin_test = joint_wald(params, cov_params, list(range(lin_idx + 1, lin_idx + 1 + n_sp)) + ix_nl_idx, resid_df)
     nonlin_wald = nonlin_test["wald"] if nonlin_test else None
@@ -1249,7 +1266,7 @@ async def rcs_regression(req: RCSRequest):
     if req.knot_positions is None:
         outcome_data = (
             RCSOutcome("cox", duration=duration, event=event)
-            if is_cox else RCSOutcome(model_type, y=y)
+            if is_cox else RCSOutcome(model_type, y=y, offset=glm_offset)
         )
         knot_comparison = await knot_aic_comparison(x_raw, cov_mat, outcome_data, req.n_knots)
 
@@ -1273,12 +1290,9 @@ async def rcs_regression(req: RCSRequest):
             else:
                 X_parts_c = [np.ones(n), x_raw, spline_cols]
                 X_c = np.column_stack(X_parts_c)
-                if model_type == "logistic":
-                    res_c = await asyncio.to_thread(lambda: sm_api.Logit(y, X_c).fit(disp=0, maxiter=200))
-                else:
-                    res_c = await asyncio.to_thread(lambda: sm_api.OLS(y, X_c).fit())
-                params_c = res_c.params
-                cov_params_c = res_c.cov_params()
+                glm_c = await asyncio.to_thread(fit_glm, model_type, y, X_c, glm_offset)
+                params_c = glm_c.params
+                cov_params_c = glm_c.cov_params
 
             def crude_rows(xs: np.ndarray) -> np.ndarray:
                 spline_part = np.column_stack([xs, _rcs_basis(xs, knots)])
@@ -1289,7 +1303,7 @@ async def rcs_regression(req: RCSRequest):
             )
             or_vals_c, ci_low_c, ci_high_c = crude_curve.estimate, crude_curve.ci_low, crude_curve.ci_high
 
-            resid_df_c = float(res_c.df_resid) if model_type == "linear" else None
+            resid_df_c = None if is_cox else glm_c.test_df_resid
             crude_overall = joint_wald(params_c, cov_params_c, range(lin_idx, lin_idx + 1 + n_sp), resid_df_c)
             crude_nl = joint_wald(params_c, cov_params_c, range(lin_idx + 1, lin_idx + 1 + n_sp), resid_df_c)
 
@@ -1310,6 +1324,7 @@ async def rcs_regression(req: RCSRequest):
         "outcome": req.outcome,
         "duration_col": req.duration_col,
         "event_col": req.event_col,
+        "exposure_col": req.exposure_col if is_count else None,
         "model_type": model_type,
         "effect_type": effect_type,
         "n": n,
@@ -1329,6 +1344,10 @@ async def rcs_regression(req: RCSRequest):
         "aic": _safe_float(aic_val),
         "log_likelihood": _safe_float(log_lik),
         "concordance": _safe_float(concordance),
+        # Count models: Pearson chi-square / residual df. Well above 1 under
+        # Poisson means overdispersion, and the Poisson bands are too narrow.
+        "dispersion": _safe_float(glm_fit.dispersion) if is_count else None,
+        "total_count": int(y.sum()) if is_count else None,
         "covariates_requested": list(req.covariates or []),
         "covariates_used": cov_names,
         "covariates_summary": cov_summary,

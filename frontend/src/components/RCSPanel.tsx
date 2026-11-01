@@ -16,6 +16,10 @@ import { SUPPORTED_KNOTS, knotBudget, KNOT_BUDGET_EVENTS, harrellPercentiles } f
 import { AbsoluteRiskPlot, RCSViewToggle, type AbsoluteRiskData, type RCSView } from "./RCSAbsoluteRisk";
 import { describeRegions, distributionAxis, distributionTrace, excludedRegions, type XDistribution } from "../lib/rcsCurve";
 import { describeStale } from "../lib/resultStamp";
+import {
+  RCS_MODEL_TYPES, dispersionNote, effectMeta, formatNestedTest, isCountModel, modelTitle, nestedTestName,
+  type NestedTest, type RCSModelType,
+} from "../lib/rcsModel";
 import type { PlotData, PlotLayout, PlotCaptureHandle } from "../lib/plotTypes";
 
 // Geometry only — background, font and colourway come from the global chart
@@ -77,9 +81,7 @@ interface RCSCrude {
   nonlinearity_p: number | null;
   overall_p?: number | null;
 }
-interface RCSInteraction {
-  lr_stat?: number;
-  df?: number;
+interface RCSInteraction extends NestedTest {
   p?: number | null;
   covariates?: string[];
   error?: string;
@@ -96,6 +98,10 @@ interface RCSResult extends RCSTestFields {
   model_type?: string;
   duration_col?: string;
   event_col?: string;
+  exposure_col?: string | null;
+  knot_positions_custom?: boolean;
+  dispersion?: number | null;
+  total_count?: number | null;
   knots: number[];
   n_knots: number;
   ref_value: number;
@@ -385,7 +391,9 @@ export default function RCSPanel() {
   const [rcsInteractionCov, setRcsInteractionCov] = usePersistedPanelState<string[]>("rcs", "interactionCov", []);
   const [rcsLogScale, setRcsLogScale] = useState(true);
   const [rcsShowData, setRcsShowData] = useState(true);
-  const [rcsOutcomeType, setRcsOutcomeType] = usePersistedPanelState<"logistic" | "linear" | "cox">("rcs", "outcomeType", "cox");
+  const [rcsOutcomeType, setRcsOutcomeType] = usePersistedPanelState<RCSModelType>("rcs", "outcomeType", "cox");
+  // Count models only: optional exposure (person-time) column, "" = none.
+  const [rcsExposure, setRcsExposure] = usePersistedPanelState("rcs", "exposure", "");
   const [rcsCoxDuration, setRcsCoxDuration] = usePersistedPanelState("rcs", "coxDuration", numCols[0] ?? "");
   const [rcsCoxEvent, setRcsCoxEvent] = usePersistedPanelState("rcs", "coxEvent", binaryCols[0] ?? numCols[1] ?? "");
   const [rcsKnotMode, setRcsKnotMode] = usePersistedPanelState<"harrell" | "custom">("rcs", "knotMode", "harrell");
@@ -464,6 +472,7 @@ export default function RCSPanel() {
           payload.risk_horizon = horizon;
         } else {
           payload.outcome = rcsOutcome;
+          if (isCountModel(rcsOutcomeType) && rcsExposure) payload.exposure_col = rcsExposure;
         }
         res = await runRCS(payload);
       } else {
@@ -535,13 +544,14 @@ export default function RCSPanel() {
               </div>
               <div>
                 <label className="text-xs text-gray-400 block mb-1">
-                  Outcome type <Tip text="Logistic: binary 0/1 outcome → OR. Linear: continuous outcome → mean difference. Cox: time-to-event with duration + event columns → HR." wide />
+                  Outcome type <Tip text="Logistic: binary 0/1 outcome → OR. Linear: continuous outcome → mean difference. Poisson: count outcome (admissions, attacks, visits) → incidence rate ratio (IRR). Quasi-Poisson: the same IRR curve with the dispersion estimated from the data, for counts that vary more than Poisson allows; tests use F. Cox: time-to-event with duration + event columns → HR." wide />
                 </label>
-                <div className="flex gap-1">
-                  {(["logistic", "linear", "cox"] as const).map((t) => (
-                    <button key={t} onClick={() => setRcsOutcomeType(t)}
-                      className={`flex-1 py-1 text-[11px] rounded border transition-colors ${rcsOutcomeType === t ? "bg-indigo-600 text-white border-indigo-600" : "border-gray-300 text-gray-600 hover:bg-gray-50"}`}>
-                      {t === "cox" ? "Cox" : t === "logistic" ? "Logistic" : "Linear"}
+                <div className="grid grid-cols-5 gap-1" role="group" aria-label="Outcome type">
+                  {RCS_MODEL_TYPES.map((t) => (
+                    <button key={t.key} onClick={() => setRcsOutcomeType(t.key)} aria-label={t.full} title={t.full}
+                      aria-pressed={rcsOutcomeType === t.key}
+                      className={`py-1 text-[11px] rounded border transition-colors ${rcsOutcomeType === t.key ? "bg-indigo-600 text-white border-indigo-600" : "border-gray-300 text-gray-600 hover:bg-gray-50"}`}>
+                      {t.label}
                     </button>
                   ))}
                 </div>
@@ -573,9 +583,10 @@ export default function RCSPanel() {
                   </div>
                 </>
               ) : (
+                <>
                 <div>
                   <label className="text-xs text-gray-400 block mb-1">
-                    Outcome {rcsOutcomeType === "logistic" ? "(binary 0/1)" : "(continuous)"}
+                    Outcome {rcsOutcomeType === "logistic" ? "(binary 0/1)" : isCountModel(rcsOutcomeType) ? "(count, whole numbers ≥ 0)" : "(continuous)"}
                     {rcsOutcomeType === "logistic" && binaryCols.length === 0 && (
                       <span className="ml-1 text-[10px] text-amber-600">⚠ no binary 0/1 column</span>
                     )}
@@ -583,10 +594,22 @@ export default function RCSPanel() {
                   <select className="select w-full" value={rcsOutcome} onChange={(e) => setRcsOutcome(e.target.value)}>
                     {(rcsOutcomeType === "logistic"
                       ? (binaryCols.length > 0 ? binaryCols : allCols)
-                      : rcsOutcomeType === "linear" ? numCols : allCols
+                      : numCols
                     ).map((c) => <option key={c}>{c}</option>)}
                   </select>
                 </div>
+                {isCountModel(rcsOutcomeType) && (
+                  <div>
+                    <label className="text-xs text-gray-400 block mb-1" htmlFor="rcs-exposure">
+                      Exposure (optional) <Tip wide text="Person-time or other exposure for each row, e.g. follow-up years. It enters as offset log(exposure), so the curve compares event rates per unit of exposure instead of raw counts. Every value must be > 0. Leave as none when all rows were observed for the same length of time." />
+                    </label>
+                    <select id="rcs-exposure" className="select w-full" value={rcsExposure} onChange={(e) => setRcsExposure(e.target.value)}>
+                      <option value="">(none)</option>
+                      {numCols.filter((c) => c !== rcsOutcome && c !== rcsPredictor).map((c) => <option key={c}>{c}</option>)}
+                    </select>
+                  </div>
+                )}
+                </>
               )}
               <div>
                 <label className="text-xs text-gray-400 block mb-1">
@@ -818,16 +841,12 @@ export default function RCSPanel() {
 
         {result && mode === "rcs" && Array.isArray(result.x_values) && (() => {
           const mt = (result.model_type as string | undefined) ?? "logistic";
-          const eff = mt === "cox"
-            ? { label: "Hazard Ratio", abbr: "HR", refValue: 1, axisType: "log" as const }
-            : mt === "linear"
-            ? { label: "Mean difference", abbr: "Δ", refValue: 0, axisType: "linear" as const }
-            : { label: "Odds Ratio", abbr: "OR", refValue: 1, axisType: "log" as const };
+          const eff = effectMeta(mt);
+          const dispNote = dispersionNote(mt, result.dispersion);
           const useLogY = rcsLogScale && eff.axisType === "log";
           const outcomeLabel = mt === "cox"
             ? `${result.duration_col ?? ""} (${result.event_col ?? "event"})`
             : (result.outcome ?? "");
-          const modelTitle = mt === "cox" ? "Cox-RCS" : mt === "linear" ? "Linear RCS" : "Logistic RCS";
           const riskData = mt === "cox" ? result.absolute_risk ?? null : null;
           const showRisk = rcsView === "risk" && riskData != null;
           return (
@@ -836,11 +855,11 @@ export default function RCSPanel() {
                 <h4 className="font-semibold text-gray-900">
                   {result.predictor}
                   {outcomeLabel ? <> &amp; <span className="text-indigo-700">{outcomeLabel}</span></> : null}
-                  : {modelTitle}
+                  : {modelTitle(mt)}
                 </h4>
                 <div className="flex items-center gap-3">
                   <div className="flex items-center gap-3 text-xs text-gray-500">
-                    <span><i>n</i> = {result.n}{result.n_events != null ? `, events = ${result.n_events}` : ""}</span>
+                    <span><i>n</i> = {result.n}{result.n_events != null ? `, events = ${result.n_events}` : ""}{result.total_count != null ? `, total count = ${result.total_count}` : ""}</span>
                     {result.aic != null && <span>AIC = {result.aic?.toFixed(1)}</span>}
                   </div>
                   {showRisk && riskData ? (
@@ -886,6 +905,12 @@ export default function RCSPanel() {
               </div>
               <div className="flex flex-wrap gap-1.5 text-[11px]">
                 <RCSTestChips result={result} adjusted={!!result.crude} />
+                {dispNote && (
+                  <span className={`rounded px-1.5 py-0.5 border ${dispNote.warn ? "bg-amber-50 text-amber-800 border-amber-200" : "bg-gray-50 text-gray-600 border-gray-200"}`}
+                    title="Pearson chi-square / residual df. Near 1 the counts fit Poisson; well above 1 they are overdispersed.">
+                    {dispNote.text}
+                  </span>
+                )}
                 {(result.crude?.overall_p != null || result.crude?.nonlinearity_p != null) && (
                   <span className="rounded px-1.5 py-0.5 border bg-gray-50 text-gray-500 border-gray-200" title="Tests from the unadjusted model">
                     crude: overall <i>p</i> = {fmtP(result.crude?.overall_p)}, non-linearity <i>p</i> = {fmtP(result.crude?.nonlinearity_p)}
@@ -893,6 +918,11 @@ export default function RCSPanel() {
                 )}
               </div>
               <KnotComparisonTable rows={result.knot_comparison ?? []} hasInteraction={!!result.tests_include_interaction} />
+              {mt === "quasipoisson" && result.knot_positions_custom !== true && (
+                <p className="text-[10px] text-gray-500">
+                  No AIC or knot comparison: quasi-Poisson has no likelihood (R reports AIC as NA). Compare knot counts under Poisson, which gives the same curve.
+                </p>
+              )}
 
               {Array.isArray(result.covariates_used) && result.covariates_used.length > 0 && (
                 <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
@@ -921,9 +951,9 @@ export default function RCSPanel() {
               {result.interaction && !result.interaction.error && (
                 <div className={`text-xs p-2 rounded border ${result.interaction.p != null && result.interaction.p < 0.05 ? "bg-amber-50 text-amber-900 border-amber-200" : "bg-gray-50 text-gray-700 border-gray-200"}`}>
                   <span className="font-semibold uppercase tracking-wider text-[10px] block mb-0.5">
-                    Spline × {Array.isArray(result.interaction.covariates) ? result.interaction.covariates.join(" + ") : "covariate"} interaction (LR test)
+                    Spline × {Array.isArray(result.interaction.covariates) ? result.interaction.covariates.join(" + ") : "covariate"} interaction ({nestedTestName(result.interaction)})
                   </span>
-                  χ²({result.interaction.df}) = {result.interaction.lr_stat?.toFixed(2)}, <i>p</i> = {fmtP(result.interaction.p)}
+                  {formatNestedTest(result.interaction)}, <i>p</i> = {fmtP(result.interaction.p)}
                   <span className="block text-[10px] text-gray-500 mt-0.5">
                     {result.interaction.p != null && result.interaction.p < 0.05
                       ? "The dose-response shape differs across levels — consider reporting stratified curves."
@@ -1043,12 +1073,15 @@ export default function RCSPanel() {
                   </p>
                   <TitledPlot
                     plotRefOut={rcsPlotRef}
-                    storageKey={`rcs2:${result.predictor}:${outcomeLabel}:ref${result.ref_value}:k${result.n_knots}:cov${(result.covariates_used as string[] | undefined)?.length ?? 0}`}
+                    // The model type and exposure are in the key: TitledPlot keeps the
+                    // labels it last showed per key, so without them a Poisson
+                    // caption (with its AIC) outlived a refit as quasi-Poisson.
+                    storageKey={`rcs2:${mt}:${result.predictor}:${outcomeLabel}:exp${result.exposure_col ?? ""}:ref${result.ref_value}:k${result.n_knots}:cov${(result.covariates_used as string[] | undefined)?.length ?? 0}`}
                     // No embedded title — supply the figure legend in the
                     // manuscript. The caption avoids raw column names (uses the
                     // predictor only) and explains the knot dots.
                     defaultTitle=""
-                    defaultSubtitle={`Restricted cubic spline (${result.n_knots} knots) · reference ${result.predictor} = ${result.ref_value}${nlAdjStr ? ` · non-linearity ${crude ? "adjusted " : ""}p=${nlAdjStr}` : ""}${result.n_events != null ? ` · n=${result.n}, events=${result.n_events}` : ` · n=${result.n}`}${result.aic != null ? ` · AIC=${(result.aic as number).toFixed(1)}` : ""} · dots = knot locations`}
+                    defaultSubtitle={`Restricted cubic spline (${result.n_knots} knots) · reference ${result.predictor} = ${result.ref_value}${nlAdjStr ? ` · non-linearity ${crude ? "adjusted " : ""}p=${nlAdjStr}` : ""}${result.n_events != null ? ` · n=${result.n}, events=${result.n_events}` : ` · n=${result.n}`}${result.dispersion != null && mt === "quasipoisson" ? ` · dispersion=${result.dispersion.toFixed(2)}` : ""}${result.aic != null ? ` · AIC=${(result.aic as number).toFixed(1)}` : ""} · dots = knot locations`}
                     defaultXAxis={result.predictor}
                     defaultYAxis={yTitle}
                     data={traces}
@@ -1127,6 +1160,8 @@ export default function RCSPanel() {
                   ? <>and the <em>hazard</em> of <em>{result.event_col ?? "the event"}</em> (time = <em>{result.duration_col ?? ""}</em>)</>
                   : mt === "linear"
                   ? <>and the mean of <em>{result.outcome}</em></>
+                  : isCountModel(mt)
+                  ? <>and the {result.exposure_col ? <>rate of <em>{result.outcome}</em> per unit of <em>{result.exposure_col}</em></> : <>expected count of <em>{result.outcome}</em></>}</>
                   : <>and the odds of <em>{result.outcome}</em></>}.
                 Filled circles mark the {result.n_knots} knot positions. The shaded band is the 95% CI.
                 {eff.axisType === "log" && <> <strong>Log scale</strong> is recommended for {eff.abbr}s — it symmetrises the curve and reveals J/U shapes that appear compressed on a linear axis.</>}

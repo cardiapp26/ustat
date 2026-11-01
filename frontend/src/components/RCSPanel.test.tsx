@@ -17,8 +17,8 @@ beforeEach(() => {
 })
 
 /**
- * MissingGuard fires its own async GET on mount and swaps in a fresh
- * run-button once it settles — give it a tick before interacting further.
+ * MissingGuard fires its own async GET on mount; let it settle so the
+ * "Checking missing data…" line is gone before interacting further.
  */
 async function settle(): Promise<void> {
   await new Promise(resolve => setTimeout(resolve, 50))
@@ -367,5 +367,86 @@ describe('RCSPanel reference and curve layers', () => {
     await settle()
     await user.click(await screen.findByRole('button', { name: 'Run RCS' }))
     expect(await screen.findByText('no interior nadir (lowest at 40)')).toBeInTheDocument()
+  })
+})
+
+describe('RCSPanel count outcomes (Poisson / quasi-Poisson)', () => {
+  const countResult = {
+    x_values: [40, 50, 60, 70],
+    or_values: [0.8, 1.0, 1.2, 1.6],
+    ci_low: [0.6, 1.0, 1.0, 1.2],
+    ci_high: [1.1, 1.0, 1.4, 2.1],
+    x_data: [45, 55, 65],
+    predictor: 'AGE',
+    outcome: 'LDL',
+    knots: [45, 55, 65],
+    n_knots: 3,
+    ref_value: 50,
+    n: 4,
+    total_count: 530,
+    nonlinearity_p: 0.2,
+  }
+
+  it('sends a Poisson fit with exposure and labels the curve as IRR with an overdispersion warning', async () => {
+    installSession(rcsSession())
+    let sent: Record<string, unknown> | null = null
+    server.use(
+      http.post('/api/models/rcs', async ({ request }) => {
+        sent = (await request.json()) as Record<string, unknown>
+        return HttpResponse.json({
+          ...countResult, model_type: 'poisson', exposure_col: 'TIME', dispersion: 2.18,
+          interaction: { covariates: ['DM'], test: 'chi2', lr_stat: 3.62, df: 3, p: 0.305 },
+        })
+      }),
+    )
+    const user = userEvent.setup()
+    render(<RCSPanel />)
+    await settle()
+
+    await user.click(screen.getByRole('button', { name: 'Poisson' }))
+    expect(screen.getByText(/Outcome \(count, whole numbers/)).toBeInTheDocument()
+    await user.selectOptions(screen.getByLabelText(/Exposure \(optional\)/), 'TIME')
+    await user.click(await screen.findByRole('button', { name: 'Run RCS' }))
+
+    await waitFor(() => expect(sent).not.toBeNull())
+    expect(sent!.model_type).toBe('poisson')
+    expect(sent!.exposure_col).toBe('TIME')
+    expect(await screen.findByText(/: Poisson RCS/)).toBeInTheDocument()
+    expect(screen.getByText(/total count = 530/)).toBeInTheDocument()
+    expect(screen.getByText(/overdispersed, the Poisson CI is too narrow; refit as quasi-Poisson/)).toBeInTheDocument()
+    expect(screen.getByText(/95% CI excludes IRR = 1 for AGE/)).toBeInTheDocument()
+    expect(screen.getByText(/rate of/)).toBeInTheDocument()
+    expect(screen.getByText(/χ²\(3\) = 3\.62/)).toBeInTheDocument()
+  })
+
+  it('shows F tests, the scaled-dispersion note and no exposure for quasi-Poisson', async () => {
+    installSession(rcsSession())
+    let sent: Record<string, unknown> | null = null
+    server.use(
+      http.post('/api/models/rcs', async ({ request }) => {
+        sent = (await request.json()) as Record<string, unknown>
+        return HttpResponse.json({
+          ...countResult, model_type: 'quasipoisson', dispersion: 2.18, aic: null, knot_comparison: [],
+          test_statistic: 'F', overall_f: 6.71, overall_df: 3, overall_p: 0.0002,
+          interaction: { covariates: ['DM'], test: 'F', f: 0.55, df: 3, df_resid: 290, p: 0.649 },
+        })
+      }),
+    )
+    const user = userEvent.setup()
+    render(<RCSPanel />)
+    await settle()
+
+    await user.click(screen.getByRole('button', { name: 'Quasi-Poisson' }))
+    await user.click(await screen.findByRole('button', { name: 'Run RCS' }))
+
+    await waitFor(() => expect(sent).not.toBeNull())
+    expect(sent!.model_type).toBe('quasipoisson')
+    expect(sent!.exposure_col).toBeUndefined()
+    expect(await screen.findByText(/: Quasi-Poisson RCS/)).toBeInTheDocument()
+    expect(screen.getByText(/standard errors scaled by/)).toBeInTheDocument()
+    expect(screen.getByText(/F\(3, 290\) = 0\.55/)).toBeInTheDocument()
+    expect(screen.getByText(/interaction \(F test\)/)).toBeInTheDocument()
+    expect(screen.getByText(/quasi-Poisson has no likelihood/)).toBeInTheDocument()
+    expect(screen.getByText(/expected count of/)).toBeInTheDocument()
   })
 })

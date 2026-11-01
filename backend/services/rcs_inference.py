@@ -25,6 +25,7 @@ from scipy.stats import chi2
 from scipy.stats import f as f_dist
 
 from services.rcs_basis import AIC_CANDIDATE_KNOTS, harrell_knots, rcs_basis
+from services.rcs_glm import fit_glm
 
 
 def joint_wald(
@@ -80,12 +81,16 @@ def aic_from_loglik(log_lik: float, n_coef: int, model_type: str) -> float:
 
 @dataclass(frozen=True)
 class RCSOutcome:
-    """Outcome data for one RCS fit; Cox uses duration/event, others y."""
+    """Outcome data for one RCS fit; Cox uses duration/event, others y.
+
+    `offset` is log(exposure) for the count models, else None.
+    """
 
     model_type: str
     y: Optional[np.ndarray] = None
     duration: Optional[np.ndarray] = None
     event: Optional[np.ndarray] = None
+    offset: Optional[np.ndarray] = None
 
 
 def _fit_loglik(outcome: RCSOutcome, design: np.ndarray) -> tuple[float, int]:
@@ -101,14 +106,11 @@ def _fit_loglik(outcome: RCSOutcome, design: np.ndarray) -> tuple[float, int]:
         cph.fit(fit_df, duration_col="_dur_", event_col="_evt_")
         return float(cph.log_likelihood_), design.shape[1]
 
-    import statsmodels.api as sm_api
-
     X = np.column_stack([np.ones(design.shape[0]), design])
-    if outcome.model_type == "logistic":
-        res = sm_api.Logit(outcome.y, X).fit(disp=0, maxiter=200)
-    else:
-        res = sm_api.OLS(outcome.y, X).fit()
-    return float(res.llf), X.shape[1]
+    fit = fit_glm(outcome.model_type, outcome.y, X, outcome.offset)
+    if fit.log_lik is None:
+        raise ValueError("model has no log-likelihood")
+    return fit.log_lik, fit.n_coef
 
 
 async def knot_aic_comparison(
@@ -122,7 +124,10 @@ async def knot_aic_comparison(
     Fits the main-effects model (spline + covariates) for each knot count.
     Counts the predictor cannot support (fewer than k + 2 unique values) or
     fits that fail are left out. `delta_aic` is relative to the lowest AIC.
+    Quasi-Poisson has no likelihood and so no AIC: the table is empty.
     """
+    if outcome.model_type == "quasipoisson":
+        return []
     counts = sorted(set(AIC_CANDIDATE_KNOTS) | {chosen_k})
     n_unique = len(np.unique(x))
     rows: list[dict] = []

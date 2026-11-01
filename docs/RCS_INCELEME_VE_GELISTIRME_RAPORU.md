@@ -142,6 +142,18 @@ Bu rapor, `/Users/yh/Documents/projects/rcs sources` dizininde yer alan 5 temel 
   3. **Kritik Eşik İşaretçileri:** Güven aralığının 1.0 çizgisini aştığı istatistiksel anlamlılık kesişim noktalarının grafikte vurgulanması.
 
 ### Faz 4: Model Yelpazesi Genişletme (Öncelik: Orta)
+
+> **Durum (1 Kasım 2026): tamamlandı.** `/api/models/rcs` artık
+> `model_type="poisson"` ve `"quasipoisson"` kabul ediyor (statsmodels GLM,
+> log bağlantı). Eğri İnsidans Hız Oranı (IRR) olarak çiziliyor; isteğe bağlı
+> maruziyet sütunu (örneğin izlem yılı) offset log(maruziyet) olarak giriyor ve
+> eğri hızları karşılaştırıyor. Genel ilişki ve non-lineerlik testleri Poisson'da
+> ki-kare, quasi-Poisson'da F (artık df ile). Pearson yayılım katsayısı her iki
+> modelde raporlanıyor; Poisson'da 1.5'in üzerindeyse ekran quasi-Poisson
+> öneriyor. Quasi-Poisson'da olabilirlik olmadığından AIC ve knot AIC tablosu
+> yok (R de NA veriyor). Etkileşim testi R `anova.glm` gibi: Poisson'da LR
+> ki-kare, quasi-Poisson'da sapma farkı üzerinden F. Değerler R
+> `glm(family = poisson / quasipoisson)` ile aynı (`backend/tests/test_rcs_poisson.py`).
 * **Hedef:** Sayım ve oran tipi klinik sonuç değişkenlerini kapsamak.
 * **Kapsam:**
   1. `model_type="poisson"` ve `"quasipoisson"` desteği (statsmodels GLM üzerinden).

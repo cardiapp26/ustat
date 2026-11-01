@@ -19,7 +19,7 @@ behavior:
   category_coding: Covariates dummy-coded, first level reference
 reference:
   software: R (pinned image qa/r_reference)
-  entrypoint: rms::rcs inside rms::ols/lrm
+  entrypoint: rms::rcs inside rms::ols/lrm; stats::glm (poisson, quasipoisson) on the Hmisc::rcspline.eval basis
   artifacts:
     - {file: qa/models_audit/reference.json, key: models.rcs}
 compared: [coefficients, standard_errors, p_values, knots, overall_wald, nonlinearity_wald, aic]
@@ -39,6 +39,13 @@ absolute_risk:
   default_horizon: median observed follow-up time
   reference: survival::coxph + summary(survfit(fit, newdata), times = 12) on qa/models_audit/dataset.csv
   tests: backend/tests/test_rcs_absolute_risk.py
+count_models:
+  poisson: GLM Poisson family, log link; curve is an incidence rate ratio; optional exposure enters as offset log(exposure)
+  quasipoisson: same coefficients with Pearson dispersion sum(r^2) / df_resid, as glm(family = quasipoisson); AIC undefined (NA in R), no knot AIC table
+  statistic: chi-square for Poisson; F(df, residual df) for quasi-Poisson; interaction test as anova.glm (LR chi-square, or deviance F using the larger model's dispersion)
+  dispersion: Pearson dispersion reported for both; above 1.5 under Poisson the result advises quasi-Poisson
+  reference: glm(visits ~ rcspline.eval(age, nk = 4, inclx = TRUE), family = poisson / quasipoisson) on qa/models_audit/dataset.csv, with and without offset(log(followup_years))
+  tests: backend/tests/test_rcs_poisson.py
 tolerance:
   rel: 1.0e-4
   rationale: qa/models_audit/compare.py REL; identical knots make the basis identical, so only optimiser noise remains
