@@ -106,24 +106,34 @@ export function MissingGuard({
 }: MissingGuardProps) {
   const { info, loading } = useMissing(sessionId, columns);
 
-  // Nothing to show while loading or when there are no missing values
-  if (loading) {
-    return (
-      <>
+  // `children` (the run button) stays in the same slot in every state. When it
+  // moved between the loading, clean and warning layouts React remounted it,
+  // so a click that landed as the missing-data check finished hit the old,
+  // detached button and was lost.
+  return (
+    <>
+      {loading && (
         <div className="text-xs text-gray-400 animate-pulse mb-2">Checking missing data…</div>
-        {children}
-      </>
-    );
-  }
+      )}
+      {!loading && info && info.rows_affected > 0 && (
+        <MissingWarning info={info} imputation={imputation} onImputation={onImputation} />
+      )}
+      {children}
+    </>
+  );
+}
 
-  if (!info || info.rows_affected === 0) {
-    return <>{children}</>;
-  }
+interface MissingWarningProps {
+  info: MissingInfo;
+  imputation: ImputationStrategy;
+  onImputation: (s: ImputationStrategy) => void;
+}
 
+function MissingWarning({ info, imputation, onImputation }: MissingWarningProps) {
   const severity = info.pct_affected >= 20 ? "red" : "amber";
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3 mb-3">
       {/* ── Warning banner ── */}
       <div
         className={`rounded-lg border px-3 py-2.5 text-xs leading-relaxed ${
@@ -193,9 +203,6 @@ export function MissingGuard({
           </label>
         ))}
       </div>
-
-      {/* ── Render children (run button etc.) ── */}
-      {children}
     </div>
   );
 }
