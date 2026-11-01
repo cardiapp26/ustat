@@ -2,6 +2,7 @@ import type { MutableRefObject } from "react";
 import TitledPlot from "./TitledPlot";
 import type { PlotCaptureHandle, PlotData } from "../lib/plotTypes";
 import { formatHorizon } from "../lib/rcsKnots";
+import { distributionAxis, distributionTrace, type XDistribution } from "../lib/rcsCurve";
 
 /** Cumulative incidence at a horizon along the spline grid (Austin 2025). */
 export interface AbsoluteRiskData {
@@ -51,11 +52,12 @@ interface PlotProps {
   layout: Record<string, unknown>;
   showGrid: boolean;
   plotRefOut: MutableRefObject<PlotCaptureHandle | null>;
+  distribution?: XDistribution | null;
 }
 
 const pct = (v: number[]): number[] => v.map((x) => x * 100);
 
-export function AbsoluteRiskPlot({ data, predictor, timeLabel, eventLabel, knots, layout, showGrid, plotRefOut }: PlotProps) {
+export function AbsoluteRiskPlot({ data, predictor, timeLabel, eventLabel, knots, layout, showGrid, plotRefOut, distribution }: PlotProps) {
   const xs = data.x_values;
   const risk = pct(data.risk);
   const knotY = knots.map((k) => {
@@ -63,6 +65,7 @@ export function AbsoluteRiskPlot({ data, predictor, timeLabel, eventLabel, knots
     return risk[idx];
   });
   const traces: PlotData[] = [
+    ...(distribution ? [distributionTrace(distribution)] : []),
     {
       type: "scatter", x: [...xs, ...xs.slice().reverse()],
       y: [...pct(data.ci_high), ...pct(data.ci_low).reverse()],
@@ -95,6 +98,7 @@ export function AbsoluteRiskPlot({ data, predictor, timeLabel, eventLabel, knots
         ...layout, autosize: true, height: 440,
         xaxis: { gridcolor: "#e5e7eb", showgrid: showGrid, title: { text: predictor }, zeroline: false },
         yaxis: { gridcolor: "#e5e7eb", showgrid: showGrid, title: { text: yTitle }, zeroline: false, rangemode: "tozero", ticksuffix: "%" },
+        ...(distribution ? { yaxis2: distributionAxis(distribution) } : {}),
         legend: { font: { size: 11, color: "#374151" }, x: 0.02, y: 0.98, xanchor: "left", yanchor: "top", bgcolor: "rgba(255,255,255,0.85)", bordercolor: "#e5e7eb", borderwidth: 1 },
         margin: { t: 20, r: 20, b: 50, l: 70 },
       }}

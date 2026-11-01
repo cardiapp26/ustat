@@ -125,6 +125,16 @@ Bu rapor, `/Users/yh/Documents/projects/rcs sources` dizininde yer alan 5 temel 
   2. `frontend/src/components/RCSPanel.tsx`: Cox modunda **"Görünüm: Rölatif Hazard Oranı (HR) | Mutlak Risk (Olay Olasılığı %)"** geçiş düğmesi.
 
 ### Faz 3: Xu (2025) Yayın Seviyesinde Görselleştirme & Nadir Referansı (Öncelik: Yüksek)
+
+> **Durum (1 Kasım 2026): tamamlandı.** Nadir (en düşük risk) her sonuçta
+> raporlanıyor ve "When blank: Nadir" ile referans seçilebiliyor; eğri verinin
+> kenarına kadar düşüyorsa iç minimum yok sayılıp medyan kullanılıyor ve bu
+> ekranda belirtiliyor. Eğri altında tüm gözlemlerden hesaplanan dağılım
+> histogramı (HR ve mutlak risk görünümünde) var. %95 GA'nın referansı (1 veya 0)
+> dışladığı aralıklar grafikte gölgeleniyor ve metin olarak yazılıyor; bu
+> aralıklar referansa bağlı olduğu için referansla birlikte veriliyor. Ayrıca
+> referans artık en yakın grid noktasına yuvarlanmıyor; eğri değerleri R
+> `rms::contrast` ile aynı (`backend/tests/test_rcs_curve.py`).
 * **Hedef:** Grafik estetiğini ve biyolojik yorumlanabilirliği en üst düzeye çıkarmak.
 * **Kapsam:**
   1. **Nadir (Minimum Risk) Tespiti:** Risk fonksiyonunun minimum olduğu $X$ değerinin sayısal optimizasyonla bulunup otomatik referans ($HR/OR=1.0$) olarak atanabilmesi.

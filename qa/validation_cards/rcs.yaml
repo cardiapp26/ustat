@@ -29,6 +29,10 @@ spline_tests:
   statistic: F(df, residual df) for the linear model as rms::anova on ols; chi-square for logistic and Cox
   aic_comparison: Harrell-default knots at 3, 4, 5 and the fitted k; AIC counts the residual variance for the linear model as R AIC()
   tests: backend/tests/test_rcs.py (values from rms::lrm, rms::ols, rms::cph on qa/models_audit/dataset.csv)
+curve:
+  reference: exact reference row (not the nearest grid point); matches rms::contrast(age = x vs age = ref)
+  nadir: grid argmin of the linear predictor refined by bounded search; no interior minimum falls back to the median reference
+  tests: backend/tests/test_rcs_curve.py
 absolute_risk:
   model: Cox only; F(t0 | x) = 1 - exp(-H(t0 | x)), Breslow cumulative hazard, other covariates at their mean
   band: Tsiatis variance of H(t0 | x) with conf.type = "log", as survival::survfit.coxph

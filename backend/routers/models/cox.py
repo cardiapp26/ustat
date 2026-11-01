@@ -33,6 +33,9 @@ from services.rcs_basis import (
 )
 from services.km_median_ci import km_median_ci
 from services.rcs_absolute_risk import absolute_risk as _absolute_risk
+from services.rcs_curve import distribution as _x_distribution
+from services.rcs_curve import find_nadir as _find_nadir
+from services.rcs_curve import relative_curve as _relative_curve
 from services.rcs_inference import (
     RCSOutcome,
     aic_from_loglik,
@@ -916,6 +919,9 @@ class RCSRequest(BaseModel):
     # Cox only: time t0 for the absolute-risk curve, in duration units.
     # None = median observed follow-up time.
     risk_horizon: Optional[float] = None
+    # Reference when ref_value is blank: "median" of the predictor, or
+    # "nadir" = the value with the lowest predicted risk / mean.
+    ref_strategy: str = "median"
 
 
 @router.post("/rcs")
@@ -927,6 +933,9 @@ async def rcs_regression(req: RCSRequest):
     model_type = (req.model_type or "logistic").lower()
     if model_type not in ("logistic", "linear", "cox"):
         raise HTTPException(status_code=422, detail=f"Unknown model_type: {req.model_type}")
+    ref_strategy = (req.ref_strategy or "median").lower()
+    if ref_strategy not in ("median", "nadir"):
+        raise HTTPException(status_code=422, detail=f"ref_strategy must be 'median' or 'nadir'. Got: {req.ref_strategy}")
 
     is_cox = model_type == "cox"
 
@@ -1156,7 +1165,6 @@ async def rcs_regression(req: RCSRequest):
 
     x_lo, x_hi = float(np.percentile(x_raw, 1)), float(np.percentile(x_raw, 99))
     x_syn = np.linspace(x_lo, x_hi, 200)
-    sp_syn = _rcs_basis(x_syn, knots)
 
     cov_means_by_name: dict[str, float] = {}
     if cov_names:
@@ -1164,47 +1172,38 @@ async def rcs_regression(req: RCSRequest):
         for cn, mean_val in zip(cov_names, cov_means):
             cov_means_by_name[cn] = float(mean_val)
 
-    spline_design_syn = np.column_stack([x_syn, sp_syn])
-
-    if is_cox:
+    def design_rows(xs: np.ndarray) -> np.ndarray:
+        """Model rows at predictor values `xs`, covariates at their mean."""
+        xs = np.asarray(xs, dtype=float)
+        m = len(xs)
+        spline_part = np.column_stack([xs, _rcs_basis(xs, knots)])
+        parts = ([] if is_cox else [np.ones(m)]) + [spline_part]
         if cov_mat is not None:
-            X_syn = np.column_stack([x_syn, sp_syn, np.tile(cov_means, (200, 1))])
-        else:
-            X_syn = np.column_stack([x_syn, sp_syn])
+            parts.append(np.tile(cov_means, (m, 1)))
+        if interaction_extra_meta:
+            parts.append(np.column_stack([
+                spline_part[:, spi] * cov_means_by_name.get(member, 0.0)
+                for (member, spi) in interaction_extra_meta
+            ]))
+        return np.column_stack(parts)
+
+    X_syn = design_rows(x_syn)
+    params_arr = np.asarray(params, dtype=float)
+    nadir = _find_nadir(lambda xs: design_rows(xs) @ params_arr, x_syn)
+
+    if req.ref_value is not None:
+        ref_used = "value"
+        ref_val = float(np.clip(req.ref_value, x_lo, x_hi))
+    elif ref_strategy == "nadir" and not nadir.at_boundary:
+        ref_used = "nadir"
+        ref_val = nadir.x
     else:
-        if cov_mat is not None:
-            X_syn = np.column_stack([np.ones(200), x_syn, sp_syn, np.tile(cov_means, (200, 1))])
-        else:
-            X_syn = np.column_stack([np.ones(200), x_syn, sp_syn])
+        ref_used = "median"
+        ref_val = float(np.clip(np.median(x_raw), x_lo, x_hi))
 
-    if interaction_extra_meta:
-        ix_syn = np.column_stack([
-            spline_design_syn[:, spi] * cov_means_by_name.get(member, 0.0)
-            for (member, spi) in interaction_extra_meta
-        ])
-        X_syn = np.column_stack([X_syn, ix_syn])
-
-    lp_syn = X_syn @ params
-
-    ref_val = req.ref_value if req.ref_value is not None else float(np.median(x_raw))
-    ref_val = float(np.clip(ref_val, x_lo, x_hi))
-    ref_idx = int(np.argmin(np.abs(x_syn - ref_val)))
-    lp_ref = lp_syn[ref_idx]
-    rel_lp = lp_syn - lp_ref
-
-    diffs = X_syn - X_syn[ref_idx]
-    var_lp = np.einsum("ij,jk,ik->i", diffs, cov_params, diffs)
-    se_lp = np.sqrt(np.maximum(var_lp, 0))
-    z95 = 1.96
-
-    if is_cox or model_type == "logistic":
-        or_vals = np.exp(rel_lp)
-        ci_low = np.exp(rel_lp - z95 * se_lp)
-        ci_high = np.exp(rel_lp + z95 * se_lp)
-    else:
-        or_vals = rel_lp
-        ci_low = rel_lp - z95 * se_lp
-        ci_high = rel_lp + z95 * se_lp
+    log_link = is_cox or model_type == "logistic"
+    curve = _relative_curve(X_syn, design_rows(np.array([ref_val]))[0], params, cov_params, log_link)
+    or_vals, ci_low, ci_high = curve.estimate, curve.ci_low, curve.ci_high
 
     effect_type = "HR" if is_cox else ("OR" if model_type == "logistic" else "mean_diff")
 
@@ -1271,7 +1270,6 @@ async def rcs_regression(req: RCSRequest):
                 design_cols_c = feat_cols_c
                 params_c = cph_c.params_.reindex(design_cols_c).values
                 cov_params_c = cph_c.variance_matrix_.reindex(index=design_cols_c, columns=design_cols_c).values
-                X_syn_c = np.column_stack([x_syn, sp_syn])
             else:
                 X_parts_c = [np.ones(n), x_raw, spline_cols]
                 X_c = np.column_stack(X_parts_c)
@@ -1281,22 +1279,15 @@ async def rcs_regression(req: RCSRequest):
                     res_c = await asyncio.to_thread(lambda: sm_api.OLS(y, X_c).fit())
                 params_c = res_c.params
                 cov_params_c = res_c.cov_params()
-                X_syn_c = np.column_stack([np.ones(200), x_syn, sp_syn])
 
-            lp_syn_c = X_syn_c @ params_c
-            ref_idx_c = int(np.argmin(np.abs(x_syn - ref_val)))
-            rel_lp_c = lp_syn_c - lp_syn_c[ref_idx_c]
-            diffs_c = X_syn_c - X_syn_c[ref_idx_c]
-            var_lp_c = np.einsum("ij,jk,ik->i", diffs_c, cov_params_c, diffs_c)
-            se_lp_c = np.sqrt(np.maximum(var_lp_c, 0))
-            if is_cox or model_type == "logistic":
-                or_vals_c = np.exp(rel_lp_c)
-                ci_low_c = np.exp(rel_lp_c - z95 * se_lp_c)
-                ci_high_c = np.exp(rel_lp_c + z95 * se_lp_c)
-            else:
-                or_vals_c = rel_lp_c
-                ci_low_c = rel_lp_c - z95 * se_lp_c
-                ci_high_c = rel_lp_c + z95 * se_lp_c
+            def crude_rows(xs: np.ndarray) -> np.ndarray:
+                spline_part = np.column_stack([xs, _rcs_basis(xs, knots)])
+                return spline_part if is_cox else np.column_stack([np.ones(len(xs)), spline_part])
+
+            crude_curve = _relative_curve(
+                crude_rows(x_syn), crude_rows(np.array([ref_val]))[0], params_c, cov_params_c, log_link,
+            )
+            or_vals_c, ci_low_c, ci_high_c = crude_curve.estimate, crude_curve.ci_low, crude_curve.ci_high
 
             resid_df_c = float(res_c.df_resid) if model_type == "linear" else None
             crude_overall = joint_wald(params_c, cov_params_c, range(lin_idx, lin_idx + 1 + n_sp), resid_df_c)
@@ -1329,6 +1320,12 @@ async def rcs_regression(req: RCSRequest):
         "knots": [round(float(kn), 2) for kn in knots],
         "knot_positions_custom": req.knot_positions is not None,
         "ref_value": round(ref_val, 4),
+        "ref_strategy_used": ref_used,
+        # Set when a nadir reference was asked for but the curve has no
+        # interior minimum, so the median was used instead.
+        "ref_fallback": ref_strategy == "nadir" and req.ref_value is None and nadir.at_boundary,
+        "nadir": {"x": round(nadir.x, 4), "at_boundary": nadir.at_boundary},
+        "x_distribution": _x_distribution(x_raw, x_lo, x_hi),
         "aic": _safe_float(aic_val),
         "log_likelihood": _safe_float(log_lik),
         "concordance": _safe_float(concordance),
@@ -1623,8 +1620,13 @@ async def cox_rcs(req: CoxRCSRequest):
         x_raw = term_info[ti]["x_raw"]
         x_lo, x_hi = float(np.percentile(x_raw, 1)), float(np.percentile(x_raw, 99))
         x_syn = np.linspace(x_lo, x_hi, 200)
-        sp_syn = _rcs_basis(x_syn, term_info[ti]["knots"])
-        this_design = np.column_stack([x_syn, sp_syn])
+        own_ref = term_info[ti]["ref_value"]
+        # Evaluate the grid plus the exact reference as a final row, so the
+        # curve is relative to the reference itself, not the nearest grid point.
+        x_eval = np.append(x_syn, own_ref)
+        m = len(x_eval)
+        sp_syn = _rcs_basis(x_eval, term_info[ti]["knots"])
+        this_design = np.column_stack([x_eval, sp_syn])
         other_idx = 1 - ti if len(term_info) == 2 else None
         other_design = None
         if other_idx is not None:
@@ -1632,7 +1634,7 @@ async def cox_rcs(req: CoxRCSRequest):
             ref_x = other_term["ref_value"]
             ref_sp = _rcs_basis(np.array([ref_x]), other_term["knots"]).flatten()
             other_vec = np.concatenate([[ref_x], ref_sp])
-            other_design = np.tile(other_vec, (200, 1))
+            other_design = np.tile(other_vec, (m, 1))
 
         if ti == 0:
             main_syn = this_design if other_design is None else np.column_stack([this_design, other_design])
@@ -1650,21 +1652,10 @@ async def cox_rcs(req: CoxRCSRequest):
             main_syn = np.column_stack([main_syn, ix_syn])
 
         if cov_names:
-            main_syn = np.column_stack([main_syn, np.tile(cov_means, (200, 1))])
+            main_syn = np.column_stack([main_syn, np.tile(cov_means, (m, 1))])
 
-        lp_syn = main_syn @ params_full
-
-        own_ref = term_info[ti]["ref_value"]
-        ref_idx_syn = int(np.argmin(np.abs(x_syn - own_ref)))
-        ref_row = main_syn[ref_idx_syn].copy()
-
-        diffs = main_syn - ref_row
-        var_lp = np.einsum("ij,jk,ik->i", diffs, cov_full, diffs)
-        se_lp = np.sqrt(np.maximum(var_lp, 0))
-        rel_lp = lp_syn - lp_syn[ref_idx_syn]
-        hr = np.exp(rel_lp)
-        ci_low = np.exp(rel_lp - 1.96 * se_lp)
-        ci_high = np.exp(rel_lp + 1.96 * se_lp)
+        rel = _relative_curve(main_syn[:-1], main_syn[-1], params_full, cov_full, log_link=True)
+        hr, ci_low, ci_high = rel.estimate, rel.ci_low, rel.ci_high
 
         curves_1d.append({
             "column": term.column,

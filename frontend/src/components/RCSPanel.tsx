@@ -14,6 +14,7 @@ import { fmtP } from "../lib/format";
 import { RCSTestChips, KnotComparisonTable, type RCSTestFields } from "./RCSInference";
 import { SUPPORTED_KNOTS, knotBudget, KNOT_BUDGET_EVENTS, harrellPercentiles } from "../lib/rcsKnots";
 import { AbsoluteRiskPlot, RCSViewToggle, type AbsoluteRiskData, type RCSView } from "./RCSAbsoluteRisk";
+import { describeRegions, distributionAxis, distributionTrace, excludedRegions, type XDistribution } from "../lib/rcsCurve";
 import { describeStale } from "../lib/resultStamp";
 import type { PlotData, PlotLayout, PlotCaptureHandle } from "../lib/plotTypes";
 
@@ -105,6 +106,10 @@ interface RCSResult extends RCSTestFields {
   aic?: number | null;
   crude?: RCSCrude | null;
   absolute_risk?: AbsoluteRiskData | null;
+  ref_strategy_used?: "value" | "median" | "nadir";
+  nadir?: { x: number; at_boundary: boolean } | null;
+  ref_fallback?: boolean;
+  x_distribution?: XDistribution | null;
   covariates_used?: string[];
   covariates_requested?: string[];
   covariates_summary?: RCSCovariateSummary[];
@@ -387,6 +392,8 @@ export default function RCSPanel() {
   const [rcsCustomKnots, setRcsCustomKnots] = usePersistedPanelState("rcs", "customKnots", "");
   const [rcsRiskHorizon, setRcsRiskHorizon] = usePersistedPanelState("rcs", "riskHorizon", "");
   const [rcsView, setRcsView] = useState<RCSView>("hr");
+  const [rcsRefStrategy, setRcsRefStrategy] = usePersistedPanelState<"median" | "nadir">("rcs", "refStrategy", "median");
+  const [rcsShowDist, setRcsShowDist] = useState(true);
 
   // ── Cox-RCS multivariable state ───────────────────────────────────────────
   const [crxDuration, setCrxDuration] = usePersistedPanelState("rcs", "crxDuration", numCols[0] ?? "");
@@ -403,7 +410,7 @@ export default function RCSPanel() {
   const runParams = mode === "rcs"
     ? {
         mode, predictor: rcsPredictor, covariates: rcsCovariates, nKnots: rcsNKnots,
-        refValue: rcsRefValue, outcomeType: rcsOutcomeType,
+        refValue: rcsRefValue, refStrategy: rcsRefValue === "" ? rcsRefStrategy : null, outcomeType: rcsOutcomeType,
         customKnots: rcsKnotMode === "custom" ? rcsCustomKnots : null,
         interaction: rcsInteractionCov.filter((c) => rcsCovariates.includes(c)),
         ...(rcsOutcomeType === "cox"
@@ -440,6 +447,7 @@ export default function RCSPanel() {
           covariates: rcsCovariates,
           n_knots: rcsNKnots,
           ref_value: rcsRefValue !== "" ? parseFloat(rcsRefValue) : undefined,
+          ref_strategy: rcsRefStrategy,
           model_type: rcsOutcomeType,
           knot_positions: customKnotsArr,
           interaction_covariates: rcsInteractionCov.length > 0
@@ -635,9 +643,19 @@ export default function RCSPanel() {
                 <label className="text-xs text-gray-400 block mb-1">
                   Reference value <Tip text="The effect = 1.0 (or 0 for linear) reference point on the X-axis. Leave blank to use the median." />
                 </label>
-                <input type="number" placeholder="(median)" value={rcsRefValue}
+                <input type="number" placeholder={rcsRefStrategy === "nadir" ? "(lowest-risk value)" : "(median)"} value={rcsRefValue}
                   onChange={(e) => setRcsRefValue(e.target.value)}
                   className="select w-full text-xs py-1" />
+                <div className="flex items-center gap-1 mt-1 text-[10px] text-gray-500" role="group" aria-label="Reference when blank">
+                  <span>When blank:</span>
+                  {([["median", "Median"], ["nadir", "Nadir (lowest risk)"]] as const).map(([key, label]) => (
+                    <button key={key} onClick={() => setRcsRefStrategy(key)} aria-pressed={rcsRefStrategy === key}
+                      className={`px-1.5 py-0.5 rounded border transition-colors ${rcsRefStrategy === key ? "bg-indigo-600 text-white border-indigo-600" : "border-gray-300 text-gray-600 hover:bg-gray-50"}`}>
+                      {label}
+                    </button>
+                  ))}
+                  <Tip wide text="Nadir = the predictor value with the lowest predicted risk (lowest mean for a linear outcome). For U- or J-shaped curves it is the biologically meaningful reference (Xu 2025, Austin 2025): every other value then shows its excess risk. Ignored when a reference value is typed. If the curve keeps falling to the edge of the data there is no interior nadir; the result says so." />
+                </div>
               </div>
               <div>
                 <label className="text-xs text-gray-400 block mb-1">
@@ -858,7 +876,13 @@ export default function RCSPanel() {
                 {((result.knots as number[]) ?? []).map((k: number, i: number) => (
                   <span key={i} className="bg-indigo-50 border border-indigo-100 text-indigo-600 rounded px-1.5 py-0.5">{k}</span>
                 ))}
-                <span className="text-gray-400 ml-2">reference = <strong>{result.ref_value}</strong> ({eff.abbr} = {eff.refValue.toFixed(1)})</span>
+                <span className="text-gray-400 ml-2">reference = <strong>{result.ref_value}</strong> ({eff.abbr} = {eff.refValue.toFixed(1)}){result.ref_strategy_used && result.ref_strategy_used !== "value" ? `, ${result.ref_strategy_used}` : ""}</span>
+                {result.nadir && (
+                  <span className={`ml-2 rounded px-1.5 py-0.5 border ${result.nadir.at_boundary ? "bg-amber-50 text-amber-700 border-amber-200" : "bg-teal-50 text-teal-700 border-teal-200"}`}
+                    title={result.nadir.at_boundary ? "The curve is lowest at the edge of the plotted range, so it has no interior minimum." : "Predictor value with the lowest predicted risk / mean, other covariates at their mean."}>
+                    {result.nadir.at_boundary ? `no interior nadir (lowest at ${result.nadir.x})${result.ref_fallback ? ", median used as reference" : ""}` : `nadir = ${result.nadir.x}`}
+                  </span>
+                )}
               </div>
               <div className="flex flex-wrap gap-1.5 text-[11px]">
                 <RCSTestChips result={result} adjusted={!!result.crude} />
@@ -920,7 +944,7 @@ export default function RCSPanel() {
                 <AbsoluteRiskPlot data={riskData} predictor={result.predictor}
                   timeLabel={result.duration_col ?? "time"} eventLabel={result.event_col ?? "event"}
                   knots={(result.knots as number[]) ?? []} layout={themedLayout} showGrid={showGrid}
-                  plotRefOut={rcsPlotRef} />
+                  plotRefOut={rcsPlotRef} distribution={rcsShowDist ? result.x_distribution ?? null : null} />
               ) : (() => {
                 // Build dose-response figure data, optionally overlaying the
                 // crude (unadjusted) curve when the backend returned one.
@@ -932,7 +956,9 @@ export default function RCSPanel() {
                 const nlp = result.nonlinearity_p as number | null | undefined;
                 const nlAdjStr = nlp == null ? null : fmtP(nlp);
 
+                const dist = rcsShowDist ? result.x_distribution ?? null : null;
                 const traces: PlotData[] = [
+                  ...(dist ? [distributionTrace(dist)] : []),
                   // Adjusted 95% CI band
                   {
                     type: "scatter", x: [...(result.x_values as number[]), ...(result.x_values as number[]).slice().reverse()],
@@ -1006,8 +1032,15 @@ export default function RCSPanel() {
                 const xMaxC = xvCurve.length ? Math.max(...xvCurve) : undefined;
                 const xPad = (xMinC != null && xMaxC != null) ? Math.max((xMaxC - xMinC) * 0.03, 1e-9) : 0;
                 const xRange = (xMinC != null && xMaxC != null) ? [xMinC - xPad, xMaxC + xPad] : undefined;
+                const regions = excludedRegions(xvCurve, (result.ci_low as number[]) ?? [], (result.ci_high as number[]) ?? [], eff.refValue);
 
                 return (
+                  <>
+                  <p className="text-[11px] text-gray-600" title="Shaded on the plot. These ranges depend on the reference value, so report them together with it.">
+                    {regions.length > 0
+                      ? <>95% CI excludes {eff.abbr} = {eff.refValue} for {result.predictor} {describeRegions(regions)}, relative to {result.ref_value}.</>
+                      : <>95% CI includes {eff.abbr} = {eff.refValue} across the plotted range of {result.predictor}.</>}
+                  </p>
                   <TitledPlot
                     plotRefOut={rcsPlotRef}
                     storageKey={`rcs2:${result.predictor}:${outcomeLabel}:ref${result.ref_value}:k${result.n_knots}:cov${(result.covariates_used as string[] | undefined)?.length ?? 0}`}
@@ -1027,7 +1060,13 @@ export default function RCSPanel() {
                         title: { text: yTitle }, zeroline: false,
                         ...(useLogY ? { type: "log" as const, dtick: 1 } : {}),
                       },
+                      ...(dist ? { yaxis2: distributionAxis(dist) } : {}),
                       shapes: [
+                        ...regions.map((r) => ({
+                          type: "rect" as const, xref: "x" as const, yref: "paper" as const,
+                          x0: r.from, x1: r.to, y0: 0, y1: 1, layer: "below" as const, line: { width: 0 },
+                          fillcolor: r.side === "above" ? "rgba(239,68,68,0.06)" : "rgba(16,185,129,0.07)",
+                        })),
                         // Horizontal reference at HR/OR = 1 (or Δ = 0)
                         { type: "line", xref: "paper", yref: "y",
                           x0: 0, x1: 1, y0: eff.refValue, y1: eff.refValue,
@@ -1037,7 +1076,8 @@ export default function RCSPanel() {
                           x0: result.ref_value, x1: result.ref_value, y0: 0, y1: 1,
                           line: { color: "#9ca3af", width: 1.2, dash: "dot" } },
                       ],
-                      legend: { font: { size: 11, color: "#374151" }, x: 0.02, y: 0.06, xanchor: "left", yanchor: "bottom", bgcolor: "rgba(255,255,255,0.85)", bordercolor: "#e5e7eb", borderwidth: 1 },
+                      // Bottom-left by default; top-left when the distribution bars fill the bottom.
+                      legend: { font: { size: 11, color: "#374151" }, x: 0.02, ...(dist ? { y: 0.98, yanchor: "top" as const } : { y: 0.06, yanchor: "bottom" as const }), xanchor: "left", bgcolor: "rgba(255,255,255,0.85)", bordercolor: "#e5e7eb", borderwidth: 1 },
                       margin: { t: 20, r: 20, b: 50, l: 70 },
                     }}
                     style={{ width: "100%", height: 520 }}
@@ -1045,10 +1085,18 @@ export default function RCSPanel() {
                       toImageButtonOptions: { format: "png", filename: `RCS_${result.predictor}_${outcomeLabel || "result"}`, width: 1200, height: 600 },
                       modeBarButtonsToRemove: ["select2d", "lasso2d"] }}
                   />
+                  </>
                 );
               })()}
 
               <div className="flex items-center gap-6 pt-1 border-t border-gray-100">
+                {result.x_distribution && <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer select-none">
+                  <span>Show Distribution</span>
+                  <button onClick={() => setRcsShowDist(v => !v)} aria-pressed={rcsShowDist} aria-label="Show distribution"
+                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${rcsShowDist ? "bg-indigo-600" : "bg-gray-300"}`}>
+                    <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${rcsShowDist ? "translate-x-4.5" : "translate-x-0.5"}`} />
+                  </button>
+                </label>}
                 {!showRisk && <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer select-none">
                   <span>Log Scale (Y)</span>
                   <button onClick={() => setRcsLogScale(v => !v)}

@@ -313,3 +313,59 @@ describe('RCSPanel absolute risk (Cox)', () => {
     expect(called).toBe(false)
   })
 })
+
+describe('RCSPanel reference and curve layers', () => {
+  const result = {
+    x_values: [40, 50, 60, 70],
+    or_values: [1.8, 1.0, 1.1, 2.2],
+    ci_low: [1.2, 1.0, 0.8, 1.4],
+    ci_high: [2.6, 1.0, 1.5, 3.4],
+    x_data: [45, 55, 65],
+    predictor: 'AGE',
+    outcome: 'DM',
+    model_type: 'logistic',
+    knots: [45, 55, 65],
+    n_knots: 3,
+    ref_value: 50,
+    ref_strategy_used: 'nadir',
+    nadir: { x: 50, at_boundary: false },
+    x_distribution: { edges: [40, 55, 70], counts: [2, 2], n_outside: 0 },
+    n: 4,
+    nonlinearity_p: 0.01,
+  }
+
+  it('sends the nadir strategy and shows the nadir, CI regions and distribution toggle', async () => {
+    installSession(rcsSession())
+    let sent: Record<string, unknown> | null = null
+    server.use(
+      http.post('/api/models/rcs', async ({ request }) => {
+        sent = (await request.json()) as Record<string, unknown>
+        return HttpResponse.json(result)
+      }),
+    )
+    const user = userEvent.setup()
+    render(<RCSPanel />)
+    await settle()
+
+    await user.click(screen.getByRole('button', { name: 'Logistic' }))
+    await user.click(screen.getByRole('button', { name: 'Nadir (lowest risk)' }))
+    await user.click(await screen.findByRole('button', { name: 'Run RCS' }))
+
+    await waitFor(() => expect(sent).not.toBeNull())
+    expect(sent!.ref_strategy).toBe('nadir')
+    expect(await screen.findByText('nadir = 50')).toBeInTheDocument()
+    expect(screen.getByText(/95% CI excludes OR = 1 for AGE/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Show distribution' })).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('flags a curve without an interior nadir', async () => {
+    installSession(rcsSession())
+    server.use(http.post('/api/models/rcs', () =>
+      HttpResponse.json({ ...result, nadir: { x: 40, at_boundary: true }, ref_strategy_used: 'median' })))
+    const user = userEvent.setup()
+    render(<RCSPanel />)
+    await settle()
+    await user.click(await screen.findByRole('button', { name: 'Run RCS' }))
+    expect(await screen.findByText('no interior nadir (lowest at 40)')).toBeInTheDocument()
+  })
+})
