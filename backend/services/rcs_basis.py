@@ -3,7 +3,7 @@
 Shared by the univariate /api/models/rcs endpoint and the multivariable
 /api/models/survival/cox_rcs endpoint.
 
-The basis follows Harrell's "Regression Modeling Strategies" §2.4.4:
+The basis follows Harrell's "Regression Modeling Strategies" §2.4.5:
   - n_knots knots produces (n_knots - 1) basis columns:
     one linear term (the raw x) plus (n_knots - 2) cubic-spline columns.
   - Default knot positions are Harrell's recommended percentiles
