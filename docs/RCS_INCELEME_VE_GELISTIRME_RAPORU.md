@@ -1,6 +1,7 @@
 # uSTAT Restricted Cubic Spline (RCS) Modülü İnceleme, Klinik Değerlendirme ve Geliştirme Planı
 
 **Tarih:** 1 Kasım 2026
+
 **Kapsam:** `/Users/yh/Documents/projects/rcs sources` kaynaklarının sentezi, uSTAT RCS modülü durum analizi, klinik/akademik gereksinimler ve önceliklendirilmiş geliştirme yol haritası.
 
 ---
