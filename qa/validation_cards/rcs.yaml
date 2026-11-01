@@ -29,6 +29,12 @@ spline_tests:
   statistic: F(df, residual df) for the linear model as rms::anova on ols; chi-square for logistic and Cox
   aic_comparison: Harrell-default knots at 3, 4, 5 and the fitted k; AIC counts the residual variance for the linear model as R AIC()
   tests: backend/tests/test_rcs.py (values from rms::lrm, rms::ols, rms::cph on qa/models_audit/dataset.csv)
+absolute_risk:
+  model: Cox only; F(t0 | x) = 1 - exp(-H(t0 | x)), Breslow cumulative hazard, other covariates at their mean
+  band: Tsiatis variance of H(t0 | x) with conf.type = "log", as survival::survfit.coxph
+  default_horizon: median observed follow-up time
+  reference: survival::coxph + summary(survfit(fit, newdata), times = 12) on qa/models_audit/dataset.csv
+  tests: backend/tests/test_rcs_absolute_risk.py
 tolerance:
   rel: 1.0e-4
   rationale: qa/models_audit/compare.py REL; identical knots make the basis identical, so only optimiser noise remains

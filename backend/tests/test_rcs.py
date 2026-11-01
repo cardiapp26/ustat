@@ -286,3 +286,11 @@ def test_covariate_repeating_predictor_or_outcome_is_ignored(client, audit_df):
     d = _post_rcs(client, audit_df, "rcs_dup_cov", model_type="logistic", outcome="event_binary",
                   covariates=["age", "event_binary", "bmi", "bmi"])
     assert d["covariates_used"] == ["bmi"]
+
+
+def test_predictor_equal_to_duration_column_rejected(client, audit_df):
+    sid = make_session(audit_df, "rcs_pred_is_time")
+    r = client.post("/api/models/rcs", json={"session_id": sid, "predictor": "time", "model_type": "cox",
+                                            "duration_col": "time", "event_col": "status"})
+    assert r.status_code == 422
+    assert "also the outcome" in r.text

@@ -237,3 +237,79 @@ describe('RCSPanel', () => {
     expect(removed()).toContain('toImage')
   })
 })
+
+describe('RCSPanel absolute risk (Cox)', () => {
+  const coxResult = {
+    x_values: [40, 60, 80],
+    or_values: [0.8, 1.0, 1.6],
+    ci_low: [0.6, 1.0, 1.2],
+    ci_high: [1.1, 1.0, 2.1],
+    x_data: [55, 62, 48, 70],
+    predictor: 'AGE',
+    model_type: 'cox',
+    duration_col: 'TIME',
+    event_col: 'EVENT',
+    knots: [45, 60, 75],
+    n_knots: 3,
+    ref_value: 60,
+    n: 4,
+    n_events: 3,
+    nonlinearity_p: 0.2,
+    overall_p: 0.01,
+    absolute_risk: {
+      horizon: 12,
+      horizon_is_default: false,
+      n_at_risk: 15,
+      n_events_by_horizon: 2,
+      x_values: [40, 60, 80],
+      risk: [0.2, 0.3, 0.5],
+      ci_low: [0.1, 0.2, 0.4],
+      ci_high: [0.3, 0.4, 0.6],
+    },
+  }
+
+  it('sends the horizon and switches the curve to absolute risk', async () => {
+    installSession(rcsSession())
+    let sent: Record<string, unknown> | null = null
+    server.use(
+      http.post('/api/models/rcs', async ({ request }) => {
+        sent = (await request.json()) as Record<string, unknown>
+        return HttpResponse.json(coxResult)
+      }),
+    )
+    const user = userEvent.setup()
+    render(<RCSPanel />)
+    await settle()
+
+    await user.click(screen.getByRole('button', { name: 'Cox' }))
+    await user.type(screen.getByLabelText(/Absolute-risk horizon/), '12')
+    await user.click(await screen.findByRole('button', { name: 'Run RCS' }))
+
+    await waitFor(() => expect(sent).not.toBeNull())
+    expect(sent!.risk_horizon).toBe(12)
+
+    const riskBtn = await screen.findByRole('button', { name: /Absolute risk at TIME = 12/ })
+    expect(screen.getByRole('button', { name: 'Hazard ratio' })).toHaveAttribute('aria-pressed', 'true')
+    await user.click(riskBtn)
+    expect(riskBtn).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByText(/survfit.coxph/)).toBeInTheDocument()
+    expect(screen.getByText(/Only 15 patients remain at risk/)).toBeInTheDocument()
+    expect(screen.queryByText('Log Scale (Y)')).not.toBeInTheDocument()
+  })
+
+  it('rejects a non-positive horizon before calling the server', async () => {
+    installSession(rcsSession())
+    let called = false
+    server.use(http.post('/api/models/rcs', () => { called = true; return HttpResponse.json(coxResult) }))
+    const user = userEvent.setup()
+    render(<RCSPanel />)
+    await settle()
+
+    await user.click(screen.getByRole('button', { name: 'Cox' }))
+    await user.type(screen.getByLabelText(/Absolute-risk horizon/), '-3')
+    await user.click(await screen.findByRole('button', { name: 'Run RCS' }))
+
+    await waitFor(() => expect(screen.getByText(/Risk horizon must be a positive number/)).toBeInTheDocument())
+    expect(called).toBe(false)
+  })
+})

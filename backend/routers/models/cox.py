@@ -32,6 +32,7 @@ from services.rcs_basis import (
     resolve_knots as _resolve_knots,
 )
 from services.km_median_ci import km_median_ci
+from services.rcs_absolute_risk import absolute_risk as _absolute_risk
 from services.rcs_inference import (
     RCSOutcome,
     aic_from_loglik,
@@ -912,6 +913,9 @@ class RCSRequest(BaseModel):
     event_col: Optional[str] = None
     knot_positions: Optional[List[float]] = None
     interaction_covariates: Optional[List[str]] = None
+    # Cox only: time t0 for the absolute-risk curve, in duration units.
+    # None = median observed follow-up time.
+    risk_horizon: Optional[float] = None
 
 
 @router.post("/rcs")
@@ -929,7 +933,13 @@ async def rcs_regression(req: RCSRequest):
     # A covariate that repeats the predictor or an outcome column would select
     # the same column twice; pandas then returns a frame where a Series is
     # expected and the request crashed with a 500. Drop such entries.
-    model_cols = {req.predictor, req.outcome, req.duration_col, req.event_col} - {None}
+    outcome_cols = {req.outcome, req.duration_col, req.event_col} - {None}
+    if req.predictor in outcome_cols:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Predictor '{req.predictor}' is also the outcome / duration / event column; pick a different predictor.",
+        )
+    model_cols = outcome_cols | {req.predictor}
     covariates = [c for c in dict.fromkeys(req.covariates or []) if c not in model_cols]
 
     if is_cox:
@@ -996,6 +1006,11 @@ async def rcs_regression(req: RCSRequest):
         unique_e = sorted(set(event.tolist()))
         if set(unique_e) - {0.0, 1.0}:
             raise HTTPException(status_code=422, detail=f"event_col '{req.event_col}' must be binary 0/1.")
+        if req.risk_horizon is not None and not (0 < req.risk_horizon <= float(np.max(duration))):
+            raise HTTPException(
+                status_code=422,
+                detail=f"risk_horizon must be > 0 and ≤ the longest follow-up ({float(np.max(duration)):.4g}). Got: {req.risk_horizon}",
+            )
     else:
         y = df[req.outcome].values.astype(float)
         if model_type == "logistic":
@@ -1193,6 +1208,13 @@ async def rcs_regression(req: RCSRequest):
 
     effect_type = "HR" if is_cox else ("OR" if model_type == "logistic" else "mean_diff")
 
+    absolute_risk_block = None
+    if is_cox:
+        absolute_risk_block = _absolute_risk_curve(
+            fit_df[design_cols].values.astype(float), duration, event,
+            params, cov_params, X_syn, x_syn, req.risk_horizon,
+        )
+
     cov_summary = []
     if cov_names:
         n_pre_cov = (0 if is_cox else 2) + (1 + spline_cols.shape[1])
@@ -1333,6 +1355,41 @@ async def rcs_regression(req: RCSRequest):
         "ci_high": _clean(ci_high),
         "x_data": _clean(x_raw[:500]),
         "crude": crude_block,
+        "absolute_risk": absolute_risk_block,
+    }
+
+
+def _absolute_risk_curve(
+    design: np.ndarray,
+    duration: np.ndarray,
+    event: np.ndarray,
+    params: np.ndarray,
+    cov_params: np.ndarray,
+    x_rows: np.ndarray,
+    x_values: np.ndarray,
+    horizon: Optional[float],
+) -> Optional[dict]:
+    """Cumulative incidence at `horizon` along the spline grid (Austin 2025).
+
+    Covariates sit at their means, as in the hazard-ratio curve. Returns None
+    when the computation fails, so the hazard-ratio result still reaches the
+    user.
+    """
+    t0 = float(horizon) if horizon is not None else float(np.median(duration))
+    try:
+        ar = _absolute_risk(design, duration, event, params, cov_params, x_rows, t0)
+    except Exception:
+        logger.exception("RCS absolute-risk curve failed")
+        return None
+    return {
+        "horizon": round(t0, 6),
+        "horizon_is_default": horizon is None,
+        "n_at_risk": int(np.sum(duration >= t0)),
+        "n_events_by_horizon": int(np.sum((event == 1) & (duration <= t0))),
+        "x_values": _clean(x_values),
+        "risk": _clean(ar.risk),
+        "ci_low": _clean(ar.ci_low),
+        "ci_high": _clean(ar.ci_high),
     }
 
 

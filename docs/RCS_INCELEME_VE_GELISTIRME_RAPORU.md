@@ -110,6 +110,15 @@ Bu rapor, `/Users/yh/Documents/projects/rcs sources` dizininde yer alan 5 temel 
   4. 3, 4 ve 5 düğümlü modeller için tek tıkla AIC karşılaştırma özeti.
 
 ### Faz 2: Austin (2025) Klinik Mutlak Risk & Kümülatif İnsidans Modu (Öncelik: Yüksek)
+
+> **Durum (1 Kasım 2026): tamamlandı.** Tek değişkenli Cox-RCS, seçilen $t_0$
+> ufkunda (boş bırakılırsa medyan takip süresi) $F(t_0 \mid x)$ eğrisini diğer
+> kovaryatlar ortalamada olacak şekilde döndürüyor. Güven bandı R
+> `survfit.coxph` ile aynı yöntemle (Tsiatis varyansı, `conf.type = "log"`)
+> hesaplanıyor; değerler `backend/tests/test_rcs_absolute_risk.py` içinde R ile
+> doğrulandı. Sonuç ekranında "Hazard ratio | Absolute risk" geçişi, ufukta
+> risk altındaki hasta sayısı ve az hasta kaldığında uyarı var. Çok değişkenli
+> Cox-RCS (iki spline terimi) için mutlak risk henüz yok.
 * **Hedef:** Klinisyenlerin doğrudan hasta başında kullanabileceği mutlak risk projeksiyonu sağlamak.
 * **Kapsam:**
   1. `backend/routers/models/cox.py`: Breslow taban kümülatif tehlike fonksiyonu ($H_0(t)$) üzerinden kullanıcının seçeceği $t_0$ zaman ufkunda (örn. 1 yıllık, 3 yıllık, 5 yıllık veya veri medyan takip süresinde) kümülatif insidans eğrisi ($F(t_0 | X) = 1 - S_0(t_0)^{\exp(X\beta)}$) ve delta metoduyla %95 güven bandı hesaplanması.

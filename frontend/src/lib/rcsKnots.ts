@@ -1,4 +1,4 @@
-/** Harrell knot-count constants and the events-per-parameter knot budget. */
+/** Harrell knot-count constants, the knot budget and RCS display helpers. */
 
 /** Knot counts the backend accepts (Harrell RMS Table 2.3). */
 export const SUPPORTED_KNOTS = [3, 4, 5, 6, 7] as const;
@@ -37,3 +37,8 @@ export function knotBudget(events: number = EPV_REFERENCE_EVENTS): KnotBudgetRow
 }
 
 export const KNOT_BUDGET_EVENTS = EPV_REFERENCE_EVENTS;
+
+/** Time horizon for labels: integers as is, otherwise 4 significant digits. */
+export function formatHorizon(t: number): string {
+  return Number.isInteger(t) ? String(t) : t.toPrecision(4).replace(/\.?0+$/, "");
+}

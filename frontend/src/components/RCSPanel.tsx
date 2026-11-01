@@ -13,6 +13,7 @@ import { MissingGuard, type ImputationStrategy } from "./MissingGuard";
 import { fmtP } from "../lib/format";
 import { RCSTestChips, KnotComparisonTable, type RCSTestFields } from "./RCSInference";
 import { SUPPORTED_KNOTS, knotBudget, KNOT_BUDGET_EVENTS, harrellPercentiles } from "../lib/rcsKnots";
+import { AbsoluteRiskPlot, RCSViewToggle, type AbsoluteRiskData, type RCSView } from "./RCSAbsoluteRisk";
 import { describeStale } from "../lib/resultStamp";
 import type { PlotData, PlotLayout, PlotCaptureHandle } from "../lib/plotTypes";
 
@@ -103,6 +104,7 @@ interface RCSResult extends RCSTestFields {
   n_excluded?: number | null;
   aic?: number | null;
   crude?: RCSCrude | null;
+  absolute_risk?: AbsoluteRiskData | null;
   covariates_used?: string[];
   covariates_requested?: string[];
   covariates_summary?: RCSCovariateSummary[];
@@ -383,6 +385,8 @@ export default function RCSPanel() {
   const [rcsCoxEvent, setRcsCoxEvent] = usePersistedPanelState("rcs", "coxEvent", binaryCols[0] ?? numCols[1] ?? "");
   const [rcsKnotMode, setRcsKnotMode] = usePersistedPanelState<"harrell" | "custom">("rcs", "knotMode", "harrell");
   const [rcsCustomKnots, setRcsCustomKnots] = usePersistedPanelState("rcs", "customKnots", "");
+  const [rcsRiskHorizon, setRcsRiskHorizon] = usePersistedPanelState("rcs", "riskHorizon", "");
+  const [rcsView, setRcsView] = useState<RCSView>("hr");
 
   // ── Cox-RCS multivariable state ───────────────────────────────────────────
   const [crxDuration, setCrxDuration] = usePersistedPanelState("rcs", "crxDuration", numCols[0] ?? "");
@@ -403,7 +407,7 @@ export default function RCSPanel() {
         customKnots: rcsKnotMode === "custom" ? rcsCustomKnots : null,
         interaction: rcsInteractionCov.filter((c) => rcsCovariates.includes(c)),
         ...(rcsOutcomeType === "cox"
-          ? { duration: rcsCoxDuration, event: rcsCoxEvent }
+          ? { duration: rcsCoxDuration, event: rcsCoxEvent, riskHorizon: rcsRiskHorizon }
           : { outcome: rcsOutcome }),
       }
     : {
@@ -445,6 +449,11 @@ export default function RCSPanel() {
         if (rcsOutcomeType === "cox") {
           payload.duration_col = rcsCoxDuration;
           payload.event_col = rcsCoxEvent;
+          const horizon = rcsRiskHorizon.trim() === "" ? undefined : Number(rcsRiskHorizon);
+          if (horizon !== undefined && !(Number.isFinite(horizon) && horizon > 0)) {
+            throw new Error("Risk horizon must be a positive number in the units of the duration column.");
+          }
+          payload.risk_horizon = horizon;
         } else {
           payload.outcome = rcsOutcome;
         }
@@ -545,6 +554,14 @@ export default function RCSPanel() {
                     <select className="select w-full" value={rcsCoxEvent} onChange={(e) => setRcsCoxEvent(e.target.value)}>
                       {(binaryCols.length > 0 ? binaryCols : numCols).map((c) => <option key={c}>{c}</option>)}
                     </select>
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-400 block mb-1" htmlFor="rcs-risk-horizon">
+                      Absolute-risk horizon <Tip wide text="Time t0 for the absolute-risk curve: the probability of the event by t0 at each predictor value, other covariates at their mean (Austin 2025). Enter it in the units of the duration column, e.g. 12 for one year if time is in months. Blank = median follow-up. Unlike the hazard ratio, this curve does not depend on the reference value." />
+                    </label>
+                    <input id="rcs-risk-horizon" type="number" min={0} step="any" placeholder="(median follow-up)"
+                      value={rcsRiskHorizon} onChange={(e) => setRcsRiskHorizon(e.target.value)}
+                      className="select w-full text-xs py-1" />
                   </div>
                 </>
               ) : (
@@ -793,6 +810,8 @@ export default function RCSPanel() {
             ? `${result.duration_col ?? ""} (${result.event_col ?? "event"})`
             : (result.outcome ?? "");
           const modelTitle = mt === "cox" ? "Cox-RCS" : mt === "linear" ? "Linear RCS" : "Logistic RCS";
+          const riskData = mt === "cox" ? result.absolute_risk ?? null : null;
+          const showRisk = rcsView === "risk" && riskData != null;
           return (
             <div className="panel space-y-3">
               <div className="flex items-center justify-between flex-wrap gap-2">
@@ -806,17 +825,31 @@ export default function RCSPanel() {
                     <span><i>n</i> = {result.n}{result.n_events != null ? `, events = ${result.n_events}` : ""}</span>
                     {result.aic != null && <span>AIC = {result.aic?.toFixed(1)}</span>}
                   </div>
-                  <ResultExporter
-                    title={`RCS_${result.predictor}_${outcomeLabel || "result"}`}
-                    headers={["x", eff.abbr, "CI_low", "CI_high"]}
-                    rows={(result.x_values as number[]).map((x: number, i: number) => [
-                      x.toFixed(4),
-                      (result.or_values as number[])[i]?.toFixed(4) ?? "",
-                      (result.ci_low as number[])[i]?.toFixed(4) ?? "",
-                      (result.ci_high as number[])[i]?.toFixed(4) ?? "",
-                    ])}
-                    plotRef={rcsPlotRef}
-                  />
+                  {showRisk && riskData ? (
+                    <ResultExporter
+                      title={`RCS_absolute_risk_${result.predictor}_t${riskData.horizon}`}
+                      headers={["x", `risk_t${riskData.horizon}`, "CI_low", "CI_high"]}
+                      rows={riskData.x_values.map((x, i) => [
+                        x.toFixed(4),
+                        riskData.risk[i]?.toFixed(4) ?? "",
+                        riskData.ci_low[i]?.toFixed(4) ?? "",
+                        riskData.ci_high[i]?.toFixed(4) ?? "",
+                      ])}
+                      plotRef={rcsPlotRef}
+                    />
+                  ) : (
+                    <ResultExporter
+                      title={`RCS_${result.predictor}_${outcomeLabel || "result"}`}
+                      headers={["x", eff.abbr, "CI_low", "CI_high"]}
+                      rows={(result.x_values as number[]).map((x: number, i: number) => [
+                        x.toFixed(4),
+                        (result.or_values as number[])[i]?.toFixed(4) ?? "",
+                        (result.ci_low as number[])[i]?.toFixed(4) ?? "",
+                        (result.ci_high as number[])[i]?.toFixed(4) ?? "",
+                      ])}
+                      plotRef={rcsPlotRef}
+                    />
+                  )}
                 </div>
               </div>
 
@@ -878,7 +911,17 @@ export default function RCSPanel() {
                 <p className="text-xs text-red-500">Interaction test failed: {result.interaction.error}</p>
               )}
 
-              {(() => {
+              {riskData && (
+                <RCSViewToggle view={showRisk ? "risk" : "hr"} onChange={setRcsView}
+                  horizon={riskData.horizon} timeLabel={result.duration_col ?? "time"} />
+              )}
+
+              {showRisk && riskData ? (
+                <AbsoluteRiskPlot data={riskData} predictor={result.predictor}
+                  timeLabel={result.duration_col ?? "time"} eventLabel={result.event_col ?? "event"}
+                  knots={(result.knots as number[]) ?? []} layout={themedLayout} showGrid={showGrid}
+                  plotRefOut={rcsPlotRef} />
+              ) : (() => {
                 // Build dose-response figure data, optionally overlaying the
                 // crude (unadjusted) curve when the backend returned one.
                 const crude = result.crude as null | {
@@ -1006,23 +1049,31 @@ export default function RCSPanel() {
               })()}
 
               <div className="flex items-center gap-6 pt-1 border-t border-gray-100">
-                <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer select-none">
+                {!showRisk && <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer select-none">
                   <span>Log Scale (Y)</span>
                   <button onClick={() => setRcsLogScale(v => !v)}
                     className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${rcsLogScale ? "bg-indigo-600" : "bg-gray-300"}`}>
                     <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${rcsLogScale ? "translate-x-4.5" : "translate-x-0.5"}`} />
                   </button>
-                </label>
-                <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer select-none">
+                </label>}
+                {!showRisk && <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer select-none">
                   <span>Show Data Points</span>
                   <button onClick={() => setRcsShowData(v => !v)}
                     className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${rcsShowData ? "bg-indigo-600" : "bg-gray-300"}`}>
                     <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${rcsShowData ? "translate-x-4.5" : "translate-x-0.5"}`} />
                   </button>
-                </label>
+                </label>}
               </div>
 
-              <InfoBanner>
+              {showRisk && riskData ? (
+                <InfoBanner>
+                  The curve shows the <strong>absolute risk</strong> of <em>{result.event_col ?? "the event"}</em> by{" "}
+                  <em>{result.duration_col ?? "time"}</em> = {riskData.horizon} at each value of <em>{result.predictor}</em>,
+                  with other covariates at their mean (Austin 2025). Unlike the hazard ratio it does not depend on the
+                  reference value. The band is the 95% CI, computed as R&apos;s <code>survfit.coxph</code> does.
+                  {riskData.n_at_risk < 20 && <> <strong>Only {riskData.n_at_risk} patients remain at risk at this horizon</strong>; the estimate is unstable, consider an earlier horizon.</>}
+                </InfoBanner>
+              ) : <InfoBanner>
                 The curve shows the <strong>non-linear dose-response</strong> relationship between <em>{result.predictor}</em>{" "}
                 {mt === "cox"
                   ? <>and the <em>hazard</em> of <em>{result.event_col ?? "the event"}</em> (time = <em>{result.duration_col ?? ""}</em>)</>
@@ -1031,7 +1082,7 @@ export default function RCSPanel() {
                   : <>and the odds of <em>{result.outcome}</em></>}.
                 Filled circles mark the {result.n_knots} knot positions. The shaded band is the 95% CI.
                 {eff.axisType === "log" && <> <strong>Log scale</strong> is recommended for {eff.abbr}s — it symmetrises the curve and reveals J/U shapes that appear compressed on a linear axis.</>}
-              </InfoBanner>
+              </InfoBanner>}
             </div>
           );
         })()}
