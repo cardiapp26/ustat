@@ -95,6 +95,13 @@ Bu rapor, `/Users/yh/Documents/projects/rcs sources` dizininde yer alan 5 temel 
 ## 5. Önceliklendirilmiş Geliştirme Yol Haritası (Implementation Roadmap)
 
 ### Faz 1: Akademik & İstatistiksel Bütünlük (Öncelik: Çok Yüksek)
+
+> **Durum (1 Kasım 2026): tamamlandı.** `overall_p` (genel ilişki, $k-1$ df) ve
+> `nonlinearity_p` iki RCS uç noktasında da raporlanıyor; etkileşim terimleri
+> rms::anova gibi iki teste de dâhil. Doğrusal modelde test F, lojistik ve Cox'ta
+> ki-kare. 6 ve 7 knot ile $n < 100$ dış knot kuralı eklendi. 3, 4, 5 knot için
+> AIC karşılaştırma tablosu sonuç ekranında. Değerler R `rms` (lrm, ols, cph) ile
+> `backend/tests/test_rcs.py` içinde doğrulandı.
 * **Hedef:** Makale yazarlarının ve hakemlerin zorunlu kıldığı hipotez testlerini ve knot seçeneklerini tamamlamak.
 * **Kapsam:**
   1. `backend/routers/models/cox.py`: Model parametrelerinden lineer ve kübik tüm terimleri kapsayan $P_{\text{overall}}$ ortak Wald testinin (`overall_wald`, `overall_df`, `overall_p`) hesaplanması.

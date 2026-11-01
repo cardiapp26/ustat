@@ -27,10 +27,17 @@ from services.missing_data import (
 )
 from services.rcs_basis import (
     KNOT_PERCENTILES as _KNOT_PERCENTILES,
+    knot_count_error as _knot_count_error,
     rcs_basis as _rcs_basis,
     resolve_knots as _resolve_knots,
 )
 from services.km_median_ci import km_median_ci
+from services.rcs_inference import (
+    RCSOutcome,
+    aic_from_loglik,
+    joint_wald,
+    knot_aic_comparison,
+)
 from services.survival_validation import validate_survival_inputs
 
 router = APIRouter()
@@ -911,7 +918,7 @@ class RCSRequest(BaseModel):
 async def rcs_regression(req: RCSRequest):
     import statsmodels.api as sm_api
     if req.n_knots not in _KNOT_PERCENTILES:
-        raise HTTPException(status_code=422, detail=f"n_knots must be 3, 4, or 5. Got: {req.n_knots}")
+        raise HTTPException(status_code=422, detail=_knot_count_error(req.n_knots))
 
     model_type = (req.model_type or "logistic").lower()
     if model_type not in ("logistic", "linear", "cox"):
@@ -919,14 +926,20 @@ async def rcs_regression(req: RCSRequest):
 
     is_cox = model_type == "cox"
 
+    # A covariate that repeats the predictor or an outcome column would select
+    # the same column twice; pandas then returns a frame where a Series is
+    # expected and the request crashed with a 500. Drop such entries.
+    model_cols = {req.predictor, req.outcome, req.duration_col, req.event_col} - {None}
+    covariates = [c for c in dict.fromkeys(req.covariates or []) if c not in model_cols]
+
     if is_cox:
         if not req.duration_col or not req.event_col:
             raise HTTPException(status_code=422, detail="duration_col and event_col are required when model_type='cox'.")
-        cols_needed = [req.predictor, req.duration_col, req.event_col] + req.covariates
+        cols_needed = list(dict.fromkeys([req.predictor, req.duration_col, req.event_col])) + covariates
     else:
         if not req.outcome:
             raise HTTPException(status_code=422, detail="outcome is required when model_type is 'logistic' or 'linear'.")
-        cols_needed = [req.predictor, req.outcome] + req.covariates
+        cols_needed = list(dict.fromkeys([req.predictor, req.outcome])) + covariates
 
     df_full = _get_df(req.session_id)
     missing_cols = [c for c in cols_needed if c not in df_full.columns]
@@ -945,11 +958,11 @@ async def rcs_regression(req: RCSRequest):
         df[c] = pd.to_numeric(df[c], errors="coerce")
 
     cov_df = None
-    if req.covariates:
-        cov_raw = df[req.covariates].copy()
+    if covariates:
+        cov_raw = df[covariates].copy()
         numeric_cov: list[str] = []
         cat_cov: list[str] = []
-        for c in req.covariates:
+        for c in covariates:
             col = cov_raw[c]
             if pd.api.types.is_numeric_dtype(col):
                 numeric_cov.append(c)
@@ -963,7 +976,7 @@ async def rcs_regression(req: RCSRequest):
         num_part = cov_raw[numeric_cov].apply(pd.to_numeric, errors="coerce") if numeric_cov else pd.DataFrame(index=cov_raw.index)
         cat_part = pd.get_dummies(cov_raw[cat_cov], drop_first=True, dummy_na=False) if cat_cov else pd.DataFrame(index=cov_raw.index)
         cov_df = pd.concat([num_part, cat_part], axis=1).astype(float)
-        df = pd.concat([df.drop(columns=req.covariates), cov_df], axis=1)
+        df = pd.concat([df.drop(columns=covariates), cov_df], axis=1)
     df = df.dropna()
     n = len(df)
     if n < 10:
@@ -1077,7 +1090,7 @@ async def rcs_regression(req: RCSRequest):
             params = result.params
             cov_params = result.cov_params()
             try:
-                aic_val = float(result.aic)
+                aic_val = aic_from_loglik(float(result.llf), X.shape[1], model_type)
                 if np.isnan(aic_val) or np.isinf(aic_val):
                     aic_val = None
             except Exception:
@@ -1194,24 +1207,30 @@ async def rcs_regression(req: RCSRequest):
                 "se": round(se, 6) if se is not None else None,
             })
 
-    nonlin_p = None
-    nonlin_wald = None
-    nonlin_df = None
-    try:
-        lin_idx = 0 if is_cox else 1
-        nl_start = lin_idx + 1
-        nl_end = nl_start + spline_cols.shape[1]
-        if nl_end > nl_start:
-            idx = np.arange(nl_start, nl_end)
-            beta_nl = np.asarray(params)[idx]
-            cov_nl = np.asarray(cov_params)[np.ix_(idx, idx)]
-            wald = float(beta_nl @ np.linalg.solve(cov_nl, beta_nl))
-            df_nl = int(len(idx))
-            nonlin_wald = round(wald, 4)
-            nonlin_df = df_nl
-            nonlin_p = round(float(chi2.sf(wald, df=df_nl)), 6)
-    except Exception:
-        logger.exception("Nonlinearity test failed")
+    # Harrell's two tests for a spline term (rms::anova): overall association
+    # (every column of the term, df = k - 1) and non-linearity (cubic columns
+    # only, df = k - 2). Interaction columns involving the predictor join both
+    # blocks, the non-linear block taking those built on a cubic column;
+    # otherwise each test only describes the covariate's reference level.
+    lin_idx = 0 if is_cox else 1
+    n_sp = spline_cols.shape[1]
+    ix_start = lin_idx + 1 + n_sp + len(cov_names)
+    ix_idx = [ix_start + j for j in range(len(interaction_extra_meta))]
+    ix_nl_idx = [ix_start + j for j, (_, spi) in enumerate(interaction_extra_meta) if spi > 0]
+    resid_df = float(result.df_resid) if model_type == "linear" else None
+    overall_test = joint_wald(params, cov_params, list(range(lin_idx, lin_idx + 1 + n_sp)) + ix_idx, resid_df)
+    nonlin_test = joint_wald(params, cov_params, list(range(lin_idx + 1, lin_idx + 1 + n_sp)) + ix_nl_idx, resid_df)
+    nonlin_wald = nonlin_test["wald"] if nonlin_test else None
+    nonlin_df = nonlin_test["df"] if nonlin_test else None
+    nonlin_p = nonlin_test["p"] if nonlin_test else None
+
+    knot_comparison: list[dict] = []
+    if req.knot_positions is None:
+        outcome_data = (
+            RCSOutcome("cox", duration=duration, event=event)
+            if is_cox else RCSOutcome(model_type, y=y)
+        )
+        knot_comparison = await knot_aic_comparison(x_raw, cov_mat, outcome_data, req.n_knots)
 
     crude_block = None
     if cov_names or interaction_extra_names:
@@ -1257,25 +1276,17 @@ async def rcs_regression(req: RCSRequest):
                 ci_low_c = rel_lp_c - z95 * se_lp_c
                 ci_high_c = rel_lp_c + z95 * se_lp_c
 
-            crude_nl_p = None
-            try:
-                lin_idx_c = 0 if is_cox else 1
-                nl_start_c = lin_idx_c + 1
-                nl_end_c = nl_start_c + spline_cols.shape[1]
-                idx_c = np.arange(nl_start_c, nl_end_c)
-                beta_nl_c = np.asarray(params_c)[idx_c]
-                cov_nl_c = np.asarray(cov_params_c)[np.ix_(idx_c, idx_c)]
-                w_c = float(beta_nl_c @ np.linalg.solve(cov_nl_c, beta_nl_c))
-                crude_nl_p = round(float(chi2.sf(w_c, df=int(len(idx_c)))), 6)
-            except Exception:
-                logger.exception("Crude RCS nonlinearity test failed")
+            resid_df_c = float(res_c.df_resid) if model_type == "linear" else None
+            crude_overall = joint_wald(params_c, cov_params_c, range(lin_idx, lin_idx + 1 + n_sp), resid_df_c)
+            crude_nl = joint_wald(params_c, cov_params_c, range(lin_idx + 1, lin_idx + 1 + n_sp), resid_df_c)
 
             crude_block = {
                 "x_values": _clean(x_syn),
                 "or_values": _clean(or_vals_c),
                 "ci_low": _clean(ci_low_c),
                 "ci_high": _clean(ci_high_c),
-                "nonlinearity_p": crude_nl_p,
+                "nonlinearity_p": crude_nl["p"] if crude_nl else None,
+                "overall_p": crude_overall["p"] if crude_overall else None,
             }
         except Exception:
             logger.exception("Crude RCS fit failed")
@@ -1307,6 +1318,15 @@ async def rcs_regression(req: RCSRequest):
         "nonlinearity_wald": nonlin_wald,
         "nonlinearity_df": nonlin_df,
         "nonlinearity_p": nonlin_p,
+        "overall_wald": overall_test["wald"] if overall_test else None,
+        "overall_df": overall_test["df"] if overall_test else None,
+        "overall_p": overall_test["p"] if overall_test else None,
+        # "F" for the linear model (as rms::anova on ols), "chi2" otherwise.
+        "test_statistic": (overall_test or nonlin_test or {}).get("test"),
+        "overall_f": overall_test.get("f") if overall_test else None,
+        "nonlinearity_f": nonlin_test.get("f") if nonlin_test else None,
+        "tests_include_interaction": bool(interaction_extra_meta),
+        "knot_comparison": knot_comparison,
         "x_values": _clean(x_syn),
         "or_values": _clean(or_vals),
         "ci_low": _clean(ci_low),
@@ -1343,7 +1363,7 @@ async def cox_rcs(req: CoxRCSRequest):
 
     for term in req.spline_terms:
         if term.n_knots not in _KNOT_PERCENTILES:
-            raise HTTPException(status_code=422, detail=f"n_knots for '{term.column}' must be 3, 4, or 5. Got: {term.n_knots}")
+            raise HTTPException(status_code=422, detail=f"'{term.column}': {_knot_count_error(term.n_knots)}")
 
     if req.include_interaction and len(req.spline_terms) != 2:
         raise HTTPException(status_code=422, detail="include_interaction requires exactly 2 spline_terms.")
@@ -1433,6 +1453,9 @@ async def cox_rcs(req: CoxRCSRequest):
 
     interaction_design = None
     interaction_names: List[str] = []
+    # (column index in term 0's design, column index in term 1's design);
+    # index 0 is the linear column, > 0 a cubic one.
+    interaction_parts: List[Tuple[int, int]] = []
     if req.include_interaction:
         a = term_info[0]["design"]
         b = term_info[1]["design"]
@@ -1443,6 +1466,7 @@ async def cox_rcs(req: CoxRCSRequest):
             for j in range(b.shape[1]):
                 ix_cols.append(a[:, i] * b[:, j])
                 interaction_names.append(f"ix_{a_names[i]}_x_{b_names[j]}")
+                interaction_parts.append((i, j))
         interaction_design = np.column_stack(ix_cols)
 
     full_design_arrays = [main_design]
@@ -1497,26 +1521,21 @@ async def cox_rcs(req: CoxRCSRequest):
             "ci_high": float(np.exp(ci_high_full[i])),
         })
 
+    # Per-term Harrell tests (rms::anova): overall association and
+    # non-linearity, each including the tensor-interaction columns that
+    # involve the term (non-linear: those built on one of its cubic columns).
     nonlinearity = {}
+    overall_association = {}
+    ix_index = [full_names.index(nm) for nm in interaction_names]
     for ti, term in enumerate(req.spline_terms):
-        sp_names = term_info[ti]["col_names"][1:]
-        idx = [full_names.index(n) for n in sp_names]
-        if not idx:
-            continue
-        b = params_full[idx]
-        cv = cov_full[np.ix_(idx, idx)]
-        try:
-            wald = float(b @ np.linalg.solve(cv, b))
-            p_nl = float(chi2.sf(wald, df=len(idx)))
-        except Exception:
-            logger.exception("Cox-RCS nonlinearity Wald test failed")
-            wald = None
-            p_nl = None
-        nonlinearity[term.column] = {
-            "wald": wald,
-            "df": len(idx),
-            "p": p_nl,
-        }
+        names = term_info[ti]["col_names"]
+        own_ix = [ix_index[j] for j in range(len(interaction_parts))]
+        own_ix_nl = [ix_index[j] for j, parts in enumerate(interaction_parts) if parts[ti] > 0]
+        nl = joint_wald(params_full, cov_full, [full_names.index(nm) for nm in names[1:]] + own_ix_nl)
+        ov = joint_wald(params_full, cov_full, [full_names.index(nm) for nm in names] + own_ix)
+        empty = {"wald": None, "df": None, "p": None}
+        nonlinearity[term.column] = nl or empty
+        overall_association[term.column] = ov or empty
 
     interaction_result = None
     if req.include_interaction and interaction_design is not None:
@@ -1681,6 +1700,7 @@ async def cox_rcs(req: CoxRCSRequest):
         "include_interaction": req.include_interaction,
         "coefficients": coefs,
         "nonlinearity": nonlinearity,
+        "overall_association": overall_association,
         "interaction": interaction_result,
         "curves_1d": curves_1d,
         "surface_2d": surface_2d,

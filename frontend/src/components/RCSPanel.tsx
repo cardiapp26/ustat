@@ -11,6 +11,8 @@ import StaleResultNotice from "./StaleResultNotice";
 import StaleGuard from "./StaleGuard";
 import { MissingGuard, type ImputationStrategy } from "./MissingGuard";
 import { fmtP } from "../lib/format";
+import { RCSTestChips, KnotComparisonTable, type RCSTestFields } from "./RCSInference";
+import { SUPPORTED_KNOTS, knotBudget, KNOT_BUDGET_EVENTS, harrellPercentiles } from "../lib/rcsKnots";
 import { describeStale } from "../lib/resultStamp";
 import type { PlotData, PlotLayout, PlotCaptureHandle } from "../lib/plotTypes";
 
@@ -46,12 +48,14 @@ interface CoxRCSCurve {
   column: string; x: number[]; hr: number[];
   lower: number[]; upper: number[]; knots: number[]; ref: number;
 }
+interface WaldTest { wald: number | null; df: number | null; p: number | null }
 interface CoxRCSResult {
   coefficients: CoxRCSCoefficient[];
   curves_1d?: CoxRCSCurve[];
   surface_2d: SurfaceData | null;
   interaction: null | { lr_stat?: number; df?: number; p?: number; error?: string };
-  nonlinearity?: Record<string, { wald: number | null; df: number; p: number | null }>;
+  nonlinearity?: Record<string, WaldTest>;
+  overall_association?: Record<string, WaldTest>;
   n: number;
   n_events: number;
   concordance?: number;
@@ -69,6 +73,7 @@ interface RCSCrude {
   ci_low: number[];
   ci_high: number[];
   nonlinearity_p: number | null;
+  overall_p?: number | null;
 }
 interface RCSInteraction {
   lr_stat?: number;
@@ -78,7 +83,7 @@ interface RCSInteraction {
   error?: string;
 }
 /** Univariate RCS result. Field set is server-driven and partly optional. */
-interface RCSResult {
+interface RCSResult extends RCSTestFields {
   x_values: number[];
   or_values: number[];
   ci_low: number[];
@@ -97,8 +102,6 @@ interface RCSResult {
   n_events?: number | null;
   n_excluded?: number | null;
   aic?: number | null;
-  nonlinearity_p?: number | null;
-  nonlinearity_df?: number | string | null;
   crude?: RCSCrude | null;
   covariates_used?: string[];
   covariates_requested?: string[];
@@ -169,6 +172,7 @@ function CoxRCSResultPanel({ result }: { result: CoxRCSResult }) {
   const surface = result.surface_2d;
   const interaction = result.interaction;
   const nonlinearity = result.nonlinearity ?? {};
+  const overall = result.overall_association ?? {};
 
   return (
     <div className="panel space-y-4">
@@ -182,13 +186,18 @@ function CoxRCSResultPanel({ result }: { result: CoxRCSResult }) {
 
       {Object.keys(nonlinearity).length > 0 && (
         <div className="space-y-1">
-          <div className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Nonlinearity (Wald)</div>
+          <div className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Wald tests per spline term (overall association · non-linearity)</div>
           <div className="flex flex-wrap gap-2">
-            {Object.entries(nonlinearity).map(([col, nl]) => (
-              <span key={col} className={`text-xs px-2 py-1 rounded border ${nl.p != null && nl.p < 0.05 ? "bg-indigo-50 text-indigo-700 border-indigo-200" : "bg-gray-50 text-gray-600 border-gray-200"}`}>
-                <b>{col}</b>: χ²({nl.df}) = {nl.wald?.toFixed(2) ?? "—"}, <i>p</i> = {fmtP(nl.p)}
-              </span>
-            ))}
+            {Object.entries(nonlinearity).map(([col, nl]) => {
+              const ov = overall[col];
+              return (
+                <span key={col} className={`text-xs px-2 py-1 rounded border ${(ov?.p ?? nl.p) != null && (ov?.p ?? nl.p)! < 0.05 ? "bg-indigo-50 text-indigo-700 border-indigo-200" : "bg-gray-50 text-gray-600 border-gray-200"}`}>
+                  <b>{col}</b>
+                  {ov && <>: overall χ²({ov.df}) = {ov.wald?.toFixed(2) ?? "-"}, <i>p</i> = {fmtP(ov.p)};</>}
+                  {" "}non-linear χ²({nl.df}) = {nl.wald?.toFixed(2) ?? "-"}, <i>p</i> = {fmtP(nl.p)}
+                </span>
+              );
+            })}
           </div>
         </div>
       )}
@@ -281,7 +290,7 @@ function SplineTermCard({ label, term, onChange, numCols }: {
       <div>
         <label className="text-[10px] text-gray-400 block">Knots</label>
         <div className="flex gap-1">
-          {[3, 4, 5].map((k) => (
+          {SUPPORTED_KNOTS.map((k) => (
             <button key={k} onClick={() => patch({ n_knots: k })}
               className={`flex-1 py-0.5 text-[11px] rounded border transition-colors ${term.n_knots === k ? "bg-indigo-600 text-white border-indigo-600" : "border-gray-300 text-gray-600 hover:bg-white"}`}>
               {k}{k === 4 ? " ★" : ""}
@@ -556,10 +565,10 @@ export default function RCSPanel() {
               )}
               <div>
                 <label className="text-xs text-gray-400 block mb-1">
-                  Knots <Tip text="k knots ⇒ k−1 spline parameters (1 linear + k−2 non-linear). Budget by events-per-variable (EPV ≥ 10 ideal, ≥ 5 borderline). 17 events ⇒ 3 knots (2 params, EPV 8.5, safe); 4 knots (3 params, EPV 5.7, borderline); 5 knots (4 params, EPV 4.25, overfit risk). Harrell percentiles: 3→[10,50,90], 4→[5,35,65,95], 5→[5,27.5,50,72.5,95]." wide />
+                  Knots <Tip text="k knots ⇒ k−1 spline parameters (1 linear + k−2 non-linear). Budget by events-per-variable (EPV ≥ 10 ideal, ≥ 5 borderline). 17 events ⇒ 3 knots (2 params, EPV 8.5, safe); 4 knots (3 params, EPV 5.7, borderline); 5 knots (4 params, EPV 4.25, overfit risk). Harrell percentiles: 3→[10,50,90], 4→[5,35,65,95], 5→[5,27.5,50,72.5,95], 6→[5,23,41,59,77,95], 7→[2.5,18.33,34.17,50,65.83,81.67,97.5]. Below n = 100 the outer knots move to the 5th smallest / largest value. More than 5 knots is seldom needed (Harrell); use 6–7 only with many events. The result shows AIC for 3, 4 and 5 knots." wide />
                 </label>
                 <div className="flex gap-2">
-                  {[3, 4, 5].map((k) => (
+                  {SUPPORTED_KNOTS.map((k) => (
                     <button key={k} onClick={() => setRcsNKnots(k)}
                       className={`flex-1 py-1 text-xs rounded border transition-colors ${rcsNKnots === k ? "bg-indigo-600 text-white border-indigo-600" : "border-gray-300 text-gray-600 hover:bg-gray-50"}`}>
                       {k}{k === 4 ? " ★" : ""}
@@ -573,21 +582,17 @@ export default function RCSPanel() {
                     their actual event count. Selected row is highlighted. */}
                 <div className="mt-1.5 rounded border border-indigo-100 bg-indigo-50/40 text-[10px] text-gray-700 leading-tight">
                   <div className="px-2 py-1 border-b border-indigo-100 text-[9px] font-semibold text-indigo-700 uppercase tracking-wider">
-                    Knot budgeting (EPV rule, n_events = 17 reference)
+                    Knot budgeting (EPV rule, n_events = {KNOT_BUDGET_EVENTS} reference)
                   </div>
-                  {[
-                    { k: 3, terms: 2, epv: "8.5",  label: "safe",       color: "text-emerald-700" },
-                    { k: 4, terms: 3, epv: "5.7",  label: "borderline", color: "text-amber-700" },
-                    { k: 5, terms: 4, epv: "4.25", label: "overfit risk", color: "text-rose-700" },
-                  ].map((r) => (
+                  {knotBudget().map((r) => (
                     <div key={r.k}
                       className={`flex items-center justify-between px-2 py-0.5 ${rcsNKnots === r.k ? "bg-indigo-100/60 font-semibold" : ""}`}>
-                      <span><b>{r.k}</b> knots ⇒ <b>{r.terms}</b> params · EPV ≈ <span className="font-mono">{r.epv}</span></span>
-                      <span className={r.color}>{r.label}</span>
+                      <span><b>{r.k}</b> knots ⇒ <b>{r.params}</b> params · EPV ≈ <span className="font-mono">{r.epv.toFixed(2).replace(/\.?0+$/, "")}</span></span>
+                      <span className={r.label === "safe" ? "text-emerald-700" : r.label === "borderline" ? "text-amber-700" : "text-rose-700"}>{r.label}</span>
                     </div>
                   ))}
                   <div className="px-2 py-1 border-t border-indigo-100 text-[9px] text-gray-500">
-                    Default placement: Harrell&apos;s 10th / 50th / 90th percentiles (3 knots).
+                    Default placement ({rcsNKnots} knots): Harrell&apos;s {harrellPercentiles(rcsNKnots).join(" / ")} percentiles.
                   </div>
                 </div>
               </div>
@@ -821,18 +826,16 @@ export default function RCSPanel() {
                   <span key={i} className="bg-indigo-50 border border-indigo-100 text-indigo-600 rounded px-1.5 py-0.5">{k}</span>
                 ))}
                 <span className="text-gray-400 ml-2">reference = <strong>{result.ref_value}</strong> ({eff.abbr} = {eff.refValue.toFixed(1)})</span>
-                {result.nonlinearity_p != null && (
-                  <span className={`ml-2 rounded px-1.5 py-0.5 border ${result.nonlinearity_p < 0.05 ? "bg-indigo-50 text-indigo-700 border-indigo-200" : "bg-gray-50 text-gray-600 border-gray-200"}`}
-                    title={`Joint Wald test on the ${(result.nonlinearity_df ?? "k-2")} non-linear basis columns`}>
-                    non-linearity {result.crude ? "adjusted " : ""}<i>p</i> = {fmtP(result.nonlinearity_p)}
-                  </span>
-                )}
-                {result.crude?.nonlinearity_p != null && (
-                  <span className="ml-1 rounded px-1.5 py-0.5 border bg-gray-50 text-gray-500 border-gray-200" title="Non-linearity test from the unadjusted model">
-                    crude <i>p</i> = {fmtP(result.crude.nonlinearity_p)}
+              </div>
+              <div className="flex flex-wrap gap-1.5 text-[11px]">
+                <RCSTestChips result={result} adjusted={!!result.crude} />
+                {(result.crude?.overall_p != null || result.crude?.nonlinearity_p != null) && (
+                  <span className="rounded px-1.5 py-0.5 border bg-gray-50 text-gray-500 border-gray-200" title="Tests from the unadjusted model">
+                    crude: overall <i>p</i> = {fmtP(result.crude?.overall_p)}, non-linearity <i>p</i> = {fmtP(result.crude?.nonlinearity_p)}
                   </span>
                 )}
               </div>
+              <KnotComparisonTable rows={result.knot_comparison ?? []} hasInteraction={!!result.tests_include_interaction} />
 
               {Array.isArray(result.covariates_used) && result.covariates_used.length > 0 && (
                 <div className="flex flex-wrap items-center gap-1.5 text-[11px]">

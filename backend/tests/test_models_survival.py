@@ -327,7 +327,7 @@ def test_rcs_bad_knots_422(client, surv_sid):
         "predictor": "AGE",
         "outcome": "event",
         "model_type": "logistic",
-        "n_knots": 7,  # only 3/4/5 allowed
+        "n_knots": 8,  # Harrell table covers 3 to 7
     })
     assert r.status_code == 422, r.text
 
