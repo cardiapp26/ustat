@@ -8,6 +8,8 @@
  * 4. Love Plot — the publication-standard balance visualization
  * 5. Optional outcome analysis on matched cohort
  */
+import { TreatedLevelPicker } from "./models/TreatedLevelPicker";
+import { treatedLevelParam, treatmentCandidates } from "../lib/treatmentLevels";
 import { useState, useRef, useMemo } from "react";
 import { useStore, paletteOf, analysisCols, type Session } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
@@ -316,19 +318,19 @@ function PSMPanelBody({ session }: { session: Session }) {
 
   const allCols = analysisCols(session.columns).map((c) => c.name);
 
-  const binaryCols = useMemo(() =>
-    allCols.filter((col) => {
-      const vals = new Set(session.preview.map((r) => r[col]).filter((v) => v != null));
-      return vals.size === 2 && [...vals].every((v) => v === 0 || v === 1);
-    }),
+  // 0/1 columns, plus two-level text columns (control/treat) with their levels.
+  const treatLevels = useMemo(() => treatmentCandidates(session.preview, allCols),
     // Recompute only per dataset, not on every preview/columns reidentification —
     // the binary-column shape is a property of the loaded session.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [session.session_id]
   );
+  const binaryCols = useMemo(() => Object.keys(treatLevels), [treatLevels]);
 
   // Form State — genuine selections persisted across tab switches (per-session cache)
   const [treatCol, setTreatCol] = usePersistedPanelState<string>("psm", "treatCol", binaryCols[0] ?? allCols[0] ?? "");
+  const [treatedLevel, setTreatedLevel] = usePersistedPanelState<string>("psm", "treatedLevel", "");
+  const treatColLevels = treatLevels[treatCol] ?? null;
   const [outcomeCol, setOutcomeCol] = usePersistedPanelState<string>("psm", "outcomeCol", "");
   const [covariates, setCovariates] = usePersistedPanelState<string[]>("psm", "covariates", []);
   const [caliper, setCaliper] = usePersistedPanelState<number>("psm", "caliper", 0.2);
@@ -353,6 +355,7 @@ function PSMPanelBody({ session }: { session: Session }) {
   // connector toggle only redraw the Love plot, so they stay out.
   const runParams = {
     treatment_col: treatCol,
+    ...treatedLevelParam(treatColLevels, treatedLevel),
     covariates,
     outcome_col: outcomeType === "binary" ? (outcomeCol || undefined) : undefined,
     caliper,
@@ -465,7 +468,7 @@ function PSMPanelBody({ session }: { session: Session }) {
         <div className="panel space-y-2">
           <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider flex items-center gap-1">
             Treatment Variable
-            <Tip wide text="The binary intervention variable: 1 = Treated, 0 = Control. Must be coded 0/1." />
+            <Tip wide text="The binary intervention variable: coded 0/1 (1 = Treated), or a two-level text column for which you pick the treated level." />
           </label>
           <select
             className="select w-full"
@@ -475,6 +478,10 @@ function PSMPanelBody({ session }: { session: Session }) {
               ? binaryCols.map((c) => <option key={c} value={c}>{c}</option>)
               : allCols.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
+          {treatColLevels && (
+            <TreatedLevelPicker levels={treatColLevels} value={treatedLevel}
+              onChange={(l) => { setTreatedLevel(l); setResult(null); }} />
+          )}
           {!binaryCols.includes(treatCol) && (
             <p className="text-[10px] text-amber-600">⚠ Column may not be binary (0/1)</p>
           )}

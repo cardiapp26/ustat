@@ -150,7 +150,7 @@ function ReliabilityPanelBody({ session }: { session: Session }) {
 
               {result.result_text && (
                 <div className="rounded-lg border border-indigo-100 bg-white px-3 py-2 text-xs text-gray-600 leading-relaxed mb-3">
-                  <span className="text-indigo-400 mr-1">\uD83D\uDCAC</span> {result.result_text}
+                  <span className="text-indigo-400 mr-1">💬</span> {result.result_text}
                 </div>
               )}
 
@@ -180,7 +180,7 @@ function ReliabilityPanelBody({ session }: { session: Session }) {
                       <th className="px-3 py-1.5 text-right">Mean</th>
                       <th className="px-3 py-1.5 text-right">SD</th>
                       <th className="px-3 py-1.5 text-right">Item-Total r</th>
-                      <th className="px-3 py-1.5 text-right">\u03B1 if deleted</th>
+                      <th className="px-3 py-1.5 text-right">α if deleted</th>
                       <th className="px-3 py-1.5 text-center">Flag</th>
                     </tr></thead>
                     <tbody>
@@ -199,7 +199,7 @@ function ReliabilityPanelBody({ session }: { session: Session }) {
                               {item.alpha_if_deleted?.toFixed(3)}
                             </td>
                             <td className="px-3 py-1.5 text-center">
-                              {flagDrop && <span className="text-amber-600 text-[10px]" title="Removing this item increases alpha">\u26A0 drop?</span>}
+                              {flagDrop && <span className="text-amber-600 text-[10px]" title="Removing this item increases alpha">⚠ drop?</span>}
                               {flagLowR && !flagDrop && <span className="text-red-500 text-[10px]" title="Low item-total correlation">low r</span>}
                             </td>
                           </tr>
@@ -222,7 +222,7 @@ function ReliabilityPanelBody({ session }: { session: Session }) {
           </StaleGuard>
         ) : (
           <div className="panel text-center text-gray-400 py-12">
-            <p className="text-lg mb-2">\uD83D\uDCCB</p>
+            <p className="text-lg mb-2">📋</p>
             <p>Select scale items from the left panel to compute reliability</p>
             <p className="text-xs mt-2">Cronbach's alpha measures how consistently your items measure the same underlying construct</p>
           </div>

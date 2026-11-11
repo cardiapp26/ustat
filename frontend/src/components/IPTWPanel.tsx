@@ -7,6 +7,8 @@
  * 3. SMD balance assessment and Love Plot
  * 4. Outcome analysis (Weighted GLM or Weighted Cox PH)
  */
+import { TreatedLevelPicker } from "./models/TreatedLevelPicker";
+import { treatedLevelParam, treatmentCandidates } from "../lib/treatmentLevels";
 import { useState, useRef, useMemo } from "react";
 import { useStore, paletteOf, analysisCols, type Session } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
@@ -295,19 +297,19 @@ function IPTWPanelBody({ session }: { session: Session }) {
 
   const allCols = analysisCols(session.columns).map((c) => c.name);
 
-  const binaryCols = useMemo(() =>
-    allCols.filter((col) => {
-      const vals = new Set(session.preview.map((r) => r[col]).filter((v) => v != null));
-      return vals.size === 2 && [...vals].every((v) => v === 0 || v === 1);
-    }),
+  // 0/1 columns, plus two-level text columns (control/treat) with their levels.
+  const treatLevels = useMemo(() => treatmentCandidates(session.preview, allCols),
     // Recompute only per dataset, not on every preview/columns reidentification —
     // the binary-column shape is a property of the loaded session.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [session.session_id]
   );
+  const binaryCols = useMemo(() => Object.keys(treatLevels), [treatLevels]);
 
   // Form State
   const [treatCol, setTreatCol] = usePersistedPanelState<string>("iptw", "treatCol", binaryCols[0] ?? allCols[0] ?? "");
+  const [treatedLevel, setTreatedLevel] = usePersistedPanelState<string>("iptw", "treatedLevel", "");
+  const treatColLevels = treatLevels[treatCol] ?? null;
   const [outcomeCol, setOutcomeCol] = usePersistedPanelState<string>("iptw", "outcomeCol", "");
   const [covariates, setCovariates] = usePersistedPanelState<string[]>("iptw", "covariates", []);
   const [trimCommonSupport, setTrimCommonSupport] = usePersistedPanelState<boolean>("iptw", "trimCommonSupport", false);
@@ -335,6 +337,7 @@ function IPTWPanelBody({ session }: { session: Session }) {
   // redraw the Love plot, so they stay out.
   const runParams = {
     treatment_col: treatCol,
+    ...treatedLevelParam(treatColLevels, treatedLevel),
     covariates,
     outcome_col: outcomeType === "binary" ? (outcomeCol || undefined) : undefined,
     imputation: undefined,
@@ -584,7 +587,7 @@ function IPTWPanelBody({ session }: { session: Session }) {
         <div className="panel space-y-2">
           <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider flex items-center gap-1">
             Treatment Variable
-            <Tip wide text="The binary intervention variable (0/1)." />
+            <Tip wide text="The binary intervention variable: coded 0/1 (1 = Treated), or a two-level text column for which you pick the treated level." />
           </label>
           <select
             className="select w-full"
@@ -594,6 +597,10 @@ function IPTWPanelBody({ session }: { session: Session }) {
               ? binaryCols.map((c) => <option key={c} value={c}>{c}</option>)
               : allCols.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
+          {treatColLevels && (
+            <TreatedLevelPicker levels={treatColLevels} value={treatedLevel}
+              onChange={(l) => { setTreatedLevel(l); setResult(null); }} />
+          )}
         </div>
 
         {/* Outcome variable */}

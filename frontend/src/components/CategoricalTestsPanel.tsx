@@ -353,7 +353,7 @@ function ResultCard({ result, stale = false, staleReason, provenance }: {
       )}
       {result.result_text && (
         <div className="rounded-lg border border-indigo-100 bg-white px-3 py-2 text-xs text-gray-600 leading-relaxed">
-          <span className="text-indigo-400 mr-1">\uD83D\uDCAC</span> {result.result_text}
+          <span className="text-indigo-400 mr-1">💬</span> {result.result_text}
         </div>
       )}
       {result.methods_text && (

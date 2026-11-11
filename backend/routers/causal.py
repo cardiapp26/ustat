@@ -37,6 +37,27 @@ def _get_df(session_id: str) -> pd.DataFrame:
     return df
 
 
+def _numeric_or_two_level(col: pd.Series, name: str) -> tuple[pd.Series, Optional[Dict[str, str]]]:
+    """A numeric column as floats, or a two-level text column coded 0/1.
+
+    `pd.to_numeric(..., errors="coerce")` turned a text exposure such as
+    control/treat into all-NaN, and the request then failed with "not enough
+    complete observations". Two-level text is coded in sorted order (second
+    level = 1) and the coding is returned so the response can report it.
+    """
+    numeric = pd.to_numeric(col, errors="coerce")
+    if numeric.notna().sum() == col.notna().sum():
+        return numeric.astype(float), None
+    levels = sorted({str(v) for v in col.dropna()})
+    if len(levels) != 2:
+        raise HTTPException(
+            422,
+            f"'{name}' must be numeric or have exactly two levels; found {len(levels)}: {levels[:6]}",
+        )
+    coded = col.map(lambda v: np.nan if pd.isna(v) else float(str(v) == levels[1]))
+    return coded.astype(float), {"column": name, "coded_0": levels[0], "coded_1": levels[1]}
+
+
 def _p_str(p: float) -> str:
     return "<0.001" if p < 0.001 else f"{p:.4f}"
 
@@ -80,7 +101,7 @@ def iv_2sls(req: IV2SLSRequest):
 
     df = apply_imputation(df_full, cols, req.imputation)
     df[req.outcome] = pd.to_numeric(df[req.outcome], errors="coerce")
-    df[req.endogenous] = pd.to_numeric(df[req.endogenous], errors="coerce")
+    df[req.endogenous], exposure_coding = _numeric_or_two_level(df[req.endogenous], req.endogenous)
     df = df.dropna(subset=cols)
     n = len(df)
     if n < len(cols) + 10:
@@ -190,6 +211,7 @@ def iv_2sls(req: IV2SLSRequest):
     )
 
     return {
+        "exposure_coding": exposure_coding,
         "test": "Instrumental Variable (2SLS)",
         "outcome": req.outcome,
         "endogenous": req.endogenous,
@@ -250,8 +272,9 @@ def mediation(req: MediationRequest):
         raise HTTPException(400, f"Columns not found: {miss}")
 
     df = apply_imputation(df_full, cols, req.imputation)
-    for c in [req.outcome, req.treatment, req.mediator]:
+    for c in [req.outcome, req.mediator]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
+    df[req.treatment], exposure_coding = _numeric_or_two_level(df[req.treatment], req.treatment)
     df = df.dropna(subset=cols)
     y_levels = sorted(df[req.outcome].dropna().unique().tolist())
     if len(y_levels) == 2 and set(y_levels).issubset({0, 1, 0.0, 1.0}):
@@ -328,6 +351,7 @@ def mediation(req: MediationRequest):
     )
 
     return {
+        "exposure_coding": exposure_coding,
         "test": "Causal Mediation (linear)",
         "outcome": req.outcome, "treatment": req.treatment, "mediator": req.mediator,
         "covariates": req.covariates, "n": int(n),
@@ -430,7 +454,7 @@ def target_trial(req: TargetTrialRequest):
     if n_eligible < len(req.confounders) + 20:
         raise HTTPException(400, "Too few eligible patients after applying eligibility criteria.")
 
-    t = pd.to_numeric(elig[req.treatment], errors="coerce")
+    t, exposure_coding = _numeric_or_two_level(elig[req.treatment], req.treatment)
     y = pd.to_numeric(elig[req.outcome], errors="coerce")
     keep = t.notna() & y.notna()
     elig, t, y = elig[keep].reset_index(drop=True), t[keep].astype(int).values, y[keep].astype(int).values
@@ -539,6 +563,7 @@ def target_trial(req: TargetTrialRequest):
     )
 
     return {
+        "exposure_coding": exposure_coding,
         "test": "Target Trial Emulation",
         "treatment": req.treatment, "outcome": req.outcome, "confounders": req.confounders,
         "n_screened": int(n_screened), "n_eligible": int(n_eligible),
@@ -596,8 +621,8 @@ def difference_in_differences(req: DiDRequest):
 
     df = apply_imputation(df_full, cols, req.imputation)
     df[req.outcome] = pd.to_numeric(df[req.outcome], errors="coerce")
-    g = pd.to_numeric(df[req.group_col], errors="coerce")
-    tm = pd.to_numeric(df[req.time_col], errors="coerce")
+    g, exposure_coding = _numeric_or_two_level(df[req.group_col], req.group_col)
+    tm, _time_coding = _numeric_or_two_level(df[req.time_col], req.time_col)
     df = df.assign(_g_=g, _t_=tm).dropna(subset=[req.outcome, "_g_", "_t_"] + req.covariates)
     if set(df["_g_"].unique()) - {0.0, 1.0} or set(df["_t_"].unique()) - {0.0, 1.0}:
         raise HTTPException(400, "Group and time must both be binary 0/1 (control/treated, pre/post).")
@@ -642,6 +667,7 @@ def difference_in_differences(req: DiDRequest):
     )
 
     return {
+        "exposure_coding": exposure_coding,
         "test": "Difference-in-Differences (2×2)",
         "outcome": req.outcome, "group_col": req.group_col, "time_col": req.time_col,
         "covariates": req.covariates, "n": int(n),

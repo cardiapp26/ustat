@@ -45,6 +45,9 @@ interface ApiErrorDetail {
   msg?: string;
 }
 
+/** Starting margin per effect scale: ratios against 1, risk difference against 0. */
+const DEFAULT_MARGIN = { RR: "1.20", OR: "1.20", RD: "0.10" } as const;
+
 export default function NonInferiorityPanel() {
   const session = useStore((s) => s.session);
   const columns = session?.columns ?? [];
@@ -58,7 +61,13 @@ export default function NonInferiorityPanel() {
   const [testGroup, setTestGroup] = useState("");
   const [refGroup, setRefGroup] = useState("");
   const [effect, setEffect] = useState<"RR" | "RD" | "OR">("RR");
-  const [margin, setMargin] = useState("1.20");
+  const [margin, setMargin] = useState<string>(DEFAULT_MARGIN.RR);
+  // A ratio margin (1.20) is meaningless as a risk difference, and the reverse.
+  // Swap the default with the scale unless the user typed their own value.
+  const chooseEffect = (next: "RR" | "RD" | "OR") => {
+    if (margin === DEFAULT_MARGIN[effect]) setMargin(DEFAULT_MARGIN[next]);
+    setEffect(next);
+  };
   const [bound, setBound] = useState<"upper" | "lower">("upper");
   const [alpha, setAlpha] = useState("0.05");
   // The test reads the session's rows (session_id is in the request), so it
@@ -165,7 +174,7 @@ export default function NonInferiorityPanel() {
               <span className="text-xs text-gray-500 font-medium">Effect measure</span>
               <div className="flex rounded-lg overflow-hidden border border-gray-300">
                 {(["RR", "RD", "OR"] as const).map((e) => (
-                  <button key={e} onClick={() => setEffect(e)}
+                  <button key={e} onClick={() => chooseEffect(e)}
                     className={`flex-1 px-2 py-1 text-[11px] ${effect === e ? "bg-indigo-600 text-white" : "text-gray-500 hover:bg-gray-50"}`}>
                     {e}
                   </button>

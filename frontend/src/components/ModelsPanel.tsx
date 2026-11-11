@@ -1123,7 +1123,7 @@ export default function ModelsPanel() {
                   outcome={result.outcome ?? ""}
                   selectionMethod={result.selection_method ?? ""}
                   nMulti={result.n_multi}
-                  nTotal={result.n_total}
+                  nTotal={result.n_predictors}
                 />
               </div>
             )}

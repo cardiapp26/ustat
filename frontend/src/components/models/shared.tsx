@@ -155,6 +155,8 @@ export interface ModelResult extends MultinomialFields, ZeroInflatedFields {
   outcome?: string;
   n?: number;
   n_total?: number;
+  /** OR / HR table: number of candidate predictors screened univariately. */
+  n_predictors?: number;
   n_excluded?: number;
   n_events?: number;
   n_events_pars?: number;

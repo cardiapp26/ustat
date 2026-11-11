@@ -936,7 +936,7 @@ export default function RCSPanel() {
                   ))}
                   {result.covariates_requested && result.covariates_requested.length !== result.covariates_used.length && (
                     <span className="text-amber-600 text-[10px] ml-1">
-                      ({result.covariates_requested.length - result.covariates_used.length} dropped — categorical encoded as dummies)
+                      ({result.covariates_requested.length} covariates entered as {result.covariates_used.length} terms; categorical ones are dummy-coded)
                     </span>
                   )}
                 </div>

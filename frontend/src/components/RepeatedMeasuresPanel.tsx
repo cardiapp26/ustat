@@ -173,7 +173,7 @@ function ResultCard({ result }: { result: RMResult }) {
             <div key={i} className={`flex items-center gap-2 text-xs px-3 py-1 rounded-lg ${a.met ? "bg-green-50 text-green-800" : "bg-amber-50 text-amber-800"}`}>
               <span>{a.met ? "\u2713" : "\u26A0"}</span>
               <span className="font-medium">{a.name}</span>
-              <span className="text-gray-500">\u2014 {a.detail}</span>
+              <span className="text-gray-500">· {a.detail}</span>
             </div>
           ))}
         </div>
@@ -181,13 +181,13 @@ function ResultCard({ result }: { result: RMResult }) {
 
       {/* Warnings */}
       {(result.warnings?.length ?? 0) > 0 && (result.warnings ?? []).map((w, i) => (
-        <div key={i} className="text-xs px-3 py-1 rounded-lg bg-amber-50 text-amber-800">\u26A0 {warningText(w)}</div>
+        <div key={i} className="text-xs px-3 py-1 rounded-lg bg-amber-50 text-amber-800">⚠ {warningText(w)}</div>
       ))}
 
       {/* Result text */}
       {result.result_text && (
         <div className="rounded-lg border border-indigo-100 bg-white px-3 py-2 text-xs text-gray-600 leading-relaxed">
-          <span className="text-indigo-400 mr-1">\uD83D\uDCAC</span> {result.result_text}
+          <span className="text-indigo-400 mr-1">💬</span> {result.result_text}
         </div>
       )}
 
@@ -202,7 +202,7 @@ function ResultCard({ result }: { result: RMResult }) {
                 <th className="px-2 py-1 text-right">F</th>
                 <th className="px-2 py-1 text-right">df</th>
                 <th className="px-2 py-1 text-right"><i>p</i></th>
-                <th className="px-2 py-1 text-right">Partial \u03B7\u00B2</th>
+                <th className="px-2 py-1 text-right">Partial η²</th>
                 <th className="px-2 py-1 text-center">Sig</th>
               </tr></thead>
               <tbody>
@@ -399,7 +399,7 @@ function RepeatedMeasuresPanelBody({ session }: { session: Session }) {
                 </select>
               </div>
               <p className="text-[10px] text-amber-600 bg-amber-50 rounded px-2 py-1">
-                Data must be in long format. Use Compute \u2192 Melt to reshape wide data first.
+                Data must be in long format. Use Compute → Melt to reshape wide data first.
               </p>
             </>
           )}

@@ -684,6 +684,20 @@ def linear_mixed_model(req: LMMRequest):
     df = apply_imputation(df_full, cols, req.imputation or "listwise")
     n_excluded = n_total - len(df)
 
+    # With one row per group the random intercept and the residual are the same
+    # quantity. statsmodels still returns a fit, splitting the variance in half
+    # (ICC = 0.5) with standard errors several times too small.
+    if len(df) > 0 and int(df[req.group_col].value_counts().max()) < 2:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Every level of '{req.group_col}' has a single observation, so a random intercept "
+                "cannot be separated from the residual and the mixed model is not identified. "
+                "Choose a grouping variable with several rows per group (for example the centre), "
+                "or reshape repeated measurements to long format first."
+            ),
+        )
+
     outcome_vals = df[req.outcome].dropna().unique()
     is_binary = set(outcome_vals.tolist()) <= {0, 1, 0.0, 1.0}
 

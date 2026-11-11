@@ -2077,6 +2077,7 @@ export default function DescriptivePanel() {
                       ["Max", fmt(summary.max)],
                       ["Skew", fmt(summary.skewness)],
                       ["Skew SE", summary.skew_se?.toFixed(4) ?? "Undefined"],
+                      ["Kurtosis", fmt(summary.kurtosis)],
                       ["Kurtosis SE", summary.kurt_se?.toFixed(4) ?? "Undefined"],
                     ] as StatEntry[]).map(([k, v, hint], i) => (
                       <span key={k} className="whitespace-nowrap" title={hint}>
@@ -2101,8 +2102,8 @@ export default function DescriptivePanel() {
                           typeof v === "number" ? v.toFixed(d) : "\u2014";
                         const pNorm = fmtP(summary.normality_p);
                         return summary.normal
-                          ? <>Normal distribution ({summary.normality_test}, <i>p</i>={pNorm}) \u2014 report Mean \u00B1 SD ({f(summary.mean)} \u00B1 {f(summary.std)}).</>
-                          : <>Non-normal ({summary.normality_test}, <i>p</i>={pNorm}) \u2014 report Median [IQR] ({f(summary.median)} [{f(summary.q1)}\u2013{f(summary.q3)}]).</>;
+                          ? <>Normal distribution ({summary.normality_test}, <i>p</i>={pNorm}): report Mean ± SD ({f(summary.mean)} ± {f(summary.std)}).</>
+                          : <>Non-normal ({summary.normality_test}, <i>p</i>={pNorm}): report Median [IQR] ({f(summary.median)} [{f(summary.q1)}–{f(summary.q3)}]).</>;
                       })()}
                       {Math.abs(summary.skewness ?? 0) > 2 ? " Highly skewed \u2014 consider log-transformation." :
                        Math.abs(summary.skewness ?? 0) > 1 ? " Moderately skewed." : ""}

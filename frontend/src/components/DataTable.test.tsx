@@ -634,8 +634,8 @@ describe('DataTable column missing-value actions', () => {
 
     const fillGroup = await screen.findByRole('button', { name: /Fill 1 blanks/i })
     await user.hover(fillGroup)
-    expect(await screen.findByRole('button', { name: '📊 Mean' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '📊 Median' })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Mean' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Median' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /MICE \(multiple imputation\)/i })).toBeInTheDocument()
   })
 })

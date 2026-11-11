@@ -31,6 +31,15 @@ from services.assumptions import (
     add_assumption_warnings_to_result,
 )
 
+
+def _bic_from_loglik(model) -> float:
+    """BIC on the log-likelihood scale, the same scale as the reported AIC.
+
+    statsmodels' `GLMResults.bic` is deviance-based (deviance - df_resid * log n),
+    which is not comparable with AIC and is usually negative.
+    """
+    return float(-2.0 * model.llf + np.log(int(model.nobs)) * len(model.params))
+
 router = APIRouter()
 
 # statsmodels GLM and discrete-count results have no leverage-based sandwich:
@@ -225,7 +234,7 @@ def poisson_regression(req: PoissonRequest):
         "n_excluded": n_excluded,
         "imputation": req.imputation or "listwise",
         "aic": float(model.aic),
-        "bic": float(model.bic),
+        "bic": _bic_from_loglik(model),
         "exposure_col": exposure_col,
         "rate_model": bool(exposure_col),
         "dispersion": dispersion,
@@ -455,7 +464,7 @@ def negative_binomial_regression(req: NegBinomRequest):
         "n": int(model.nobs),
         "n_excluded": n_excluded,
         "aic": float(model.aic),
-        "bic": float(model.bic),
+        "bic": _bic_from_loglik(model),
         "exposure_col": exposure_col,
         "rate_model": bool(exposure_col),
         # The dispersion the model actually estimated, so the reader can see

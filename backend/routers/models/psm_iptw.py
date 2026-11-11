@@ -33,6 +33,8 @@ router = APIRouter()
 class PSMRequest(BaseModel):
     session_id: str
     treatment_col: str
+    # For a two-level text treatment: the level that counts as treated (coded 1).
+    treated_level: Optional[str] = None
     covariates: List[str]
     outcome_col: Optional[str] = None
     caliper: Optional[float] = 0.2
@@ -54,6 +56,8 @@ class PSMRequest(BaseModel):
 class IPTWRequest(BaseModel):
     session_id: str
     treatment_col: str
+    # For a two-level text treatment: the level that counts as treated (coded 1).
+    treated_level: Optional[str] = None
     covariates: List[str]
     estimand: str = "ate"
     stabilize: bool = True
@@ -103,30 +107,43 @@ def _clean_covariate_categories(df: pd.DataFrame, covariates: List[str]) -> tupl
     return work, warnings
 
 
-def _binary_treatment(series: pd.Series, column: str) -> pd.Series:
-    """Coerce the treatment column to 0/1, or refuse with a message.
+def _binary_treatment(
+    series: pd.Series, column: str, treated_level: Optional[str] = None,
+) -> tuple[pd.Series, Optional[dict]]:
+    """Code the treatment column as 0/1, or refuse with a message.
 
-    Both endpoints already carried a check for a non-binary treatment, and
-    neither could reach it: the cast to float/int ran first and raised, so a
-    text column — `arm` holding "control"/"treat", the ordinary way a trial
-    stores its allocation — came back as a 500 rather than the 422 that was
-    written for it. A two-level text column is not silently recoded here
-    either: which level is "treated" decides the sign of the effect, and
-    guessing it is worse than saying so.
+    A numeric 0/1 column is used as it is. A two-level text column, such as
+    `arm` holding "control"/"treat", is coded only when the request names the
+    treated level: which level is "treated" decides the sign of the effect, so
+    it is never guessed. The coding is returned for the response.
     """
     numeric = pd.to_numeric(series, errors="coerce")
     if numeric.notna().any():
         values = set(numeric.dropna().unique().tolist())
         if values <= {0, 1} and values:
-            return numeric.fillna(0).astype(int)
-    levels = sorted({str(v) for v in series.dropna().unique()})[:6]
+            return numeric.fillna(0).astype(int), None
+    as_text = series.map(lambda v: None if pd.isna(v) else str(v))
+    levels = sorted({v for v in as_text if v is not None})
+    if len(levels) == 2 and treated_level is not None:
+        if str(treated_level) not in levels:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Treated level '{treated_level}' is not a level of '{column}'. Levels: {levels}.",
+            )
+        control = next(v for v in levels if v != str(treated_level))
+        coded = (as_text == str(treated_level)).astype(int)
+        return coded, {"column": column, "treated": str(treated_level), "control": control}
+    hint = (
+        "Choose which level is the treated group (treated_level)."
+        if len(levels) == 2
+        else "Recode it to 0/1 first."
+    )
     raise HTTPException(
         status_code=422,
         detail=(
             f"Treatment column '{column}' must be binary 0/1 "
-            f"(0 = control, 1 = treated). Found: {levels}. "
-            "Recode it to 0/1 first — which level counts as treated decides "
-            "the direction of the estimated effect."
+            f"(0 = control, 1 = treated). Found: {levels[:6]}. {hint} "
+            "Which level counts as treated decides the direction of the estimated effect."
         ),
     )
 
@@ -222,7 +239,11 @@ def _run_psm(req: PSMRequest):
     df_full_imputed = df_full_imputed.loc[df.index].copy().reset_index(drop=True)
     df = df.reset_index(drop=True)
 
-    treat_vals = _binary_treatment(df[req.treatment_col], req.treatment_col)
+    treat_vals, treatment_coding = _binary_treatment(df[req.treatment_col], req.treatment_col, req.treated_level)
+    # Everything downstream (matched cohort, outcome models) reads this column
+    # as numbers, so a text treatment is replaced by its 0/1 coding.
+    df[req.treatment_col] = treat_vals.to_numpy()
+    df_full_imputed[req.treatment_col] = treat_vals.to_numpy()
 
     X = pd.get_dummies(df[req.covariates], drop_first=True).astype(float)
     y = treat_vals.values
@@ -625,6 +646,7 @@ def _run_psm(req: PSMRequest):
         logger.exception("Saving PSM child-session metadata failed")
 
     return {
+        "treatment_coding": treatment_coding,
         "n_total": int(len(df)),
         "n_treated": n_all_treated,
         "n_control": n_all_control,
@@ -713,7 +735,8 @@ def _run_iptw(req: IPTWRequest):
     if req.outcome_type == "binary" and req.outcome_col:
         _require_binary_outcome(df[req.outcome_col], req.outcome_col)
 
-    treat = _binary_treatment(df[req.treatment_col], req.treatment_col)
+    treat, treatment_coding = _binary_treatment(df[req.treatment_col], req.treatment_col, req.treated_level)
+    df = df.assign(**{req.treatment_col: treat.to_numpy()})
     X = pd.get_dummies(df[req.covariates], drop_first=True).astype(float)
 
     scaler = StandardScaler()
@@ -973,6 +996,7 @@ def _run_iptw(req: IPTWRequest):
         logger.exception("Saving IPTW child-session metadata failed")
 
     return {
+        "treatment_coding": treatment_coding,
         "method": "iptw",
         "estimand": req.estimand,
         "stabilize": bool(req.stabilize),

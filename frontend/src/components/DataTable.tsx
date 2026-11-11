@@ -1,7 +1,11 @@
 import { useState, useMemo, useRef, useEffect, useLayoutEffect } from "react";
 import type { CSSProperties, Dispatch, ReactNode, RefObject, SetStateAction } from "react";
 import { createPortal } from "react-dom";
-import { BookOpen, X } from "lucide-react";
+import {
+  ArrowLeftToLine, ArrowRightToLine, BookOpen, CalendarDays, ClipboardPaste, Copy, CopyPlus, Eye, EyeOff,
+  Hash, Lightbulb, ListChecks, MapPin, MoveHorizontal, PaintBucket, Pencil, Plus, Replace, Shapes, Snowflake,
+  Tags, Trash2, X,
+} from "lucide-react";
 import { runColumnStructureMutation, useStore } from "../store";
 import type { CaseCondition, ColMeta, Session } from "../store";
 import api from "../api";
@@ -169,7 +173,23 @@ function useViewportContextMenuStyle(
 const MENU_ITEM_CLS =
   "w-full text-left px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50 flex items-center gap-2";
 
+const MENU_ICON_CLS = "w-3.5 h-3.5 shrink-0 text-gray-400";
+
+const FILL_ITEM_CLS = "w-full text-left px-3 py-1 text-xs text-gray-700 hover:bg-amber-50";
+
+/** Small caption that opens a section of the column context menu. */
+function MenuSection({ label }: { label: string }) {
+  return (
+    <div className="mt-1 border-t border-gray-100 px-3 pt-1.5 pb-0.5 text-[10px] uppercase tracking-wide text-gray-400 select-none">
+      {label}
+    </div>
+  );
+}
+
 const SUBMENU_W = 192;
+
+/** Width of the column context menu (Tailwind w-56). */
+const COLUMN_MENU_W = 224;
 
 /** One collapsible group in the column context menu. The menu had grown to ~20
  *  flat items; each group opens its items in a flyout on hover so the top level
@@ -182,9 +202,10 @@ const SUBMENU_W = 192;
  *  `data-colmenu-flyout` marker the outside-click handler looks for.
  *  `flip` opens leftwards when the menu sits near the right viewport edge. */
 function ColMenuGroup({
-  label, groupKey, activeKey, setActiveKey, flip, tone = "default", children,
+  label, icon, groupKey, activeKey, setActiveKey, flip, tone = "default", children,
 }: {
   label: string;
+  icon?: ReactNode;
   groupKey: string;
   activeKey: string | null;
   setActiveKey: Dispatch<SetStateAction<string | null>>;
@@ -247,7 +268,7 @@ function ColMenuGroup({
             : "text-gray-700 hover:bg-gray-50"
         } ${open ? (tone === "amber" ? "bg-amber-50" : "bg-gray-50") : ""}`}
       >
-        <span className="flex items-center gap-2">{label}</span>
+        <span className="flex items-center gap-2">{icon}{label}</span>
         <span className="text-gray-400 text-[10px]">▸</span>
       </button>
       {open && pos && createPortal(
@@ -418,12 +439,12 @@ function DataTableBody({ session }: { session: Session }) {
   const [rowRangeInput, setRowRangeInput] = useState("");
   // Range spec typed into the column context menu ("3-10, 15")
   const [colRangeInput, setColRangeInput] = useState("");
-  const columnMenuStyle = useViewportContextMenuStyle(ctxMenu, ctxRef, 192);
+  const columnMenuStyle = useViewportContextMenuStyle(ctxMenu, ctxRef, COLUMN_MENU_W);
   // Flyouts open rightwards by default; near the right edge there isn't room
   // for menu (192) + submenu (192), so flip them to the left instead.
   const subFlip = ctxMenu !== null
     && typeof window !== "undefined"
-    && ctxMenu.x + 192 + 192 > window.innerWidth;
+    && ctxMenu.x + COLUMN_MENU_W + SUBMENU_W > window.innerWidth;
   const cellMenuStyle = useViewportContextMenuStyle(cellCtx, cellCtxRef, 192);
   const rowMenuStyle = useViewportContextMenuStyle(rowCtx, rowCtxRef, 176);
 
@@ -2641,58 +2662,103 @@ function DataTableBody({ session }: { session: Session }) {
         <span>Click to select · Double-click / Enter to edit · Drag or Shift+arrows for range · Ctrl/Cmd+C/X/V</span>
       </div>
 
-      {/* ── Right-click context menu ── */}
-      {ctxMenu && (
+      {/* ── Right-click context menu ──
+          Sections, top to bottom: values in the column, its type, the column
+          as a whole (clipboard and placement), selection, then delete. */}
+      {ctxMenu && (() => {
+        const menuCol = columns.find((c) => c.name === ctxMenu.col);
+        const menuColIdx = columns.findIndex((c) => c.name === ctxMenu.col);
+        const missingCount = resolvedMissingCounts[ctxMenu.col] ?? 0;
+        return (
         <div ref={ctxRef}
-          className="fixed z-50 bg-white border border-gray-200 rounded-xl shadow-xl py-1 w-48"
+          className="fixed z-50 bg-white border border-gray-200 rounded-xl shadow-xl py-1 w-56"
           style={columnMenuStyle}
           role="menu">
-          <div className="sticky top-0 z-10 bg-white px-3 py-1.5 text-xs text-gray-400 font-medium border-b border-gray-100 truncate">
-            {ctxMenu.col}
-            {(resolvedMissingCounts[ctxMenu.col] ?? 0) > 0 && (
-              <span className="ml-1 text-amber-500">({resolvedMissingCounts[ctxMenu.col]} missing)</span>
+          <div className="sticky top-0 z-10 bg-white px-3 py-1.5 border-b border-gray-100 flex items-center gap-1.5">
+            <span className="text-xs font-semibold text-gray-700 truncate">{ctxMenu.col}</span>
+            {menuCol && (
+              <span className="shrink-0 text-[10px] px-1 rounded bg-gray-100 text-gray-500">{menuCol.kind}</span>
+            )}
+            {missingCount > 0 && (
+              <span className="shrink-0 ml-auto text-[10px] text-amber-600">{missingCount} missing</span>
             )}
           </div>
-          {/* Everyday actions stay at the top level; the rest live in the
-              hover-out groups below so the menu isn't a 20-item scroll. */}
+
           <button onClick={() => { startRename(ctxMenu.col); setCtxMenu(null); }}
             className={MENU_ITEM_CLS}>
-            ✏️ Rename
-          </button>
-          <button onClick={() => { void copyColumn(ctxMenu.col); }}
-            className={MENU_ITEM_CLS}>
-            📋 Copy column
-          </button>
-          <button onClick={() => { void pasteColumn(ctxMenu.col); }}
-            title="Paste a copied column from the clipboard as a new column after this one — works across windows"
-            className={MENU_ITEM_CLS}>
-            📥 Paste column
+            <Pencil className={MENU_ICON_CLS} /> Rename
           </button>
 
-          <div className="border-t border-gray-100 mt-0.5" />
-
-          {/* Everyday formatting lives at the top level; Change type and Parse
-              as date moved into the More group. */}
+          <MenuSection label="Values" />
           <button onClick={() => {
-            const col = columns.find((c) => c.name === ctxMenu.col);
-            setValueLabelDraft(col?.value_labels ? { ...col.value_labels } : {});
+            setValueLabelDraft(menuCol?.value_labels ? { ...menuCol.value_labels } : {});
             setValueLabelCol(ctxMenu.col);
             setCtxMenu(null);
           }}
             className={MENU_ITEM_CLS}>
-            🔤 Value Labels
+            <Tags className={MENU_ICON_CLS} /> Value Labels
           </button>
           <button onClick={() => { setFindReplaceCol(ctxMenu.col); setCtxMenu(null); }}
             title="Convert value: swap codes (e.g. 1 ↔ 2) or recode missing → 0"
             className={MENU_ITEM_CLS}>
-            🔁 Convert value…
+            <Replace className={MENU_ICON_CLS} /> Convert value…
           </button>
-          {/* Decimal places selector — explanation lives in the tooltip */}
-          {columns.find((c) => c.name === ctxMenu.col)?.kind === "numeric" && (
-            <div className="px-3 py-1"
+          {missingCount > 0 && (
+            <ColMenuGroup
+              icon={<PaintBucket className="w-3.5 h-3.5 shrink-0" />}
+              label={`Fill ${missingCount} blanks`}
+              groupKey="fill" activeKey={openSub} setActiveKey={setOpenSub} flip={subFlip} tone="amber">
+              <button onClick={() => { fillBlanks(ctxMenu.col, "__mean__"); }} className={FILL_ITEM_CLS}>Mean</button>
+              <button onClick={() => { fillBlanks(ctxMenu.col, "__median__"); }} className={FILL_ITEM_CLS}>Median</button>
+              <button onClick={() => { fillBlanks(ctxMenu.col, "0"); }} className={FILL_ITEM_CLS}>Zero</button>
+              <button onClick={() => { fillBlanks(ctxMenu.col, "__mice__"); }} className={FILL_ITEM_CLS}>
+                MICE (multiple imputation)
+              </button>
+              <button onClick={() => { fillBlanks(ctxMenu.col, "__rownum__"); }} className={FILL_ITEM_CLS}>
+                Case number (1…n)
+              </button>
+              <button onClick={() => { setFormulaFor(ctxMenu.col); setFormulaErr(null); setCtxMenu(null); }}
+                className={FILL_ITEM_CLS}>
+                Compute from other columns...
+              </button>
+              {fillMode === ctxMenu.col ? (
+                <div className="px-3 py-1 flex items-center gap-1">
+                  <input ref={fillRef} autoFocus
+                    className="text-xs border border-gray-300 rounded px-1.5 py-0.5 w-20 focus:outline-none focus:border-indigo-400"
+                    placeholder="value"
+                    value={fillVal}
+                    onChange={(e) => setFillVal(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") { fillBlanks(ctxMenu.col, fillVal); setFillMode(null); setFillVal(""); }
+                      if (e.key === "Escape") { setFillMode(null); setFillVal(""); }
+                    }}
+                  />
+                  <button onClick={() => { fillBlanks(ctxMenu.col, fillVal); setFillMode(null); setFillVal(""); }}
+                    className="text-[10px] px-1.5 py-0.5 bg-indigo-600 text-white rounded hover:bg-indigo-700">Fill</button>
+                </div>
+              ) : (
+                <button onClick={() => { setFillMode(ctxMenu.col); setFillVal(""); }} className={FILL_ITEM_CLS}>
+                  Custom value...
+                </button>
+              )}
+            </ColMenuGroup>
+          )}
+
+          <MenuSection label="Type and format" />
+          <button onClick={() => { cycleKind(ctxMenu.col); setCtxMenu(null); }}
+            className={MENU_ITEM_CLS}>
+            <Shapes className={MENU_ICON_CLS} /> Change type
+          </button>
+          <button onClick={() => { setParseDateCol(ctxMenu.col); setCtxMenu(null); }}
+            className={MENU_ITEM_CLS}>
+            <CalendarDays className={MENU_ICON_CLS} /> Parse as date…
+          </button>
+          {menuCol?.kind === "numeric" && (
+            <div className="px-3 py-1 flex items-center gap-2"
               title={'Also applied to Summary, Histogram and Table 1 metrics. "A" = automatic (0 decimals for integer columns, 2 otherwise).'}>
-              <span className="text-xs text-gray-500">🔢 Decimals</span>
-              <div className="flex items-center gap-1 mt-1">
+              <Hash className={MENU_ICON_CLS} />
+              <span className="text-xs text-gray-700">Decimals</span>
+              <div className="flex items-center gap-px ml-auto">
                 {[0, 1, 2, 3, 4, "auto"].map((d) => (
                   <button key={String(d)}
                     onClick={() => {
@@ -2703,7 +2769,7 @@ function DataTableBody({ session }: { session: Session }) {
                       }
                       setCtxMenu(null);
                     }}
-                    className={`text-[10px] w-6 h-5 rounded flex items-center justify-center transition-colors ${
+                    className={`text-[10px] w-4 h-5 rounded flex items-center justify-center transition-colors ${
                       (d === "auto" && !(ctxMenu.col in columnDecimals)) || columnDecimals[ctxMenu.col] === d
                         ? "bg-indigo-600 text-white"
                         : "bg-gray-100 text-gray-600 hover:bg-gray-200"
@@ -2714,45 +2780,72 @@ function DataTableBody({ session }: { session: Session }) {
               </div>
             </div>
           )}
+          <button onClick={() => {
+            setColumnAnalysisExcluded(ctxMenu.col, !(menuCol?.analysis_excluded ?? false));
+            setCtxMenu(null);
+          }}
+            className={MENU_ITEM_CLS}>
+            {menuCol?.analysis_excluded
+              ? <><Eye className={MENU_ICON_CLS} /> Include in analysis</>
+              : <><EyeOff className={MENU_ICON_CLS} /> Exclude from analysis</>}
+          </button>
 
-          <div className="border-t border-gray-100 mt-0.5" />
-
-          <ColMenuGroup label="↔️ Position" groupKey="position" activeKey={openSub} setActiveKey={setOpenSub} flip={subFlip}>
-            <button onClick={() => { const idx = columns.findIndex((c) => c.name === ctxMenu.col); setCtxMenu(null); addColumn(idx); }}
+          <MenuSection label="Column" />
+          <button onClick={() => { void copyColumn(ctxMenu.col); }}
+            className={MENU_ITEM_CLS}>
+            <Copy className={MENU_ICON_CLS} /> Copy column
+          </button>
+          <button onClick={() => { void pasteColumn(ctxMenu.col); }}
+            title="Paste a copied column from the clipboard as a new column after this one (works across windows)"
+            className={MENU_ITEM_CLS}>
+            <ClipboardPaste className={MENU_ICON_CLS} /> Paste column
+          </button>
+          <button onClick={() => duplicateColumn(ctxMenu.col)}
+            className={MENU_ITEM_CLS}>
+            <CopyPlus className={MENU_ICON_CLS} /> Duplicate column
+          </button>
+          <ColMenuGroup icon={<Plus className={MENU_ICON_CLS} />} label="Insert"
+            groupKey="insert" activeKey={openSub} setActiveKey={setOpenSub} flip={subFlip}>
+            <button onClick={() => { setCtxMenu(null); addColumn(menuColIdx); }}
               className={MENU_ITEM_CLS}>
-              ⬅️ Insert column left
+              <ArrowLeftToLine className={MENU_ICON_CLS} /> Insert column left
             </button>
-            <button onClick={() => { const idx = columns.findIndex((c) => c.name === ctxMenu.col); setCtxMenu(null); addColumn(idx + 1); }}
+            <button onClick={() => { setCtxMenu(null); addColumn(menuColIdx + 1); }}
               className={MENU_ITEM_CLS}>
-              ➡️ Insert column right
+              <ArrowRightToLine className={MENU_ICON_CLS} /> Insert column right
             </button>
+          </ColMenuGroup>
+          <ColMenuGroup icon={<MoveHorizontal className={MENU_ICON_CLS} />} label="Move and freeze"
+            groupKey="position" activeKey={openSub} setActiveKey={setOpenSub} flip={subFlip}>
             <button onClick={() => sendToEnd(ctxMenu.col)}
               className={MENU_ITEM_CLS}>
-              ➡️ Send to end
+              <ArrowRightToLine className={MENU_ICON_CLS} /> Send to end
             </button>
             <button onClick={() => { setMoveCol(ctxMenu.col); setCtxMenu(null); }}
               className={MENU_ITEM_CLS}>
-              📍 Send to position…
+              <MapPin className={MENU_ICON_CLS} /> Send to position…
             </button>
+            <div className="border-t border-gray-100 my-0.5" />
             <button
               onClick={() => {
-                const idx = columns.findIndex((c) => c.name === ctxMenu.col);
-                if (idx >= 0) setFrozenCount(idx + 1);
+                if (menuColIdx >= 0) setFrozenCount(menuColIdx + 1);
                 setCtxMenu(null);
               }}
               className={MENU_ITEM_CLS}>
-              ❄ Freeze up to here
+              <Snowflake className={MENU_ICON_CLS} /> Freeze up to here
             </button>
             {frozenCount > 0 && (
               <button
                 onClick={() => { setFrozenCount(0); setCtxMenu(null); }}
                 className={MENU_ITEM_CLS}>
-                ❄ Unfreeze all
+                <Snowflake className={MENU_ICON_CLS} /> Unfreeze all
               </button>
             )}
           </ColMenuGroup>
 
-          <ColMenuGroup label="☑️ Select columns" groupKey="select" activeKey={openSub} setActiveKey={setOpenSub} flip={subFlip}>
+          <MenuSection label="Table" />
+          <ColMenuGroup icon={<ListChecks className={MENU_ICON_CLS} />} label="Select columns"
+            groupKey="select" activeKey={openSub} setActiveKey={setOpenSub} flip={subFlip}>
             {/* Range spec uses the 1-based numbers of the column-number row */}
             <div className="px-3 py-1.5">
               <input
@@ -2773,114 +2866,39 @@ function DataTableBody({ session }: { session: Session }) {
               if (applyColRangeSpec(colRangeInput) > 0) setCtxMenu(null);
             }}
               className={MENU_ITEM_CLS}>
-              ✅ Select column range
+              Select column range
             </button>
             <button onClick={() => {
-              tickColsFromHere(columns.findIndex((c) => c.name === ctxMenu.col));
+              tickColsFromHere(menuColIdx);
               setCtxMenu(null);
             }}
               className={MENU_ITEM_CLS}>
-              ⤵️ Select here → end
+              Select here → end
             </button>
             <button onClick={() => { invertCheckedCols(); setCtxMenu(null); }}
               className={MENU_ITEM_CLS}>
-              🔁 Invert selection
+              Invert selection
             </button>
             {(checkedCols.size > 0 || checkedRows.size > 0) && (
               <button onClick={() => { clearChecks(); setCtxMenu(null); }}
                 className={MENU_ITEM_CLS}>
-                ✖️ Clear selection
+                Clear selection
               </button>
             )}
           </ColMenuGroup>
+          <button onClick={openSuggestNames}
+            className={MENU_ITEM_CLS}>
+            <Lightbulb className={MENU_ICON_CLS} /> Suggest names…
+          </button>
 
-          <ColMenuGroup label="⋯ More" groupKey="more" activeKey={openSub} setActiveKey={setOpenSub} flip={subFlip}>
-            <button onClick={() => { cycleKind(ctxMenu.col); setCtxMenu(null); }}
-              className={MENU_ITEM_CLS}>
-              🏷️ Change type
-            </button>
-            <button onClick={() => { setParseDateCol(ctxMenu.col); setCtxMenu(null); }}
-              className={MENU_ITEM_CLS}>
-              📅 Parse as date…
-            </button>
-            <button onClick={() => duplicateColumn(ctxMenu.col)}
-              className={MENU_ITEM_CLS}>
-              📑 Duplicate column
-            </button>
-            <button onClick={openSuggestNames}
-              className={MENU_ITEM_CLS}>
-              💡 Suggest names…
-            </button>
-            <button onClick={() => {
-              const col = columns.find((c) => c.name === ctxMenu.col);
-              setColumnAnalysisExcluded(ctxMenu.col, !(col?.analysis_excluded ?? false));
-              setCtxMenu(null);
-            }}
-              className={MENU_ITEM_CLS}>
-              {columns.find((c) => c.name === ctxMenu.col)?.analysis_excluded
-                ? "✅ Include in analysis" : "🚫 Exclude from analysis"}
-            </button>
-          </ColMenuGroup>
-
-          {(resolvedMissingCounts[ctxMenu.col] ?? 0) > 0 && (
-            <ColMenuGroup
-              label={`📊 Fill ${resolvedMissingCounts[ctxMenu.col]} blanks`}
-              groupKey="fill" activeKey={openSub} setActiveKey={setOpenSub} flip={subFlip} tone="amber">
-              <button onClick={() => { fillBlanks(ctxMenu.col, "__mean__"); }}
-                className="w-full text-left px-3 py-1 text-xs text-gray-700 hover:bg-amber-50 flex items-center gap-2">
-                📊 Mean
-              </button>
-              <button onClick={() => { fillBlanks(ctxMenu.col, "__median__"); }}
-                className="w-full text-left px-3 py-1 text-xs text-gray-700 hover:bg-amber-50 flex items-center gap-2">
-                📊 Median
-              </button>
-              <button onClick={() => { fillBlanks(ctxMenu.col, "0"); }}
-                className="w-full text-left px-3 py-1 text-xs text-gray-700 hover:bg-amber-50 flex items-center gap-2">
-                0️⃣ Zero
-              </button>
-              <button onClick={() => { fillBlanks(ctxMenu.col, "__mice__"); }}
-                className="w-full text-left px-3 py-1 text-xs text-gray-700 hover:bg-amber-50 flex items-center gap-2">
-                🧬 MICE (multiple imputation)
-              </button>
-              <button onClick={() => { fillBlanks(ctxMenu.col, "__rownum__"); }}
-                className="w-full text-left px-3 py-1 text-xs text-gray-700 hover:bg-amber-50 flex items-center gap-2">
-                🔢 Case number (1…n)
-              </button>
-              <button onClick={() => { setFormulaFor(ctxMenu.col); setFormulaErr(null); setCtxMenu(null); }}
-                className="w-full text-left px-3 py-1 text-xs text-gray-700 hover:bg-amber-50 flex items-center gap-2">
-                🧮 Compute from other columns...
-              </button>
-              {fillMode === ctxMenu.col ? (
-                <div className="px-3 py-1 flex items-center gap-1">
-                  <input ref={fillRef} autoFocus
-                    className="text-xs border border-gray-300 rounded px-1.5 py-0.5 w-20 focus:outline-none focus:border-indigo-400"
-                    placeholder="value"
-                    value={fillVal}
-                    onChange={(e) => setFillVal(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") { fillBlanks(ctxMenu.col, fillVal); setFillMode(null); setFillVal(""); }
-                      if (e.key === "Escape") { setFillMode(null); setFillVal(""); }
-                    }}
-                  />
-                  <button onClick={() => { fillBlanks(ctxMenu.col, fillVal); setFillMode(null); setFillVal(""); }}
-                    className="text-[10px] px-1.5 py-0.5 bg-indigo-600 text-white rounded hover:bg-indigo-700">Fill</button>
-                </div>
-              ) : (
-                <button onClick={() => { setFillMode(ctxMenu.col); setFillVal(""); }}
-                  className="w-full text-left px-3 py-1 text-xs text-gray-700 hover:bg-amber-50 flex items-center gap-2">
-                  ✏️ Custom value...
-                </button>
-              )}
-            </ColMenuGroup>
-          )}
-
-          <div className="border-t border-gray-100 mt-0.5" />
+          <div className="border-t border-gray-100 mt-1" />
           <button onClick={() => deleteColumn(ctxMenu.col)}
-            className="w-full text-left px-3 py-1.5 text-xs text-red-500 hover:bg-red-50 flex items-center gap-2">
-            🗑️ Delete column
+            className="w-full text-left px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 flex items-center gap-2">
+            <Trash2 className="w-3.5 h-3.5 shrink-0" /> Delete column
           </button>
         </div>
-      )}
+        );
+      })()}
 
       {/* ── Cell right-click context menu ── */}
       {cellCtx && (
