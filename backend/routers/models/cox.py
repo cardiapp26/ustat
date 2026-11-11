@@ -19,9 +19,10 @@ from services.assumptions import (
     check_cox_assumptions_from_ph_test,
     add_assumption_warnings_to_result,
 )
+from services.cox_encoding import encode_design
 from services.missing_data import (
     mice_multiple,
-    pool_cox_results,
+    pool_rubin_terms,
     missing_pattern_summary,
     add_missing_data_diagnostics,
 )
@@ -60,8 +61,26 @@ def _safe_float(v) -> Optional[float]:
         return None
 
 
+def _round_sig(v, digits: int = 4) -> float:
+    """Round to `digits` significant figures, so 0.00679 does not become 0.01."""
+    f = float(v)
+    if f == 0 or not np.isfinite(f):
+        return f
+    return round(f, digits - 1 - int(np.floor(np.log10(abs(f)))))
+
+
 def _clean(arr):
     return [_safe_float(v) for v in arr]
+
+
+def _declared_categorical(session_id: str, cols: List[str]) -> frozenset:
+    """Columns the user declared categorical: kind override or value labels."""
+    meta = store.get_metadata(session_id) or {}
+    kinds = store.get_kind_overrides(session_id) or {}
+    return frozenset(
+        c for c in cols
+        if kinds.get(c) == "categorical" or bool((meta.get(c, {}) or {}).get("value_labels"))
+    )
 
 
 def _get_df(session_id: str) -> pd.DataFrame:
@@ -151,19 +170,33 @@ def _median_follow_up(time: pd.Series, event: pd.Series) -> Optional[dict]:
     try:
         S = kmf.survival_function_.values.ravel().astype(float)
         T = kmf.survival_function_.index.values.astype(float)
-        order = np.argsort(S)            # ascending S for np.interp
-        Ss, Ts = S[order], T[order]
-
-        def _pc(p: float) -> Optional[float]:
-            v = float(np.interp(p, Ss, Ts))
-            return v if np.isfinite(v) else None
-
-        return {"median": _safe_float(_pc(0.50)),
-                "q1": _safe_float(_pc(0.75)),   # 25th pct of follow-up
-                "q3": _safe_float(_pc(0.25))}   # 75th pct of follow-up
+        return {"median": _safe_float(_km_step_quantile(T, S, 0.50)),
+                "q1": _safe_float(_km_step_quantile(T, S, 0.75)),   # 25th pct of follow-up
+                "q3": _safe_float(_km_step_quantile(T, S, 0.25))}   # 75th pct of follow-up
     except Exception:
-        logger.exception("Reverse-KM quantile interpolation failed")
+        logger.exception("Reverse-KM quantile failed")
         return None
+
+
+def _km_step_quantile(times: np.ndarray, surv: np.ndarray, p: float) -> Optional[float]:
+    """Time at which a KM step curve reaches survival `p` (R quantile.survfit).
+
+    The first time with S(t) <= p; when the curve sits exactly on p over an
+    interval, the midpoint of that interval. None when the curve never comes
+    down to p ("not reached"), which linear interpolation used to hide by
+    clamping to the nearest end of the curve.
+    """
+    tol = 1e-9
+    at_or_below = np.flatnonzero(surv <= p + tol)
+    if at_or_below.size == 0:
+        return None
+    first = int(at_or_below[0])
+    if abs(surv[first] - p) > tol:
+        return float(times[first])
+    below = np.flatnonzero(surv < p - tol)
+    if below.size == 0:
+        return float(times[first])
+    return float((times[first] + times[int(below[0])]) / 2.0)
 
 
 def _sorted_groups(series: pd.Series) -> list:
@@ -366,9 +399,19 @@ def kaplan_meier(req: KMRequest):
     df_full[req.duration_col] = pd.to_numeric(df_full[req.duration_col], errors="coerce")
     df_full[req.event_col] = pd.to_numeric(df_full[req.event_col], errors="coerce")
 
+    split_cols = [c for c in dict.fromkeys([req.group_col, req.stratify_col]) if c]
+    missing_split = [c for c in split_cols if c not in df_full.columns]
+    if missing_split:
+        raise HTTPException(status_code=422, detail=f"Columns not found: {missing_split}")
+
     km_cols = [req.duration_col, req.event_col]
     df = apply_imputation(df_full, km_cols, req.imputation)
     df, survival_warnings, n_invalid_survival = _drop_invalid_survival_rows(df, req.duration_col, req.event_col)
+    # A row with no group belongs to no curve. Left in, lifelines counted the
+    # missing values as one more group, so the log-rank p came from the wrong
+    # degrees of freedom while the response still reported groups - 1.
+    if split_cols:
+        df = df.dropna(subset=split_cols)
     n_excluded = n_total - len(df)
 
     if len(df) == 0:
@@ -379,8 +422,6 @@ def kaplan_meier(req: KMRequest):
         raise HTTPException(status_code=422, detail=f"Event column must be binary 0/1 (0=censored, 1=event). Found: {event_vals[:10]}")
 
     if req.stratify_col:
-        if req.stratify_col not in df_full.columns:
-            raise HTTPException(status_code=422, detail=f"Stratify column '{req.stratify_col}' not found.")
         strata_vals = sorted(df[req.stratify_col].dropna().unique(), key=lambda x: (isinstance(x, str), x))
         strata_out = []
         for sv in strata_vals:
@@ -431,115 +472,67 @@ class CoxRequest(BaseModel):
     interactions: Optional[List[List[str]]] = None
 
 
-@router.post("/survival/cox")
-async def cox_regression(req: CoxRequest):
-    df_full = _get_df(req.session_id)
-    n_total = len(df_full)
+def _cox_fit_frame(
+    df: pd.DataFrame,
+    duration_col: str,
+    event_col: str,
+    predictors: List[str],
+    interactions: Optional[List[List[str]]],
+) -> Tuple[pd.DataFrame, pd.DataFrame, List[str]]:
+    """Complete-case Cox frame: (duration + event + design, design, interaction columns)."""
+    design = encode_design(df, predictors)
+    enc = design.frame.copy()
+    interaction_cols: List[str] = []
+    for pair in interactions or []:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            raise HTTPException(status_code=422, detail=f"Each interaction must be a [colA, colB] pair. Got: {pair}")
+        a_members = design.columns_of(pair[0])
+        b_members = design.columns_of(pair[1])
+        if not a_members or not b_members:
+            raise HTTPException(status_code=422, detail=f"Interaction '{pair[0]} × {pair[1]}': one or both columns are not in the predictor list.")
+        for a in a_members:
+            for b in b_members:
+                new_col = f"{a}:{b}"
+                enc[new_col] = enc[a] * enc[b]
+                interaction_cols.append(new_col)
+    fit_df = pd.concat([df[[duration_col, event_col]], enc], axis=1).dropna()
+    return fit_df, enc.loc[fit_df.index], interaction_cols
 
-    df_full = df_full.copy()
-    df_full[req.duration_col] = pd.to_numeric(df_full[req.duration_col], errors="coerce")
-    df_full[req.event_col] = pd.to_numeric(df_full[req.event_col], errors="coerce")
 
-    cox_cols = [req.duration_col, req.event_col] + req.predictors
-    imputation_method = req.imputation or "listwise"
-    use_mice_pooled = False
+async def _fit_cox_per_imputation(imputed_dfs: list, req: "CoxRequest") -> Tuple[List[dict], Optional[tuple]]:
+    """Fit the request's Cox model on every imputed dataset.
 
-    if imputation_method == "mice":
-        imp_result = mice_multiple(df_full, cox_cols, n_imputations=5)
-        imputed_dfs = imp_result.imputed_datasets
+    Returns ({term: (log HR, SE)} per dataset that fitted, validation result
+    of the first dataset). Each dataset goes through the same encoding as the
+    reported model, so text predictors and interactions are pooled as well.
+    """
+    per_imputation: List[dict] = []
+    first_validation: Optional[tuple] = None
+    for df_imp in imputed_dfs:
+        validation = _drop_invalid_survival_rows(df_imp, req.duration_col, req.event_col)
+        if first_validation is None:
+            first_validation = validation
+        try:
+            imp_fit, _, _ = _cox_fit_frame(validation[0], req.duration_col, req.event_col, req.predictors, req.interactions)
+            cph_imp = CoxPHFitter()
+            await asyncio.to_thread(cph_imp.fit, imp_fit, duration_col=req.duration_col, event_col=req.event_col)
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("Cox fit failed for one imputed dataset")
+            continue
+        per_imputation.append({
+            str(name): (float(cph_imp.params_[name]), float(cph_imp.standard_errors_[name]))
+            for name in cph_imp.params_.index
+        })
+    return per_imputation, first_validation
 
-        individual_results = []
-        first_validation = None
-        for df_imp in imputed_dfs:
-            try:
-                val_df, val_warnings, val_invalid = _drop_invalid_survival_rows(df_imp, req.duration_col, req.event_col)
-                if first_validation is None:
-                    first_validation = (val_df, val_warnings, val_invalid)
-                cph_imp = CoxPHFitter()
-                await asyncio.to_thread(cph_imp.fit, val_df[cox_cols], duration_col=req.duration_col, event_col=req.event_col)
-                loghrs = {var: float(np.log(cph_imp.hazard_ratios_.get(var, 1.0))) for var in req.predictors}
-                individual_results.append({"coefficients": loghrs})
-            except Exception:
-                logger.exception("Cox fit failed for one imputation step")
-                continue
 
-        pooled = pool_cox_results(individual_results) if individual_results else {}
-
-        if first_validation is not None:
-            df, survival_warnings, n_invalid_survival = first_validation
-        else:
-            df, survival_warnings, n_invalid_survival = _drop_invalid_survival_rows(imputed_dfs[0], req.duration_col, req.event_col)
-        n_excluded = n_total - len(df)
-        use_mice_pooled = True
-    else:
-        df = apply_imputation(df_full, cox_cols, imputation_method)
-        df, survival_warnings, n_invalid_survival = _drop_invalid_survival_rows(df, req.duration_col, req.event_col)
-        n_excluded = n_total - len(df)
-        use_mice_pooled = False
-    if len(df) == 0:
-        raise HTTPException(status_code=400, detail="No valid rows after coercing duration/event columns to numeric.")
-
-    event_vals = sorted(df[req.event_col].dropna().unique())
-    if set(event_vals) - {0, 1, 0.0, 1.0}:
-        raise HTTPException(status_code=422, detail=f"Event column must be binary 0/1. Found: {event_vals[:10]}")
-
-    pred_raw = df[req.predictors].copy()
-    numeric_pred: list[str] = []
-    cat_pred: list[str] = []
-    for c in req.predictors:
-        col = pred_raw[c]
-        if pd.api.types.is_numeric_dtype(col):
-            numeric_pred.append(c)
-        else:
-            coerced = pd.to_numeric(col, errors="coerce")
-            if coerced.notna().mean() >= 0.8 and len(coerced.dropna().unique()) > 2:
-                pred_raw[c] = coerced
-                numeric_pred.append(c)
-            else:
-                cat_pred.append(c)
-
-    num_part = pred_raw[numeric_pred].apply(pd.to_numeric, errors="coerce") if numeric_pred else pd.DataFrame(index=pred_raw.index)
-    cat_part = pd.get_dummies(pred_raw[cat_pred], drop_first=True, dummy_na=False) if cat_pred else pd.DataFrame(index=pred_raw.index)
-    enc = pd.concat([num_part, cat_part], axis=1).astype(float)
-
-    interaction_cols: list[str] = []
-    if req.interactions:
-        def _members(name: str) -> list[str]:
-            if name in enc.columns:
-                return [name]
-            prefix = f"{name}_"
-            return [c for c in enc.columns if c.startswith(prefix)]
-
-        for pair in req.interactions:
-            if not isinstance(pair, (list, tuple)) or len(pair) != 2:
-                raise HTTPException(status_code=422, detail=f"Each interaction must be a [colA, colB] pair. Got: {pair}")
-            a_members = _members(pair[0])
-            b_members = _members(pair[1])
-            if not a_members or not b_members:
-                raise HTTPException(status_code=422, detail=f"Interaction '{pair[0]} × {pair[1]}': one or both columns are not in the predictor list.")
-            for a in a_members:
-                for b in b_members:
-                    new_col = f"{a}:{b}"
-                    enc[new_col] = enc[a] * enc[b]
-                    interaction_cols.append(new_col)
-
-    fit_df = pd.concat([df[[req.duration_col, req.event_col]], enc], axis=1).dropna()
-    if len(fit_df) < 10:
-        raise HTTPException(status_code=400, detail=f"Not enough complete rows after encoding (need ≥ 10, got {len(fit_df)}).")
-
-    cph = CoxPHFitter()
-    try:
-        await asyncio.to_thread(cph.fit, fit_df, duration_col=req.duration_col, event_col=req.event_col)
-    except Exception as exc:
-        logger.exception("Cox fitting failed")
-        raise HTTPException(status_code=400, detail=f"Cox fitting error: {exc}")
-
-    summary = cph.summary.reset_index()
-    vifs = _compute_vif(enc)
-    coefs = []
-    for _, row in summary.iterrows():
+def _cox_summary_rows(cph: CoxPHFitter, vifs: dict) -> List[dict]:
+    rows = []
+    for _, row in cph.summary.reset_index().iterrows():
         name = str(row["covariate"])
-        coefs.append({
+        rows.append({
             "variable": name,
             "log_hr": _safe_float(row["coef"]),
             "hr": _safe_float(row["exp(coef)"]),
@@ -550,11 +543,111 @@ async def cox_regression(req: CoxRequest):
             "hr_ci_high": _safe_float(row["exp(coef) upper 95%"]),
             "vif": vifs.get(name),
         })
+    return rows
+
+
+def _pooled_cox_row(name: str, pooled: dict, vifs: dict) -> dict:
+    """One coefficient row from Rubin-pooled log HR; same keys as the unpooled rows."""
+    return {
+        "variable": name,
+        "log_hr": _safe_float(pooled["coef"]),
+        "hr": _safe_float(np.exp(pooled["coef"])),
+        "se": _safe_float(pooled["se"]),
+        "z": _safe_float(pooled["t"]),
+        "p": _safe_float(pooled["p"]),
+        "hr_ci_low": _safe_float(np.exp(pooled["ci_low"])),
+        "hr_ci_high": _safe_float(np.exp(pooled["ci_high"])),
+        "vif": vifs.get(name),
+        "df": pooled["df"],
+        "fmi": pooled["fmi"],
+    }
+
+
+def _ph_global_test(cph: CoxPHFitter, scaled_resids: pd.DataFrame) -> Tuple[Optional[float], Optional[int], Optional[float]]:
+    """Grambsch-Therneau global test of proportional hazards: (chi2, df, p).
+
+    The joint quadratic form over all coefficients, on the rank time scale
+    the per-term tests use. Adding the per-term chi-squares instead is right
+    only for uncorrelated terms.
+    """
+    from lifelines.statistics import TimeTransformers
+
+    events = cph.event_observed.astype(bool)
+    n_deaths = float(events.sum())
+    times = TimeTransformers().get("rank")(cph.durations, cph.event_observed, cph.weights)[events.values]
+    centred = np.asarray(times - times.mean(), dtype=float)
+    spread = float((centred ** 2).sum())
+    n_terms = scaled_resids.shape[1]
+    if n_deaths == 0 or spread == 0 or n_terms == 0:
+        return None, None, None
+    score = (centred[:, None] * scaled_resids.values).sum(axis=0)
+    stat = float(score @ np.linalg.solve(cph.variance_matrix_.values, score) / (n_deaths * spread))
+    return stat, n_terms, float(chi2.sf(stat, n_terms))
+
+
+@router.post("/survival/cox")
+async def cox_regression(req: CoxRequest):
+    df_full = _get_df(req.session_id)
+    n_total = len(df_full)
+
+    df_full = df_full.copy()
+    df_full[req.duration_col] = pd.to_numeric(df_full[req.duration_col], errors="coerce")
+    df_full[req.event_col] = pd.to_numeric(df_full[req.event_col], errors="coerce")
+
+    cox_cols = [req.duration_col, req.event_col] + req.predictors
+    missing_cols = [c for c in cox_cols if c not in df_full.columns]
+    if missing_cols:
+        raise HTTPException(status_code=422, detail=f"Columns not found: {missing_cols}")
+    imputation_method = req.imputation or "listwise"
+    pooled_terms: Optional[dict] = None
+    n_imputations_fitted = 0
+
+    if imputation_method == "mice":
+        imputed_dfs = mice_multiple(df_full, cox_cols, n_imputations=5).imputed_datasets
+        per_imputation, first_validation = await _fit_cox_per_imputation(imputed_dfs, req)
+        if not per_imputation:
+            raise HTTPException(
+                status_code=400,
+                detail="The Cox model could not be fitted on any imputed dataset; see the server log for the cause.",
+            )
+        pooled_terms = pool_rubin_terms(per_imputation)
+        n_imputations_fitted = len(per_imputation)
+        df, survival_warnings, n_invalid_survival = first_validation
+    else:
+        df = apply_imputation(df_full, cox_cols, imputation_method)
+        df, survival_warnings, n_invalid_survival = _drop_invalid_survival_rows(df, req.duration_col, req.event_col)
+    if len(df) == 0:
+        raise HTTPException(status_code=400, detail="No valid rows after coercing duration/event columns to numeric.")
+
+    event_vals = sorted(df[req.event_col].dropna().unique())
+    if set(event_vals) - {0, 1, 0.0, 1.0}:
+        raise HTTPException(status_code=422, detail=f"Event column must be binary 0/1. Found: {event_vals[:10]}")
+
+    fit_df, enc, interaction_cols = _cox_fit_frame(df, req.duration_col, req.event_col, req.predictors, req.interactions)
+    # Rows lost to a missing category or a failed numeric coercion are
+    # excluded rows too; counting only the earlier drops under-reported them.
+    n_excluded = n_total - len(fit_df)
+    if len(fit_df) < 10:
+        raise HTTPException(status_code=400, detail=f"Not enough complete rows after encoding (need ≥ 10, got {len(fit_df)}).")
+
+    cph = CoxPHFitter()
+    try:
+        await asyncio.to_thread(cph.fit, fit_df, duration_col=req.duration_col, event_col=req.event_col)
+    except Exception as exc:
+        logger.exception("Cox fitting failed")
+        raise HTTPException(status_code=400, detail=f"Cox fitting error: {exc}")
+
+    vifs = _compute_vif(enc)
+    if pooled_terms is not None:
+        coefs = [_pooled_cox_row(str(name), pooled_terms[str(name)], vifs) for name in cph.params_.index if str(name) in pooled_terms]
+    else:
+        coefs = _cox_summary_rows(cph, vifs)
 
     ph_test = None
     try:
         from lifelines.statistics import proportional_hazard_test
-        ph_res = proportional_hazard_test(cph, fit_df, time_transform="rank")
+        scaled_resids = cph.compute_residuals(fit_df, kind="scaled_schoenfeld")
+        ph_res = proportional_hazard_test(cph, fit_df, time_transform="rank", precomputed_residuals=scaled_resids)
         ph_summary = ph_res.summary.reset_index() if hasattr(ph_res.summary, "reset_index") else ph_res.summary
         per_term = []
         for _, row in ph_summary.iterrows():
@@ -563,14 +656,7 @@ async def cox_regression(req: CoxRequest):
                 "test_stat": _safe_float(row.get("test_statistic")),
                 "p": _safe_float(row.get("p")),
             })
-        from scipy.stats import chi2 as _chi2
-        chi_vals = [t["test_stat"] for t in per_term if t["test_stat"] is not None]
-        if chi_vals:
-            global_chi = float(sum(chi_vals))
-            global_df = len(chi_vals)
-            global_p = float(1 - _chi2.cdf(global_chi, global_df)) if global_df > 0 else None
-        else:
-            global_chi, global_df, global_p = None, None, None
+        global_chi, global_df, global_p = _ph_global_test(cph, scaled_resids)
         ph_test = {"global": {"chi2": global_chi, "df": global_df, "p": global_p}, "per_term": per_term}
     except Exception as exc:
         logger.exception("Proportional hazards test failed")
@@ -578,7 +664,9 @@ async def cox_regression(req: CoxRequest):
 
     result = {
         "model": "Cox Proportional Hazards",
+        # "n" has always held the event count here; n_events names it.
         "n": int(cph.event_observed.sum()),
+        "n_events": int(cph.event_observed.sum()),
         "n_analyzed": int(len(fit_df)),
         "n_total": n_total,
         "n_excluded": n_excluded,
@@ -590,10 +678,16 @@ async def cox_regression(req: CoxRequest):
         "ph_test": ph_test,
     }
 
-    if use_mice_pooled and 'pooled' in locals() and pooled:
-        result["coefficients"] = pooled.get("coefficients", result.get("coefficients", []))
+    if pooled_terms is not None:
         result["pooled_from_imputations"] = True
         result["imputation"] = "mice (pooled)"
+        result["n_imputations"] = n_imputations_fitted
+        # Only the coefficient table is pooled; the rest describes one dataset.
+        result["pooling_note"] = (
+            f"Hazard ratios, standard errors, confidence intervals and p-values are pooled over "
+            f"{n_imputations_fitted} imputed datasets with Rubin's rules. Concordance, log-likelihood "
+            f"and the proportional-hazards test come from the first imputed dataset."
+        )
 
     cox_assumption_report = check_cox_assumptions_from_ph_test(ph_test)
     result = add_assumption_warnings_to_result(result, cox_assumption_report)
@@ -621,32 +715,6 @@ class CoxHorizonsRequest(BaseModel):
     include_full: bool = True                   # append an un-censored "Full follow-up" row
     full_label: str = "Full follow-up"
     imputation: Optional[str] = "listwise"
-
-
-def _encode_predictors(df: pd.DataFrame, cols: List[str]) -> Tuple[pd.DataFrame, List[str], List[str]]:
-    """Numeric-vs-categorical split + dummy coding (reference = first level).
-
-    Mirrors the encoding used by the main Cox endpoint so the horizon
-    model is identical to a single-window fit at full follow-up.
-    """
-    raw = df[cols].copy()
-    numeric_pred: List[str] = []
-    cat_pred: List[str] = []
-    for c in cols:
-        col = raw[c]
-        if pd.api.types.is_numeric_dtype(col):
-            numeric_pred.append(c)
-        else:
-            coerced = pd.to_numeric(col, errors="coerce")
-            if coerced.notna().mean() >= 0.8 and len(coerced.dropna().unique()) > 2:
-                raw[c] = coerced
-                numeric_pred.append(c)
-            else:
-                cat_pred.append(c)
-    num_part = raw[numeric_pred].apply(pd.to_numeric, errors="coerce") if numeric_pred else pd.DataFrame(index=raw.index)
-    cat_part = pd.get_dummies(raw[cat_pred], drop_first=True, dummy_na=False) if cat_pred else pd.DataFrame(index=raw.index)
-    enc = pd.concat([num_part, cat_part], axis=1).astype(float)
-    return enc, numeric_pred, cat_pred
 
 
 @router.post("/survival/cox_horizons")
@@ -682,14 +750,14 @@ async def cox_horizons(req: CoxHorizonsRequest):
         raise HTTPException(status_code=422, detail=f"Event column must be binary 0/1. Found: {event_vals[:10]}")
 
     # Encode predictors once — the encoded design is reused across windows.
-    enc, _num, _cat = _encode_predictors(df, [req.predictor] + cov)
+    # Rows with a missing category or an unparseable number leave the sample
+    # here, once, so every window is fitted on the same subjects.
+    design = encode_design(df, [req.predictor] + cov)
+    enc = design.frame.dropna()
+    df = df.loc[enc.index]
     # Which encoded columns belong to the tracked predictor? (a binary/
     # numeric predictor → one column; a multi-level categorical → several).
-    if req.predictor in enc.columns:
-        pred_terms = [req.predictor]
-    else:
-        prefix = f"{req.predictor}_"
-        pred_terms = [c for c in enc.columns if c.startswith(prefix)]
+    pred_terms = design.columns_of(req.predictor)
     if not pred_terms:
         raise HTTPException(status_code=400, detail=f"Predictor '{req.predictor}' produced no usable terms after encoding.")
 
@@ -852,7 +920,9 @@ async def cox_time_varying(req: CoxTVRequest):
         raise HTTPException(status_code=422, detail="Event column must be 0/1.")
     n_excluded = n_total - len(df)
 
-    enc = pd.get_dummies(df[req.predictors], drop_first=True).astype(float)
+    enc = encode_design(df, req.predictors).frame.dropna()
+    df = df.loc[enc.index]
+    n_excluded = n_total - len(df)
     if enc.shape[1] == 0:
         raise HTTPException(status_code=422, detail="No usable predictor columns after encoding.")
     fit_df = pd.concat([df[[req.id_col, req.start_col, req.stop_col, req.event_col]], enc], axis=1)
@@ -994,24 +1064,10 @@ async def rcs_regression(req: RCSRequest):
         df[c] = pd.to_numeric(df[c], errors="coerce")
 
     cov_df = None
+    cov_design = None
     if covariates:
-        cov_raw = df[covariates].copy()
-        numeric_cov: list[str] = []
-        cat_cov: list[str] = []
-        for c in covariates:
-            col = cov_raw[c]
-            if pd.api.types.is_numeric_dtype(col):
-                numeric_cov.append(c)
-            else:
-                coerced = pd.to_numeric(col, errors="coerce")
-                if coerced.notna().mean() >= 0.8 and len(coerced.dropna().unique()) > 2:
-                    cov_raw[c] = coerced
-                    numeric_cov.append(c)
-                else:
-                    cat_cov.append(c)
-        num_part = cov_raw[numeric_cov].apply(pd.to_numeric, errors="coerce") if numeric_cov else pd.DataFrame(index=cov_raw.index)
-        cat_part = pd.get_dummies(cov_raw[cat_cov], drop_first=True, dummy_na=False) if cat_cov else pd.DataFrame(index=cov_raw.index)
-        cov_df = pd.concat([num_part, cat_part], axis=1).astype(float)
+        cov_design = encode_design(df, covariates, _declared_categorical(req.session_id, covariates))
+        cov_df = cov_design.frame
         df = pd.concat([df.drop(columns=covariates), cov_df], axis=1)
     df = df.dropna()
     n = len(df)
@@ -1075,10 +1131,7 @@ async def rcs_regression(req: RCSRequest):
     interaction_extra_meta: list[tuple[str, int]] = []
     if req.interaction_covariates:
         def _resolve_cov(name: str) -> list[str]:
-            if name in cov_names:
-                return [name]
-            prefix = f"{name}_"
-            return [c for c in cov_names if c.startswith(prefix)]
+            return cov_design.columns_of(name) if cov_design is not None else []
 
         spline_design = np.column_stack([x_raw, spline_cols])
         spline_part_names = ["lin"] + [f"sp{i+1}" for i in range(spline_cols.shape[1])]
@@ -1233,7 +1286,8 @@ async def rcs_regression(req: RCSRequest):
 
     cov_summary = []
     if cov_names:
-        n_pre_cov = (0 if is_cox else 2) + (1 + spline_cols.shape[1])
+        # Design order: [intercept (GLM only), x, cubic columns, covariates].
+        n_pre_cov = (0 if is_cox else 1) + (1 + spline_cols.shape[1])
         for offset, name in enumerate(cov_names):
             i = n_pre_cov + offset
             beta = float(params[i]) if i < len(params) else None
@@ -1332,7 +1386,7 @@ async def rcs_regression(req: RCSRequest):
         "n_excluded": n_total - n,
         "n_events": n_events,
         "n_knots": req.n_knots,
-        "knots": [round(float(kn), 2) for kn in knots],
+        "knots": [_round_sig(kn) for kn in knots],
         "knot_positions_custom": req.knot_positions is not None,
         "ref_value": round(ref_val, 4),
         "ref_strategy_used": ref_used,
@@ -1504,11 +1558,7 @@ async def cox_rcs(req: CoxRCSRequest):
 
     cov_df = pd.DataFrame(index=df.index)
     if req.covariates:
-        cov_raw = df_full.loc[df.index, req.covariates].copy()
-        cov_df = pd.get_dummies(cov_raw, drop_first=True, dummy_na=False)
-        for c in cov_df.columns:
-            cov_df[c] = pd.to_numeric(cov_df[c], errors="coerce")
-        cov_df = cov_df.dropna()
+        cov_df = encode_design(df, req.covariates, _declared_categorical(req.session_id, req.covariates)).frame.dropna()
         df_aligned = df.loc[cov_df.index]
         duration = df_aligned[req.duration_col].values.astype(float)
         event = df_aligned[req.event_col].values.astype(float)
@@ -1682,7 +1732,7 @@ async def cox_rcs(req: CoxRCSRequest):
             "hr": _clean(hr),
             "lower": _clean(ci_low),
             "upper": _clean(ci_high),
-            "knots": [round(float(k), 2) for k in term_info[ti]["knots"]],
+            "knots": [_round_sig(k) for k in term_info[ti]["knots"]],
             "ref": round(float(own_ref), 4),
         })
 
@@ -1757,7 +1807,7 @@ async def cox_rcs(req: CoxRCSRequest):
             {
                 "column": t.column,
                 "n_knots": t.n_knots,
-                "knots": [round(float(k), 2) for k in term_info[i]["knots"]],
+                "knots": [_round_sig(k) for k in term_info[i]["knots"]],
                 "knot_positions_custom": t.knot_positions is not None,
                 "ref": round(float(term_info[i]["ref_value"]), 4),
             }
@@ -1838,7 +1888,8 @@ def _encode_cox_predictor(series: pd.Series, name: str, force_categorical: bool 
     terms = []
     for lvl in contrasts:
         term = f"{name}={lvl}"
-        design[term] = (s == lvl).astype(float)
+        # A missing value is no level at all, not the reference level.
+        design[term] = (s == lvl).astype(float).where(series.notna())
         terms.append({
             "term": term, "predictor": name, "kind": "category",
             "category": lvl, "reference": ref,

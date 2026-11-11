@@ -23,10 +23,11 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 from lifelines.utils import concordance_index
+from loguru import logger
 
 from services.model_validation import (
     competing_risks_calibration,
-    compute_calibration_slope_intercept,
+    compute_cox_calibration_slope,
     flexible_calibration_curve,
 )
 
@@ -380,21 +381,22 @@ def evaluate_external_validation(
     except Exception:
         val_c = None
 
-    # Calibration (using LP)
+    # Calibration slope: Cox regression of the outcome on the linear predictor.
+    # A logistic slope on the event flag ignored time and censoring. A Cox
+    # model has no intercept, so there is no calibration intercept to report.
     try:
-        cal = compute_calibration_slope_intercept(
-            y=event, probs_or_lp=lp, duration=duration if np.any(event == 0) else None
-        )
-        val_slope = cal.get("calibration_slope")
-        val_intercept = cal.get("calibration_intercept")
+        val_slope = compute_cox_calibration_slope(df, duration_col, event_col, lp).get("calibration_slope")
     except Exception:
-        val_slope = val_intercept = None
+        logger.exception("External validation calibration slope failed")
+        val_slope = None
+    val_intercept = None
 
     result = {
         "n_validation": int(len(df)),
-        "validation_c_index": round(float(val_c), 4) if val_c else None,
-        "validation_calibration_slope": round(float(val_slope), 4) if val_slope else None,
-        "validation_calibration_intercept": round(float(val_intercept), 4) if val_intercept else None,
+        "validation_c_index": round(float(val_c), 4) if val_c is not None else None,
+        "validation_calibration_slope": round(float(val_slope), 4) if val_slope is not None else None,
+        "validation_calibration_intercept": val_intercept,
+        "calibration_slope_method": "cox_recalibration",
     }
     if weights is not None:
         event_by_median = ((duration <= np.median(duration)) & (event == 1)).astype(float)

@@ -32,13 +32,16 @@ def test_bootstrap_and_optimism_correction():
     probs = model.predict_proba(X_scaled)[:, 1]
 
     perf = bootstrap_performance(y, probs, n_boot=150)
-    opt = optimism_corrected_metrics(y, probs, n_boot=100)
+    # Optimism needs the design matrix: the model is refitted per resample.
+    opt = optimism_corrected_metrics(y, X_scaled, n_boot=100)
 
     # Basic sanity checks
     assert "auc" in perf
     assert perf["auc"]["mean"] > 0.6
     assert "optimism_corrected_auc" in opt
-    assert 0.4 < opt["optimism_corrected_auc"] < 1.0
+    # n = 600 with 4 predictors: little optimism, corrected AUC near apparent.
+    assert abs(opt["optimism_auc"]) < 0.03
+    assert opt["optimism_corrected_auc"] > 0.6
 
 
 @pytest.mark.simulation

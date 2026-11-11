@@ -132,21 +132,44 @@ def compute_vif(X: pd.DataFrame) -> dict:
     return out
 
 
+# ── Predictor-to-design-column map ───────────────────────────────────────────
+
+def dummy_column_map(df: pd.DataFrame, predictors: list) -> dict:
+    """Design columns each predictor produces under get_dummies(drop_first=True).
+
+    Looking columns up by the prefix "<name>_" also matches other predictors
+    whose name starts the same way: with `sex` (categorical) and `sex_partner`
+    in one model, the lookup for `sex` returned `sex_partner` as well, which
+    created interaction terms nobody asked for and read p-values from the
+    wrong variable. Encoding each predictor on its own gives the exact map.
+    """
+    return {
+        pred: [str(c) for c in pd.get_dummies(df[[pred]], drop_first=True).columns]
+        for pred in predictors
+        if pred in df.columns
+    }
+
+
+def members_for(name: str, columns, column_map: dict | None) -> list:
+    """Design columns in `columns` that belong to predictor `name`."""
+    present = [str(c) for c in columns]
+    if column_map is not None and name in column_map:
+        return [c for c in column_map[name] if c in present]
+    if name in present:
+        return [name]
+    prefix = f"{name}_"
+    return [c for c in present if c.startswith(prefix)]
+
+
 # ── Stepwise selection helpers (pure functions) ────────────────────────────────
 
-def _p_for_pred(pred: str, pvalues) -> float:
-    if pred in pvalues.index:
-        return float(pvalues[pred])
-    dummy_cols = [c for c in pvalues.index if c != "const" and c.startswith(pred + "_")]
-    if dummy_cols:
-        return float(pvalues[dummy_cols].max())
-    return 1.0
+STEPWISE_MODEL_TYPES = ("logistic", "linear")
+STEPWISE_CRITERIA = ("p", "aic")
 
 
-def _uni_p_for_pred(pred: str, uni_results: dict) -> float:
-    if pred in uni_results:
-        return uni_results[pred]["p"]
-    matching = [v["p"] for k, v in uni_results.items() if k.startswith(pred + "_")]
+def _uni_p_for_pred(pred: str, uni_results: dict, column_map: dict | None = None) -> float:
+    """Smallest univariable p among the design columns of `pred`."""
+    matching = [uni_results[c]["p"] for c in members_for(pred, uni_results.keys(), column_map)]
     return min(matching) if matching else 1.0
 
 
@@ -157,25 +180,88 @@ def _compute_aic(model) -> float:
         return float("nan")
 
 
-def stepwise_forward(y, df: pd.DataFrame, pred_list: list, p_enter: float = 0.05) -> list:
-    """Pure functional forward stepwise selection. Does not mutate inputs."""
+def _fit_terms(y, df: pd.DataFrame, terms: list, model_type: str):
+    """Fit outcome ~ terms with an intercept, as OLS or logistic regression."""
     from statsmodels import api as sm
-    selected: list = []
-    remaining = list(pred_list)
 
+    if terms:
+        X_enc = pd.get_dummies(df[terms], drop_first=True).astype(float)
+    else:
+        X_enc = pd.DataFrame(index=df.index)
+    X_const = sm.add_constant(X_enc, has_constant="add")
+    if model_type == "linear":
+        return sm.OLS(y, X_const).fit()
+    return sm.Logit(y, X_const).fit(disp=False, maxiter=200)
+
+
+def _term_p(term: str, model, column_map: dict) -> float:
+    """p-value for one predictor: its own p, or a joint Wald test over its dummies."""
+    names = [str(c) for c in model.params.index]
+    cols = members_for(term, names, column_map)
+    if not cols:
+        return 1.0
+    if len(cols) == 1:
+        return float(model.pvalues[cols[0]])
+    restriction = np.zeros((len(cols), len(names)))
+    for row, col in enumerate(cols):
+        restriction[row, names.index(col)] = 1.0
+    return float(model.wald_test(restriction, scalar=True).pvalue)
+
+
+def _check_stepwise_args(model_type: str, criterion: str) -> None:
+    if model_type not in STEPWISE_MODEL_TYPES:
+        raise ValueError(f"model_type must be one of {STEPWISE_MODEL_TYPES}. Got: {model_type}")
+    if criterion not in STEPWISE_CRITERIA:
+        raise ValueError(f"criterion must be one of {STEPWISE_CRITERIA}. Got: {criterion}")
+
+
+def _safe_fit(y, df: pd.DataFrame, terms: list, model_type: str):
+    try:
+        return _fit_terms(y, df, terms, model_type)
+    except Exception:
+        return None
+
+
+def _best_addition(y, df, selected, remaining, model_type, criterion, p_enter, column_map):
+    """The candidate to add next, or None when none improves the model."""
+    current = _safe_fit(y, df, selected, model_type) if criterion == "aic" else None
+    best_var = None
+    best_score = p_enter if criterion == "p" else (_compute_aic(current) if current is not None else float("inf"))
+    for var in remaining:
+        model = _safe_fit(y, df, selected + [var], model_type)
+        if model is None:
+            continue
+        score = _term_p(var, model, column_map) if criterion == "p" else _compute_aic(model)
+        if np.isfinite(score) and score < best_score:
+            best_score, best_var = score, var
+    return best_var
+
+
+def stepwise_forward(
+    y,
+    df: pd.DataFrame,
+    pred_list: list,
+    p_enter: float = 0.05,
+    *,
+    model_type: str = "logistic",
+    criterion: str = "p",
+    base: list | None = None,
+) -> list:
+    """Forward selection. Does not mutate inputs.
+
+    `model_type` picks the model the candidates are tested in. It used to be
+    logistic regardless: a linear stepwise fitted Logit to a continuous
+    outcome, every fit raised, and forward selection returned nothing.
+    `criterion` "p" adds the term with the smallest p below `p_enter`; "aic"
+    adds the term that lowers AIC the most. `base` terms are always in the
+    model and are returned first.
+    """
+    _check_stepwise_args(model_type, criterion)
+    selected: list = list(base or [])
+    remaining = [v for v in pred_list if v not in selected]
+    column_map = dummy_column_map(df, selected + remaining)
     while remaining:
-        best_var, best_p = None, p_enter
-        for var in remaining:
-            candidate = selected + [var]
-            X_enc = pd.get_dummies(df[candidate], drop_first=True).astype(float)
-            X_const = sm.add_constant(X_enc, has_constant="add")
-            try:
-                m = sm.Logit(y, X_const).fit(disp=False, maxiter=200)
-                p = _p_for_pred(var, m.pvalues)
-                if p < best_p:
-                    best_p, best_var = p, var
-            except Exception:
-                pass
+        best_var = _best_addition(y, df, selected, remaining, model_type, criterion, p_enter, column_map)
         if best_var is None:
             break
         selected = selected + [best_var]
@@ -183,24 +269,145 @@ def stepwise_forward(y, df: pd.DataFrame, pred_list: list, p_enter: float = 0.05
     return selected
 
 
-def stepwise_backward(y, df: pd.DataFrame, pred_list: list, p_remove: float = 0.10) -> list:
-    """Pure functional backward stepwise selection. Does not mutate inputs."""
-    from statsmodels import api as sm
-    selected = list(pred_list)
-
-    while selected:
-        X_enc = pd.get_dummies(df[selected], drop_first=True).astype(float)
-        X_const = sm.add_constant(X_enc, has_constant="add")
-        try:
-            m = sm.Logit(y, X_const).fit(disp=False, maxiter=200)
-        except Exception:
-            break
+def _worst_term(y, df, selected, model, model_type, criterion, p_remove, column_map):
+    """The term to drop next, or None when every term should stay."""
+    if criterion == "p":
         worst_var, worst_p = None, p_remove
         for var in selected:
-            p = _p_for_pred(var, m.pvalues)
+            p = _term_p(var, model, column_map)
             if p > worst_p:
                 worst_p, worst_var = p, var
+        return worst_var
+    worst_var, best_aic = None, _compute_aic(model)
+    for var in selected:
+        reduced = _safe_fit(y, df, [v for v in selected if v != var], model_type)
+        aic = _compute_aic(reduced) if reduced is not None else float("nan")
+        if np.isfinite(aic) and aic < best_aic:
+            best_aic, worst_var = aic, var
+    return worst_var
+
+
+def stepwise_backward(
+    y,
+    df: pd.DataFrame,
+    pred_list: list,
+    p_remove: float = 0.10,
+    *,
+    model_type: str = "logistic",
+    criterion: str = "p",
+) -> list:
+    """Backward elimination. Does not mutate inputs. See `stepwise_forward`."""
+    _check_stepwise_args(model_type, criterion)
+    selected = list(pred_list)
+    column_map = dummy_column_map(df, selected)
+    while selected:
+        model = _safe_fit(y, df, selected, model_type)
+        if model is None:
+            break
+        worst_var = _worst_term(y, df, selected, model, model_type, criterion, p_remove, column_map)
         if worst_var is None:
             break
         selected = [v for v in selected if v != worst_var]
     return selected
+
+
+# ── Binary outcome coding ────────────────────────────────────────────────────
+
+def encode_binary_outcome(y: pd.Series, model_label: str = "Logistic regression") -> tuple[pd.Series, dict]:
+    """Code a binary outcome as 0/1 and say which level is the event.
+
+    Numeric (and boolean) outcomes must already be 0/1; 1 is the event. A text
+    or categorical outcome needs exactly two levels and is coded in sorted
+    order, the second level being the event, which is what LabelEncoder did
+    here before. That choice was never reported: "Case"/"Control" modelled
+    P(Control) and every odds ratio came out inverted with nothing in the
+    response to show it. The returned info names both levels.
+
+    Missing values stay NaN in the returned float Series (same index as `y`).
+
+    Raises:
+        HTTPException 422 when the outcome is not binary.
+    """
+    if pd.api.types.is_bool_dtype(y) or pd.api.types.is_numeric_dtype(y):
+        coded = pd.to_numeric(y, errors="coerce").astype(float)
+        values = sorted(coded.dropna().unique().tolist())
+        if set(values) - {0.0, 1.0}:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{model_label} requires a binary 0/1 outcome. Found values: {values[:10]}",
+            )
+        return coded, {"event_level": "1", "reference_level": "0", "coded_from_text": False}
+
+    as_text = y.astype(object).where(y.notna(), None)
+    levels = sorted({str(v) for v in as_text if v is not None})
+    if len(levels) != 2:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{model_label} requires a binary outcome with exactly two levels. "
+                f"Found {len(levels)}: {levels[:10]}"
+            ),
+        )
+    mapping = {levels[0]: 0.0, levels[1]: 1.0}
+    coded = pd.Series(
+        [np.nan if v is None else mapping[str(v)] for v in as_text],
+        index=y.index, dtype=float,
+    )
+    return coded, {"event_level": levels[1], "reference_level": levels[0], "coded_from_text": True}
+
+
+def outcome_level_sentence(outcome: str, info: dict) -> str:
+    """Sentence naming the modelled level of a text outcome, else empty."""
+    if not info.get("coded_from_text"):
+        return ""
+    return (
+        f" The modelled event is {outcome} = '{info['event_level']}' "
+        f"(reference: '{info['reference_level']}'); odds ratios above 1 mean "
+        f"higher odds of '{info['event_level']}'."
+    )
+
+
+# ── Pairwise interactions ────────────────────────────────────────────────────
+
+def add_pairwise_interactions(
+    enc: pd.DataFrame,
+    interactions: list | None,
+    requested_predictors: list,
+    column_map: dict | None = None,
+) -> tuple[pd.DataFrame, list]:
+    """Append pairwise interaction columns to a dummy-coded design matrix.
+
+    `column_map` (from `dummy_column_map`) says which design columns belong to
+    each predictor, so `sex` never picks up the columns of `sex_partner`.
+    """
+    if not interactions:
+        return enc, []
+
+    out = enc.copy()
+    added: list = []
+    requested_set = set(requested_predictors)
+    for pair in interactions:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            raise HTTPException(status_code=422, detail=f"Each interaction must be a [colA, colB] pair. Got: {pair}")
+        a_name, b_name = pair
+        for nm in (a_name, b_name):
+            if nm not in requested_set:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Interaction '{a_name} × {b_name}': '{nm}' must already be in the predictors list.",
+                )
+        a_members = members_for(a_name, enc.columns, column_map)
+        b_members = members_for(b_name, enc.columns, column_map)
+        if not a_members or not b_members:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Interaction '{a_name} × {b_name}': one or both columns did not survive dummy encoding.",
+            )
+        for a in a_members:
+            for b in b_members:
+                col = f"{a}:{b}"
+                if col in out.columns:
+                    continue
+                out[col] = out[a] * out[b]
+                added.append(col)
+    return out, added

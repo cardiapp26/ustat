@@ -61,10 +61,13 @@ def _assert_matches_polr(body, sign=1.0):
     cx = next(c for c in body["coefficients"] if c["variable"] == "x")
     assert cx["log_odds"] == pytest.approx(sign * POLR["beta"], rel=1e-4)
     assert cx["se"] == pytest.approx(POLR["se"], rel=1e-4)
-    # statsmodels parameterises the second cut-point as log(zeta2 - zeta1).
+    # The endpoint reports the cut-points themselves. statsmodels stores the
+    # second one as log(zeta2 - zeta1); that raw value is kept in raw_param.
     th = [t["coef"] for t in body["thresholds"]]
+    raw = [t["raw_param"] for t in body["thresholds"]]
     if sign > 0:
-        assert (th[0], th[0] + math.exp(th[1])) == pytest.approx(POLR["zeta"], rel=1e-4)
+        assert (th[0], th[1]) == pytest.approx(POLR["zeta"], rel=1e-4)
+        assert th[1] == pytest.approx(raw[0] + math.exp(raw[1]), rel=1e-9)
 
 
 # ── Ordinal logistic regression ──────────────────────────────────────────────

@@ -295,9 +295,12 @@ def _rmst_one_group_raw(t: np.ndarray, e: np.ndarray, tau: float) -> Dict[str, f
     pieces_t: List[float] = []  # left edges
     pieces_h: List[float] = []  # heights (S at left edge)
     pieces_w: List[float] = []  # widths (capped at tau)
-    for k in range(len(times) - 1):
+    # The curve stays flat after the last observed time, so the final piece
+    # runs to tau (as survfit's rmean does). Leaving it out truncated the
+    # RMST of any group whose follow-up ended before tau.
+    for k in range(len(times)):
         a = times[k]
-        b = min(times[k + 1], tau)
+        b = min(times[k + 1], tau) if k + 1 < len(times) else tau
         if b <= a:
             break
         pieces_t.append(a)
@@ -453,10 +456,13 @@ def _negative_binomial_recurrent_counts(
         followup = (grouped[stop_col].max() - grouped[start_col].min()).clip(lower=1e-8).astype(float)
         X = grouped[cov_cols].first().astype(float)
         X = sm.add_constant(X, has_constant="add")
-        model = sm.GLM(counts, X, family=sm.families.NegativeBinomial(), offset=np.log(followup))
-        fit = model.fit()
+        # NB2 with the dispersion alpha estimated by maximum likelihood. The
+        # GLM family fixes alpha at 1, which gives wrong SEs, p-values and
+        # AIC unless the data happen to have exactly that dispersion.
+        fit = sm.NegativeBinomial(counts, X, exposure=followup).fit(disp=0, maxiter=200)
+        alpha = float(fit.params["alpha"])
         rows = []
-        for var in fit.params.index:
+        for var in X.columns:
             beta = float(fit.params[var])
             rows.append({
                 "variable": str(var),
@@ -470,6 +476,7 @@ def _negative_binomial_recurrent_counts(
             "model": "negative_binomial_event_count",
             "n_subjects": int(len(counts)),
             "coefficients": rows,
+            "alpha": round(alpha, 6),
             "aic": round(float(fit.aic), 4),
             "method_note": "Subject-level event count model with log follow-up offset; useful as a robustness check, not a replacement for event-time models.",
         }
@@ -951,6 +958,38 @@ def _fine_gray_mi_pooled(df_cols, cols_needed, dur, event, cause, predictors,
     return out
 
 
+def _aalen_johansen_cif(durations: np.ndarray, events: np.ndarray,
+                        event_of_interest: int) -> tuple[List[float], List[float]]:
+    """Aalen-Johansen cumulative incidence of `event_of_interest`.
+
+    At each distinct time t with n at risk: CIF += S(t-) * d_interest / n,
+    then S *= 1 - d_any / n. Tied times are handled in the risk-set counts.
+    lifelines' AalenJohansenFitter instead jitters ties by a random amount
+    with no seed, so the same request returned a different curve each call.
+    Returns (times, cif), both starting at the origin.
+    """
+    durations = np.asarray(durations, dtype=float)
+    events = np.asarray(events)
+    times: List[float] = [0.0]
+    cif: List[float] = [0.0]
+    surv = 1.0
+    total = 0.0
+    for t in np.unique(durations):
+        at_time = durations == t
+        n_at_risk = int(np.sum(durations >= t))
+        d_any = int(np.sum(at_time & (events != 0)))
+        d_interest = int(np.sum(at_time & (events == event_of_interest)))
+        if n_at_risk > 0:
+            total += surv * d_interest / n_at_risk
+            surv *= 1.0 - d_any / n_at_risk
+        if t > 0:
+            times.append(float(t))
+            cif.append(float(total))
+        else:
+            cif[0] = float(total)
+    return times, cif
+
+
 def fit_fine_gray(req):
     df = _get_df(req.session_id)
 
@@ -962,8 +1001,6 @@ def fit_fine_gray(req):
     validate_survival_inputs(df, req.duration_col, req.event_col, require_binary_event=False)
     if req.group_col and req.group_col not in df.columns:
         raise HTTPException(status_code=400, detail=f"Column '{req.group_col}' not found")
-
-    from lifelines import AalenJohansenFitter
 
     work = df[[req.duration_col, req.event_col] + ([req.group_col] if req.group_col else [])].dropna()
     durations = work[req.duration_col].values.astype(float)
@@ -996,13 +1033,7 @@ def fit_fine_gray(req):
             dur_g = durations
             ev_g = events
 
-        ajf = AalenJohansenFitter()
-        ajf.fit(dur_g, ev_g, event_of_interest=req.event_of_interest)
-
-        cif = ajf.cumulative_density_
-        col_name = cif.columns[0]
-        times = cif.index.tolist()
-        probs = cif[col_name].tolist()
+        times, probs = _aalen_johansen_cif(dur_g, ev_g, req.event_of_interest)
 
         label = f"CIF - {group}" if req.group_col else "CIF"
         color = colors[gi % len(colors)]
@@ -1478,6 +1509,24 @@ def fit_causal_sensitivity(req):
 # ── 4. Landmark Analysis ────────────────────────────────────────────────────
 
 
+def _landmark_cox_design(frame: pd.DataFrame, duration_col: str, event_col: str,
+                         covariates: List[str]) -> pd.DataFrame:
+    """Cox design for the landmark model: numeric covariates as they are,
+    every other covariate as reference-coded indicator columns.
+
+    Integer category codes made a nominal variable (stage I/II/III) one
+    linear term, a single HR per "step" in alphabetical order.
+    """
+    cols = [c for c in dict.fromkeys(covariates) if c in frame.columns]
+    work = frame[[duration_col, event_col] + cols].dropna()
+    numeric = [c for c in cols if pd.api.types.is_numeric_dtype(work[c])]
+    nominal = [c for c in cols if c not in numeric]
+    parts = [work[[duration_col, event_col]], work[numeric].astype(float)]
+    if nominal:
+        parts.append(pd.get_dummies(work[nominal].astype(str), drop_first=True, dtype=float))
+    return pd.concat(parts, axis=1)
+
+
 def _landmark_cox_mi(df_needed, needed, req, n_imputations: int = 10):
     """Landmark Cox on m multiply-imputed datasets, pooled (Rubin, log-HR).
     Returns (cox_results_list, mi_note) — same row shape as the single-fit path,
@@ -1486,26 +1535,18 @@ def _landmark_cox_mi(df_needed, needed, req, n_imputations: int = 10):
     from lifelines import CoxPHFitter
     from services.missing_data import mice_multiple, pool_rubin_terms
 
-    preds = list(req.predictors)
-    cat_cols = preds + ([req.group_col] if req.group_col and req.group_col not in preds else [])
-    cox_cols = [req.duration_col, req.event_col] + preds
-    if req.group_col and req.group_col not in preds:
-        cox_cols.append(req.group_col)
+    covariates = list(req.predictors) + ([req.group_col] if req.group_col else [])
 
     imp = mice_multiple(df_needed, needed, n_imputations=n_imputations)
     per: list = []
     for dfi in imp.imputed_datasets:
         w = dfi.copy()
         w[req.duration_col] = pd.to_numeric(w[req.duration_col], errors="coerce")
-        w = w[w[req.duration_col] >= req.landmark_time].copy()
+        w = w[w[req.duration_col] > req.landmark_time].copy()
         if len(w) < 10:
             continue
         w[req.duration_col] = w[req.duration_col] - req.landmark_time
-        cdf = w[[c for c in cox_cols if c in w.columns]].copy()
-        for c in cat_cols:
-            if c in cdf.columns and cdf[c].dtype == object:
-                cdf[c] = pd.Categorical(cdf[c]).codes
-        cdf = cdf.dropna()
+        cdf = _landmark_cox_design(w, req.duration_col, req.event_col, covariates)
         try:
             cph = CoxPHFitter()
             cph.fit(cdf, duration_col=req.duration_col, event_col=req.event_col)
@@ -1566,8 +1607,10 @@ def fit_landmark(req):
     surv = validate_survival_inputs(work, req.duration_col, req.event_col, mode="drop_with_warning")
     work = surv.df
 
-    # Apply landmark: exclude subjects who had event before landmark
-    lm_mask = work[req.duration_col] >= req.landmark_time
+    # Apply landmark: keep subjects still at risk after it. An event or a
+    # censoring exactly at the landmark leaves nobody to follow, and kept
+    # in, those events put a drop at time 0 of the landmark curve.
+    lm_mask = work[req.duration_col] > req.landmark_time
     lm_df = work[lm_mask].copy()
     n_landmark_excluded = len(work) - len(lm_df)
     n_excluded = n_total - len(lm_df)
@@ -1649,15 +1692,10 @@ def fit_landmark(req):
         cox_results, cox_mi_note = _landmark_cox_mi(df[needed], needed, req)
     if req.predictors and cox_results is None:
         try:
-            cox_cols = [req.duration_col, req.event_col] + req.predictors
-            if req.group_col and req.group_col not in req.predictors:
-                cox_cols.append(req.group_col)
-            cox_df = lm_df[cox_cols].copy()
-
-            # Encode categorical predictors
-            for c in req.predictors + ([req.group_col] if req.group_col else []):
-                if c in cox_df.columns and cox_df[c].dtype == object:
-                    cox_df[c] = pd.Categorical(cox_df[c]).codes
+            cox_df = _landmark_cox_design(
+                lm_df, req.duration_col, req.event_col,
+                list(req.predictors) + ([req.group_col] if req.group_col else []),
+            )
 
             cph = CoxPHFitter()
             cph.fit(cox_df, duration_col=req.duration_col, event_col=req.event_col)
@@ -1691,7 +1729,7 @@ def fit_landmark(req):
 
     assumptions = [
         {"name": "Landmark exclusion", "met": True,
-         "detail": f"{n_landmark_excluded} subjects excluded (event or censored before t={req.landmark_time})."},
+         "detail": f"{n_landmark_excluded} subjects excluded (event or censored at or before t={req.landmark_time})."},
         {"name": "Sufficient sample", "met": len(lm_df) >= 20,
          "detail": f"{len(lm_df)} subjects remain after landmark."},
         {"name": "Landmark selection bias", "met": True,
@@ -1702,9 +1740,11 @@ def fit_landmark(req):
                             "detail": f"p = {logrank_p}"})
 
     result_text = (
-        f"Landmark analysis at t = {req.landmark_time}: {n_excluded} subjects were excluded "
-        f"(event or censored before landmark), leaving {len(lm_df)} subjects for analysis."
+        f"Landmark analysis at t = {req.landmark_time}: {n_landmark_excluded} subjects were excluded "
+        f"(event or censored at or before the landmark), leaving {len(lm_df)} subjects for analysis."
     )
+    if surv.n_excluded:
+        result_text += f" A further {int(surv.n_excluded)} rows had an invalid duration or event value."
     if logrank_p is not None:
         result_text += f" Log-rank test p = {logrank_p}."
 
@@ -1721,7 +1761,7 @@ def fit_landmark(req):
         f"library(survival)\n"
         f"library(survminer)\n\n"
         f"# Landmark at t = {req.landmark_time}\n"
-        f"lm_data <- data[data${req.duration_col} >= {req.landmark_time}, ]\n"
+        f"lm_data <- data[data${req.duration_col} > {req.landmark_time}, ]\n"
         f"lm_data${req.duration_col} <- lm_data${req.duration_col} - {req.landmark_time}\n\n"
         f"# KM curves\n"
         f"fit <- survfit(Surv({req.duration_col}, {req.event_col}) ~ "
@@ -1897,6 +1937,13 @@ def fit_rmst(req):
             rmst_by_group[str(g)] = _format_rmst_result(
                 raw_rmst_by_group[str(g)]
             )
+            g_max = float(t_all[mask].max())
+            if g_max < float(req.tau):
+                rmst_warnings.append(
+                    f"Group '{g}': follow-up ends at {g_max:.4g}, before tau = {req.tau}. "
+                    "Its survival curve is held flat from there to tau, so this RMST "
+                    "rests on extrapolation; a tau within every group's follow-up is safer."
+                )
 
     # Pairwise contrasts when groups present
     contrasts: List[dict] = []
@@ -2218,15 +2265,24 @@ def fit_recurrent_lwyy(req):
                 show_progress=False,
             )
         except Exception as exc:
-            raise HTTPException(status_code=422, detail=f"WLW fit failed: {exc}")
+            raise HTTPException(status_code=422, detail=f"PWP (event-order stratified) fit failed: {exc}")
         wlw_result = {
-            "model": "Wei-Lin-Weissfeld marginal model",
+            # Counting-process entry with event-order strata puts a subject at
+            # risk for event k only after event k-1: that is the conditional
+            # Prentice-Williams-Peterson model. Wei-Lin-Weissfeld keeps every
+            # subject at risk in every stratum from time 0. The response key
+            # and model_type stay "wlw" for the existing contract.
+            "model": f"Prentice-Williams-Peterson conditional model ({'gap' if time_scale == 'gap' else 'total'} time)",
             "time_scale": time_scale,
             "event_order_source": req.event_order_col or "computed from subject event history",
             "n_event_strata": int(fit_df["__event_order__"].nunique()),
             "coefficients": _cox_recurrent_coefficients(wlw_cph),
             "concordance": round(float(wlw_cph.concordance_index_), 4),
-            "method_note": "WLW fits event-order-specific marginal risk sets with robust subject-clustered variance.",
+            "method_note": (
+                "PWP conditional model: stratified by event order, a subject enters the risk set for "
+                "event k only after event k-1; robust subject-clustered variance. This is not the "
+                "Wei-Lin-Weissfeld marginal model, which keeps every subject at risk for every event from time 0."
+            ),
         }
         if cph is None:
             cph = wlw_cph
@@ -2237,9 +2293,11 @@ def fit_recurrent_lwyy(req):
     n_events = int((work[req.event_col] == 1).sum())
     # per-subject event counts
     ev_per = work.groupby(req.id_col)[req.event_col].sum()
-    # total follow-up = sum over subjects of (max stop − min start)
+    # total follow-up = sum over subjects of (max stop − min start), on the
+    # original clock. On the gap scale the transformed columns restart at 0
+    # for every interval, so they gave each subject's longest gap instead.
     grp_fu = work.groupby(req.id_col)
-    fu = grp_fu["__re_stop__"].max() - grp_fu["__re_start__"].min()
+    fu = grp_fu[req.stop_col].max() - grp_fu[req.start_col].min()
     total_fu = float(fu.sum())
 
     # Mean cumulative function — overall + by group.
@@ -2333,8 +2391,8 @@ def fit_recurrent_lwyy(req):
         assumptions.append({"name": "Robust variance (LWYY)", "met": True,
                             "detail": "Cluster-robust sandwich SE clustered on subject id accounts for within-subject event correlation."})
     if wlw_result:
-        assumptions.append({"name": "WLW marginal risk sets", "met": True,
-                            "detail": "Event-order strata are used for Wei-Lin-Weissfeld marginal modeling."})
+        assumptions.append({"name": "PWP conditional risk sets", "met": True,
+                            "detail": "Event-order strata with counting-process entry: a subject is at risk for event k only after event k-1 (Prentice-Williams-Peterson)."})
 
     export_rows = [["Variable", "Rate ratio", "95% CI low", "95% CI high", "β", "Robust SE", "z", "p"]]
     for c in coefs:
@@ -2342,15 +2400,15 @@ def fit_recurrent_lwyy(req):
                             c["estimate"], c["robust_se"], c["z"], c["p"]])
 
     negative_binomial = (
-        _negative_binomial_recurrent_counts(work, req.id_col, "__re_start__", "__re_stop__", req.event_col, enc)
+        _negative_binomial_recurrent_counts(work, req.id_col, req.start_col, req.stop_col, req.event_col, enc)
         if req.include_negative_binomial and cov_cols
         else {"available": False, "reason": "Negative binomial model not requested or no covariates available."}
     )
     informative_censoring = _informative_censoring_diagnostics(
         work,
         req.id_col,
-        "__re_start__",
-        "__re_stop__",
+        req.start_col,
+        req.stop_col,
         req.event_col,
         req.terminal_time_col,
         req.terminal_event_col,
@@ -2381,10 +2439,10 @@ def fit_recurrent_lwyy(req):
         f"fit_lwyy <- coxph(Surv({req.start_col}, {req.stop_col}, {req.event_col}) ~ "
         f"{' + '.join(req.predictors) if req.predictors else '1'} + cluster({req.id_col}), data = data)\n"
         f"summary(fit_lwyy)\n\n"
-        f"# WLW marginal model with event-order strata\n"
-        f"fit_wlw <- coxph(Surv({req.start_col}, {req.stop_col}, {req.event_col}) ~ "
+        f"# PWP conditional model: event-order strata on the counting process\n"
+        f"fit_pwp <- coxph(Surv({req.start_col}, {req.stop_col}, {req.event_col}) ~ "
         f"{' + '.join(req.predictors) if req.predictors else '1'} + strata(event_order) + cluster({req.id_col}), data = data)\n"
-        f"summary(fit_wlw)"
+        f"summary(fit_pwp)"
     )
 
     try:
@@ -2579,6 +2637,13 @@ def fit_joint_model(req):
             )
         surv_df = long_df.drop_duplicates(subset=[req.id_col], keep="first").reset_index(drop=True)
 
+    try:
+        return _fit_joint_model(req, long_df, surv_df)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"Joint model could not be fitted: {exc}")
+
+
+def _fit_joint_model(req, long_df: pd.DataFrame, surv_df: pd.DataFrame) -> Dict[str, Any]:
     if req.latent_classes > 0:
         from services.joint_model import fit_latent_class_joint_model
         result = fit_latent_class_joint_model(

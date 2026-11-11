@@ -49,6 +49,20 @@ def _fit_model(df: pd.DataFrame, outcome: str, predictors: List[str], model_type
     return model, X, y
 
 
+def _aic_bic(model, model_type: str) -> tuple[float, float]:
+    """AIC and BIC as the model screens report them.
+
+    The linear model counts the residual variance as a parameter (as R does
+    and as /api/models/linear does); statsmodels' own OLS aic leaves it out,
+    so the same model read 2 lower here than on the regression screen.
+    """
+    if model_type == "linear":
+        from routers.models.linear import information_criteria
+
+        return information_criteria(model, n_params=int(model.df_model) + 2, n_obs=int(model.nobs))
+    return float(model.aic), float(model.bic)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # 1. NESTED LIKELIHOOD RATIO TEST
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -90,10 +104,8 @@ def nested_lr_test(req: NestedLRRequest):
     n_params_red = int(model_red.df_model) + 1  # +1 for intercept
     n_params_full = int(model_full.df_model) + 1
 
-    aic_red = float(model_red.aic)
-    aic_full = float(model_full.aic)
-    bic_red = float(model_red.bic)
-    bic_full = float(model_full.bic)
+    aic_red, bic_red = _aic_bic(model_red, req.model_type)
+    aic_full, bic_full = _aic_bic(model_full, req.model_type)
 
     # ── LR test statistic ──────────────────────────────────────────────────
     lr_stat = -2 * (ll_red - ll_full)
@@ -224,8 +236,7 @@ def compare_models(req: CompareModelsRequest):
 
         n_params = int(fitted.df_model) + 1
         ll = round(float(fitted.llf), 4)
-        aic = round(float(fitted.aic), 4)
-        bic = round(float(fitted.bic), 4)
+        aic, bic = (round(v, 4) for v in _aic_bic(fitted, req.model_type))
 
         entry = {
             "name": name,

@@ -79,7 +79,13 @@ export function excludedRegions(x: number[], lo: number[], hi: number[], ref: nu
   return regions;
 }
 
-const fmt = (v: number): string => (Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(1));
+/** One decimal for ordinary scales; 3 significant digits below 1, where one decimal reads "0.0". */
+const fmt = (v: number): string => {
+  const abs = Math.abs(v);
+  if (abs >= 100) return v.toFixed(0);
+  if (abs >= 1 || abs === 0) return v.toFixed(1);
+  return String(Number(v.toPrecision(3)));
+};
 
 /** "38.1 to 45.0 (lower), 70.3 to 85.6 (higher)" */
 export function describeRegions(regions: ExcludedRegion[]): string {

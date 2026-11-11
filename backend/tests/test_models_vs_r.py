@@ -516,12 +516,17 @@ def test_iptw_effect_matches_svyglm_on_ustats_own_weights(client, frame):
         "estimand": "ate", "stabilize": True, "outcome_type": "binary"}).json()
     co = out["outcome_result"]["coefficients"][0]
 
-    # svyglm(event_binary ~ treat01, design=svydesign(~1, ~iptw_weight))
-    assert co["estimate"] == pytest.approx(0.74619646, abs=1e-6)
-    assert co["se"] == pytest.approx(0.27240986, abs=1e-7)
-    assert co["p"] == pytest.approx(0.00652914, abs=1e-5)
+    # svyglm(event_binary ~ treat01, design=svydesign(~1, ~iptw_weight)).
+    # Reference re-run after the propensity model became unpenalised maximum
+    # likelihood (it was L2-penalised, which R's glm is not): the exported
+    # weights changed, and now agree with weights built from R's own
+    # glm(treat01 ~ age + bmi + sex, binomial) to 4e-4. On the old weights
+    # the values were 0.74619646 / 0.27240986 / 0.00652914.
+    assert co["estimate"] == pytest.approx(0.74502201, abs=1e-5)
+    assert co["se"] == pytest.approx(0.27245573, abs=1e-5)
+    assert co["p"] == pytest.approx(0.00662214, abs=1e-5)
     assert co["df"] == 299
-    # Without the correction the SE was 0.27195546 — smaller, so a smaller p.
+    # Without the finite-sample correction the SE is smaller, so a smaller p.
     assert co["se"] > 0.272
 
 

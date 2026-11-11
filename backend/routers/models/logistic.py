@@ -1,26 +1,29 @@
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
+from typing import List, Optional
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from sklearn.preprocessing import LabelEncoder
 from loguru import logger
 
 from services import store
 from services.impute import apply_imputation
 from services.missing_data import (
     mice_multiple,
-    pool_logistic_results,
+    pool_rubin_terms,
     missing_pattern_summary,
     add_missing_data_diagnostics,
 )
 from services.category_health import rare_level_warnings
 from services.regression import (
+    add_pairwise_interactions as _add_pairwise_interactions,
     constant_column_warnings,
     design_with_constant,
+    dummy_column_map,
+    encode_binary_outcome,
+    outcome_level_sentence,
     stepwise_forward as _stepwise_forward,
     stepwise_backward as _stepwise_backward,
     _uni_p_for_pred,
@@ -59,49 +62,64 @@ def _apply_scaling(df: pd.DataFrame, predictors: List[str], scale_factors: Optio
     return df, new_predictors
 
 
-def _add_pairwise_interactions(
-    enc: pd.DataFrame,
-    interactions: Optional[List[List[str]]],
-    requested_predictors: List[str],
-) -> Tuple[pd.DataFrame, List[str]]:
-    if not interactions:
-        return enc, []
+def _design(df: pd.DataFrame, pred_list: List[str], interactions) -> pd.DataFrame:
+    """Dummy-coded predictors plus the requested pairwise interactions."""
+    X = pd.get_dummies(df[pred_list], drop_first=True).astype(float)
+    X, _ = _add_pairwise_interactions(X, interactions, pred_list, dummy_column_map(df, pred_list))
+    return X
 
-    out = enc.copy()
-    added: List[str] = []
 
-    def _members(name: str) -> List[str]:
-        if name in out.columns:
-            return [name]
-        prefix = f"{name}_"
-        return [c for c in out.columns if c.startswith(prefix)]
+def _binary_outcome(y: pd.Series, label: str) -> tuple[pd.Series, dict]:
+    """0/1 integer outcome and its level info; 422 when it has missing values."""
+    coded, info = encode_binary_outcome(y, label)
+    if coded.isna().any():
+        raise HTTPException(
+            status_code=422,
+            detail=f"{label}: the outcome has {int(coded.isna().sum())} missing value(s) after imputation.",
+        )
+    if coded.nunique() < 2:
+        raise HTTPException(status_code=422, detail="Outcome column has only one unique value; logistic regression requires both 0 and 1.")
+    return coded.astype(int), info
 
-    requested_set = set(requested_predictors)
-    for pair in interactions:
-        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
-            raise HTTPException(status_code=422, detail=f"Each interaction must be a [colA, colB] pair. Got: {pair}")
-        a_name, b_name = pair
-        for nm in (a_name, b_name):
-            if nm not in requested_set:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"Interaction '{a_name} × {b_name}': '{nm}' must already be in the predictors list."
-                )
-        a_members = _members(a_name)
-        b_members = _members(b_name)
-        if not a_members or not b_members:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Interaction '{a_name} × {b_name}': one or both columns did not survive dummy encoding."
-            )
-        for a in a_members:
-            for b in b_members:
-                col = f"{a}:{b}"
-                if col in out.columns:
-                    continue
-                out[col] = out[a] * out[b]
-                added.append(col)
-    return out, added
+
+# Logit and GLM results in statsmodels have no leverage-based correction:
+# asking for HC1, HC2 or HC3 there silently gives HC0 (White). Request and
+# report what is actually computed.
+LOGIT_ROBUST_COV = "HC0"
+
+MICE_FIT_NOTE = (
+    "Coefficients are pooled across imputations with Rubin's rules. Model-fit "
+    "statistics (omnibus test, R², Hosmer-Lemeshow, AUC, classification, AIC/BIC) "
+    "are from the first imputed dataset and are not pooled."
+)
+
+
+def _pooled_logistic_coefs(per_imputation: list, vifs: dict) -> list:
+    """Rubin-pooled coefficient rows in the same shape as a single fit."""
+    rows = []
+    for var, t in pool_rubin_terms(per_imputation).items():
+        rows.append({
+            "variable": var,
+            "B": t["coef"],
+            "log_odds": t["coef"],
+            "se": t["se"],
+            "wald": round(t["t"] ** 2, 4),
+            "df": 1,
+            "p": t["p"],
+            "odds_ratio": _finite_exp(t["coef"]),
+            "z": t["t"],
+            "or_ci_low": _finite_exp(t["ci_low"]),
+            "or_ci_high": _finite_exp(t["ci_high"]),
+            "vif": vifs.get(var),
+            "rubin_df": t["df"],
+            "fmi": t["fmi"],
+        })
+    return rows
+
+
+def _finite_exp(value: float) -> Optional[float]:
+    out = float(np.exp(value))
+    return out if np.isfinite(out) else None
 
 
 def _compute_vif(X: pd.DataFrame) -> dict:
@@ -137,6 +155,7 @@ def logistic_regression(req: LogisticRequest):
     df_full = _get_df(req.session_id)
     n_total = len(df_full)
     imputation_method = req.imputation or "listwise"
+    cov_type = LOGIT_ROBUST_COV if req.robust_se else "nonrobust"
 
     if imputation_method == "mice":
         imp_result = mice_multiple(
@@ -144,65 +163,33 @@ def logistic_regression(req: LogisticRequest):
         )
         imputed_dfs = imp_result.imputed_datasets
 
-        individual_results = []
+        per_imputation = []
         for df_imp in imputed_dfs:
             df_imp, pred_list_imp = _apply_scaling(df_imp, req.predictors, req.scale_factors)
-            X_imp = pd.get_dummies(df_imp[pred_list_imp], drop_first=True).astype(float)
-            X_imp, _ = _add_pairwise_interactions(X_imp, req.interactions, pred_list_imp)
-            Xc, _dropped_const = design_with_constant(X_imp)
-            y_imp = df_imp[req.outcome]
-            if y_imp.dtype == object:
-                le = LabelEncoder()
-                y_imp = le.fit_transform(y_imp)
-            else:
-                y_imp = pd.to_numeric(y_imp, errors="coerce").astype(int)
-
+            Xc, _dropped_const = design_with_constant(_design(df_imp, pred_list_imp, req.interactions))
+            y_imp, _ = _binary_outcome(df_imp[req.outcome], "Logistic regression")
             try:
-                m = sm.Logit(y_imp, Xc).fit(disp=False, maxiter=100)
-                individual_results.append({
-                    "coefficients": [
-                        {"variable": str(var), "log_odds": float(m.params[var]), "se": float(m.bse[var])}
-                        for var in m.params.index
-                    ]
-                })
+                m = sm.Logit(y_imp, Xc).fit(disp=False, maxiter=100, cov_type=cov_type)
+                per_imputation.append({str(var): (float(m.params[var]), float(m.bse[var])) for var in m.params.index})
             except Exception:
                 logger.exception("MICE Logit fit iteration failed")
                 continue
 
-        pooled = pool_logistic_results(individual_results) if individual_results else {}
-
         df = imputed_dfs[0]
         n_excluded = n_total - len(df)
         df, pred_list = _apply_scaling(df, req.predictors, req.scale_factors)
-        X = pd.get_dummies(df[pred_list], drop_first=True).astype(float)
-        X, _ix_added = _add_pairwise_interactions(X, req.interactions, pred_list)
-        X_const, dropped_const = design_with_constant(X)
-        y = df[req.outcome]
-        use_mice_pooled = True
+        X_const, dropped_const = design_with_constant(_design(df, pred_list, req.interactions))
+        use_mice_pooled = bool(per_imputation)
     else:
+        per_imputation = []
         df = apply_imputation(df_full, [req.outcome] + req.predictors, imputation_method)
         n_excluded = n_total - len(df)
         df, pred_list = _apply_scaling(df, req.predictors, req.scale_factors)
-        X = pd.get_dummies(df[pred_list], drop_first=True).astype(float)
-        X, _ix_added = _add_pairwise_interactions(X, req.interactions, pred_list)
-        X_const, dropped_const = design_with_constant(X)
-        y = df[req.outcome]
+        X_const, dropped_const = design_with_constant(_design(df, pred_list, req.interactions))
         use_mice_pooled = False
 
-    if y.dtype == object:
-        le = LabelEncoder()
-        y = le.fit_transform(y)
-    else:
-        y = pd.to_numeric(y, errors="coerce")
-        unique_vals = sorted(y.dropna().unique())
-        if set(unique_vals) - {0, 1, 0.0, 1.0}:
-            raise HTTPException(status_code=422, detail=f"Logistic regression requires a binary 0/1 outcome. Found values: {unique_vals[:10]}")
-        y = y.astype(int)
+    y, outcome_info = _binary_outcome(df[req.outcome], "Logistic regression")
 
-    if len(set(y)) < 2:
-        raise HTTPException(status_code=422, detail="Outcome column has only one unique value — logistic regression requires both 0 and 1.")
-
-    cov_type = "HC3" if req.robust_se else "nonrobust"
     model = sm.Logit(y, X_const).fit(disp=False, cov_type=cov_type)
 
     vifs = _compute_vif(X_const)
@@ -228,6 +215,9 @@ def logistic_regression(req: LogisticRequest):
             "vif": vifs.get(str(var)),
         })
 
+    if use_mice_pooled:
+        coefs = _pooled_logistic_coefs(per_imputation, vifs)
+
     from scipy.stats import chi2 as chi2_dist
     from sklearn.metrics import roc_auc_score, confusion_matrix
 
@@ -244,8 +234,12 @@ def logistic_regression(req: LogisticRequest):
     max_r2 = 1 - np.exp((2 / n) * llnull)
     nagelkerke_r2 = float(cox_snell_r2 / max_r2) if max_r2 != 0 else 0.0
 
-    pred_probs = model.predict(X_const)
-    y_arr = np.array(y)
+    # Plain arrays: predict() returns a Series carrying the frame's index, and
+    # indexing that with argsort positions looked rows up by label. After any
+    # dropped row or case filter the labels no longer run 0..n-1, the lookup
+    # raised, and the Hosmer-Lemeshow test silently vanished from the result.
+    pred_probs = np.asarray(model.predict(X_const), dtype=float)
+    y_arr = np.asarray(y, dtype=int)
 
     try:
         order = np.argsort(pred_probs)
@@ -299,7 +293,10 @@ def logistic_regression(req: LogisticRequest):
 
     result = {
         "model": f"Logistic Regression{' [Robust SE]' if req.robust_se else ''}",
+        "robust_se_type": LOGIT_ROBUST_COV if req.robust_se else None,
         "outcome": req.outcome,
+        "outcome_event_level": outcome_info["event_level"],
+        "outcome_reference_level": outcome_info["reference_level"],
         "n": int(model.nobs),
         "n_excluded": n_excluded,
         "imputation": req.imputation or "listwise",
@@ -307,6 +304,8 @@ def logistic_regression(req: LogisticRequest):
         "cox_snell_r2": round(float(cox_snell_r2), 4),
         "nagelkerke_r2": round(float(nagelkerke_r2), 4),
         "pseudo_r2": float(model.prsquared),
+        "pseudo_r2_type": "McFadden",
+        "mcfadden_r2": float(model.prsquared),
         "log_likelihood": llf,
         "aic": float(model.aic),
         "bic": float(model.bic),
@@ -315,8 +314,15 @@ def logistic_regression(req: LogisticRequest):
         "classification": classification,
         "auc": round(auc, 4) if auc is not None else None,
         "coefficients": coefs,
-        "result_text": _logistic_results_text(req.outcome, coefs, omnibus_chi2, omnibus_df, omnibus_p, nagelkerke_r2, hosmer_lemeshow, classification, auc),
+        "result_text": (
+            _logistic_results_text(req.outcome, coefs, omnibus_chi2, omnibus_df, omnibus_p, nagelkerke_r2, hosmer_lemeshow, classification, auc)
+            + outcome_level_sentence(req.outcome, outcome_info)
+            + (" " + MICE_FIT_NOTE if use_mice_pooled else "")
+        ),
     }
+    ignored = _ignored_option_warnings(req)
+    if ignored:
+        result["warnings"] = ignored
 
     result = add_assumption_warnings_to_result(result, logistic_assumption_report)
 
@@ -336,10 +342,16 @@ def logistic_regression(req: LogisticRequest):
             existing.append(w["note"])
         result["rare_categories"] = cat_warnings
 
-    if use_mice_pooled and 'pooled' in locals() and pooled:
-        result["coefficients"] = pooled.get("coefficients", result.get("coefficients", []))
+    if use_mice_pooled:
         result["pooled_from_imputations"] = True
         result["imputation"] = "mice (pooled)"
+        result["n_imputations_pooled"] = len(per_imputation)
+        result["fit_statistics_source"] = "first imputed dataset"
+        result["warnings"] = (result.get("warnings") or []) + [MICE_FIT_NOTE]
+    elif imputation_method == "mice":
+        result["warnings"] = (result.get("warnings") or []) + [
+            "No imputed dataset could be fitted; results are from the first imputed dataset only and are not pooled."
+        ]
 
     missing_info = missing_pattern_summary(df_full, [req.outcome] + req.predictors)
     result = add_missing_data_diagnostics(result, missing_info)
@@ -347,8 +359,28 @@ def logistic_regression(req: LogisticRequest):
     return result
 
 
+def _ignored_option_warnings(req: "LogisticRequest") -> list:
+    """Options this endpoint accepts in its request but does not apply."""
+    notes = []
+    if (req.selection or "all").strip().lower() != "all":
+        notes.append(
+            f"selection='{req.selection}' is not applied by this endpoint: every listed predictor "
+            "is in the model. Variable selection is available in the logistic OR table."
+        )
+    if req.use_firth:
+        notes.append(
+            "use_firth is not applied by this endpoint: this is an ordinary maximum-likelihood fit. "
+            "Use Firth logistic regression for the penalised fit."
+        )
+    return notes
+
+
 def _logistic_results_text(outcome, coefs, chi2_val, df, chi2_p, nagelkerke, hl, classification, auc):
-    sig_coefs = [c for c in coefs if c["variable"] != "const" and c["p"] < 0.05]
+    sig_coefs = [
+        c for c in coefs
+        if c["variable"] != "const" and c["p"] is not None and c["p"] < 0.05
+        and c["odds_ratio"] is not None and c["or_ci_low"] is not None and c["or_ci_high"] is not None
+    ]
     p_str = "<0.001" if chi2_p < 0.001 else f"{chi2_p:.3f}"
     parts = [
         f"A binary logistic regression was performed to predict {outcome}. "
@@ -478,23 +510,9 @@ def firth_logistic_regression(req: FirthLogisticRequest):
     df = apply_imputation(df_full, [req.outcome] + req.predictors, req.imputation or "listwise")
     n_excluded = n_total - len(df)
     df, pred_list = _apply_scaling(df, req.predictors, req.scale_factors)
-    X_df = pd.get_dummies(df[pred_list], drop_first=True).astype(float)
-    X_df, _ix_added = _add_pairwise_interactions(X_df, req.interactions, pred_list)
+    X_df = _design(df, pred_list, req.interactions)
     X_const_df = sm.add_constant(X_df, has_constant="add")
-    y = df[req.outcome]
-    if y.dtype == object:
-        le = LabelEncoder()
-        y = le.fit_transform(y)
-    else:
-        y = pd.to_numeric(y, errors="coerce")
-        unique_vals = sorted(y.dropna().unique())
-        if set(unique_vals) - {0, 1, 0.0, 1.0}:
-            raise HTTPException(status_code=422,
-                detail=f"Firth logistic requires a binary 0/1 outcome. Found values: {unique_vals[:10]}")
-        y = y.astype(int)
-    if len(set(y)) < 2:
-        raise HTTPException(status_code=422,
-            detail="Outcome column has only one unique value — logistic regression requires both 0 and 1.")
+    y, outcome_info = _binary_outcome(df[req.outcome], "Firth logistic regression")
 
     X = X_const_df.values.astype(float)
     y_arr = np.asarray(y, dtype=int)
@@ -576,6 +594,8 @@ def firth_logistic_regression(req: FirthLogisticRequest):
     return {
         "model": "Firth Penalized Logistic Regression",
         "outcome": req.outcome,
+        "outcome_event_level": outcome_info["event_level"],
+        "outcome_reference_level": outcome_info["reference_level"],
         "n": int(n),
         "n_events": int(y_arr.sum()),
         "n_excluded": n_excluded,
@@ -587,7 +607,11 @@ def firth_logistic_regression(req: FirthLogisticRequest):
         "log_likelihood": float(ll),
         "cox_snell_r2": round(cox_snell_r2, 4),
         "nagelkerke_r2": round(nagelkerke_r2, 4),
+        # Kept as Cox-Snell for existing clients; /logistic reports McFadden
+        # under the same key, so the type is stated and McFadden given too.
         "pseudo_r2": round(cox_snell_r2, 4),
+        "pseudo_r2_type": "Cox-Snell",
+        "mcfadden_r2": round(float(1.0 - ll / ll0), 4) if ll0 != 0 else None,
         "aic": round(aic, 4),
         "bic": round(bic, 4),
         "omnibus": {"chi2": round(omnibus_chi2, 4), "df": omnibus_df, "p": round(omnibus_p, 6)},
@@ -610,6 +634,7 @@ def firth_logistic_regression(req: FirthLogisticRequest):
             f"Nagelkerke R² = {nagelkerke_r2:.3f}"
             + (f", AUC = {auc:.3f}." if auc is not None else ".")
             + FIRTH_WALD_SENTENCE
+            + outcome_level_sentence(req.outcome, outcome_info)
         ),
     }
 
@@ -625,16 +650,8 @@ def logistic_or_table(req: LogisticRequest):
 
     df, pred_list = _apply_scaling(df, req.predictors, req.scale_factors)
 
-    y_raw = df[req.outcome]
-    if y_raw.dtype == object:
-        le = LabelEncoder()
-        y = le.fit_transform(y_raw)
-    else:
-        y_num = pd.to_numeric(y_raw, errors="coerce")
-        unique_vals = sorted(y_num.dropna().unique())
-        if set(unique_vals) - {0, 1, 0.0, 1.0}:
-            raise HTTPException(status_code=422, detail=f"Logistic regression requires a binary 0/1 outcome. Found: {unique_vals[:10]}")
-        y = y_num.values
+    y_coded, outcome_info = encode_binary_outcome(df[req.outcome], "Logistic regression")
+    y = y_coded.values
     valid_mask = ~pd.isna(y)
     y = np.array(y[valid_mask], dtype=int)
     df = df.loc[valid_mask].reset_index(drop=True)
@@ -734,6 +751,7 @@ def logistic_or_table(req: LogisticRequest):
             return rows, m, X_const, y_clean
         return rows
 
+    column_map = dummy_column_map(df, pred_list)
     uni_results: dict = {}
     skipped: list = []
     for pred in pred_list:
@@ -750,10 +768,10 @@ def logistic_or_table(req: LogisticRequest):
     sel = (req.selection or "all").strip().lower()
 
     if sel == "p05":
-        multi_pred_list = [p for p in pred_list if _uni_p_for_pred(p, uni_results) < 0.05]
+        multi_pred_list = [p for p in pred_list if _uni_p_for_pred(p, uni_results, column_map) < 0.05]
         selection_label = "Univariate p < 0.05"
     elif sel == "p10":
-        multi_pred_list = [p for p in pred_list if _uni_p_for_pred(p, uni_results) < 0.10]
+        multi_pred_list = [p for p in pred_list if _uni_p_for_pred(p, uni_results, column_map) < 0.10]
         selection_label = "Univariate p < 0.10"
     elif sel == "forward":
         multi_pred_list = _stepwise_forward(y, df, pred_list, p_enter=0.05)
@@ -784,7 +802,7 @@ def logistic_or_table(req: LogisticRequest):
             cox_snell = 1 - np.exp((2 / n_m) * (llnull_m - llf_m))
             max_r2 = 1 - np.exp((2 / n_m) * llnull_m)
             nagelkerke = float(cox_snell / max_r2) if max_r2 != 0 else 0.0
-            pred_probs = multi_model.predict(multi_X)
+            pred_probs = np.asarray(multi_model.predict(multi_X), dtype=float)
             try:
                 auc_val = float(roc_auc_score(multi_y, pred_probs))
             except Exception:
@@ -826,6 +844,7 @@ def logistic_or_table(req: LogisticRequest):
                 "cox_snell_r2": round(float(cox_snell), 4),
                 "nagelkerke_r2": round(nagelkerke, 4),
                 "pseudo_r2": round(float(multi_model.prsquared), 4),
+                "pseudo_r2_type": "McFadden",
                 "auc": round(auc_val, 4) if auc_val else None,
                 "hosmer_lemeshow": hl,
                 "classification": classification,
@@ -859,6 +878,8 @@ def logistic_or_table(req: LogisticRequest):
         "use_firth": bool(use_firth),
         **({"ci_method": FIRTH_CI_METHOD, "method_note": FIRTH_WALD_NOTE} if use_firth else {}),
         "outcome": req.outcome,
+        "outcome_event_level": outcome_info["event_level"],
+        "outcome_reference_level": outcome_info["reference_level"],
         "n": len(df),
         "n_excluded": n_excluded,
         "imputation": req.imputation or "listwise",
@@ -868,7 +889,10 @@ def logistic_or_table(req: LogisticRequest):
         "n_predictors": len(pred_list),
         "table": table,
         "model_stats": model_stats,
-        "result_text": result_text + (FIRTH_WALD_SENTENCE if use_firth else ""),
+        "result_text": (
+            result_text + (FIRTH_WALD_SENTENCE if use_firth else "")
+            + outcome_level_sentence(req.outcome, outcome_info)
+        ),
         "warnings": (skipped if skipped else []) + ([f"Multivariate: {multi_error}"] if multi_error else []),
     }
 

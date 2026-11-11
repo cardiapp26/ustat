@@ -37,6 +37,53 @@ def _or_to_rr(or_val: float, baseline_risk: float = 0.1) -> float:
     return or_val / ((1.0 - p0) + p0 * or_val)
 
 
+def _e_value_from_rr(rr: float) -> float:
+    """VanderWeele & Ding: RR + sqrt(RR (RR - 1)) for RR > 1, else 1."""
+    if not math.isfinite(rr):
+        return float("inf")
+    return rr + _safe_sqrt(rr * (rr - 1.0)) if rr > 1.0 else 1.0
+
+
+def _to_rr_scale(
+    estimate: float,
+    ci_low: Optional[float],
+    ci_high: Optional[float],
+    measure: str,
+    rare_outcome: bool,
+    baseline_risk: Optional[float],
+) -> tuple[float, Optional[List[float]], str]:
+    """Approximate risk ratio for the estimate and its CI limits.
+
+    VanderWeele & Ding (2017), Table 2:
+    - RR: used as is.
+    - OR or HR with a rare outcome (< 15%): treated as a risk ratio.
+    - OR with a common outcome: RR ~ sqrt(OR); with a supplied baseline risk
+      the Zhang & Yu conversion is used instead.
+    - HR with a common outcome:
+      RR ~ (1 - 0.5^sqrt(HR)) / (1 - 0.5^sqrt(1/HR)).
+    """
+    if measure == "rr" or rare_outcome:
+        convert, label = (lambda v: float(v)), ("none" if measure == "rr" else "rare_outcome")
+    elif measure == "or":
+        if baseline_risk is not None:
+            convert, label = (lambda v: _or_to_rr(float(v), baseline_risk)), "baseline_risk"
+        else:
+            convert, label = (lambda v: math.sqrt(float(v))), "sqrt_or"
+    else:
+        convert, label = _hr_to_rr_common, "hr_common_outcome"
+    rr_ci = None
+    if ci_low is not None and ci_high is not None:
+        if ci_low <= 0 or ci_high <= 0:
+            raise ValueError("confidence limits must be positive")
+        rr_ci = [convert(ci_low), convert(ci_high)]
+    return convert(estimate), rr_ci, label
+
+
+def _hr_to_rr_common(hr: float) -> float:
+    root = math.sqrt(float(hr))
+    return (1.0 - 0.5 ** root) / (1.0 - 0.5 ** (1.0 / root))
+
+
 def e_value(
     estimate: float,
     ci_low: Optional[float] = None,
@@ -58,44 +105,21 @@ def e_value(
     if estimate <= 0:
         raise ValueError("estimate must be positive")
 
-    # Convert everything to RR scale (immutably)
-    if measure == "rr" or measure == "hr":
-        rr = float(estimate)
-        rr_ci = (
-            [float(ci_low), float(ci_high)]
-            if ci_low is not None and ci_high is not None
-            else None
-        )
-    else:  # OR
-        if rare_outcome or baseline_risk is None:
-            # Rare outcome or user did not supply prevalence → use conservative approx
-            p0 = 0.1 if baseline_risk is None else baseline_risk
-        else:
-            p0 = baseline_risk
-        rr = _or_to_rr(float(estimate), p0)
-        if ci_low is not None and ci_high is not None:
-            rr_ci = [_or_to_rr(float(ci_low), p0), _or_to_rr(float(ci_high), p0)]
-        else:
-            rr_ci = None
+    rr, rr_ci, conversion = _to_rr_scale(estimate, ci_low, ci_high, measure, rare_outcome, baseline_risk)
 
-    # Invert if protective (RR < 1) — work on copies
-    if rr <= 1.0:
-        rr = 1.0 / rr if rr > 0 else 1.0
+    # A protective estimate is inverted so both it and its CI sit above 1.
+    if rr < 1.0:
+        rr = 1.0 / rr
         if rr_ci:
-            rr_ci = [1.0 / x if x > 0 else float("inf") for x in sorted(rr_ci, reverse=True)]
+            rr_ci = [1.0 / x if x > 0 else float("inf") for x in rr_ci]
 
-    # E-value point estimate (classic formula)
-    ev_point = rr + _safe_sqrt(rr * (rr - 1.0)) if rr > 1.0 else 1.0
+    ev_point = _e_value_from_rr(rr)
 
-    # E-value for CI (bound closest to null)
+    # E-value for the CI uses the limit closest to the null: the lower limit
+    # once the estimate is on the >= 1 side. A CI that includes 1 gives 1.
     ev_ci = None
     if rr_ci:
-        lo, hi = sorted(rr_ci)
-        bound = lo if lo < 1.0 else hi
-        if bound > 1.0:
-            ev_ci = bound + _safe_sqrt(bound * (bound - 1.0))
-        else:
-            ev_ci = 1.0
+        ev_ci = _e_value_from_rr(min(rr_ci))
 
     interpretation = (
         f"An unmeasured confounder would need to be associated with both the exposure and the outcome "
@@ -109,7 +133,11 @@ def e_value(
         "e_value_point_estimate": round(ev_point, 3) if ev_point > 1.0 else 1.0,
         "e_value_ci": round(ev_ci, 3) if ev_ci and ev_ci > 1.0 else 1.0,
         "interpretation": interpretation,
-        "baseline_risk_used": baseline_risk if measure == "or" else None,
+        "baseline_risk_used": baseline_risk if conversion == "baseline_risk" else None,
+        # How the estimate was put on the risk-ratio scale: none, rare_outcome,
+        # sqrt_or, baseline_risk or hr_common_outcome.
+        "rr_conversion": conversion,
+        "rr_used": round(rr, 4),
     }
 
 

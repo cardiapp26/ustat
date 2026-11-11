@@ -16,6 +16,81 @@ import numpy as np
 import pandas as pd
 
 
+def _is_nominal_multilevel(s_treated: pd.Series, s_control: pd.Series) -> bool:
+    """True for a text / categorical covariate with three or more levels."""
+    if pd.api.types.is_bool_dtype(s_treated) or pd.api.types.is_numeric_dtype(s_treated):
+        return False
+    return pd.concat([s_treated, s_control]).dropna().nunique() > 2
+
+
+def smd_by_level(
+    s_treated: pd.Series,
+    s_control: pd.Series,
+    ref_treated: Optional[pd.Series] = None,
+    ref_control: Optional[pd.Series] = None,
+) -> dict:
+    """SMD of each level's indicator for a nominal covariate.
+
+    A nominal covariate has no single mean. Coding its levels 0, 1, 2 in
+    alphabetical order and taking the SMD of those codes gave a number that
+    changed when the levels were relabelled and could sit under 0.10 while
+    individual levels were at 0.3. Each level is compared as a proportion
+    instead (Austin 2009). With `ref_*` (the unmatched sample) the levels and
+    the denominators come from there, so before and after are comparable.
+    """
+    base_t = s_treated if ref_treated is None else ref_treated
+    base_c = s_control if ref_control is None else ref_control
+    levels = sorted(pd.concat([base_t, base_c]).dropna().unique().tolist(), key=str)
+    out: dict = {}
+    for level in levels:
+        ind_t = (s_treated.dropna() == level).astype(float)
+        ind_c = (s_control.dropna() == level).astype(float)
+        denom = None
+        if ref_treated is not None and ref_control is not None:
+            denom = _pooled_sd(
+                (ref_treated.dropna() == level).astype(float),
+                (ref_control.dropna() == level).astype(float),
+            )
+        out[str(level)] = _binary_smd(ind_t, ind_c, denom)
+    return out
+
+
+def _binary_smd(ind_treated: pd.Series, ind_control: pd.Series, denom_sd: Optional[float]) -> float:
+    if len(ind_treated) == 0 or len(ind_control) == 0:
+        return 0.0
+    p1, p0 = float(ind_treated.mean()), float(ind_control.mean())
+    denom = denom_sd if denom_sd is not None else np.sqrt((p1 * (1 - p1) + p0 * (1 - p0)) / 2)
+    return float(abs(p1 - p0) / denom) if denom > 1e-9 else 0.0
+
+
+def smd_before_after(
+    before_treated: pd.Series,
+    before_control: pd.Series,
+    after_treated: pd.Series,
+    after_control: pd.Series,
+) -> Tuple[float, float, Optional[dict]]:
+    """SMD before and after matching, on the unmatched-sample denominator.
+
+    Returns (before, after, per_level). For a nominal covariate with three or
+    more levels the two numbers are the largest level SMD and `per_level` is
+    {level: {"before", "after"}}; otherwise `per_level` is None.
+    """
+    if _is_nominal_multilevel(before_treated, before_control):
+        lv_before = smd_by_level(before_treated, before_control)
+        lv_after = smd_by_level(after_treated, after_control, before_treated, before_control)
+        per_level = {
+            lvl: {"before": round(lv_before[lvl], 4), "after": round(lv_after.get(lvl, 0.0), 4)}
+            for lvl in lv_before
+        }
+        return max(lv_before.values()), max(lv_after.values()), per_level
+    denom = _pooled_sd(before_treated, before_control)
+    return (
+        _compute_smd(before_treated, before_control, denom_sd=denom),
+        _compute_smd(after_treated, after_control, denom_sd=denom),
+        None,
+    )
+
+
 def _smd_columns(
     s_treated: pd.Series, s_control: pd.Series
 ) -> Tuple[pd.Series, pd.Series, bool]:
@@ -46,7 +121,12 @@ def _compute_smd(
 
     If `denom_sd` is supplied, it is used as the denominator for both
     before and after (so that improvement is visible in the numerator only).
+
+    A nominal covariate with three or more levels returns its largest
+    per-level SMD (see `smd_by_level`); `denom_sd` does not apply to it.
     """
+    if _is_nominal_multilevel(s_treated, s_control):
+        return max(smd_by_level(s_treated, s_control).values())
     s_t, s_c, is_bin = _smd_columns(s_treated, s_control)
     if len(s_t) == 0 or len(s_c) == 0:
         return 0.0
@@ -80,6 +160,8 @@ def _pooled_sd(s_treated: pd.Series, s_control: pd.Series) -> float:
 
 def _variance_ratio(s_treated: pd.Series, s_control: pd.Series) -> Optional[float]:
     """Rubin's variance ratio (treated variance / control variance). Target 0.5–2.0."""
+    if _is_nominal_multilevel(s_treated, s_control):
+        return None
     s_t, s_c, is_bin = _smd_columns(s_treated, s_control)
     if is_bin or len(s_t) < 2 or len(s_c) < 2:
         return None
@@ -92,6 +174,8 @@ def _variance_ratio(s_treated: pd.Series, s_control: pd.Series) -> Optional[floa
 
 def _ks_p(s_treated: pd.Series, s_control: pd.Series) -> Optional[float]:
     """Two-sample Kolmogorov-Smirnov p-value for distributional balance."""
+    if _is_nominal_multilevel(s_treated, s_control):
+        return None
     s_t, s_c, is_bin = _smd_columns(s_treated, s_control)
     if is_bin or len(s_t) < 2 or len(s_c) < 2:
         return None
@@ -115,8 +199,12 @@ def _fit_propensity_scores(
     if method == "logistic":
         from sklearn.linear_model import LogisticRegression
 
+        # penalty=None: a propensity model is a maximum-likelihood logistic
+        # regression. The scikit-learn default (L2, C=1) shrinks the
+        # coefficients, which pulls the scores toward the prevalence and
+        # understates the extreme weights, most in small samples.
         m = LogisticRegression(
-            max_iter=1000, solver="lbfgs", C=1.0, random_state=random_state
+            max_iter=5000, solver="lbfgs", penalty=None, random_state=random_state
         )
         m.fit(X_scaled, y)
         return m.predict_proba(X_scaled)[:, 1]

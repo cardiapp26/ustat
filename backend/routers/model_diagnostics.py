@@ -15,8 +15,8 @@ from services.missing_data_sensitivity import (
     summarize_sensitivity,
 )
 from services.model_validation import (
+    OPTIMISM_NEEDS_REFIT,
     bootstrap_performance,
-    optimism_corrected_metrics,
     compute_cox_calibration_slope,
     compute_calibration_slope_intercept,
 )
@@ -251,6 +251,30 @@ def logistic_diagnostics(req: LogisticDiagRequest):
 # 2. COX PH DIAGNOSTICS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _cox_diag_design(df: pd.DataFrame, predictors: List[str]) -> tuple[pd.DataFrame, List[str]]:
+    """Numeric design for the Cox diagnostics: numbers as is, text as dummies.
+
+    A text column whose every value parses as a number is treated as numeric.
+    Other non-numeric columns are dummy-coded against their first level.
+    Rows are expected to be complete already. Returns the design (same index
+    as `df`) and its column names.
+    """
+    parts: List[pd.DataFrame] = []
+    for col in predictors:
+        series = df[col]
+        if pd.api.types.is_bool_dtype(series) or pd.api.types.is_numeric_dtype(series):
+            parts.append(series.astype(float).to_frame(col))
+            continue
+        coerced = pd.to_numeric(series, errors="coerce")
+        if coerced.notna().all():
+            parts.append(coerced.astype(float).to_frame(col))
+            continue
+        parts.append(pd.get_dummies(series.astype(str), prefix=col, drop_first=True).astype(float))
+    design = pd.concat(parts, axis=1) if parts else pd.DataFrame(index=df.index)
+    design = design.loc[:, design.nunique() > 1]
+    return design, list(design.columns)
+
+
 class CoxDiagRequest(BaseModel):
     session_id: str
     duration_col: str
@@ -275,11 +299,11 @@ def cox_diagnostics(req: CoxDiagRequest):
     if len(df) < len(req.predictors) + 10:
         raise HTTPException(400, "Not enough observations for Cox PH diagnostics.")
 
-    # Ensure numeric
+    # Survival columns must be numeric. Predictors are numeric or categorical:
+    # coercing a text predictor to numeric turned every value into NaN and
+    # dropped every row, so categorical ones are dummy-coded instead.
     df[req.duration_col] = pd.to_numeric(df[req.duration_col], errors="coerce")
     df[req.event_col] = pd.to_numeric(df[req.event_col], errors="coerce")
-    for col in req.predictors:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
     df = df.dropna(subset=all_cols).copy()
 
     if len(df) < len(req.predictors) + 10:
@@ -294,19 +318,24 @@ def cox_diagnostics(req: CoxDiagRequest):
     n = len(df)
     n_events = int(df[req.event_col].sum())
 
+    design, term_names = _cox_diag_design(df, req.predictors)
+    if not term_names:
+        raise HTTPException(400, "Predictors produced no usable columns (each needs at least two distinct values).")
+
     # ── Fit Cox model ────────────────────────────────────────────────────────
-    cox_cols = req.predictors + [req.duration_col, req.event_col]
+    fit_df = pd.concat([design, df[[req.duration_col, req.event_col]]], axis=1)
     try:
         cph = CoxPHFitter()
-        cph.fit(df[cox_cols], duration_col=req.duration_col, event_col=req.event_col)
+        cph.fit(fit_df, duration_col=req.duration_col, event_col=req.event_col)
     except Exception as exc:
         raise HTTPException(400, f"Cox PH model failed: {exc}")
 
     # ── 1. Schoenfeld residuals PH test ──────────────────────────────────────
+    # One row per model term: a categorical predictor gives one per dummy.
     ph_results = []
     try:
-        ph_test = proportional_hazard_test(cph, df[cox_cols], time_transform="rank")
-        for var in req.predictors:
+        ph_test = proportional_hazard_test(cph, fit_df, time_transform="rank")
+        for var in term_names:
             try:
                 row = ph_test.summary.loc[var]
                 test_stat = float(row["test_statistic"])
@@ -326,7 +355,7 @@ def cox_diagnostics(req: CoxDiagRequest):
                 })
     except Exception:
         # PH test may fail for some data configurations
-        for var in req.predictors:
+        for var in term_names:
             ph_results.append({
                 "variable": var,
                 "test_stat": None,
@@ -365,11 +394,12 @@ def cox_diagnostics(req: CoxDiagRequest):
         })
 
     # Events per variable (rule of thumb: >= 10)
-    epv = n_events / max(len(req.predictors), 1)
+    # Counted per model term: a categorical predictor spends one per dummy.
+    epv = n_events / max(len(term_names), 1)
     assumptions.append({
         "name": "Events per variable",
         "met": epv >= 10,
-        "detail": f"EPV = {epv:.1f} ({n_events} events, {len(req.predictors)} predictors)" + (" — may be underpowered" if epv < 10 else ""),
+        "detail": f"EPV = {epv:.1f} ({n_events} events, {len(term_names)} model terms)" + ("; may be underpowered" if epv < 10 else ""),
     })
 
     # ── Warnings ─────────────────────────────────────────────────────────────
@@ -926,19 +956,20 @@ def model_validation(req: ValidationRequest):
     perf = bootstrap_performance(y, probs, n_boot=req.n_boot)
 
     result = {
-        "test": "Model Validation (Bootstrap + Optimism Correction)",
+        "test": "Model Validation (Bootstrap performance)",
         "n": int(len(y)),
         "n_boot": req.n_boot,
         "bootstrap_performance": perf,
     }
 
     if req.include_optimism:
-        opt = optimism_corrected_metrics(y, probs, n_boot=min(req.n_boot, 200))
-        result["optimism_correction"] = opt
+        # A column of predicted probabilities has no model to refit, so there
+        # is no optimism to estimate; predictors mode above does the refit.
+        result["optimism_correction"] = {"available": False, "reason": OPTIMISM_NEEDS_REFIT}
 
     # Attach calibration slope/intercept
     try:
-        cal = compute_calibration_slope_intercept(y, probs)
+        cal = compute_calibration_slope_intercept(y, probs=probs)
         result["calibration"] = cal
     except Exception:
         pass
@@ -976,8 +1007,8 @@ def causal_sensitivity(req: CausalSensitivityRequest):
 
     if req.measure == "or" and not req.rare_outcome and req.baseline_risk is None:
         warnings.append(
-            "OR supplied without rare_outcome=True or baseline_risk. Using conservative approximation (p0≈0.1). "
-            "For common outcomes, provide baseline_risk for better accuracy."
+            "OR supplied without rare_outcome=True or baseline_risk. The common-outcome approximation "
+            "RR ≈ sqrt(OR) is used (VanderWeele & Ding). Provide baseline_risk for an exact conversion."
         )
 
     ev = e_value(

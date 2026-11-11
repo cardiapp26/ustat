@@ -167,6 +167,8 @@ export interface ModelResult extends MultinomialFields, ZeroInflatedFields {
   r_squared?: number;
   adj_r_squared?: number;
   pseudo_r2?: number;
+  /** Which pseudo R² `pseudo_r2` holds: "McFadden" or "Cox-Snell" (Firth). */
+  pseudo_r2_type?: string;
   f_stat?: number;
   aic?: number;
   bic?: number;

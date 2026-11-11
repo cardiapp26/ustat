@@ -423,7 +423,7 @@ export default function RCSPanel() {
         interaction: rcsInteractionCov.filter((c) => rcsCovariates.includes(c)),
         ...(rcsOutcomeType === "cox"
           ? { duration: rcsCoxDuration, event: rcsCoxEvent, riskHorizon: rcsRiskHorizon }
-          : { outcome: rcsOutcome }),
+          : { outcome: rcsOutcome, exposure: isCountModel(rcsOutcomeType) ? rcsExposure : "" }),
       }
     : {
         mode, duration: crxDuration, event: crxEvent,

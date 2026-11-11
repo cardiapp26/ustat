@@ -12,9 +12,29 @@ This module is designed to support mid-to-advanced biostatistical practice.
 
 from __future__ import annotations
 
-from typing import Dict, Any, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
+
+
+def _to_logits(values: np.ndarray, scale: str) -> np.ndarray:
+    """Logit-scale predictor from probabilities or a linear predictor.
+
+    `scale` is "prob", "lp", or "auto". "auto" keeps the legacy guess (values
+    wholly inside [0, 1] are probabilities) and exists only for callers that
+    pass `probs_or_lp`; a linear predictor that happens to lie in [0, 1] is
+    misread by it, so new callers must state the scale.
+    """
+    if scale not in ("prob", "lp", "auto"):
+        raise ValueError(f"scale must be 'prob', 'lp' or 'auto'. Got: {scale}")
+    values = np.asarray(values, dtype=float).ravel()
+    outside = np.nanmin(values) < 0 or np.nanmax(values) > 1
+    if scale == "prob" and outside:
+        raise ValueError("probs must lie in [0, 1]; pass linear_predictor= for a linear predictor.")
+    if scale == "lp" or (scale == "auto" and outside):
+        return values
+    clipped = np.clip(values, 1e-6, 1 - 1e-6)
+    return np.log(clipped / (1 - clipped))
 
 
 def compute_calibration_slope_intercept(
@@ -22,25 +42,32 @@ def compute_calibration_slope_intercept(
     probs: Optional[np.ndarray] = None,
     probs_or_lp: Optional[np.ndarray] = None,
     duration: Optional[np.ndarray] = None,
+    *,
+    linear_predictor: Optional[np.ndarray] = None,
+    scale: Optional[str] = None,
 ) -> Dict[str, float]:
     """
-    Compute calibration slope and intercept by regressing observed outcomes
-    on predicted probabilities (logistic calibration).
+    Logistic calibration: regress the observed outcome on the logit of the
+    prediction; the coefficient is the calibration slope.
+
+    The scale of the prediction is explicit:
+    - `probs`: probabilities in [0, 1] (anything else raises).
+    - `linear_predictor`: already on the logit scale, used as is.
+    - `probs_or_lp`: legacy argument, scale guessed from the range unless
+      `scale` ("prob" or "lp") says which it is.
     """
     from sklearn.linear_model import LogisticRegression
 
     y = np.asarray(y).ravel()
     del duration  # accepted for survival-call compatibility; binary calibration uses y/probs.
-    probs = probs if probs is not None else probs_or_lp
-    if probs is None:
-        raise ValueError("Provide probs or probs_or_lp")
-    probs = np.asarray(probs).ravel()
-    if np.nanmin(probs) < 0 or np.nanmax(probs) > 1:
-        probs = 1.0 / (1.0 + np.exp(-probs))
-    probs = np.clip(probs, 1e-6, 1 - 1e-6)
-
-    # Use logit of probabilities as predictor
-    logits = np.log(probs / (1 - probs + 1e-12))
+    if linear_predictor is not None:
+        logits = _to_logits(linear_predictor, scale or "lp")
+    elif probs is not None:
+        logits = _to_logits(probs, scale or "prob")
+    elif probs_or_lp is not None:
+        logits = _to_logits(probs_or_lp, scale or "auto")
+    else:
+        raise ValueError("Provide probs, linear_predictor or probs_or_lp")
 
     X = logits.reshape(-1, 1)
     cal_model = LogisticRegression(penalty=None, solver='lbfgs', max_iter=1000)
@@ -55,6 +82,47 @@ def compute_calibration_slope_intercept(
     }
 
 
+IPCW_NOTE = (
+    "Observed risk at the horizon is estimated with inverse probability of "
+    "censoring weights (Kaplan-Meier of the censoring distribution). Subjects "
+    "censored before the horizon have unknown status and get weight 0; they "
+    "are not counted as non-events."
+)
+
+
+def ipcw_horizon_weights(
+    duration: np.ndarray,
+    observed: np.ndarray,
+    horizon: float,
+) -> np.ndarray:
+    """IPCW weights for the binary endpoint "event by `horizon`".
+
+    `observed` is 1 when the subject's follow-up ended with any event
+    (including a competing one) and 0 when it was censored. Subjects whose
+    status at the horizon is known get 1 / G(min(T, horizon)), with G the
+    Kaplan-Meier estimate of remaining uncensored (left limit at event
+    times); subjects censored before the horizon get 0.
+    """
+    from lifelines import KaplanMeierFitter
+
+    duration = np.asarray(duration, dtype=float).ravel()
+    observed = np.asarray(observed).ravel().astype(int)
+    kmf = KaplanMeierFitter().fit(duration, event_observed=1 - observed)
+    g_times = kmf.survival_function_.index.to_numpy(dtype=float)
+    g_vals = kmf.survival_function_.iloc[:, 0].to_numpy(dtype=float)
+
+    def g_at(t: np.ndarray, left: bool) -> np.ndarray:
+        idx = np.searchsorted(g_times, t, side="left" if left else "right") - 1
+        return g_vals[np.clip(idx, 0, len(g_vals) - 1)]
+
+    had_event = (observed == 1) & (duration <= horizon)
+    beyond = duration > horizon
+    weights = np.zeros(len(duration))
+    weights[had_event] = 1.0 / np.clip(g_at(duration[had_event], left=True), 1e-6, None)
+    weights[beyond] = 1.0 / max(float(g_at(np.array([horizon]), left=False)[0]), 1e-6)
+    return weights
+
+
 def flexible_calibration_curve(
     y: np.ndarray,
     probs: np.ndarray,
@@ -65,20 +133,28 @@ def flexible_calibration_curve(
     n_grid: int = 50,
 ) -> Dict[str, Any]:
     """
-    Flexible calibration using restricted-cubic-spline-style basis over logit(p).
+    Flexible calibration using a natural cubic spline of logit(p).
 
-    For survival predictions, pass duration + time_horizon; the observed endpoint
-    becomes event by horizon. This is a pragmatic calibration curve for API use.
+    For survival predictions, pass duration + time_horizon: the endpoint is
+    the event by the horizon, weighted by IPCW so that subjects censored
+    before the horizon are not counted as non-events.
     """
     import statsmodels.api as sm
-    from patsy import dmatrix
+    from patsy import build_design_matrices, dmatrix
 
     y = np.asarray(y).ravel().astype(float)
     probs = np.clip(np.asarray(probs).ravel().astype(float), 1e-6, 1 - 1e-6)
-    if duration is not None and time_horizon is not None:
+    weights = np.ones(len(y))
+    censoring_adjusted = duration is not None and time_horizon is not None
+    if len(y) != len(probs):
+        return {"available": False, "reason": "Outcome and predictions differ in length."}
+    if censoring_adjusted:
         duration = np.asarray(duration).ravel().astype(float)
+        weights = ipcw_horizon_weights(duration, y, float(time_horizon))
         y = ((duration <= float(time_horizon)) & (y == 1)).astype(float)
-    if len(y) != len(probs) or len(y) < 20 or len(np.unique(y)) < 2:
+    keep = weights > 0
+    y, probs, weights = y[keep], probs[keep], weights[keep]
+    if len(y) < 20 or len(np.unique(y)) < 2:
         return {"available": False, "reason": "Need at least 20 rows with both outcome classes."}
 
     lp = np.log(probs / (1 - probs))
@@ -86,13 +162,15 @@ def flexible_calibration_curve(
     spline_df = max(3, int(n_knots))
     try:
         X = dmatrix(f"cr(lp, df={spline_df})", df, return_type="dataframe")
-        model = sm.GLM(df["y"], X, family=sm.families.Binomial()).fit()
+        model = sm.GLM(df["y"], X, family=sm.families.Binomial(), freq_weights=weights).fit()
         grid_p = np.linspace(max(0.001, float(np.percentile(probs, 1))), min(0.999, float(np.percentile(probs, 99))), n_grid)
         grid_lp = np.log(grid_p / (1 - grid_p))
-        Xg = dmatrix(f"cr(lp, df={spline_df})", pd.DataFrame({"lp": grid_lp}), return_type="dataframe")
+        # Same knots as the fit: re-running dmatrix on the grid would place
+        # the knots at the grid's own quantiles and evaluate another basis.
+        Xg = build_design_matrices([X.design_info], {"lp": grid_lp}, return_type="dataframe")[0]
         observed = np.clip(model.predict(Xg), 0, 1)
-        ici = float(np.mean(np.abs(model.predict(X) - probs)))
-        return {
+        ici = float(np.average(np.abs(model.predict(X) - probs), weights=weights))
+        result = {
             "available": True,
             "method": "restricted_cubic_spline_logistic_calibration",
             "n": int(len(y)),
@@ -102,6 +180,11 @@ def flexible_calibration_curve(
                 for p, o in zip(grid_p, observed)
             ],
         }
+        if censoring_adjusted:
+            result["censoring_adjustment"] = "ipcw"
+            result["n_censored_before_horizon"] = int(np.sum(~keep))
+            result["note"] = IPCW_NOTE
+        return result
     except Exception as exc:
         return {"available": False, "reason": str(exc)}
 
@@ -127,19 +210,28 @@ def competing_risks_calibration(
     if len(work) < 20:
         return {"available": False, "reason": "Need at least 20 complete rows."}
     pred = np.clip(work[predicted_cif_col].to_numpy(dtype=float), 0, 1)
-    obs = ((work[duration_col].to_numpy(dtype=float) <= time_horizon) & (work[status_col].to_numpy(dtype=int) == event_code)).astype(float)
+    dur = work[duration_col].to_numpy(dtype=float)
+    status = work[status_col].to_numpy(dtype=int)
+    obs = ((dur <= time_horizon) & (status == event_code)).astype(float)
+    # Any non-zero status ends follow-up with a known outcome; 0 is censoring.
+    weights = ipcw_horizon_weights(dur, (status != 0).astype(int), float(time_horizon))
     try:
         bins = pd.qcut(pred, q=min(n_bins, len(np.unique(pred))), duplicates="drop")
     except Exception:
         bins = pd.cut(pred, bins=min(n_bins, max(2, len(np.unique(pred)))), duplicates="drop")
-    frame = pd.DataFrame({"pred": pred, "obs": obs, "bin": bins})
+    frame = pd.DataFrame({"pred": pred, "obs": obs, "w": weights, "bin": bins})
     rows = []
     for _, g in frame.groupby("bin", observed=False):
+        w_sum = float(g["w"].sum())
+        if len(g) == 0 or w_sum <= 0:
+            continue
+        observed_cif = float(np.average(g["obs"], weights=g["w"]))
         rows.append({
             "n": int(len(g)),
+            "n_censored_before_horizon": int((g["w"] == 0).sum()),
             "mean_predicted_cif": round(float(g["pred"].mean()), 5),
-            "observed_cumulative_incidence": round(float(g["obs"].mean()), 5),
-            "absolute_error": round(float(abs(g["obs"].mean() - g["pred"].mean())), 5),
+            "observed_cumulative_incidence": round(observed_cif, 5),
+            "absolute_error": round(float(abs(observed_cif - g["pred"].mean())), 5),
         })
     return {
         "available": True,
@@ -147,7 +239,8 @@ def competing_risks_calibration(
         "time_horizon": round(float(time_horizon), 4),
         "bins": rows,
         "ici": round(float(np.mean([r["absolute_error"] for r in rows])), 5) if rows else None,
-        "note": "Observed CIF is approximated as cause-specific event by horizon; use Aalen-Johansen when full competing-risk curves are available.",
+        "censoring_adjustment": "ipcw",
+        "note": IPCW_NOTE + " Status 0 is treated as censoring and every other status as an observed event.",
     }
 
 
@@ -164,7 +257,7 @@ def compute_cox_calibration_slope(
     from lifelines import CoxPHFitter
 
     work = df[[duration_col, event_col]].copy()
-    work["lp"] = linear_predictor
+    work["lp"] = np.asarray(linear_predictor, dtype=float).ravel()
 
     try:
         cph = CoxPHFitter()
@@ -244,63 +337,69 @@ def bootstrap_performance(
     return summary
 
 
-def optimism_corrected_metrics(
-    y: np.ndarray,
-    probs: np.ndarray,
-    n_boot: int = 200,
-    random_state: int = 42,
-) -> Dict[str, Any]:
-    """
-    Very practical optimism correction using bootstrap (similar to Harrell's approach).
+FitPredict = Callable[[np.ndarray, np.ndarray, np.ndarray], np.ndarray]
 
-    Returns apparent performance, optimism, and optimism-corrected estimates
-    for AUC and calibration slope.
-    """
+
+def _logistic_fit_predict(X_train: np.ndarray, y_train: np.ndarray, X_test: np.ndarray) -> np.ndarray:
+    """Maximum-likelihood logistic regression: fit on train, predict test."""
+    from sklearn.linear_model import LogisticRegression
+
+    model = LogisticRegression(penalty=None, solver="lbfgs", max_iter=1000).fit(X_train, y_train)
+    return model.predict_proba(X_test)[:, 1]
+
+
+def _auc_and_slope(y: np.ndarray, probs: np.ndarray) -> Tuple[float, float]:
     from sklearn.metrics import roc_auc_score
 
-    y = np.asarray(y).ravel()
-    probs = np.asarray(probs).ravel()
+    slope = compute_calibration_slope_intercept(y, probs=np.clip(probs, 0.0, 1.0))["calibration_slope"]
+    return float(roc_auc_score(y, probs)), float(slope)
 
-    # Apparent performance
-    apparent_auc = roc_auc_score(y, probs)
-    cal = compute_calibration_slope_intercept(y, probs)
-    apparent_slope = cal['calibration_slope']
+
+def optimism_corrected_metrics(
+    y: np.ndarray,
+    X: np.ndarray,
+    n_boot: int = 200,
+    random_state: int = 42,
+    *,
+    fit_predict: Optional[FitPredict] = None,
+) -> Dict[str, Any]:
+    """
+    Harrell's bootstrap optimism correction for AUC and calibration slope.
+
+    The model is refitted on every bootstrap sample; optimism is its
+    performance on that sample minus its performance on the original data.
+    This needs the design matrix `X` (n, p): predicted probabilities alone
+    cannot be used, because a fixed set of predictions has nothing to refit.
+
+    `fit_predict(X_train, y_train, X_test)` returns predicted probabilities
+    for `X_test`; the default is maximum-likelihood logistic regression.
+    """
+    y = np.asarray(y).ravel().astype(int)
+    X = np.asarray(X, dtype=float)
+    if X.ndim != 2 or X.shape[0] != len(y):
+        raise ValueError(
+            "optimism_corrected_metrics needs the design matrix X with one row per "
+            "outcome; predicted probabilities cannot be optimism-corrected without refitting."
+        )
+    fit_predict = fit_predict or _logistic_fit_predict
+
+    apparent_auc, apparent_slope = _auc_and_slope(y, fit_predict(X, y, X))
 
     rng = np.random.default_rng(random_state)
     n = len(y)
-
-    optimism_auc = []
-    optimism_slope = []
-
+    optimism_auc: List[float] = []
+    optimism_slope: List[float] = []
     for _ in range(n_boot):
-        # Bootstrap sample
         idx = rng.choice(n, n, replace=True)
-        yb = y[idx]
-        pb = probs[idx]
-
-        # Refit a simple logistic on bootstrap sample for "model"
-        # For simplicity we use the same probabilities (common practical approximation)
-        # More rigorous would be to refit the original model on bootstrap data.
-
-        # Performance on bootstrap sample (apparent in bootstrap)
+        if len(np.unique(y[idx])) < 2:
+            continue
         try:
-            boot_auc = roc_auc_score(yb, pb)
+            boot_auc, boot_slope = _auc_and_slope(y[idx], fit_predict(X[idx], y[idx], X[idx]))
+            orig_auc, orig_slope = _auc_and_slope(y, fit_predict(X[idx], y[idx], X))
         except Exception:
             continue
-
-        # Performance on original sample using bootstrap model predictions
-        # Here we approximate by using the bootstrap probabilities on original data
-        orig_auc = roc_auc_score(y, pb)
-
         optimism_auc.append(boot_auc - orig_auc)
-
-        # Calibration slope optimism
-        try:
-            boot_cal = compute_calibration_slope_intercept(yb, pb)
-            orig_cal = compute_calibration_slope_intercept(y, pb)
-            optimism_slope.append(boot_cal['calibration_slope'] - orig_cal['calibration_slope'])
-        except Exception:
-            continue
+        optimism_slope.append(boot_slope - orig_slope)
 
     opt_auc = float(np.mean(optimism_auc)) if optimism_auc else 0.0
     opt_slope = float(np.mean(optimism_slope)) if optimism_slope else 0.0
@@ -313,22 +412,35 @@ def optimism_corrected_metrics(
         "optimism_calibration_slope": round(opt_slope, 4),
         "optimism_corrected_calibration_slope": round(apparent_slope - opt_slope, 4),
         "n_boot": n_boot,
+        "n_boot_used": len(optimism_auc),
+        "method": "Harrell bootstrap optimism (model refitted in every resample)",
     }
 
 
+OPTIMISM_NEEDS_REFIT = (
+    "Optimism correction needs the model refitted in every bootstrap sample, "
+    "which is impossible from a column of predicted probabilities. Run the "
+    "validation with `predictors` to get refit-based optimism."
+)
+
+
 def add_validation_to_result(
-    result: dict, 
-    y: np.ndarray, 
+    result: dict,
+    y: np.ndarray,
     probs: np.ndarray,
     include_optimism: bool = True,
-    n_boot: int = 300
+    n_boot: int = 300,
+    X: Optional[np.ndarray] = None,
 ) -> dict:
-    """Convenience function to attach validation metrics to an existing result dict."""
-    perf = bootstrap_performance(y, probs, n_boot=n_boot)
-    result["bootstrap_performance"] = perf
+    """Attach validation metrics to a copy of `result`.
 
+    Optimism correction is computed only when the design matrix `X` is given.
+    """
+    out = {**result, "bootstrap_performance": bootstrap_performance(y, probs, n_boot=n_boot)}
     if include_optimism:
-        opt = optimism_corrected_metrics(y, probs, n_boot=min(n_boot, 200))
-        result["optimism_correction"] = opt
-
-    return result
+        out["optimism_correction"] = (
+            optimism_corrected_metrics(y, X, n_boot=min(n_boot, 200))
+            if X is not None
+            else {"available": False, "reason": OPTIMISM_NEEDS_REFIT}
+        )
+    return out

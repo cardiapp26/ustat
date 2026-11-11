@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
+from typing import List, Optional
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
@@ -15,10 +15,15 @@ from services.impute import apply_imputation
 from services.missing_data import (
     mice_multiple,
     missing_pattern_summary,
-    pool_linear_results,
+    pool_rubin_terms,
     add_missing_data_diagnostics,
 )
 from services.regression import (
+    STEPWISE_CRITERIA,
+    STEPWISE_MODEL_TYPES,
+    add_pairwise_interactions as _add_pairwise_interactions,
+    dummy_column_map,
+    encode_binary_outcome,
     stepwise_forward as _stepwise_forward,
     stepwise_backward as _stepwise_backward,
     _compute_aic,
@@ -106,50 +111,36 @@ def _clean_predictor_categories(df: pd.DataFrame, predictors: List[str]) -> tupl
     return work, warnings
 
 
-def _add_pairwise_interactions(
-    enc: pd.DataFrame,
-    interactions: Optional[List[List[str]]],
-    requested_predictors: List[str],
-) -> Tuple[pd.DataFrame, List[str]]:
-    """Append pairwise interaction columns to a design matrix."""
-    if not interactions:
-        return enc, []
+def _design(df: pd.DataFrame, predictors: List[str], interactions) -> pd.DataFrame:
+    """Dummy-coded predictors plus the requested pairwise interactions."""
+    X_enc = pd.get_dummies(df[predictors], drop_first=True).astype(float)
+    X_enc, _ = _add_pairwise_interactions(X_enc, interactions, predictors, dummy_column_map(df, predictors))
+    return X_enc
 
-    out = enc.copy()
-    added: List[str] = []
 
-    def _members(name: str) -> List[str]:
-        if name in out.columns:
-            return [name]
-        prefix = f"{name}_"
-        return [c for c in out.columns if c.startswith(prefix)]
+MICE_FIT_NOTE = (
+    "Coefficients are pooled across imputations with Rubin's rules. R² is the "
+    "mean across imputations. The F-test, adjusted R², residual SE, AIC and BIC "
+    "are from the first imputed dataset and are not pooled."
+)
 
-    requested_set = set(requested_predictors)
-    for pair in interactions:
-        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
-            raise HTTPException(status_code=422, detail=f"Each interaction must be a [colA, colB] pair. Got: {pair}")
-        a_name, b_name = pair
-        for nm in (a_name, b_name):
-            if nm not in requested_set:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"Interaction '{a_name} × {b_name}': '{nm}' must already be in the predictors list."
-                )
-        a_members = _members(a_name)
-        b_members = _members(b_name)
-        if not a_members or not b_members:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Interaction '{a_name} × {b_name}': one or both columns did not survive dummy encoding."
-            )
-        for a in a_members:
-            for b in b_members:
-                col = f"{a}:{b}"
-                if col in out.columns:
-                    continue
-                out[col] = out[a] * out[b]
-                added.append(col)
-    return out, added
+
+def _pooled_linear_coefs(per_imputation: list) -> list:
+    """Rubin-pooled coefficient rows in the same shape as a single fit."""
+    return [
+        {
+            "variable": var,
+            "estimate": t["coef"],
+            "se": t["se"],
+            "t": t["t"],
+            "p": t["p"],
+            "ci_low": t["ci_low"],
+            "ci_high": t["ci_high"],
+            "df": t["df"],
+            "fmi": t["fmi"],
+        }
+        for var, t in pool_rubin_terms(per_imputation).items()
+    ]
 
 
 # ── OLS Linear Regression ──────────────────────────────────────────────────────────
@@ -177,12 +168,11 @@ def linear_regression(req: LinearRequest):
         )
         imputed_dfs = imp_result.imputed_datasets
 
-        individual_results = []
+        per_imputation = []
+        imputed_r2 = []
         imputed_scale_ratios = []
         for df_imp in imputed_dfs:
-            X_enc = pd.get_dummies(df_imp[req.predictors], drop_first=True).astype(float)
-            X_enc, _ = _add_pairwise_interactions(X_enc, req.interactions, req.predictors)
-            X, _dropped_const = design_with_constant(X_enc)
+            X, _dropped_const = design_with_constant(_design(df_imp, req.predictors, req.interactions))
             require_full_rank_design(X)
             y_imp = df_imp[req.outcome].astype(float)
             # use_t=True on every branch. statsmodels keeps the t on residual
@@ -198,44 +188,28 @@ def linear_regression(req: LinearRequest):
                 str(var): float(X[var].std(ddof=1)) / y_imp_sd
                 for var in X.columns if var != "const" and y_imp_sd > 0
             })
-            individual_results.append({
-                "coefficients": [
-                    {"variable": str(var), "estimate": float(m.params[var]), "se": float(m.bse[var])}
-                    for var in m.params.index
-                ],
-                "r_squared": float(m.rsquared),
-            })
-
-        pooled = pool_linear_results(individual_results)
+            per_imputation.append({str(var): (float(m.params[var]), float(m.bse[var])) for var in m.params.index})
+            imputed_r2.append(float(m.rsquared))
 
         df = imputed_dfs[0]
-        n_excluded = n_total - len(df)
-        X_enc = pd.get_dummies(df[req.predictors], drop_first=True).astype(float)
-        X_enc, ix_added = _add_pairwise_interactions(X_enc, req.interactions, req.predictors)
-        X, dropped_const = design_with_constant(X_enc)
-        require_full_rank_design(X)
-        y = df[req.outcome].astype(float)
-        model = sm.OLS(y, X).fit(cov_type="HC3" if req.robust_se else "nonrobust", use_t=True)
     else:
         df = apply_imputation(df_full, [req.outcome] + req.predictors, imputation_method)
-        n_excluded = n_total - len(df)
-        X_enc = pd.get_dummies(df[req.predictors], drop_first=True).astype(float)
-        X_enc, ix_added = _add_pairwise_interactions(X_enc, req.interactions, req.predictors)
-        X, dropped_const = design_with_constant(X_enc)
-        require_full_rank_design(X)
-        y = df[req.outcome].astype(float)
-        model = sm.OLS(y, X).fit(cov_type="HC3" if req.robust_se else "nonrobust", use_t=True)
+
+    n_excluded = n_total - len(df)
+    X_enc = _design(df, req.predictors, req.interactions)
+    X, dropped_const = design_with_constant(X_enc)
+    require_full_rank_design(X)
+    y = df[req.outcome].astype(float)
+    model = sm.OLS(y, X).fit(cov_type="HC3" if req.robust_se else "nonrobust", use_t=True)
 
     vifs = _compute_vif(X)
 
     r_squared_val = None
     pooled_from_imputations = False
 
-    if use_mice_pooled and 'pooled' in locals():
-        coefs = pooled.get("coefficients", [])
-        for c in coefs:
-            c["vif"] = vifs.get(c["variable"])
-        r_squared_val = pooled.get("r_squared")
+    if use_mice_pooled:
+        coefs = [{**c, "vif": vifs.get(c["variable"])} for c in _pooled_linear_coefs(per_imputation)]
+        r_squared_val = float(np.mean(imputed_r2)) if imputed_r2 else None
         pooled_from_imputations = True
     else:
         ci = model.conf_int()
@@ -307,6 +281,7 @@ def linear_regression(req: LinearRequest):
         model, n_params=int(model.df_model) + 2, n_obs=int(model.nobs))
     result = {
         "model": f"Linear Regression (OLS){' [Robust SE]' if req.robust_se else ''}",
+        "robust_se_type": "HC3" if req.robust_se else None,
         "outcome": req.outcome,
         "n": int(model.nobs),
         "n_excluded": n_excluded,
@@ -336,11 +311,14 @@ def linear_regression(req: LinearRequest):
         "df_resid": int(model.df_resid),
         "predictors": req.predictors,
         "predictor_info": predictor_info,
-        "result_text": _linear_results_text(req.outcome, coefs, model),
+        "result_text": _linear_results_text(req.outcome, coefs, model) + (" " + MICE_FIT_NOTE if use_mice_pooled else ""),
     }
 
     if pooled_from_imputations:
         result["pooled_from_imputations"] = True
+        result["n_imputations_pooled"] = len(per_imputation)
+        result["fit_statistics_source"] = "first imputed dataset"
+        result["warnings"] = [MICE_FIT_NOTE]
 
     result = add_assumption_warnings_to_result(result, assumption_report)
 
@@ -354,7 +332,7 @@ def linear_regression(req: LinearRequest):
 
 
 def _linear_results_text(outcome, coefs, model):
-    sig = [c for c in coefs if c["variable"] != "const" and c["p"] < 0.05]
+    sig = [c for c in coefs if c["variable"] != "const" and c["p"] is not None and c["p"] < 0.05]
     f_p = "<0.001" if model.f_pvalue < 0.001 else f"{model.f_pvalue:.3f}"
     parts = [
         f"Multiple linear regression was performed to predict {outcome}. "
@@ -387,6 +365,16 @@ class StepwiseRequest(BaseModel):
 
 @router.post("/stepwise")
 def stepwise_selection(req: StepwiseRequest):
+    mt = (req.model_type or "logistic").lower()
+    direction = (req.direction or "both").lower()
+    criterion = (req.criterion or "p").lower()
+    if mt not in STEPWISE_MODEL_TYPES:
+        raise HTTPException(status_code=422, detail=f"model_type must be one of {list(STEPWISE_MODEL_TYPES)}. Got: {req.model_type}")
+    if direction not in ("forward", "backward", "both"):
+        raise HTTPException(status_code=422, detail=f"direction must be 'forward', 'backward' or 'both'. Got: {req.direction}")
+    if criterion not in STEPWISE_CRITERIA:
+        raise HTTPException(status_code=422, detail=f"criterion must be one of {list(STEPWISE_CRITERIA)}. Got: {req.criterion}")
+
     df_full = _get_df(req.session_id)
     n_total = len(df_full)
 
@@ -398,20 +386,23 @@ def stepwise_selection(req: StepwiseRequest):
     if len(df) < 10:
         raise HTTPException(status_code=422, detail="Too few rows after imputation for stepwise selection.")
 
-    y = df[req.outcome]
-    if req.model_type == "logistic":
-        if y.dtype == object:
-            from sklearn.preprocessing import LabelEncoder
-            le = LabelEncoder()
-            y = le.fit_transform(y)
-        else:
-            y = pd.to_numeric(y, errors="coerce")
-        unique_vals = sorted(pd.Series(y).dropna().unique())
-        if set(unique_vals) - {0, 1, 0.0, 1.0}:
-            raise HTTPException(status_code=422, detail=f"Logistic stepwise requires binary 0/1 outcome. Found: {unique_vals[:8]}")
-        y = pd.Series(y).astype(float)
+    outcome_info = None
+    if mt == "logistic":
+        # encode_binary_outcome keeps the frame's index. The LabelEncoder path
+        # returned a bare array that was re-wrapped with a fresh 0..n-1 index,
+        # so after any dropped row y and X no longer lined up and every fit
+        # failed with "indices are not aligned", reported as non-convergence.
+        y, outcome_info = encode_binary_outcome(df[req.outcome], "Logistic stepwise")
     else:
-        y = pd.to_numeric(y, errors="coerce")
+        y = pd.to_numeric(df[req.outcome], errors="coerce").astype(float)
+    keep = y.notna()
+    if not keep.all():
+        df, y = df.loc[keep], y.loc[keep]
+        n_excluded = n_total - len(df)
+    if mt == "logistic" and y.nunique() < 2:
+        raise HTTPException(status_code=422, detail="Outcome has only one unique value; it needs both 0 and 1.")
+    if len(df) < 10:
+        raise HTTPException(status_code=422, detail="Too few rows with a usable outcome for stepwise selection.")
 
     Xdf = df[req.candidates].copy()
 
@@ -419,9 +410,7 @@ def stepwise_selection(req: StepwiseRequest):
 
     trace: list = []
     selected: list = []
-
-    mt = req.model_type.lower()
-    direction = req.direction.lower()
+    step_kw = {"model_type": mt, "criterion": criterion}
 
     def _fit_and_aic(vars_in: list):
         if not vars_in:
@@ -431,15 +420,16 @@ def stepwise_selection(req: StepwiseRequest):
         try:
             if mt == "logistic":
                 m = sm.Logit(y, Xc).fit(disp=False, maxiter=200)
-            else:
-                m = sm.OLS(y, Xc).fit()
-            return m, _compute_aic(m)
+                return m, _compute_aic(m)
+            m = sm.OLS(y, Xc).fit()
+            # Same count as /linear: the residual variance is a parameter.
+            return m, information_criteria(m, n_params=int(m.df_model) + 2, n_obs=int(m.nobs))[0]
         except Exception:
             logger.exception("Stepwise model fit failed")
             return None, float("inf")
 
     if direction in ("forward", "both"):
-        sel = _stepwise_forward(y, Xdf, pred_list, p_enter=req.p_enter)
+        sel = _stepwise_forward(y, Xdf, pred_list, p_enter=req.p_enter, **step_kw)
         selected = sel
         m, aic = _fit_and_aic(selected)
         trace.append({"step": 1, "action": "forward", "selected": list(selected), "aic": aic})
@@ -447,7 +437,7 @@ def stepwise_selection(req: StepwiseRequest):
     if direction in ("backward", "both"):
         if not selected:
             selected = list(pred_list)
-        sel = _stepwise_backward(y, Xdf, selected, p_remove=req.p_remove)
+        sel = _stepwise_backward(y, Xdf, selected, p_remove=req.p_remove, **step_kw)
         selected = sel
         m, aic = _fit_and_aic(selected)
         trace.append({"step": len(trace)+1, "action": "backward", "selected": list(selected), "aic": aic})
@@ -455,11 +445,9 @@ def stepwise_selection(req: StepwiseRequest):
     if direction == "both":
         for i in range(2):
             before = list(selected)
-            forward_candidates = [v for v in pred_list if v not in selected]
-            new_forward = _stepwise_forward(y, Xdf, forward_candidates, p_enter=req.p_enter)
-            if new_forward:
-                selected = list(dict.fromkeys(selected + new_forward))
-            selected = _stepwise_backward(y, Xdf, selected, p_remove=req.p_remove)
+            # Candidates are tested for entry given the terms already kept.
+            selected = _stepwise_forward(y, Xdf, pred_list, p_enter=req.p_enter, base=selected, **step_kw)
+            selected = _stepwise_backward(y, Xdf, selected, p_remove=req.p_remove, **step_kw)
             if selected == before:
                 break
             m, aic = _fit_and_aic(selected)
@@ -470,7 +458,7 @@ def stepwise_selection(req: StepwiseRequest):
         return _sanitize({
             "model_type": mt,
             "direction": direction,
-            "criterion": req.criterion,
+            "criterion": criterion,
             "selected": [],
             "n_selected": 0,
             "final_aic": None,
@@ -486,7 +474,9 @@ def stepwise_selection(req: StepwiseRequest):
     return _sanitize({
         "model_type": mt,
         "direction": direction,
-        "criterion": req.criterion,
+        "criterion": criterion,
+        "outcome_event_level": outcome_info["event_level"] if outcome_info else None,
+        "outcome_reference_level": outcome_info["reference_level"] if outcome_info else None,
         "selected": selected,
         "n_selected": len(selected),
         "final_aic": round(final_aic, 2) if np.isfinite(final_aic) else None,
@@ -632,21 +622,44 @@ class LMMRequest(BaseModel):
     imputation: Optional[str] = "listwise"
 
 
+_ID_NAME_TOKENS = frozenset({"id", "no", "num", "number", "patient", "subject", "case", "record", "mrn"})
+_ID_MIN_LEVELS = 10
+_ID_MIN_UNIQUE_RATIO = 0.95
+
+
+def _name_tokens(col: str) -> list:
+    """Lower-case word tokens of a column name: 'patientID' -> [patient, id]."""
+    import re
+
+    spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", col)
+    return [t for t in re.split(r"[^0-9a-zA-Z]+", spaced.lower()) if t]
+
+
 def _is_id_like(col: str, series: pd.Series) -> bool:
-    """Heuristic: column is likely a patient/subject identifier."""
-    name_lower = col.lower()
-    name_match = any(name_lower == tok or name_lower.endswith(tok) or name_lower.startswith(tok)
-                     for tok in ("id", "no", "num", "number", "patient", "subject", "case", "record"))
-    if name_match:
-        return True
-    n = len(series.dropna())
+    """Heuristic: column is likely a patient/subject identifier.
+
+    The name alone is not evidence. Matching "id", "no", "num" or "case" as a
+    prefix or suffix of the name rejected `steroid`, `thyroid`, `nodes`,
+    `num_vessels` and `caseload` as fixed effects. A column now counts as an
+    identifier when either
+    - its name ENDS in an identifier word as a whole token (`patient_id`,
+      `recordNo`, `subject`) and it has many distinct values, or
+    - it is integer or text valued and takes a different value in nearly
+      every row, whatever it is called.
+    """
+    values = series.dropna()
+    n = len(values)
     if n < 5:
         return False
     try:
-        nunique = series.nunique()
-        return (nunique / n) > 0.95 and pd.api.types.is_integer_dtype(series)
+        n_levels = int(values.nunique())
     except Exception:
         return False
+    tokens = _name_tokens(col)
+    if tokens and tokens[-1] in _ID_NAME_TOKENS and n_levels >= _ID_MIN_LEVELS:
+        return True
+    code_like = pd.api.types.is_integer_dtype(values) or not pd.api.types.is_numeric_dtype(values)
+    return code_like and (n_levels / n) > _ID_MIN_UNIQUE_RATIO
 
 
 @router.post("/lmm")

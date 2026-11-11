@@ -24,8 +24,12 @@ from sklearn.model_selection import KFold, ParameterSampler, RepeatedKFold
 from lifelines import CoxPHFitter
 from lifelines.utils import concordance_index
 
-from services.model_validation import compute_calibration_slope_intercept
+from services.model_validation import IPCW_NOTE, compute_cox_calibration_slope, ipcw_horizon_weights
 from services.external_validation import evaluate_external_validation
+
+
+# Ridge penalty used only when the unpenalised Cox fit does not converge.
+FALLBACK_PENALIZER = 0.05
 
 
 def _safe(v: Any) -> Any:
@@ -40,50 +44,43 @@ def _safe(v: Any) -> Any:
     return v
 
 
-def _risk_to_survival_probs(
+def _survival_probs_from_risk(
     risk_scores: np.ndarray,
+    durations: np.ndarray,
+    events: np.ndarray,
     time_points: np.ndarray,
-    *,
-    invert: bool = True,
-    risk_std_scale: float = 0.9,
 ) -> np.ndarray:
-    """
-    Immutable helper (Phase 12 deepened): convert risk scores into approximate
-    survival probability curves S(t) suitable for IPCW Integrated Brier Score.
+    """S(t | risk) on `time_points` from a risk score, estimated from the data.
 
-    Strategy:
-    - Standardize risks (mean 0, controlled std) so the relative hazard exp()
-      term has a sensible dynamic range regardless of whether the input came
-      from GB regression or Cox partial hazard.
-    - Use a simple linear ramp baseline cumulative hazard derived from the
-      observed time scale (good enough for demo + property testing).
-    - Explicit invert flag ensures higher risk always maps to lower survival.
+    A one-covariate Cox model is fitted on the standardised score, and its
+    Breslow baseline gives S_i(t) = S0(t) ** exp(b * z_i). The direction and
+    the size of the score's effect, and the baseline, all come from the
+    observed follow-up; nothing is assumed about the scale of the score. With
+    b > 0 (a score where higher means worse) a higher score always gives a
+    lower survival probability.
+
+    Returns an array of shape (n, len(time_points)).
     """
     risk = np.asarray(risk_scores, dtype=float)
     times = np.asarray(time_points, dtype=float)
-
     if len(risk) == 0 or len(times) == 0:
         return np.ones((len(risk), len(times)))
 
-    # Standardize per-model (critical: GB risks and Cox LP live on different scales)
-    risk = risk - np.nanmean(risk)
-    rstd = np.nanstd(risk) or 1.0
-    risk = risk / (rstd / risk_std_scale)
-
-    if invert:
-        # Higher (standardized) risk → higher hazard multiplier → faster decay
-        eff_risk = -risk
-    else:
-        eff_risk = risk
-
-    # Data-driven-ish baseline cumulative hazard: ramp from 0 to ~1.2 over the time grid
-    # This keeps S(t) in a realistic [0.05, 0.98] band for typical clinical follow-up
-    t_max = float(times[-1]) if times[-1] > 0 else 1.0
-    cumhaz0 = (times / max(t_max, 1e-6)) * 1.15
-
-    # S_i(t) = exp( -Λ0(t) * exp(eff_risk_i) )
-    surv = np.exp(-cumhaz0[None, :] * np.exp(eff_risk)[:, None])
+    spread = float(np.nanstd(risk))
+    z = (risk - float(np.nanmean(risk))) / (spread if spread > 0 else 1.0)
+    frame = pd.DataFrame({"z": z, "_d_": np.asarray(durations, dtype=float), "_e_": np.asarray(events, dtype=int)})
+    cph = CoxPHFitter().fit(frame, duration_col="_d_", event_col="_e_")
+    surv = cph.predict_survival_function(frame[["z"]], times=times).to_numpy().T
     return np.clip(surv, 1e-5, 1.0 - 1e-5)
+
+
+def _dummy_code(series: pd.Series, name: str) -> pd.DataFrame:
+    """Dummy columns for a categorical predictor, first level as reference."""
+    return pd.get_dummies(series.astype(str), prefix=name, drop_first=True).astype(float)
+
+
+def _is_categorical(series: pd.Series) -> bool:
+    return not (pd.api.types.is_numeric_dtype(series) or pd.api.types.is_bool_dtype(series))
 
 
 def _prepare_survival_design(
@@ -92,20 +89,57 @@ def _prepare_survival_design(
     event_col: str,
     predictors: List[str],
 ) -> Tuple[pd.DataFrame, np.ndarray, np.ndarray, List[str], List[int]]:
-    needed = [duration_col, event_col] + predictors
-    work = df[needed].copy()
-    X = work[predictors].copy()
-    for c in predictors:
-        if X[c].dtype == object or str(X[c].dtype).startswith("category"):
-            X[c] = pd.Categorical(X[c]).codes
-    X = X.apply(pd.to_numeric, errors="coerce")
+    """Complete-case design matrix for the survival benchmark.
+
+    Rows with a missing value in any column, or a duration that is not
+    positive, are dropped. Categorical predictors are dummy-coded against
+    their first level; integer category codes would enter the Cox model as
+    one linear term and would turn a missing value into a level of its own.
+
+    Raises:
+        ValueError: when the event column holds anything other than 0 and 1.
+    """
+    work = df[[duration_col, event_col] + predictors].copy()
     work[duration_col] = pd.to_numeric(work[duration_col], errors="coerce")
     work[event_col] = pd.to_numeric(work[event_col], errors="coerce")
-    mask = work[[duration_col, event_col]].notna().all(axis=1) & X.notna().all(axis=1)
-    X = X.loc[mask].astype(float).reset_index(drop=True)
-    durations = work.loc[mask, duration_col].astype(float).to_numpy()
-    events = work.loc[mask, event_col].astype(int).to_numpy()
-    return X, durations, events, list(X.columns), work.index[mask].tolist()
+    categorical = [c for c in predictors if _is_categorical(work[c])]
+    for c in predictors:
+        if c not in categorical:
+            work[c] = pd.to_numeric(work[c], errors="coerce")
+    work = work.dropna()
+    work = work[work[duration_col] > 0]
+
+    bad_events = sorted(set(work[event_col].unique()) - {0, 1})
+    if bad_events:
+        raise ValueError(
+            f"Event column '{event_col}' must be coded 0 (censored) / 1 (event). Found: {bad_events[:5]}"
+        )
+
+    parts = [
+        _dummy_code(work[c], c) if c in categorical else work[c].astype(float).to_frame(c)
+        for c in predictors
+    ]
+    X = pd.concat(parts, axis=1) if parts else pd.DataFrame(index=work.index)
+    kept_index = work.index.tolist()
+    durations = work[duration_col].astype(float).to_numpy()
+    events = work[event_col].astype(int).to_numpy()
+    return X.reset_index(drop=True), durations, events, list(X.columns), kept_index
+
+
+def _fit_cox_baseline(cox_df: pd.DataFrame, duration_col: str, event_col: str) -> Tuple[CoxPHFitter, float]:
+    """Unpenalised Cox fit; a ridge penalty is used only if that fails.
+
+    Returns the fitted model and the penalizer that was applied (0.0 for the
+    ordinary partial-likelihood fit).
+    """
+    try:
+        cph = CoxPHFitter().fit(cox_df, duration_col=duration_col, event_col=event_col, robust=True)
+        return cph, 0.0
+    except Exception:
+        cph = CoxPHFitter(penalizer=FALLBACK_PENALIZER).fit(
+            cox_df, duration_col=duration_col, event_col=event_col, robust=True
+        )
+        return cph, FALLBACK_PENALIZER
 
 
 def _fit_gb_survival(
@@ -339,26 +373,32 @@ def _calibration_curve_at_times(
     for j, t in enumerate(time_points):
         pred = np.clip(pred_event[:, j], 1e-6, 1.0 - 1e-6)
         obs = ((durations <= t) & (events == 1)).astype(float)
+        # Subjects censored before t have unknown status: weight 0, and the
+        # rest are up-weighted so each bin estimates the event proportion.
+        weights = ipcw_horizon_weights(durations, events, float(t))
         try:
             bins = pd.qcut(pred, q=min(n_bins, len(np.unique(pred))), duplicates="drop")
         except Exception:
             bins = pd.cut(pred, bins=min(n_bins, max(2, len(np.unique(pred)))), duplicates="drop")
-        frame = pd.DataFrame({"pred": pred, "obs": obs, "bin": bins})
+        frame = pd.DataFrame({"pred": pred, "obs": obs, "w": weights, "bin": bins})
         bin_rows = []
         hl = 0.0
         for _, g in frame.groupby("bin", observed=False):
-            n = len(g)
-            exp_events = float(g["pred"].sum())
-            obs_events = float(g["obs"].sum())
-            exp_nonevents = n - exp_events
-            obs_nonevents = n - obs_events
+            known = g[g["w"] > 0]
+            if len(known) == 0:
+                continue
+            n = len(known)
+            obs_rate = float(np.average(known["obs"], weights=known["w"]))
+            pred_rate = float(np.average(known["pred"], weights=known["w"]))
+            exp_events, obs_events = n * pred_rate, n * obs_rate
             hl += ((obs_events - exp_events) ** 2) / max(exp_events, 1e-6)
-            hl += ((obs_nonevents - exp_nonevents) ** 2) / max(exp_nonevents, 1e-6)
+            hl += ((obs_events - exp_events) ** 2) / max(n - exp_events, 1e-6)
             bin_rows.append({
-                "n": int(n),
-                "mean_predicted_event": round(float(g["pred"].mean()), 4),
-                "observed_event_rate": round(float(g["obs"].mean()), 4),
-                "absolute_error": round(float(abs(g["obs"].mean() - g["pred"].mean())), 4),
+                "n": int(len(g)),
+                "n_censored_before_time": int(len(g) - n),
+                "mean_predicted_event": round(pred_rate, 4),
+                "observed_event_rate": round(obs_rate, 4),
+                "absolute_error": round(abs(obs_rate - pred_rate), 4),
             })
         abs_errors = [r["absolute_error"] for r in bin_rows]
         df_hl = max(len(bin_rows) - 2, 1)
@@ -489,11 +529,11 @@ def run_survival_ml_benchmark(
     df_work = df.loc[kept_index].reset_index(drop=True)
 
     # --- 1. Classical Cox baseline ---
-    cox_df = pd.concat([df_work[[duration_col, event_col]], X], axis=1)
-    cph = CoxPHFitter(penalizer=0.05)
-    cph.fit(cox_df, duration_col=duration_col, event_col=event_col, robust=True)
+    cox_df = X.assign(**{duration_col: y_duration, event_col: y_event})
+    cph, cox_penalizer = _fit_cox_baseline(cox_df, duration_col, event_col)
 
-    cox_lp = cph.predict_partial_hazard(X).values
+    # Linear predictor (log partial hazard), not the partial hazard exp(LP).
+    cox_lp = cph.predict_log_partial_hazard(X).to_numpy(dtype=float)
     cox_c = float(cph.concordance_index_)
 
     # --- 2. Practical ML Survival model (Gradient Boosting ranking) ---
@@ -517,16 +557,12 @@ def run_survival_ml_benchmark(
     # We use the risk scores to compute a simple C-index style comparison
     ml_c = _c_index(y_duration, y_event, ml_risk)
 
-    # Calibration using LP-style for both
-    try:
-        cox_cal = compute_calibration_slope_intercept(y_event, cox_lp, duration=y_duration)
-    except Exception:
-        cox_cal = {}
-
-    try:
-        ml_cal = compute_calibration_slope_intercept(y_event, ml_risk, duration=y_duration)
-    except Exception:
-        ml_cal = {}
+    # Calibration slope of a survival model: the coefficient of its linear
+    # predictor in a Cox model on the same data. The GB score is a predicted
+    # negative duration, not a log hazard, so it has no calibration slope.
+    surv_frame = pd.DataFrame({duration_col: y_duration, event_col: y_event})
+    cox_cal = compute_cox_calibration_slope(surv_frame, duration_col, event_col, cox_lp)
+    ml_cal: Dict[str, Any] = {"calibration_slope": None}
 
     # Prepare risk scores for Phase 9 external validation (higher = higher risk)
     ml_risk_scores = ml_risk.astype(float)
@@ -541,10 +577,10 @@ def run_survival_ml_benchmark(
     time_grid = np.percentile(y_duration, [20, 40, 60, 80])
     time_grid = np.clip(time_grid, 0.1, None)
 
-    # Explicit inversion: our ML risk and Cox LP are "higher = worse"
-    # _risk_to_survival_probs(..., invert=True) ensures high-risk subjects get lower S(t)
-    ml_surv_probs = _risk_to_survival_probs(ml_risk_scores, time_grid, invert=True)
-    cox_surv_probs = _risk_to_survival_probs(cox_risk_scores, time_grid, invert=True)
+    # Both scores are "higher = worse". Each is mapped to S(t) through a Cox
+    # model on the score with a Breslow baseline estimated from these data.
+    ml_surv_probs = _survival_probs_from_risk(ml_risk_scores, y_duration, y_event, time_grid)
+    cox_surv_probs = _survival_probs_from_risk(cox_risk_scores, y_duration, y_event, time_grid)
 
     full_validation = {}
     try:
@@ -585,13 +621,13 @@ def run_survival_ml_benchmark(
             {
                 "name": "Classical Cox",
                 "c_index": full_validation.get("cox", {}).get("validation_c_index") if isinstance(full_validation.get("cox"), dict) else None,
-                "calibration_slope": full_validation.get("cox", {}).get("validation_calibration_slope") if isinstance(full_validation.get("cox"), dict) else None,
+                "calibration_slope": cox_cal.get("calibration_slope"),
                 "ibs": cox_ibs,
             },
             {
                 "name": "Gradient Boosting Survival (ranking)",
                 "c_index": full_validation.get("ml", {}).get("validation_c_index") if isinstance(full_validation.get("ml"), dict) else None,
-                "calibration_slope": full_validation.get("ml", {}).get("validation_calibration_slope") if isinstance(full_validation.get("ml"), dict) else None,
+                "calibration_slope": ml_cal.get("calibration_slope"),
                 "ibs": ml_ibs,
             },
         ],
@@ -613,12 +649,22 @@ def run_survival_ml_benchmark(
     # Rich metadata (immutable construction, following project conventions)
     assumptions = [
         "Gradient Boosting treats survival as a censored ranking / accelerated failure time surrogate (negative duration target + event weighting).",
-        "Survival probabilities are approximated via exponential decay model calibrated to observed time scale; not a full parametric or non-parametric cumulative hazard estimator.",
-        "Risk direction: higher ML risk score and higher Cox LP both correspond to worse prognosis (shorter survival). Inversion applied before S(t) generation.",
+        "Survival probabilities S(t) come from a Cox model on each model's standardised risk score with a Breslow baseline hazard, both estimated on the analysed rows. They are in-sample (apparent) predictions.",
+        "Risk direction: higher ML risk score and higher Cox linear predictor both correspond to worse prognosis, so a higher score gives a lower S(t).",
+        "Calibration slope is the coefficient of the linear predictor in a Cox model on the same data (1 = no over- or under-fitting; exactly 1 in-sample for an unpenalised Cox model). The gradient-boosting score is a predicted negative duration, not a log hazard, so no calibration slope is reported for it.",
+        "Calibration bins compare predicted 1 - S(t) with the observed event proportion estimated by inverse probability of censoring weights; subjects censored before t are not counted as event-free.",
         "Phase 9 external_validation receives both LP (for C-index/calibration) and generated S(t) curves (for proper IPCW IBS and tdAUC).",
         "The headline classical_cox and ml_gradient_boosting_survival C-indices are APPARENT (resubstitution) values — the model is scored on the same rows it was fitted on. Gradient boosting is far more prone to this optimism than Cox, so the two are not directly comparable. Use repeated_cv for the honest, out-of-sample estimate.",
     ]
     warnings = []
+    if cox_penalizer > 0:
+        warnings.append(
+            f"The unpenalised Cox model did not converge; the Cox baseline uses a ridge penalty of {cox_penalizer}, "
+            "which shrinks its coefficients towards zero."
+        )
+    n_dropped = int(len(df) - len(df_work))
+    if n_dropped:
+        warnings.append(f"{n_dropped} row(s) with a missing value or a non-positive duration were excluded.")
     if ml_c is None:
         warnings.append("ML C-index could not be computed in-sample.")
     if "error" in full_validation:
@@ -651,7 +697,9 @@ def run_survival_ml_benchmark(
     calibration_assessment = {
         "ml": _calibration_curve_at_times(y_duration, y_event, ml_surv_probs, time_grid),
         "cox": _calibration_curve_at_times(y_duration, y_event, cox_surv_probs, time_grid),
-        "interpretation": "Calibration compares predicted event probability 1-S(t) with observed event rate by risk bins at each time point.",
+        "interpretation": "Calibration compares predicted event probability 1-S(t) with the IPCW-estimated observed event proportion by risk bins at each time point.",
+        "censoring_adjustment": "ipcw",
+        "note": IPCW_NOTE,
     }
     pdp = []
     if include_partial_dependence:
@@ -700,11 +748,14 @@ def run_survival_ml_benchmark(
             # Scored on the fitting rows — consumers must label it as such.
             "c_index_type": "apparent",
             "calibration_slope": cox_cal.get("calibration_slope"),
+            "calibration_slope_method": "Cox regression on the linear predictor",
+            "penalizer": cox_penalizer,
         },
         "ml_gradient_boosting_survival": {
             "c_index": round(float(ml_c), 4) if ml_c else None,
             "c_index_type": "apparent",
             "calibration_slope": ml_cal.get("calibration_slope"),
+            "calibration_slope_note": "Not defined: the score is a predicted negative duration, not a log hazard.",
             "permutation_importance": importance[:8],
             "shap_values": shap_values,
             "partial_dependence": pdp,

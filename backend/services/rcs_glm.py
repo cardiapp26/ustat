@@ -65,7 +65,12 @@ def fit_glm(
     import statsmodels.api as sm_api
 
     if model_type == "logistic":
-        return _wrap(sm_api.Logit(y, X).fit(disp=0, maxiter=200), X, f_tests=False)
+        # Binomial GLM (IRLS) gives the Logit maximum-likelihood fit, but does
+        # not start Newton steps from zero on the raw design. Logit did, and
+        # failed with "Singular matrix" for predictors on a small scale
+        # (values around 0.01), where the same model on rescaled x fitted.
+        res = sm_api.GLM(y, X, family=sm_api.families.Binomial()).fit(maxiter=200)
+        return _wrap(res, X, f_tests=False)
     if model_type == "linear":
         return _wrap(sm_api.OLS(y, X).fit(), X, f_tests=True)
     if model_type in COUNT_MODEL_TYPES:

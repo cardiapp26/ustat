@@ -350,69 +350,6 @@ def pool_linear_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-def pool_cox_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """
-    Pool Cox PH results across multiple imputations using Rubin's Rules (on log HR scale).
-
-    Expects each result to have:
-    - 'coefficients': dict like {var: hr_value} or list of {'variable': , 'estimate': loghr or hr}
-    """
-    if not results:
-        return {}
-
-    # Normalize coefficients to log(HR) scale
-    all_vars = set()
-    for res in results:
-        coefs = res.get("coefficients", {})
-        if isinstance(coefs, dict):
-            all_vars.update(coefs.keys())
-        elif isinstance(coefs, list):
-            for c in coefs:
-                if "variable" in c:
-                    all_vars.add(c["variable"])
-
-    pooled = {}
-    for var in sorted(all_vars):
-        loghr_list = []
-        for res in results:
-            coefs = res.get("coefficients", {})
-            val = None
-            if isinstance(coefs, dict):
-                val = coefs.get(var)
-            elif isinstance(coefs, list):
-                for c in coefs:
-                    if c.get("variable") == var:
-                        val = c.get("estimate") or c.get("log_hr") or c.get("hr")
-                        break
-
-            if val is not None and val > 0:
-                loghr_list.append(np.log(val))
-
-        if not loghr_list:
-            continue
-
-        loghr_arr = np.array(loghr_list)
-        Q_bar = float(np.mean(loghr_arr))
-        U_bar = float(np.var(loghr_arr, ddof=1)) / len(loghr_arr) if len(loghr_arr) > 1 else 0.0
-        B = float(np.var(loghr_arr, ddof=1)) if len(loghr_arr) > 1 else 0.0
-        T = U_bar + (1 + 1 / len(results)) * B
-
-        pooled_se = float(np.sqrt(max(T, 1e-12)))
-        hr = float(np.exp(Q_bar))
-
-        pooled[var] = {
-            "hr": round(hr, 4),
-            "log_hr": round(Q_bar, 6),
-            "se_log_hr": round(pooled_se, 6),
-        }
-
-    return {
-        "method": "rubins_rules_pooled_cox",
-        "n_imputations": len(results),
-        "coefficients": pooled,
-    }
-
-
 def pool_logistic_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Pool logistic regression results across multiple imputations using Rubin's Rules.

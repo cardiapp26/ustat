@@ -33,6 +33,11 @@ from services.assumptions import (
 
 router = APIRouter()
 
+# statsmodels GLM and discrete-count results have no leverage-based sandwich:
+# cov_type "HC1", "HC2" or "HC3" all return the HC0 (White) estimate. Request
+# and report the one that is actually computed.
+GLM_ROBUST_COV = "HC0"
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _get_df(session_id: str) -> pd.DataFrame:
@@ -175,7 +180,7 @@ def poisson_regression(req: PoissonRequest):
         # uncaught ValueError (a 500). There is nothing to model when the event
         # never happens, so reject it clearly.
         raise HTTPException(status_code=422, detail="Poisson regression needs at least one non-zero count; the outcome is zero for every row.")
-    cov_type = "HC3" if req.robust_se else "nonrobust"
+    cov_type = GLM_ROBUST_COV if req.robust_se else "nonrobust"
     try:
         model = sm.GLM(y, X, family=sm.families.Poisson(), exposure=exposure).fit(cov_type=cov_type)
     except (ValueError, np.linalg.LinAlgError) as exc:
@@ -214,6 +219,7 @@ def poisson_regression(req: PoissonRequest):
         })
     return _sanitize({
         "model": f"Poisson Regression{' [Robust SE]' if req.robust_se else ''}",
+        "robust_se_type": GLM_ROBUST_COV if req.robust_se else None,
         "outcome": req.outcome,
         "n": int(model.nobs),
         "n_excluded": n_excluded,
@@ -289,7 +295,7 @@ def gamma_regression(req: GammaRequest):
         raise HTTPException(status_code=422, detail=f"Invalid link function '{req.link}'. Valid: {valid_links}")
     link_map = {"log": sm.families.links.Log(), "identity": sm.families.links.Identity(), "inverse": sm.families.links.InversePower()}
     family = sm.families.Gamma(link=link_map.get(req.link, sm.families.links.Log()))
-    cov_type = "HC3" if req.robust_se else "nonrobust"
+    cov_type = GLM_ROBUST_COV if req.robust_se else "nonrobust"
     model = sm.GLM(y, X, family=family).fit(cov_type=cov_type)
     ci = model.conf_int()
 
@@ -325,6 +331,7 @@ def gamma_regression(req: GammaRequest):
 
     return _sanitize({
         "model": f"Gamma GLM (link={req.link}){' [Robust SE]' if req.robust_se else ''}",
+        "robust_se_type": GLM_ROBUST_COV if req.robust_se else None,
         "outcome": req.outcome,
         "link": req.link,
         "n": int(model.nobs),
@@ -387,7 +394,7 @@ def negative_binomial_regression(req: NegBinomRequest):
         raise HTTPException(status_code=422, detail="Negative binomial requires non-negative integer counts.")
     if (y.dropna() % 1 != 0).any():
         raise HTTPException(status_code=422, detail="Negative binomial requires integer counts. Fractional values found.")
-    cov_type = "HC3" if req.robust_se else "nonrobust"
+    cov_type = GLM_ROBUST_COV if req.robust_se else "nonrobust"
     # The dispersion is estimated by maximum likelihood jointly with the
     # coefficients, the way R's MASS::glm.nb does it.
     #
@@ -443,6 +450,7 @@ def negative_binomial_regression(req: NegBinomRequest):
 
     return _sanitize({
         "model": f"Negative Binomial Regression{' [Robust SE]' if req.robust_se else ''}",
+        "robust_se_type": GLM_ROBUST_COV if req.robust_se else None,
         "outcome": req.outcome,
         "n": int(model.nobs),
         "n_excluded": n_excluded,
@@ -829,11 +837,7 @@ def ordinal_regression(req: OrdinalRequest):
             "or_ci_high": math.exp(hi) if hi is not None else None,
         })
 
-    # Cumulative cut-points (thresholds) — params after the predictor betas.
-    thresholds = []
-    for name in result.params.index:
-        if name not in exog_names:
-            thresholds.append({"boundary": str(name), "coef": float(result.params[name])})
+    thresholds = _ordinal_cutpoints(model, result, exog_names)
 
     # McFadden pseudo-R² against the intercept-only (category-frequency) model.
     pseudo_r2 = None
@@ -870,6 +874,24 @@ def ordinal_regression(req: OrdinalRequest):
     ordinal_report = check_ordinal_assumptions_placeholder()
     res = add_assumption_warnings_to_result(res, ordinal_report)
     return _sanitize(res)
+
+
+def _ordinal_cutpoints(model, result, exog_names: list) -> list:
+    """Cumulative cut-points on the latent scale, low to high.
+
+    OrderedModel does not store the cut-points: it stores the first one and
+    then the LOG of each increment, which keeps them ordered during the fit.
+    Reporting those parameters as cut-points gave 7.43, -0.07, 0.12 where the
+    cut-points are 7.43, 8.36, 9.49. `transform_threshold_params` converts
+    them (it pads -inf and +inf at the ends).
+    """
+    names = [str(n) for n in result.params.index if n not in exog_names]
+    raw = np.asarray([float(result.params[n]) for n in result.params.index if n not in exog_names])
+    cuts = np.asarray(model.transform_threshold_params(raw), dtype=float)[1:-1]
+    return [
+        {"boundary": name, "coef": float(cut), "raw_param": float(param)}
+        for name, cut, param in zip(names, cuts, raw)
+    ]
 
 
 _ORDER_SOURCE_PHRASE = {

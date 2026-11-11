@@ -23,6 +23,7 @@ from services.psm import (
     _pooled_sd,
     _rosenbaum_bounds,
     _variance_ratio,
+    smd_before_after,
 )
 
 router = APIRouter()
@@ -328,24 +329,23 @@ def _run_psm(req: PSMRequest):
     df_matched["_match_id_"] = match_ids
 
     smd_before, smd_after = {}, {}
+    smd_levels: dict = {}
     var_ratio_before, var_ratio_after = {}, {}
     ks_before, ks_after = {}, {}
     treat_mask = df["_treat_"].values
     for cov in req.covariates:
         col = df[cov]
         col_m = df_matched[cov]
-        denom = _pooled_sd(col[treat_mask == 1], col[treat_mask == 0])
-        smd_before[cov] = round(
-            _compute_smd(col[treat_mask == 1], col[treat_mask == 0], denom_sd=denom), 4
+        # Nominal covariates with 3+ levels report their largest level SMD,
+        # so the < 0.10 balance check cannot pass on an average of codes.
+        before, after, per_level = smd_before_after(
+            col[treat_mask == 1], col[treat_mask == 0],
+            col_m[df_matched["_treat_"] == 1], col_m[df_matched["_treat_"] == 0],
         )
-        smd_after[cov] = round(
-            _compute_smd(
-                col_m[df_matched["_treat_"] == 1],
-                col_m[df_matched["_treat_"] == 0],
-                denom_sd=denom,
-            ),
-            4,
-        )
+        smd_before[cov] = round(before, 4)
+        smd_after[cov] = round(after, 4)
+        if per_level is not None:
+            smd_levels[cov] = per_level
         var_ratio_before[cov] = _variance_ratio(col[treat_mask == 1], col[treat_mask == 0])
         var_ratio_after[cov] = _variance_ratio(
             col_m[df_matched["_treat_"] == 1], col_m[df_matched["_treat_"] == 0]
@@ -647,6 +647,9 @@ def _run_psm(req: PSMRequest):
         "reduction_pct": round(reduction_pct, 1),
         "smd_before": smd_before,
         "smd_after": smd_after,
+        # Nominal covariates with 3+ levels: SMD of each level's proportion.
+        # Their smd_before / smd_after entries are the largest of these.
+        "smd_by_level": smd_levels,
         "variance_ratio_before": var_ratio_before,
         "variance_ratio_after": var_ratio_after,
         "ks_p_before": ks_before,
@@ -678,6 +681,25 @@ async def iptw_analysis(req: IPTWRequest):
         )
 
 
+def _require_binary_outcome(series: pd.Series, name: str) -> None:
+    """422 unless the outcome is coded 0/1.
+
+    The weighted outcome model is a binomial GLM. A continuous outcome went
+    straight into it and came back as an estimate of -3.2e15, an odds ratio
+    of 0 and NaN standard errors, with no error raised.
+    """
+    values = pd.to_numeric(series, errors="coerce")
+    found = sorted(pd.unique(series.dropna()).tolist(), key=str)[:10]
+    if values.isna().any() or set(values.unique().tolist()) - {0, 1, 0.0, 1.0}:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"IPTW outcome '{name}' must be binary, coded 0/1. Found values: {found}. "
+                "Recode it to 0/1, or choose a survival outcome."
+            ),
+        )
+
+
 def _run_iptw(req: IPTWRequest):
     df_full = _get_df(req.session_id)
     needed = [req.treatment_col] + req.covariates
@@ -688,6 +710,8 @@ def _run_iptw(req: IPTWRequest):
 
     df = apply_imputation(df_full, [c for c in needed if c], req.imputation or "listwise")
     df, cat_warnings = _clean_covariate_categories(df, req.covariates)
+    if req.outcome_type == "binary" and req.outcome_col:
+        _require_binary_outcome(df[req.outcome_col], req.outcome_col)
 
     treat = _binary_treatment(df[req.treatment_col], req.treatment_col)
     X = pd.get_dummies(df[req.covariates], drop_first=True).astype(float)
@@ -997,7 +1021,7 @@ def _iptw_results_text(estimand, outcome_result, warnings):
     parts = [f"IPTW analysis was performed for the {estimand.upper()} estimand."]
     if outcome_result and "error" not in outcome_result:
         if outcome_result.get("type") == "weighted_glm":
-            parts.append("A weighted logistic/linear model was fit on the inverse probability weights.")
+            parts.append("A weighted logistic regression of the outcome on treatment was fit with the inverse probability weights.")
         elif outcome_result.get("type") == "weighted_cox":
             parts.append("A weighted Cox model was fit using the stabilized/truncated weights.")
     if warnings:

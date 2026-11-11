@@ -90,7 +90,10 @@ def _fit_outcome(
             detail=f"Outcome '{outcome}' has n={n}, which is too small for k={k} predictors.",
         )
 
-    model = sm.OLS(y, X).fit(cov_type="HC3" if robust_se else "nonrobust")
+    # use_t=True: with a cov_type statsmodels switches to the normal
+    # distribution, which undoes HC3's small-sample correction and disagreed
+    # with /api/models/linear for the same model (p 0.00443 against 0.00466).
+    model = sm.OLS(y, X).fit(cov_type="HC3" if robust_se else "nonrobust", use_t=True)
     ci = model.conf_int()
     y_std = float(y.std())
 
