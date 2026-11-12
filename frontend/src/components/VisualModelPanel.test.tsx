@@ -20,10 +20,10 @@ beforeEach(() => {
 const fourColSession = () =>
   makeSession({
     columns: [
+      { name: 'PatientID', dtype: 'int64', kind: 'numeric', id_like: true },
       { name: 'Y', dtype: 'float64', kind: 'numeric' },
       { name: 'X', dtype: 'float64', kind: 'numeric' },
       { name: 'Z', dtype: 'float64', kind: 'numeric' },
-      { name: 'PatientID', dtype: 'int64', kind: 'numeric' },
     ],
     preview: [
       { Y: 1, X: 2, Z: 3, PatientID: 1 },
@@ -113,6 +113,30 @@ describe('VisualModelPanel', () => {
     await waitFor(() =>
       expect(screen.getByText('Predictor has zero variance')).toBeInTheDocument(),
     )
+  })
+
+  it.each([
+    ['patient_id', 'patient_id'],
+    ['centre', 'centre'],
+  ])('LMM tab: chooses a grouping column other than the outcome with %s in the data', async (cluster, expectedGroup) => {
+    installSession(makeSession({
+      rows: 16,
+      columns: [
+        { name: 'age', dtype: 'int64', kind: 'numeric', id_like: false },
+        { name: 'score', dtype: 'float64', kind: 'numeric', id_like: false },
+        { name: cluster, dtype: 'int64', kind: 'numeric', id_like: false },
+      ],
+      preview: Array.from({ length: 16 }, (_, i) => ({ age: 42, score: i / 2, [cluster]: i % 8 })),
+    }))
+    const user = userEvent.setup()
+    render(<VisualModelPanel initialModel="lmm" />)
+
+    const outcome = selectAfterLabel('Outcome')
+    const group = selectAfterLabel('Grouping variable')
+    expect(outcome).toHaveValue('age')
+    expect(group).toHaveValue(expectedGroup)
+    await user.selectOptions(outcome, expectedGroup)
+    expect(group).toHaveValue('')
   })
 
   it('LMM tab: fits a mixed model with grouping variable and renders ICC', async () => {
@@ -355,5 +379,31 @@ describe('VisualModelPanel', () => {
 
     expect(await screen.findByText(/Out of date\./)).toBeInTheDocument()
     expect(screen.getByText(/the data changed/)).toBeInTheDocument()
+  })
+})
+
+describe('VisualModelPanel LMM default grouping', () => {
+  it('prefers a repeating cluster over a one-row-per-patient ID', async () => {
+    installSession(makeSession({
+      columns: [
+        { name: 'pid', dtype: 'int64', kind: 'numeric' },
+        { name: 'site', dtype: 'object', kind: 'categorical' },
+        { name: 'qol', dtype: 'float64', kind: 'numeric' },
+        { name: 'age', dtype: 'float64', kind: 'numeric' },
+      ],
+      rows: 4,
+      preview: [
+        { pid: 1, site: 's1', qol: 70, age: 60 },
+        { pid: 2, site: 's1', qol: 65, age: 55 },
+        { pid: 3, site: 's2', qol: 72, age: 63 },
+        { pid: 4, site: 's2', qol: 68, age: 58 },
+      ],
+    }))
+    const user = userEvent.setup()
+    render(<VisualModelPanel />)
+    await user.click(screen.getByRole('button', { name: 'Linear Mixed Model' }))
+    const label = screen.getByText(/^Grouping variable/)
+    const select = (label.closest('div') as HTMLElement).querySelector('select') as HTMLSelectElement
+    expect(select.value).toBe('site')
   })
 })

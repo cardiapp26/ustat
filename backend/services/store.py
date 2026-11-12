@@ -11,6 +11,8 @@ import os
 import tempfile
 import threading
 from copy import deepcopy
+from dataclasses import dataclass
+from uuid import uuid4
 import pandas as pd
 from typing import Dict, List, Optional
 import time
@@ -173,34 +175,50 @@ def _cleanup_old_sessions(force: bool = False) -> None:
                 _metadata.pop(sid, None)
 
 
-def save(session_id: str, df: pd.DataFrame, track_undo: bool = True) -> None:
+def save(
+    session_id: str,
+    df: pd.DataFrame,
+    track_undo: bool = True,
+    *,
+    expected_df: Optional[pd.DataFrame] = None,
+) -> None:
     """Save dataframe with timestamp for TTL tracking.
     If track_undo=True, pushes the previous state onto the undo stack.
     """
     _cleanup_old_sessions()
-    n_cells = int(df.shape[0]) * int(df.shape[1])
+    _check_session_size(*df.shape)
+    with _lock:
+        if expected_df is not None and _store.get(session_id, {}).get("df") is not expected_df:
+            raise HTTPException(status_code=409, detail="The dataset changed while this edit was in progress.")
+        _save_locked(session_id, df, track_undo)
+    log_action(session_id, "data_updated")
+
+
+def _check_session_size(rows: int, columns: int) -> None:
+    n_cells = rows * columns
     if n_cells > MAX_SESSION_CELLS:
         raise HTTPException(
             status_code=413,
             detail=(
-                f"Dataset too large: {df.shape[0]:,} rows × {df.shape[1]:,} cols "
+                f"Dataset too large: {rows:,} rows × {columns:,} cols "
                 f"= {n_cells:,} cells (limit {MAX_SESSION_CELLS:,})."
             ),
         )
-    with _lock:
-        # Push current state to undo stack before overwriting
-        if track_undo and session_id in _store:
-            old_df = _store[session_id]["df"]
-            _undo.setdefault(session_id, []).append(
-                _undo_snapshot(session_id, old_df, include_column_state=False)
-            )
-            if len(_undo[session_id]) > MAX_UNDO:
-                _undo[session_id] = _undo[session_id][-MAX_UNDO:]
-            # Clear redo stack on new action
-            _redo.pop(session_id, None)
-        _store[session_id] = {"df": df, "timestamp": time.time()}
-        _dirty.add(session_id)
-    log_action(session_id, "data_updated")
+
+
+def _save_locked(
+    session_id: str, df: pd.DataFrame, track_undo: bool, *, include_column_state: bool = False
+) -> None:
+    if track_undo and session_id in _store:
+        old_df = _store[session_id]["df"]
+        _undo.setdefault(session_id, []).append(
+            _undo_snapshot(session_id, old_df, include_column_state=include_column_state)
+        )
+        if len(_undo[session_id]) > MAX_UNDO:
+            _undo[session_id] = _undo[session_id][-MAX_UNDO:]
+        _redo.pop(session_id, None)
+    _store[session_id] = {"df": df, "timestamp": time.time()}
+    _dirty.add(session_id)
 
 
 def delete_row(session_id: str, row_index: int) -> bool:
@@ -315,41 +333,126 @@ def get_filtered(session_id: str, weighted: bool = True) -> Optional[pd.DataFram
     `weighted=False` is the Select Cases view: no Split File level and no
     weights. It is for counting rows (the "n selected" beside the filter),
     never for an analysis."""
+    df, _ = get_filtered_with_scope(session_id, weighted)
+    return df
+
+
+@dataclass(frozen=True, eq=False)
+class AnalysisScope:
+    df: pd.DataFrame
+    conditions: list[dict]
+    weight: Optional[str]
+    missing_codes: dict
+    split: Optional[_split_scope.SplitScope]
+
+
+def _analysis_scope_locked(session_id: str, df: pd.DataFrame, weighted: bool) -> AnalysisScope:
+    coded = {
+        col: meta for col, meta in (_metadata.get(session_id) or {}).items()
+        if isinstance(meta, dict) and (
+            meta.get("missing_codes") or meta.get("missing_ranges") or meta.get("missing_user_values")
+        )
+    }
+    return AnalysisScope(
+        df,
+        _filters.get(session_id, []),
+        _weights.get(session_id) if weighted else None,
+        coded,
+        _split_scope.current_split.get() if weighted else None,
+    )
+
+
+def get_filtered_with_scope(
+    session_id: str, weighted: bool = True
+) -> tuple[Optional[pd.DataFrame], Optional[AnalysisScope]]:
+    """Capture the backing frame and settings that produced an analysis view."""
     with _lock:
         entry = _store.get(session_id)
         if entry is None:
-            return None
-        df = entry["df"]
-        # Update access timestamp
+            return None, None
         entry["timestamp"] = time.time()
-        conditions = _filters.get(session_id, [])
-        weight = _weights.get(session_id)
-        coded = {
-            col: meta for col, meta in (_metadata.get(session_id) or {}).items()
-            if isinstance(meta, dict) and (
-                meta.get("missing_codes") or meta.get("missing_ranges") or meta.get("missing_user_values")
-            )
-        }
+        scope = _analysis_scope_locked(session_id, entry["df"], weighted)
     # Codes before the filter, as SPSS does: "age > 50" must not select 999.
-    df = apply_missing_codes(df, coded)
-    df = _apply_conditions(df, conditions)
-    # Split File: the level this request was sent for (services/split_scope).
-    split = _split_scope.current_split.get() if weighted else None
-    if split is not None:
+    df = apply_missing_codes(scope.df, scope.missing_codes)
+    df = _apply_conditions(df, scope.conditions)
+    if scope.split is not None:
         try:
-            df = _split_scope.apply_split(df, split)
+            df = _split_scope.apply_split(df, scope.split)
         except _split_scope.SplitScopeError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
     # Weights last, as SPSS does: Select Cases picks rows, WEIGHT BY counts them.
-    if weight and weighted:
+    if scope.weight:
         try:
-            df = _case_weights.apply_weights(df, weight)
+            df = _case_weights.apply_weights(df, scope.weight)
         except _case_weights.CaseWeightError as exc:
             raise HTTPException(
                 status_code=422,
                 detail=f"{exc} Weight Cases is on; change the weights or turn it off.",
             ) from exc
-    return df
+    return df, scope
+
+
+def _same_analysis_scope(left: AnalysisScope, right: AnalysisScope) -> bool:
+    return (
+        left.df is right.df
+        and left.conditions == right.conditions
+        and left.weight == right.weight
+        and left.missing_codes == right.missing_codes
+        and left.split == right.split
+    )
+
+
+def remember_fitted_probabilities(
+    session_id: str, scope: AnalysisScope, outcome: str, values: pd.Series
+) -> Optional[str]:
+    """Keep recent fits in session RAM, without adding row data to fit responses."""
+    if not scope.df.index.is_unique:
+        return None
+    if not values.index.is_unique:
+        # Frequency-weight replicas share a source row. They can have
+        # different predictions when their missing predictors were imputed.
+        values = values.groupby(level=list(range(values.index.nlevels)), sort=False).mean()
+    with _lock:
+        entry = _store.get(session_id)
+        if entry is None or not _same_analysis_scope(
+            scope, _analysis_scope_locked(session_id, entry["df"], weighted=True)
+        ):
+            return None
+        fits = entry.setdefault("probability_fits", {})
+        token = uuid4().hex
+        fits[token] = (scope, outcome, values)
+        # A user can fit different Split File levels or work in several tabs.
+        while len(fits) > 8:
+            fits.pop(next(iter(fits)))
+        return token
+
+
+def append_fitted_probabilities(session_id: str, token: str) -> tuple[pd.DataFrame, str, int]:
+    """Save one fit's predictions at the original row labels with normal undo."""
+    with _lock:
+        entry = _store.get(session_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        df = entry["df"]
+        fit = entry.get("probability_fits", {}).get(token)
+        current = _analysis_scope_locked(session_id, df, weighted=True)
+        if fit is None or not _same_analysis_scope(fit[0], current):
+            raise HTTPException(status_code=409, detail="These fitted probabilities are out of date or expired. Fit the model again.")
+        _, outcome, values = fit
+        _check_session_size(len(df), len(df.columns) + 1)
+        base = f"{outcome}_predicted_probability"
+        name = base
+        suffix = 2
+        while name in df.columns:
+            name = f"{base}_{suffix}"
+            suffix += 1
+        updated = df.assign(**{name: values})
+        _save_locked(session_id, updated, track_undo=True, include_column_state=True)
+        _kinds.setdefault(session_id, {})[name] = "numeric"
+        depth = len(_undo[session_id])
+    log_action(session_id, "data_updated")
+    log_action(session_id, "save_logistic_probabilities", {"outcome": outcome, "column": name})
+    return updated, name, depth
 
 
 def fill_values_by_index(session_id: str, column: str, values: Dict[int, object]) -> bool:

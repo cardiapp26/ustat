@@ -18,7 +18,7 @@ USTAT_DASH <- "\u2014"
 # numbers.py::format_p. Canonical p-value string: "<0.001" or an exact
 # 3-decimal. A second copy that rounded to "0.000" would contradict the `p`
 # field sitting beside it in the same payload.
-ustat_format_p_text <- function(p, prefix = FALSE) {
+ustat_format_p_text <- function(p, prefix = FALSE, decimals = 3L) {
   ok <- !is.null(p) && length(p) == 1L && !is.na(p) &&
     is.finite(suppressWarnings(as.numeric(p)))
   if (!ok) {
@@ -28,8 +28,13 @@ ustat_format_p_text <- function(p, prefix = FALSE) {
   if (n < 0.001) {
     return(if (prefix) "p<0.001" else "<0.001")
   }
-  body <- sprintf("%.3f", n)
+  body <- sprintf("%.*f", decimals, n)
   if (prefix) paste0("p=", body) else body
+}
+
+ustat_p_clause_text <- function(p, decimals = 3L) {
+  body <- ustat_format_p_text(p, decimals = decimals)
+  if (startsWith(body, "<")) paste0("p < ", substring(body, 2L)) else paste0("p = ", body)
 }
 
 # common.py::_es_str
@@ -134,7 +139,7 @@ ustat_results_ttest_ind_text <- function(result) {
     "The ", g1, " group (M = ", sprintf("%.2f", m1), ") ",
     if (sig) "significantly differed from" else "did not significantly differ from",
     " the ", g2, " group (M = ", sprintf("%.2f", m2), "), t(", df, ") = ",
-    sprintf("%.3f", t), ", p = ", ustat_format_p_text(p), es_text, "."
+    sprintf("%.3f", t), ", ", ustat_p_clause_text(p), es_text, "."
   )
 }
 
@@ -152,7 +157,7 @@ ustat_results_ttest_one_text <- function(result) {
     "The sample mean (M = ", sprintf("%.2f", mean), ") ",
     if (sig) "was significantly different from" else "did not significantly differ from",
     " the test value of ", mu_text, ", t(", df, ") = ", sprintf("%.3f", t),
-    ", p = ", ustat_format_p_text(p), es_text, "."
+    ", ", ustat_p_clause_text(p), es_text, "."
   )
 }
 
@@ -175,17 +180,11 @@ ustat_r_ttest_one_text <- function(col, mu_text) {
 # The two interpretation sentences, built inline in stats/ttest.py
 # ---------------------------------------------------------------------------
 
-# ttest.py spells the p in these two sentences with 4 decimals, not through
-# format_p's 3. Transcribed as it is, not as it arguably should be.
-ustat_interp_p_text <- function(p) {
-  if (p < 0.001) "<0.001" else sprintf("%.4f", p)
-}
-
 ustat_interpretation_ttest_ind_text <- function(sig, stat, p, es) {
   paste0(
     if (sig) "Significant" else "No significant",
     " difference between groups (t = ", sprintf("%.3f", stat),
-    ", p = ", ustat_interp_p_text(p),
+    ", ", ustat_p_clause_text(p, decimals = 4L),
     ", Hedges' g = ", sprintf("%.3f", as.numeric(es$value)),
     " [", as.character(es$magnitude), "])"
   )
@@ -195,7 +194,7 @@ ustat_interpretation_ttest_one_text <- function(sig, stat, p, es, mu_text) {
   paste0(
     "Mean ", if (sig) "differs from" else "does not differ from", " ", mu_text,
     " (t = ", sprintf("%.3f", stat),
-    ", p = ", ustat_interp_p_text(p),
+    ", ", ustat_p_clause_text(p, decimals = 4L),
     ", Cohen's d = ", sprintf("%.3f", as.numeric(es$value)),
     " [", as.character(es$magnitude), "])"
   )

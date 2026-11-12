@@ -139,7 +139,10 @@ interface TestEntry {
   tab: string;
   aliases?: string[];
   group?: string;
+  visualModel?: VisualModelTarget;
 }
+
+type VisualModelTarget = "gamma" | "negbinom" | "lmm";
 
 const TEST_CATALOG: TestEntry[] = [
   // Hypothesis (Tests tab)
@@ -201,12 +204,12 @@ const TEST_CATALOG: TestEntry[] = [
   { name: "Cox time-varying", tab: "models", aliases: ["cox tv", "time varying"] },
   { name: "RCS Dose-Response", tab: "models", aliases: ["restricted cubic spline", "spline"] },
   { name: "Cox-RCS (multivariable)", tab: "models", aliases: ["cox rcs", "multivariable spline"] },
-  { name: "Negative Binomial", tab: "models", aliases: ["nb regression"] },
-  { name: "Gamma GLM", tab: "models" },
+  { name: "Negative Binomial", tab: "visual", visualModel: "negbinom", aliases: ["nb regression"] },
+  { name: "Gamma GLM", tab: "visual", visualModel: "gamma" },
   { name: "Polynomial", tab: "models", aliases: ["polynomial regression"] },
   { name: "Ordinal Logistic", tab: "models", aliases: ["proportional odds"] },
   { name: "Multinomial Logistic", tab: "models", aliases: ["multinomial", "mnlogit", "polytomous", "nominal outcome", "relative risk ratio", "çok kategorili lojistik"] },
-  { name: "Mixed-effects (LMM)", tab: "models", aliases: ["lmm", "linear mixed"] },
+  { name: "Linear Mixed Model (LMM)", tab: "visual", visualModel: "lmm", aliases: ["mixed-effects"] },
   { name: "GEE", tab: "models", aliases: ["generalized estimating equations"] },
   { name: "Stepwise selection", tab: "models", aliases: ["forward backward stepwise"] },
   { name: "Random Forest", tab: "models", group: "Machine Learning", aliases: ["rf", "random orman", "ensemble", "ml", "makine öğrenmesi", "predictive"] },
@@ -493,13 +496,20 @@ function ModelsCombo() {
 
 function VisualChartsCombo() {
   const [sub, setSub] = usePersistedPanelState<"models" | "charts" | "subgroup" | "score" | "kmcomposite" | "forest" | "addedvalue">("combo_visual", "sub", "models");
+  const [modelHandoff, setModelHandoff] = useState<{ target: VisualModelTarget; key: number }>();
   // Deep-link: another panel can request a specific inner sub-tab (e.g.
   // the Cox time-horizon panel jumps straight to "forest"). Consume once.
   const visualSubTab = useStore((s) => s.visualSubTab);
   const setVisualSubTab = useStore((s) => s.setVisualSubTab);
   useEffect(() => {
     if (visualSubTab) {
-      setSub(visualSubTab as typeof sub);
+      if (visualSubTab === "gamma" || visualSubTab === "negbinom" || visualSubTab === "lmm") {
+        setModelHandoff((previous) => ({ target: visualSubTab, key: (previous?.key ?? 0) + 1 }));
+        setSub("models");
+      } else {
+        setModelHandoff(undefined);
+        setSub(visualSubTab as typeof sub);
+      }
       setVisualSubTab(null);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -516,7 +526,7 @@ function VisualChartsCombo() {
           ["kmcomposite", "KM Composite (endpoints)"],
           ["forest", "Forest plot (sensitivity / multi-endpoint)"],
         ] as const).map(([id, label]) => (
-          <button key={id} onClick={() => setSub(id)}
+          <button key={id} onClick={() => { setModelHandoff(undefined); setSub(id); }}
             className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
               sub === id ? "bg-surface text-ink-600 shadow-card border border-line" : "text-slate-500 hover:text-slate-700 hover:bg-chip"
             }`}>
@@ -525,7 +535,7 @@ function VisualChartsCombo() {
         ))}
       </div>
       <div className="flex-1 p-4 overflow-y-auto">
-        {sub === "models" ? <VisualModelPanel />
+        {sub === "models" ? <VisualModelPanel key={modelHandoff?.key ?? 0} initialModel={modelHandoff?.target} />
           : sub === "addedvalue" ? <AddedValuePanel />
           : sub === "charts" ? <ChartsPanel />
           : sub === "subgroup" ? <SubgroupBarPanel />
@@ -709,6 +719,13 @@ export default function App() {
 
   const tabLabel = (id: string) => TABS.find((t) => t.id === id)?.label ?? id;
 
+  const openTest = (entry: TestEntry) => {
+    if (entry.visualModel) useStore.getState().setVisualSubTab(entry.visualModel);
+    setActiveTab(entry.tab);
+    setShowTestSearch(false);
+    setTestQuery("");
+  };
+
   const handleOpenNew = () => setShowSaveModal(true);
 
   const handleSave = async (fmt: "csv" | "xlsx" | "json") => {
@@ -828,10 +845,7 @@ export default function App() {
                 onKeyDown={(e) => {
                   if (e.key === "Escape") { setShowTestSearch(false); (e.target as HTMLInputElement).blur(); }
                   if (e.key === "Enter" && testMatches.length > 0) {
-                    const top = testMatches[0];
-                    setActiveTab(top.tab);
-                    setShowTestSearch(false);
-                    setTestQuery("");
+                    openTest(testMatches[0]);
                   }
                 }}
                 placeholder="Search tests / models…  (ROC, Cox, Firth, Jonckheere)"
@@ -846,7 +860,7 @@ export default function App() {
                   testMatches.map((t, i) => (
                     <button
                       key={`${t.name}-${i}`}
-                      onClick={() => { setActiveTab(t.tab); setShowTestSearch(false); setTestQuery(""); }}
+                      onClick={() => openTest(t)}
                       className="w-full flex items-center justify-between gap-2 px-3 py-1.5 text-left hover:bg-indigo-50 transition-colors border-b border-gray-100 last:border-b-0"
                     >
                       <span className="flex flex-col min-w-0">

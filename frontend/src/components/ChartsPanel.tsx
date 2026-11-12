@@ -1,3 +1,4 @@
+import { analysisDefaultColumns } from "../lib/columnDefaults";
 import { useState, useRef } from "react";
 import { useStore, isNumericKind, isCategoricalKind, type Session } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
@@ -60,8 +61,9 @@ function ChartsPanelBody({ session }: { session: Session }) {
   const catCols = session.columns.filter((c) => isCategoricalKind(c.kind) && !c.analysis_excluded).map((c) => c.name);
 
   const [chartType, setChartType] = usePersistedPanelState<string>("charts", "chartType", "histogram");
-  const [x, setX] = usePersistedPanelState<string>("charts", "x", numCols[0] ?? "");
-  const [y, setY] = usePersistedPanelState<string>("charts", "y", numCols[1] ?? "");
+  const defaultNumCols = analysisDefaultColumns(session, numCols);
+  const [x, setX] = usePersistedPanelState<string>("charts", "x", defaultNumCols[0] ?? "");
+  const [y, setY] = usePersistedPanelState<string>("charts", "y", defaultNumCols[1] ?? "");
   const [color, setColor] = usePersistedPanelState<string>("charts", "color", "");
   const [pairId, setPairId] = usePersistedPanelState<string>("charts", "pairId", session.columns[0]?.name ?? "");
   const [bins, setBins] = usePersistedPanelState<number>("charts", "bins", 20);
@@ -73,8 +75,8 @@ function ChartsPanelBody({ session }: { session: Session }) {
   const [identityLine, setIdentityLine] = usePersistedPanelState<boolean>("charts", "identityLine", false);
   const [labelCol, setLabelCol] = usePersistedPanelState<string>("charts", "labelCol", "");
   // Dumbbell: two numeric columns per category, drawn as a gap.
-  const [dbStart, setDbStart] = usePersistedPanelState<string>("charts", "dbStart", numCols[0] ?? "");
-  const [dbEnd, setDbEnd] = usePersistedPanelState<string>("charts", "dbEnd", numCols[1] ?? "");
+  const [dbStart, setDbStart] = usePersistedPanelState<string>("charts", "dbStart", defaultNumCols[0] ?? "");
+  const [dbEnd, setDbEnd] = usePersistedPanelState<string>("charts", "dbEnd", defaultNumCols[1] ?? "");
   const [dbSort, setDbSort] = usePersistedPanelState<string>("charts", "dbSort", "gap");
   // Significance brackets over box / violin / bar — ggpubr's stat_compare_means.
   const [showBrackets, setShowBrackets] = usePersistedPanelState<boolean>("charts", "showBrackets", false);
@@ -153,9 +155,9 @@ function ChartsPanelBody({ session }: { session: Session }) {
   const [showSummary, setShowSummary] = usePersistedPanelState<boolean>("charts", "showSummary", false);
   // cnsplots shapes: line over an ordered axis, before/after slopes, flow,
   // stacked composition, stacked densities, set overlap.
-  const [lineY, setLineY] = usePersistedPanelState<string>("charts", "lineY", numCols[0] ?? "");
-  const [slopeBefore, setSlopeBefore] = usePersistedPanelState<string>("charts", "slopeBefore", numCols[0] ?? "");
-  const [slopeAfter, setSlopeAfter] = usePersistedPanelState<string>("charts", "slopeAfter", numCols[1] ?? "");
+  const [lineY, setLineY] = usePersistedPanelState<string>("charts", "lineY", defaultNumCols[0] ?? "");
+  const [slopeBefore, setSlopeBefore] = usePersistedPanelState<string>("charts", "slopeBefore", defaultNumCols[0] ?? "");
+  const [slopeAfter, setSlopeAfter] = usePersistedPanelState<string>("charts", "slopeAfter", defaultNumCols[1] ?? "");
   const [stage2, setStage2] = usePersistedPanelState<string>("charts", "stage2", "");
   const [stage3, setStage3] = usePersistedPanelState<string>("charts", "stage3", "");
   const [fillCol, setFillCol] = usePersistedPanelState<string>("charts", "fillCol", "");
@@ -545,6 +547,7 @@ function ChartsPanelBody({ session }: { session: Session }) {
                 : "X axis"}
             </label>
             <select className="select w-full" value={x} onChange={(e) => setX(e.target.value)}>
+              {!x && <option value="">Select variable</option>}
               {(chartType === "boxplot" || chartType === "violin" || chartType === "raincloud" || chartType === "paired"
                 || chartType === "errorplot" || chartType === "ecdf" || chartType === "facet"
                 || chartType === "ridgeplot" || chartType === "waterfall" ? numCols
@@ -567,12 +570,14 @@ function ChartsPanelBody({ session }: { session: Session }) {
               <div>
                 <label className="text-xs text-gray-400 block mb-1">Open marker (reference)</label>
                 <select className="select w-full" value={dbStart} onChange={(e) => setDbStart(e.target.value)}>
+                  {!dbStart && <option value="">Select start variable</option>}
                   {numCols.map((c) => <option key={c}>{c}</option>)}
                 </select>
               </div>
               <div>
                 <label className="text-xs text-gray-400 block mb-1">Filled marker (observed)</label>
                 <select className="select w-full" value={dbEnd} onChange={(e) => setDbEnd(e.target.value)}>
+                  {!dbEnd && <option value="">Select end variable</option>}
                   {numCols.map((c) => <option key={c}>{c}</option>)}
                 </select>
               </div>
@@ -685,6 +690,7 @@ function ChartsPanelBody({ session }: { session: Session }) {
             <div>
               <label className="text-xs text-gray-400 block mb-1">Value (Y)</label>
               <select className="select w-full" value={lineY} onChange={(e) => setLineY(e.target.value)}>
+                {!lineY && <option value="">Select outcome</option>}
                 {numCols.map((c) => <option key={c}>{c}</option>)}
               </select>
               <p className="text-[10px] text-gray-400 mt-1">
@@ -697,12 +703,14 @@ function ChartsPanelBody({ session }: { session: Session }) {
               <div>
                 <label className="text-xs text-gray-400 block mb-1">Before</label>
                 <select className="select w-full" value={slopeBefore} onChange={(e) => setSlopeBefore(e.target.value)}>
+                  {!slopeBefore && <option value="">Select before variable</option>}
                   {numCols.map((c) => <option key={c}>{c}</option>)}
                 </select>
               </div>
               <div>
                 <label className="text-xs text-gray-400 block mb-1">After</label>
                 <select className="select w-full" value={slopeAfter} onChange={(e) => setSlopeAfter(e.target.value)}>
+                  {!slopeAfter && <option value="">Select after variable</option>}
                   {numCols.map((c) => <option key={c}>{c}</option>)}
                 </select>
                 <p className="text-[10px] text-gray-400 mt-1">

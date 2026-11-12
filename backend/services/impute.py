@@ -259,15 +259,18 @@ def add_survival_auxiliary_variables(
 
 def missing_info(df: pd.DataFrame, cols: List[str]) -> dict:
     """Return a structured missing-value summary for the given columns."""
-    valid_cols = [c for c in cols if c in df.columns]
+    valid_cols = list(dict.fromkeys(c for c in cols if c in df.columns))
     total = len(df)
 
     per_col: dict = {}
+    raw_masks = df[valid_cols].isna()
+    affected = raw_masks.copy()
     for col in valid_cols:
         max_plausible = plausibility_max_for_column(col)
-        raw_missing = df[col].isna()
+        raw_missing = raw_masks[col]
         implausible = flag_sentinels(df[col], max_plausible)
-        n = int((raw_missing | implausible).sum())
+        affected[col] = raw_missing | implausible
+        n = int(affected[col].sum())
         per_col[col] = {
             "count": n,
             "raw_count": int(raw_missing.sum()),
@@ -276,17 +279,11 @@ def missing_info(df: pd.DataFrame, cols: List[str]) -> dict:
             "pct": round(n / total * 100, 1) if total > 0 else 0.0,
         }
 
-    if valid_cols:
-        masks = []
-        for col in valid_cols:
-            max_plausible = plausibility_max_for_column(col)
-            masks.append(df[col].isna() | flag_sentinels(df[col], max_plausible))
-        rows_affected = int(pd.concat(masks, axis=1).any(axis=1).sum())
-    else:
-        rows_affected = 0
+    rows_affected = int(affected.any(axis=1).sum())
     return {
         "total_rows": total,
         "rows_affected": rows_affected,
         "pct_affected": round(rows_affected / total * 100, 1) if total > 0 else 0.0,
+        "raw_rows_affected": int(raw_masks.any(axis=1).sum()),
         "per_column": per_col,
     }

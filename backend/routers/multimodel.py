@@ -33,7 +33,7 @@ from scipy import stats as scipy_stats
 
 from services import store
 from services.dirty_value_guard import coerce_numeric
-from services.number_format import format_p
+from services.number_format import format_p_clause
 from services.stat_utils import sanitize_nonfinite
 
 router = APIRouter()
@@ -180,7 +180,14 @@ def multi_model(req: MultiModelRequest):
     # The exposure as the table will show it: one row per level against a
     # reference, or a single per-unit row.
     exp_raw = df[req.exposure]
-    if req.exposure_categorical:
+    # A text exposure (control / treat) has no per-unit slope: coercing it to
+    # numbers gave an all-missing column, every model then failed on NaN, and
+    # the only message was "No model converged". It can only be read level by
+    # level, so it takes that path and the response says so.
+    exp_as_numbers = coerce_numeric(exp_raw)
+    is_text_exposure = int(exp_as_numbers.notna().sum()) < int(exp_raw.notna().sum())
+    exposure_categorical = bool(req.exposure_categorical) or is_text_exposure
+    if exposure_categorical:
         levels = _sorted_levels(exp_raw)
         if len(levels) < 2:
             raise HTTPException(status_code=400, detail=f"'{req.exposure}' has fewer than 2 levels")
@@ -202,7 +209,9 @@ def multi_model(req: MultiModelRequest):
     frames = [y.rename("_y"), exp_present.rename("_x")] + ([t.rename("_t")] if t is not None else [])
     if not union_cov.empty:
         frames.append(union_cov)
-    keep = pd.concat(frames, axis=1).notna().all(axis=1)
+    # `exp_present` is boolean, so `notna()` never drops a row for it: rows
+    # with a missing exposure stayed in, every fit hit NaN and failed.
+    keep = pd.concat(frames, axis=1).notna().all(axis=1) & exp_present.astype(bool)
     n_used, n_dropped = int(keep.sum()), int(len(df) - int(keep.sum()))
     if n_used < 10:
         raise HTTPException(
@@ -218,7 +227,10 @@ def multi_model(req: MultiModelRequest):
     # level, so a single coefficient carries the monotone trend. Numeric
     # levels use their own values; text levels fall back to their rank, which
     # assumes the ordering is meaningful and is reported as such.
-    trend_series, trend_basis = _trend_score(exp_raw, levels) if req.exposure_categorical else (None, None)
+    # With two levels the "trend" is the level contrast itself, and the rank
+    # warning that came with it only confused a control / treat comparison.
+    has_trend = exposure_categorical and len(levels) >= 3
+    trend_series, trend_basis = _trend_score(exp_raw, levels) if has_trend else (None, None)
 
     rows, warnings = [], []
     for spec in req.models:
@@ -230,7 +242,7 @@ def multi_model(req: MultiModelRequest):
             continue
         params, cov_m, names, df_resid = fit
 
-        if req.exposure_categorical:
+        if exposure_categorical:
             effects = [{"level": str(levels[0]), "reference": True}]
             for lv_name in levels[1:]:
                 e = _term(params, cov_m, names, df_resid, f"exp_{lv_name}", kind)
@@ -252,6 +264,10 @@ def multi_model(req: MultiModelRequest):
     if not rows:
         raise HTTPException(status_code=400, detail="No model converged on these variables")
 
+    if is_text_exposure and not req.exposure_categorical:
+        warnings.append(
+            f"'{req.exposure}' is not numeric, so it is reported level by level against "
+            f"'{levels[0]}' rather than per unit.")
     if trend_basis == "rank":
         warnings.append(
             f"P for trend uses the rank of each level of '{req.exposure}' (1, 2, 3 …) because its "
@@ -265,7 +281,7 @@ def multi_model(req: MultiModelRequest):
     label = {"continuous": "Mean difference", "binary": "Odds ratio", "survival": "Hazard ratio"}[kind]
     return sanitize_nonfinite({
         "outcome": req.outcome, "exposure": req.exposure, "outcome_kind": kind,
-        "effect_label": label, "exposure_categorical": bool(req.exposure_categorical),
+        "effect_label": label, "exposure_categorical": exposure_categorical,
         "levels": [str(lv) for lv in levels],
         "trend_basis": trend_basis,
         "n_used": n_used, "n_dropped": n_dropped,
@@ -313,7 +329,7 @@ def _results_text(req, kind, label, rows, n) -> str:
                else f"{e['ratio']:.2f} (95% CI {e['ratio_ci_low']:.2f} to {e['ratio_ci_high']:.2f})")
         parts.append(f"{e['level']}: {val}")
     trend = last.get("trend") or {}
-    trend_txt = f" P for trend {format_p(trend['p'], prefix=True)}." if trend.get("p") is not None else ""
+    trend_txt = f" P for trend: {format_p_clause(trend['p'])}." if trend.get("p") is not None else ""
     return (
         f"In the fully adjusted model ({last['label']}), the {word} for {req.exposure} was "
         f"{'; '.join(parts) if parts else '—'} (n = {n}).{trend_txt} "

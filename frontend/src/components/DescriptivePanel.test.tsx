@@ -701,7 +701,7 @@ describe('DescriptivePanel', () => {
     await waitFor(() =>
       expect(screen.getByText((_, el) => el?.textContent === 'Continuous · n=3')).toBeInTheDocument(),
     )
-    expect(screen.getByText((_, el) => el?.textContent === '· Normal (p=0.842)')).toBeInTheDocument()
+    expect(screen.getByText((_, el) => el?.textContent === '· Normal (p = 0.842)')).toBeInTheDocument()
 
     // normality badge box
     expect(screen.getByText('Normal')).toBeInTheDocument()
@@ -713,6 +713,26 @@ describe('DescriptivePanel', () => {
 
     // default chart tab is histogram → plotly mock present
     expect(screen.getByTestId('plotly-mock')).toBeInTheDocument()
+  })
+
+  it('uses an inequality throughout Summary when normality p is below 0.001', async () => {
+    installSession()
+    mockCommonEndpoints()
+    server.use(
+      http.get('/api/stats/test-session/column_summary', () => HttpResponse.json({
+        ...numericSummary, normal: false, normality_label: 'Non-normal',
+        normality_test: 'Shapiro-Wilk', normality_p: 0.0002,
+      })),
+    )
+
+    render(<DescriptivePanel />)
+
+    expect(await screen.findByText((_, el) => el?.textContent === '(Shapiro-Wilk p < 0.001)')).toBeInTheDocument()
+    expect(screen.getByText((_, el) => el?.textContent === '· Non-normal (p < 0.001)')).toBeInTheDocument()
+    expect(screen.getByText(
+      (_, el) => el?.textContent?.startsWith('Non-normal (Shapiro-Wilk, p < 0.001):') ?? false,
+      { selector: 'p' },
+    )).toBeInTheDocument()
   })
 
   it('categorical column: loads and displays frequency table info', async () => {

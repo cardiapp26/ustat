@@ -7,6 +7,7 @@
  * 3. SMD balance assessment and Love Plot
  * 4. Outcome analysis (Weighted GLM or Weighted Cox PH)
  */
+import { analysisDefaultColumns } from "../lib/columnDefaults";
 import { TreatedLevelPicker } from "./models/TreatedLevelPicker";
 import { treatedLevelParam, treatmentCandidates } from "../lib/treatmentLevels";
 import { useState, useRef, useMemo } from "react";
@@ -307,7 +308,7 @@ function IPTWPanelBody({ session }: { session: Session }) {
   const binaryCols = useMemo(() => Object.keys(treatLevels), [treatLevels]);
 
   // Form State
-  const [treatCol, setTreatCol] = usePersistedPanelState<string>("iptw", "treatCol", binaryCols[0] ?? allCols[0] ?? "");
+  const [treatCol, setTreatCol] = usePersistedPanelState<string>("iptw", "treatCol", analysisDefaultColumns(session, binaryCols.length ? binaryCols : allCols)[0] ?? "");
   const [treatedLevel, setTreatedLevel] = usePersistedPanelState<string>("iptw", "treatedLevel", "");
   const treatColLevels = treatLevels[treatCol] ?? null;
   const [outcomeCol, setOutcomeCol] = usePersistedPanelState<string>("iptw", "outcomeCol", "");
@@ -593,6 +594,7 @@ function IPTWPanelBody({ session }: { session: Session }) {
             className="select w-full"
             value={treatCol}
             onChange={(e) => { setTreatCol(e.target.value); setResult(null); }}>
+            {!treatCol && <option value="">Select treatment</option>}
             {binaryCols.length > 0
               ? binaryCols.map((c) => <option key={c} value={c}>{c}</option>)
               : allCols.map((c) => <option key={c} value={c}>{c}</option>)}

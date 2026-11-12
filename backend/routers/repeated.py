@@ -8,6 +8,7 @@ from typing import List, Optional
 
 from services import store
 from services.hodges_lehmann import hl_paired
+from services.number_format import format_p_clause
 from services.stat_utils import (
     cohen_d_paired, matched_rank_biserial, kendalls_w, partial_eta_squared,
     check_normality, group_summary, adjust_pvalues,
@@ -83,7 +84,7 @@ def paired_ttest(req: PairedTTestRequest):
 
     mean_diff = float(d.mean())
     sd_diff = float(d.std(ddof=1))
-    ps = _p_str(p) if p is not None else "\u2014"
+    p_text = format_p_clause(p, decimals=4)
 
     t_disp = f"{t_stat:.3f}" if t_stat is not None else "—"
     warn_list = (
@@ -109,13 +110,13 @@ def paired_ttest(req: PairedTTestRequest):
         },
         "interpretation": (
             degenerate_note if degenerate_note else
-            f"{'Significant' if sig else 'No significant'} difference between {req.col1} and {req.col2} (t({n-1}) = {t_disp}, p = {ps}, d_z = {es['value']:.3f} [{es['magnitude']}])"
+            f"{'Significant' if sig else 'No significant'} difference between {req.col1} and {req.col2} (t({n-1}) = {t_disp}, {p_text}, d_z = {es['value']:.3f} [{es['magnitude']}])"
         ),
         "result_text": (
             f"A paired-samples t-test compared {req.col1} (M = {x1.mean():.2f}, SD = {x1.std(ddof=1):.2f}) "
             f"and {req.col2} (M = {x2.mean():.2f}, SD = {x2.std(ddof=1):.2f}). "
             f"{'There was a significant difference' if sig else 'There was no significant difference'} "
-            f"(t({n-1}) = {t_disp}, p = {ps}). The mean difference was {mean_diff:.3f} (SD = {sd_diff:.3f}), "
+            f"(t({n-1}) = {t_disp}, {p_text}). The mean difference was {mean_diff:.3f} (SD = {sd_diff:.3f}), "
             f"with a {es['magnitude']} effect size (Cohen's d_z = {es['value']:.3f}, 95% CI [{es['ci_low']:.3f}, {es['ci_high']:.3f}])."
         ),
         "export_rows": [
@@ -183,7 +184,7 @@ def wilcoxon_signed_rank(req: WilcoxonSRRequest):
     w_minus = float(abs_ranks[nonzero < 0].sum())
     asymptotic = sp.wilcoxon(d, method="approx", alternative="two-sided")
     es = matched_rank_biserial(w_plus, len(nonzero))
-    ps = _p_str(p)
+    p_text = format_p_clause(p, decimals=4)
     hl_conf = 1.0 - req.alpha if 0.0 < req.alpha < 1.0 else 0.95
     hl = hl_paired(x1, x2, hl_conf)
     hl_pct = f"{hl_conf * 100:g}%"
@@ -226,11 +227,11 @@ def wilcoxon_signed_rank(req: WilcoxonSRRequest):
             req.col1: group_summary(x1, req.col1),
             req.col2: group_summary(x2, req.col2),
         },
-        "interpretation": f"{'Significant' if sig else 'No significant'} difference (W = {w_stat:.1f}, p = {ps}, r = {es['value']:.3f} [{es['magnitude']}])",
+        "interpretation": f"{'Significant' if sig else 'No significant'} difference (W = {w_stat:.1f}, {p_text}, r = {es['value']:.3f} [{es['magnitude']}])",
         "result_text": (
             f"A Wilcoxon signed-rank test indicated that {req.col2} scores were "
             f"{'significantly' if sig else 'not significantly'} different from {req.col1} scores "
-            f"(W = {w_stat:.1f}, p = {ps}, r = {es['value']:.3f} [{es['magnitude']}]). "
+            f"(W = {w_stat:.1f}, {p_text}, r = {es['value']:.3f} [{es['magnitude']}]). "
             f"Median {req.col1} = {np.median(x1):.2f}, median {req.col2} = {np.median(x2):.2f}."
             f"{hl_text}"
         ),

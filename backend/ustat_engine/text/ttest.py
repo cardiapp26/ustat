@@ -10,7 +10,8 @@ lives here rather than being reconstructed by whoever renders the result.
 """
 from __future__ import annotations
 
-from .common import _df_str, _es_str, _p_str
+from .common import _df_str, _es_str
+from .numbers import format_p_clause
 
 
 def methods_ttest_ind(col: str, group_col: str, welch: bool = False) -> str:
@@ -46,7 +47,7 @@ def results_ttest_ind(result: dict) -> str:
 
     return (
         f"The {g1} group (M = {m1:.2f}) {'significantly differed from' if sig else 'did not significantly differ from'} "
-        f"the {g2} group (M = {m2:.2f}), t({df}) = {t:.3f}, p = {_p_str(p)}{es_text}."
+        f"the {g2} group (M = {m2:.2f}), t({df}) = {t:.3f}, {format_p_clause(p)}{es_text}."
     )
 
 
@@ -62,7 +63,7 @@ def results_ttest_one(result: dict) -> str:
 
     return (
         f"The sample mean (M = {mean:.2f}) {'was significantly different from' if sig else 'did not significantly differ from'} "
-        f"the test value of {mu}, t({df}) = {t:.3f}, p = {_p_str(p)}{es_text}."
+        f"the test value of {mu}, t({df}) = {t:.3f}, {format_p_clause(p)}{es_text}."
     )
 
 

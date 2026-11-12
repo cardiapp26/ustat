@@ -244,6 +244,33 @@ describe('ROCPanel', () => {
     await waitFor(() => expect(screen.getByText('Pairwise DeLong')).toBeInTheDocument())
   })
 
+  it('shows each curve\'s n and says when the curves rest on different samples', async () => {
+    installSession(rocSession())
+    mockNoMissing()
+    server.use(
+      http.post('/api/stats/roc', async ({ request }) => {
+        const body = await request.json() as { score_column: string }
+        const nByCol: Record<string, number> = { SCORE1: 100, SCORE2: 97 }
+        return HttpResponse.json({ auc: 0.63, n: nByCol[body.score_column], curve, ci_lower: 0.5, ci_upper: 0.75 })
+      }),
+      http.post('/api/stats/roc_multi_compare', () =>
+        HttpResponse.json({ pairs: [], scores: ['SCORE1', 'SCORE2'], n: 97, n_pairs: 1, p_adjust: 'holm' }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<ROCPanel />)
+    await user.click(screen.getByRole('button', { name: 'Multi-curve' }))
+    await user.click(checkboxFor('SCORE1'))
+    await user.click(checkboxFor('SCORE2'))
+    await waitFor(() => expect(screen.getByRole('button', { name: /Run 2 ROCs/ })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: /Run 2 ROCs/ }))
+
+    await waitFor(() => expect(screen.getByText('n=100')).toBeInTheDocument())
+    expect(screen.getByText('n=97')).toBeInTheDocument()
+    expect(screen.getByText(/curves rest on different samples/)).toBeInTheDocument()
+  })
+
   it('Combined-model tab: fits combined model and renders the AUC', async () => {
     installSession(rocSession())
     mockNoMissing()

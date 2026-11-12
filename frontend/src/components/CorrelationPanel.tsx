@@ -1,3 +1,4 @@
+import { analysisDefaultColumns } from "../lib/columnDefaults";
 import { useState, useEffect, useRef, useMemo, type ReactNode } from "react";
 import Plot from "../PlotComponent";
 import TitledPlot from "./TitledPlot";
@@ -135,11 +136,11 @@ interface PairResult {
 }
 
 // ── PairwiseTab ───────────────────────────────────────────────────────────────
-function PairwiseTab({ sessionId, columns }: { sessionId: string; columns: string[] }) {
+function PairwiseTab({ sessionId, columns, defaultColumns }: { sessionId: string; columns: string[]; defaultColumns: string[] }) {
   const plotBg = usePlotBg();
   const showGrid = useStore((s) => s.showGrid);
   const corrScatterRef = useRef<PlotCaptureHandle | null>(null);
-  const [vars, setVars] = usePersistedPanelState<string[]>("correlation_pairwise", "vars", columns.slice(0, Math.min(4, columns.length)));
+  const [vars, setVars] = usePersistedPanelState<string[]>("correlation_pairwise", "vars", defaultColumns.slice(0, 4));
   const [varFilter, setVarFilter] = useState("");
   const [method, setMethod] = usePersistedPanelState<string>("correlation_pairwise", "method", "auto");
   // Detect ordinal variables among the selection → Spearman is the right
@@ -558,12 +559,12 @@ interface MatrixResult {
 }
 
 // ── MatrixTab ─────────────────────────────────────────────────────────────────
-function MatrixTab({ sessionId, columns }: { sessionId: string; columns: string[] }) {
+function MatrixTab({ sessionId, columns, defaultColumns }: { sessionId: string; columns: string[]; defaultColumns: string[] }) {
   const plotBg = usePlotBg();
   const showGrid = useStore((s) => s.showGrid);
   const corrHeatmapRef = useRef<PlotCaptureHandle | null>(null);
   const corrSplomRef = useRef<PlotCaptureHandle | null>(null);
-  const [selected, setSelected] = usePersistedPanelState<string[]>("correlation_matrix", "selected", columns.slice(0, Math.min(8, columns.length)));
+  const [selected, setSelected] = usePersistedPanelState<string[]>("correlation_matrix", "selected", defaultColumns.slice(0, 8));
   const [colFilter, setColFilter] = useState("");
   const [method, setMethod] = usePersistedPanelState<string>("correlation_matrix", "method", "pearson");
   // Heatmap vs scatter is a view of the same matrix, so it stays out.
@@ -957,14 +958,14 @@ interface ICCResult {
 }
 
 // ── ICCTab ────────────────────────────────────────────────────────────────────
-function ICCTab({ sessionId, columns }: { sessionId: string; columns: string[] }) {
+function ICCTab({ sessionId, columns, defaultColumns }: { sessionId: string; columns: string[]; defaultColumns: string[] }) {
   const plotBg = usePlotBg();
   const showGrid = useStore((s) => s.showGrid);
   const blandAltmanRef = useRef<PlotCaptureHandle | null>(null);
   // Persisted with the result: a cached ICC shown beside raters reset to the
   // first two columns would read as settings-changed and mislabel its plot.
-  const [rater1, setRater1] = usePersistedPanelState<string>("correlation_icc", "rater1", columns[0] ?? "");
-  const [rater2, setRater2] = usePersistedPanelState<string>("correlation_icc", "rater2", columns[1] ?? "");
+  const [rater1, setRater1] = usePersistedPanelState<string>("correlation_icc", "rater1", defaultColumns[0] ?? "");
+  const [rater2, setRater2] = usePersistedPanelState<string>("correlation_icc", "rater2", defaultColumns[1] ?? "");
   const [extraRaters, setExtraRaters] = usePersistedPanelState<string[]>("correlation_icc", "extraRaters", []);
   const [agreement, setAgreement] = usePersistedPanelState<"absolute" | "consistency">("correlation_icc", "agreement", "absolute");
   const [unit, setUnit] = usePersistedPanelState<"single" | "average">("correlation_icc", "unit", "single");
@@ -1022,6 +1023,7 @@ function ICCTab({ sessionId, columns }: { sessionId: string; columns: string[] }
       <div className="space-y-1">
         <label className="text-xs text-gray-500 font-medium">Rater 1 Column</label>
         <select className="select w-full text-xs" value={rater1} onChange={(e) => { setRater1(e.target.value); setExtraRaters(extraRaters.filter((c) => c !== e.target.value)); }}>
+          {!rater1 && <option value="">Select rater</option>}
           {columns.map((c) => <option key={c}>{c}</option>)}
         </select>
       </div>
@@ -1036,6 +1038,7 @@ function ICCTab({ sessionId, columns }: { sessionId: string; columns: string[] }
       <div className="space-y-1">
         <label className="text-xs text-gray-500 font-medium">Rater 2 Column</label>
         <select className="select w-full text-xs" value={rater2} onChange={(e) => { setRater2(e.target.value); setExtraRaters(extraRaters.filter((c) => c !== e.target.value)); }}>
+          {!rater2 && <option value="">Select rater</option>}
           {columns.map((c) => <option key={c}>{c}</option>)}
         </select>
       </div>
@@ -1183,9 +1186,9 @@ interface PartialResult {
 // ── PartialTab ────────────────────────────────────────────────────────────────
 // SPSS Correlate > Partial: r between two variables with one or more
 // covariates partialled out, instead of detouring through regression.
-function PartialTab({ sessionId, columns }: { sessionId: string; columns: string[] }) {
-  const [var1, setVar1] = usePersistedPanelState<string>("correlation_partial", "var1", columns[0] ?? "");
-  const [var2, setVar2] = usePersistedPanelState<string>("correlation_partial", "var2", columns[1] ?? "");
+function PartialTab({ sessionId, columns, defaultColumns }: { sessionId: string; columns: string[]; defaultColumns: string[] }) {
+  const [var1, setVar1] = usePersistedPanelState<string>("correlation_partial", "var1", defaultColumns[0] ?? "");
+  const [var2, setVar2] = usePersistedPanelState<string>("correlation_partial", "var2", defaultColumns[1] ?? "");
   const [controls, setControls] = usePersistedPanelState<string[]>("correlation_partial", "controls", []);
   const [method, setMethod] = usePersistedPanelState<string>("correlation_partial", "method", "pearson");
   const runParams = { var1, var2, controls, method };
@@ -1230,12 +1233,14 @@ function PartialTab({ sessionId, columns }: { sessionId: string; columns: string
       <div className="space-y-1">
         <label className="text-xs text-gray-500 font-medium">Variable 1</label>
         <select className="select w-full text-xs" value={var1} onChange={(e) => setVar1(e.target.value)}>
+          {!var1 && <option value="">Select variable</option>}
           {columns.map((c) => <option key={c}>{c}</option>)}
         </select>
       </div>
       <div className="space-y-1">
         <label className="text-xs text-gray-500 font-medium">Variable 2</label>
         <select className="select w-full text-xs" value={var2} onChange={(e) => setVar2(e.target.value)}>
+          {!var2 && <option value="">Select variable</option>}
           {columns.map((c) => <option key={c}>{c}</option>)}
         </select>
       </div>
@@ -1359,13 +1364,13 @@ interface KappaResult {
 }
 
 // ── KappaTab ──────────────────────────────────────────────────────────────────
-function KappaTab({ sessionId, columns }: { sessionId: string; columns: string[] }) {
+function KappaTab({ sessionId, columns, defaultColumns }: { sessionId: string; columns: string[]; defaultColumns: string[] }) {
   const plotBg = usePlotBg();
   const showGrid = useStore((s) => s.showGrid);
   const kappaMatrixRef = useRef<PlotCaptureHandle | null>(null);
   // Persisted with the result, as in the ICC tab.
-  const [rater1, setRater1] = usePersistedPanelState<string>("correlation_kappa", "rater1", columns[0] ?? "");
-  const [rater2, setRater2] = usePersistedPanelState<string>("correlation_kappa", "rater2", columns[1] ?? "");
+  const [rater1, setRater1] = usePersistedPanelState<string>("correlation_kappa", "rater1", defaultColumns[0] ?? "");
+  const [rater2, setRater2] = usePersistedPanelState<string>("correlation_kappa", "rater2", defaultColumns[1] ?? "");
   const [weights, setWeights] = usePersistedPanelState<"none" | "linear" | "quadratic">("correlation_kappa", "weights", "none");
   const [levelOrderText, setLevelOrderText] = usePersistedPanelState<string>("correlation_kappa", "levelOrderText", "");
   const runParams = { rater1, rater2, weights, levelOrderText };
@@ -1429,12 +1434,14 @@ function KappaTab({ sessionId, columns }: { sessionId: string; columns: string[]
       <div className="space-y-1">
         <label className="text-xs text-gray-500 font-medium">Rater 1 Column</label>
         <select className="select w-full text-xs" value={rater1} onChange={(e) => setRater1(e.target.value)}>
+          {!rater1 && <option value="">Select rater</option>}
           {columns.map((c) => <option key={c}>{c}</option>)}
         </select>
       </div>
       <div className="space-y-1">
         <label className="text-xs text-gray-500 font-medium">Rater 2 Column</label>
         <select className="select w-full text-xs" value={rater2} onChange={(e) => setRater2(e.target.value)}>
+          {!rater2 && <option value="">Select rater</option>}
           {columns.map((c) => <option key={c}>{c}</option>)}
         </select>
       </div>
@@ -1589,6 +1596,8 @@ function CorrelationPanelBody({ session }: { session: Session }) {
     .filter((c) => !c.analysis_excluded)
     .map((c) => c.name);
 
+  const defaultNumeric = analysisDefaultColumns(session, numColumns);
+  const defaultAll = analysisDefaultColumns(session, allColumns);
   const [activeTab, setActiveTab] = useState<Tab>("Pairwise");
 
   return (
@@ -1610,11 +1619,11 @@ function CorrelationPanelBody({ session }: { session: Session }) {
       </div>
 
       <div className="flex-1 min-h-0">
-        {activeTab === "Pairwise"  && <PairwiseTab sessionId={session.session_id} columns={numColumns} />}
-        {activeTab === "Partial"   && <PartialTab  sessionId={session.session_id} columns={numColumns} />}
-        {activeTab === "Matrix"    && <MatrixTab   sessionId={session.session_id} columns={numColumns} />}
-        {activeTab === "ICC"       && <ICCTab      sessionId={session.session_id} columns={numColumns} />}
-        {activeTab === "Cohen's κ" && <KappaTab    sessionId={session.session_id} columns={allColumns} />}
+        {activeTab === "Pairwise"  && <PairwiseTab sessionId={session.session_id} columns={numColumns} defaultColumns={defaultNumeric} />}
+        {activeTab === "Partial"   && <PartialTab  sessionId={session.session_id} columns={numColumns} defaultColumns={defaultNumeric} />}
+        {activeTab === "Matrix"    && <MatrixTab   sessionId={session.session_id} columns={numColumns} defaultColumns={defaultNumeric} />}
+        {activeTab === "ICC"       && <ICCTab      sessionId={session.session_id} columns={numColumns} defaultColumns={defaultNumeric} />}
+        {activeTab === "Cohen's κ" && <KappaTab    sessionId={session.session_id} columns={allColumns} defaultColumns={defaultAll} />}
       </div>
     </div>
   );

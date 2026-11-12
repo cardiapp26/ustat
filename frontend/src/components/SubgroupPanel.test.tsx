@@ -224,3 +224,62 @@ describe('SubgroupPanel', () => {
     expect(useStore.getState().forestHandoff).toBeNull()
   })
 })
+
+describe('SubgroupPanel text exposure', () => {
+  const textSession = () =>
+    makeSession({
+      columns: [
+        { name: 'sbp', dtype: 'float64', kind: 'numeric' },
+        { name: 'arm', dtype: 'object', kind: 'categorical' },
+        { name: 'sex', dtype: 'object', kind: 'categorical' },
+      ],
+      preview: [
+        { sbp: 140, arm: 'treat', sex: 'F' },
+        { sbp: 150, arm: 'control', sex: 'M' },
+      ],
+    })
+
+  it('offers a two-level text exposure and sends the chosen exposed level', async () => {
+    installSession(textSession())
+    const seen = mockRun(result({
+      exposure: 'arm', exposure_coding: { column: 'arm', exposed: 'treat', reference: 'control' },
+    }))
+    const user = userEvent.setup()
+    render(<SubgroupPanel />)
+
+    await user.selectOptions(screen.getByRole('combobox', { name: /^outcome$/i }), 'sbp')
+    await user.selectOptions(screen.getByRole('combobox', { name: /^exposure$/i }), 'arm')
+    const box = screen.getByText('Subgroup variables').closest('div') as HTMLElement
+    await user.click(within(box).getByRole('checkbox', { name: 'sex' }))
+
+    // No level chosen yet: the run is refused with a message, nothing is sent.
+    await user.click(screen.getByRole('button', { name: /run subgroup analysis/i }))
+    expect(screen.getByText(/which level of the exposure is the exposed group/i)).toBeInTheDocument()
+    expect(seen.request).toBeUndefined()
+
+    await user.selectOptions(screen.getByRole('combobox', { name: /exposed level/i }), 'treat')
+    await user.click(screen.getByRole('button', { name: /run subgroup analysis/i }))
+
+    await waitFor(() => expect(seen.request?.exposure_level).toBe('treat'))
+    expect(await screen.findByText(/compares arm = treat with control/i)).toBeInTheDocument()
+  })
+})
+
+describe('SubgroupPanel stratum without an interval', () => {
+  it('keeps rendering when a stratum has an estimate but no CI', async () => {
+    installSession(session())
+    mockRun(result({
+      subgroups: [{
+        variable: 'sex', levels: ['F', 'M'],
+        rows: [row('F', -5.759, 0.00001), { level: 'M', n: 4, beta: 1.2, se: null, p: null, ci_low: null, ci_high: null }],
+        p_interaction: 0.2, interaction_note: 'likelihood-ratio test on 1 df', n_used: 300,
+      }],
+    }))
+    const user = userEvent.setup()
+    render(<SubgroupPanel />)
+    await run(user)
+
+    await waitFor(() => expect(screen.getByText('1.200 (CI not estimable)')).toBeInTheDocument())
+    expect(screen.queryByText(/This panel hit an error/)).not.toBeInTheDocument()
+  })
+})

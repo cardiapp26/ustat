@@ -15,6 +15,8 @@ export type ColKind = "numeric" | "categorical" | "ordinal" | "text" | "date";
 export interface ColMeta {
   name: string;
   dtype: string;
+  /** Full-data identifier classification used for automatic variable choices. */
+  id_like?: boolean;
   /** Measurement kind. `ordinal` = ordered categorical (numeric-coded): it is
    *  eligible both where numeric and where categorical columns are, and lets
    *  order-aware tests (Spearman, trend, Jonckheere, ordinal logistic) detect it. */

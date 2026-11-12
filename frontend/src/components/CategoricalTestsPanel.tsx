@@ -1,9 +1,10 @@
+import { analysisDefaultColumns } from "../lib/columnDefaults";
 import { useEffect, useState } from "react";
 import { useStore, isNumericKind, isCategoricalKind, type Session } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
 import { useStampedResult } from "../hooks/useStampedResult";
 import { runBinomial, runChisquareGof, runOneProportion, runTwoProportions, runMcNemar, runCochranQ, runMantelHaenszel, runCochranArmitage, runPairedCategorical, getFrequency } from "../api";
-import { fmtP, warningText } from "../lib/format";
+import { fmtP, fmtPRelation, warningText } from "../lib/format";
 import { describeStale } from "../lib/resultStamp";
 import StaleResultNotice from "./StaleResultNotice";
 import StaleGuard from "./StaleGuard";
@@ -219,7 +220,7 @@ function ResultCard({ result, stale = false, staleReason, provenance }: {
           ordering flips the trend direction), so they sit above the numbers. */}
       {heterogeneous && homogeneity && (
         <p role="alert" className="bg-amber-50 border border-amber-300 rounded-lg px-3 py-2 text-xs text-amber-900 leading-relaxed">
-          ⚠ Caution: the odds ratios are not homogeneous across strata (Breslow-Day test, Tarone adjusted, <i>p</i> = {fmtP(homogeneity.p)}).
+          ⚠ Caution: the odds ratios are not homogeneous across strata (Breslow-Day test, Tarone adjusted, <i>p</i>{fmtPRelation(homogeneity.p)}).
           A single pooled OR may be misleading; report the stratum-specific odds ratios as well.
         </p>
       )}
@@ -247,7 +248,7 @@ function ResultCard({ result, stale = false, staleReason, provenance }: {
             {homogeneity ? (
               <span className="flex items-center gap-2">
                 <span className="font-mono text-gray-700">
-                  chi-square({homogeneity.df}) = {fixed(homogeneity.statistic)}, <i>p</i> = {fmtP(homogeneity.p)}
+                  chi-square({homogeneity.df}) = {fixed(homogeneity.statistic)}, <i>p</i>{fmtPRelation(homogeneity.p)}
                 </span>
                 <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${heterogeneous ? "bg-amber-100 text-amber-800" : "bg-green-100 text-green-700"}`}>
                   {heterogeneous ? "heterogeneous" : "homogeneous"}
@@ -382,10 +383,12 @@ function CategoricalTestsPanelBody({ session }: { session: Session }) {
   const binCols = [...catCols, ...numCols]; // binary cols could be either
 
   const [test, setTest] = usePersistedPanelState<string>("categorical_tests", "test", "binomial");
-  const [col, setCol] = usePersistedPanelState<string>("categorical_tests", "col", binCols[0] ?? "");
-  const [col2, setCol2] = usePersistedPanelState<string>("categorical_tests", "col2", binCols[1] ?? binCols[0] ?? "");
-  const [groupCol, setGroupCol] = usePersistedPanelState<string>("categorical_tests", "groupCol", catCols[0] ?? "");
-  const [strataCol, setStrataCol] = usePersistedPanelState<string>("categorical_tests", "strataCol", catCols[1] ?? catCols[0] ?? "");
+  const defaultBinCols = analysisDefaultColumns(session, binCols);
+  const defaultCatCols = analysisDefaultColumns(session, catCols);
+  const [col, setCol] = usePersistedPanelState<string>("categorical_tests", "col", defaultBinCols[0] ?? "");
+  const [col2, setCol2] = usePersistedPanelState<string>("categorical_tests", "col2", defaultBinCols[1] ?? defaultBinCols[0] ?? "");
+  const [groupCol, setGroupCol] = usePersistedPanelState<string>("categorical_tests", "groupCol", defaultCatCols[0] ?? "");
+  const [strataCol, setStrataCol] = usePersistedPanelState<string>("categorical_tests", "strataCol", defaultCatCols[1] ?? defaultCatCols[0] ?? "");
   const [nullProp, setNullProp] = usePersistedPanelState<string>("categorical_tests", "nullProp", "0.5");
   // Low→high ordering for word-labelled exposures. Left blank the backend sorts
   // alphabetically, which reverses e.g. Low/Medium/High and flips the trend.
@@ -530,6 +533,7 @@ function CategoricalTestsPanelBody({ session }: { session: Session }) {
           <div>
             <label className="text-xs text-gray-400 block mb-1">{isMH ? "Row variable" : isCA ? "Binary outcome (event)" : isGof ? "Categorical column" : (test === "bowker" || test === "stuart_maxwell") ? "First categorical measurement" : "Binary column"}</label>
             <select className="select w-full" value={col} onChange={(e) => setCol(e.target.value)}>
+              {!col && <option value="">Select variable</option>}
               {binCols.map((c) => <option key={c}>{c}</option>)}
             </select>
           </div>
@@ -556,6 +560,7 @@ function CategoricalTestsPanelBody({ session }: { session: Session }) {
             <div>
               <label className="text-xs text-gray-400 block mb-1">Group column</label>
               <select className="select w-full" value={groupCol} onChange={(e) => setGroupCol(e.target.value)}>
+                {!groupCol && <option value="">Select group</option>}
                 {catCols.map((c) => <option key={c}>{c}</option>)}
               </select>
             </div>
@@ -564,6 +569,7 @@ function CategoricalTestsPanelBody({ session }: { session: Session }) {
             <div>
               <label className="text-xs text-gray-400 block mb-1">{isMH ? "Column variable" : "Second measurement"}</label>
               <select className="select w-full" value={col2} onChange={(e) => setCol2(e.target.value)}>
+                {!col2 && <option value="">Select variable</option>}
                 {binCols.map((c) => <option key={c}>{c}</option>)}
               </select>
             </div>
@@ -572,6 +578,7 @@ function CategoricalTestsPanelBody({ session }: { session: Session }) {
             <div>
               <label className="text-xs text-gray-400 block mb-1">Stratifying variable</label>
               <select className="select w-full" value={strataCol} onChange={(e) => setStrataCol(e.target.value)}>
+                {!strataCol && <option value="">Select stratum</option>}
                 {catCols.map((c) => <option key={c}>{c}</option>)}
               </select>
             </div>
@@ -589,6 +596,7 @@ function CategoricalTestsPanelBody({ session }: { session: Session }) {
             <div>
               <label className="text-xs text-gray-400 block mb-1">Ordered exposure (3+ levels)</label>
               <select className="select w-full" value={groupCol} onChange={(e) => setGroupCol(e.target.value)}>
+                {!groupCol && <option value="">Select group</option>}
                 {[...catCols, ...numCols].map((c) => <option key={c}>{c}</option>)}
               </select>
               <p className="text-[10px] text-gray-400 mt-1">Scores default to 0,1,2,… (rank order). Custom scores not exposed in UI for v1.</p>

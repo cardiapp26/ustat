@@ -1,3 +1,4 @@
+import { analysisDefaultColumns } from "../lib/columnDefaults";
 import { useState, useRef } from "react";
 import { useStore, isNumericKind, isCategoricalKind, type Session } from "../store";
 import { usePlotLayout, usePalette } from "../plotStyle";
@@ -61,10 +62,12 @@ function BayesianPanelBody({ session }: { session: Session }) {
   const catCols = session.columns.filter((c) => isCategoricalKind(c.kind) && !c.analysis_excluded).map((c) => c.name);
 
 
+  const defaultNumCols = analysisDefaultColumns(session, numCols);
+
   // States
   const [analysisType, setAnalysisType] = usePersistedPanelState<AnalysisType>("bayesian", "analysisType", "ttest_one");
-  const [outcome, setOutcome] = usePersistedPanelState<string>("bayesian", "outcome", numCols[0] ?? "");
-  const [predictor, setPredictor] = usePersistedPanelState<string>("bayesian", "predictor", numCols[1] ?? numCols[0] ?? "");
+  const [outcome, setOutcome] = usePersistedPanelState<string>("bayesian", "outcome", defaultNumCols[0] ?? "");
+  const [predictor, setPredictor] = usePersistedPanelState<string>("bayesian", "predictor", defaultNumCols[1] ?? defaultNumCols[0] ?? "");
   const [predictors, setPredictors] = usePersistedPanelState<string[]>("bayesian", "predictors", []);
   // Persisted with the rest: the result now survives a tab switch, and a test
   // value reset to 0 beside it would date a one-sample result for nothing.
@@ -230,6 +233,7 @@ function BayesianPanelBody({ session }: { session: Session }) {
                 value={outcome}
                 onChange={(e) => setOutcome(e.target.value)}
               >
+                {!outcome && <option value="">Select outcome</option>}
                 {numCols.map((c) => (
                   <option key={c}>{c}</option>
                 ))}
@@ -259,6 +263,7 @@ function BayesianPanelBody({ session }: { session: Session }) {
                   value={predictor}
                   onChange={(e) => setPredictor(e.target.value)}
                 >
+                  {!predictor && <option value="">Select grouping variable</option>}
                   {[...catCols, ...numCols].map((c) => (
                     <option key={c}>{c}</option>
                   ))}
@@ -287,6 +292,7 @@ function BayesianPanelBody({ session }: { session: Session }) {
                   value={predictor}
                   onChange={(e) => setPredictor(e.target.value)}
                 >
+                  {!predictor && <option value="">Select paired variable</option>}
                   {numCols.map((c) => (
                     <option key={c}>{c}</option>
                   ))}
@@ -303,6 +309,7 @@ function BayesianPanelBody({ session }: { session: Session }) {
                   value={predictor}
                   onChange={(e) => setPredictor(e.target.value)}
                 >
+                  {!predictor && <option value="">Select second variable</option>}
                   {numCols.map((c) => (
                     <option key={c}>{c}</option>
                   ))}
@@ -347,7 +354,7 @@ function BayesianPanelBody({ session }: { session: Session }) {
           <button
             className="btn-primary w-full mt-3 py-1.5"
             onClick={run}
-            disabled={loading || (analysisType === "regression" && predictors.length === 0)}
+            disabled={loading || !outcome || (analysisType === "regression" && predictors.length === 0)}
           >
             {loading ? "Computing..." : "Compute Bayes Factor"}
           </button>

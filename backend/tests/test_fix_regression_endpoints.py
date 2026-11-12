@@ -48,6 +48,15 @@ def _post(client, path, payload, expect=200):
     return r.json()
 
 
+@pytest.mark.parametrize("outcome, warns", [("event", True), ("sbp", False)])
+def test_linear_binary_outcome_warns_without_preventing_the_fit(client, sid, outcome, warns):
+    result = _post(client, "/api/models/linear", {
+        "session_id": sid, "outcome": outcome, "predictors": ["age"],
+    })
+    assert result["n"] == 400
+    assert any("Consider logistic regression" in message for message in result.get("warnings", [])) == warns
+
+
 # ── Logistic ─────────────────────────────────────────────────────────────────
 
 def test_hosmer_lemeshow_survives_dropped_rows(client, sid, frame):

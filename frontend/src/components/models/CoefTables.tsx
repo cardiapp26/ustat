@@ -5,16 +5,16 @@ import { fmtP, fmtPubP } from "../../lib/format";
 import { adjustP, MiniNormalSVG, SigBar, type Coefficient, type ORRow } from "./shared";
 
 export function CoefTable({
-  coefs, hrMode = false, allColumns = [], selectedIdx = null, onSelect, nullHyp = "eq",
+  coefs, allColumns = [], selectedIdx = null, onSelect, nullHyp = "eq",
 }: {
-  coefs: Coefficient[]; hrMode?: boolean; allColumns?: string[];
+  coefs: Coefficient[]; allColumns?: string[];
   selectedIdx?: number | null; onSelect?: (i: number) => void; nullHyp?: string;
 }) {
   const sig   = (p: number) => p < 0.001 ? "***" : p < 0.01 ? "**" : p < 0.05 ? "*" : "";
 
   const isConst   = (n: string) => n === "const" || n === "Intercept";
   const isDummy   = (n: string) => !isConst(n) && allColumns.length > 0 && !allColumns.includes(n);
-  const getBeta   = (c: Coefficient) => hrMode ? (c.log_hr ?? c.estimate) : (c.log_odds ?? c.estimate);
+  const getBeta   = (c: Coefficient) => c.log_odds ?? c.estimate;
 
   const renderViz = (c: Coefficient) => {
     if (isConst(c.variable)) return <span className="text-gray-300 text-xs">—</span>;
@@ -35,36 +35,31 @@ export function CoefTable({
   const hd = "pb-1.5 pr-2 font-medium";
 
   // Detect logistic mode: coefficients have odds_ratio + or_ci_low fields
-  const isLogistic = !hrMode && coefs.length > 0 && coefs[0].odds_ratio != null;
+  const isLogistic = coefs.length > 0 && coefs[0].odds_ratio != null;
   // Detect Poisson mode
-  const isPoisson  = !hrMode && !isLogistic && coefs.length > 0 && coefs[0].irr != null;
+  const isPoisson  = !isLogistic && coefs.length > 0 && coefs[0].irr != null;
 
   // ── Export rows (generic) ─────────────────────────────────────────────────
   const coefExportHeaders = isPoisson
     ? ["Variable", "Log-IRR", "SE", "z", "p-value", "IRR", "CI_low", "CI_high"]
     : isLogistic
       ? ["Variable", "Log-Odds", "SE", "z", "p-value", "OR", "CI_low", "CI_high"]
-      : hrMode
-        ? ["Variable", "HR", "SE", "z", "p-value", "CI_low", "CI_high"]
-        : ["Variable", "Estimate", "Standardized beta", "VIF", "Tolerance", "SE", "t", "p-value", "CI_low", "CI_high"];
+      : ["Variable", "Estimate", "Standardized beta", "VIF", "Tolerance", "SE", "t", "p-value", "CI_low", "CI_high"];
   const coefExportRows = coefs.map((c: Coefficient) => {
     if (isPoisson) return [c.variable, c.log_irr?.toFixed(4) ?? "", c.se?.toFixed(4) ?? "", c.z?.toFixed(3) ?? "", fmtP(c.p), c.irr?.toFixed(3) ?? "", c.irr_ci_low?.toFixed(3) ?? "", c.irr_ci_high?.toFixed(3) ?? ""];
     if (isLogistic) return [c.variable, c.log_odds?.toFixed(4) ?? "", c.se?.toFixed(4) ?? "", c.z?.toFixed(3) ?? "", fmtP(c.p), c.odds_ratio?.toFixed(3) ?? "", c.or_ci_low?.toFixed(3) ?? "", c.or_ci_high?.toFixed(3) ?? ""];
-    if (hrMode) return [c.variable, c.hr?.toFixed(4) ?? "", c.se?.toFixed(4) ?? "", (c.t ?? c.z)?.toFixed(3) ?? "", fmtP(c.p), c.hr_ci_low?.toFixed(3) ?? "", c.hr_ci_high?.toFixed(3) ?? ""];
     return [c.variable, c.estimate?.toFixed(4) ?? "", c.standardized_beta?.toFixed(4) ?? "", c.vif?.toFixed(4) ?? "", c.tolerance?.toFixed(4) ?? "", c.se?.toFixed(4) ?? "", (c.t ?? c.z)?.toFixed(3) ?? "", fmtP(c.p), c.ci_low?.toFixed(3) ?? "", c.ci_high?.toFixed(3) ?? ""];
   });
-  const coefTitle = isPoisson ? "Poisson_Coefficients" : isLogistic ? "Logistic_Coefficients" : hrMode ? "Cox_Coefficients" : "Linear_Coefficients";
+  const coefTitle = isPoisson ? "Poisson_Coefficients" : isLogistic ? "Logistic_Coefficients" : "Linear_Coefficients";
 
   // ── Publication-styled export (effect + 95% CI + p in one cell) ───────────
-  const effLabel = isPoisson ? "IRR" : isLogistic ? "OR" : hrMode ? "HR" : "Estimate";
+  const effLabel = isPoisson ? "IRR" : isLogistic ? "OR" : "Estimate";
   const effCell = (c: Coefficient): string => {
     const [v, lo, hi] = isPoisson
       ? [c.irr, c.irr_ci_low, c.irr_ci_high]
       : isLogistic
         ? [c.odds_ratio, c.or_ci_low, c.or_ci_high]
-        : hrMode
-          ? [c.hr, c.hr_ci_low, c.hr_ci_high]
-          : [c.estimate, c.ci_low, c.ci_high];
+        : [c.estimate, c.ci_low, c.ci_high];
     if (v == null) return "—";
     const ci = lo != null && hi != null ? ` (${lo.toFixed(2)}–${hi.toFixed(2)})` : "";
     return `${v.toFixed(2)}${ci}`;
@@ -187,11 +182,11 @@ export function CoefTable({
         <thead>
           <tr>
             <th className={hd}>Variable</th>
-            {hrMode ? <th className={hd}>HR</th> : <th className={hd}>Estimate</th>}
-            {!hrMode && coefs.some((c) => c.standardized_beta != null) && <th className={hd}>Standardized β</th>}
-            {!hrMode && coefs.some((c) => c.tolerance != null) && <><th className={hd}>VIF</th><th className={hd}>Tolerance</th></>}
+            <th className={hd}>Estimate</th>
+            {coefs.some((c) => c.standardized_beta != null) && <th className={hd}>Standardized β</th>}
+            {coefs.some((c) => c.tolerance != null) && <><th className={hd}>VIF</th><th className={hd}>Tolerance</th></>}
             <th className={hd}>SE</th>
-            {hrMode ? <th className={hd}>Z</th> : <th className={hd}>t / z</th>}
+            <th className={hd}>t / z</th>
             <th className={hd}><i>p</i>-value</th>
             <th className={hd}>CI (95%)</th>
             <th className={hd}>Visualization</th>
@@ -201,18 +196,16 @@ export function CoefTable({
         </thead>
         <tbody>
           {coefs.map((c: Coefficient, i: number) => {
-            const est  = hrMode ? c.hr : (c.estimate ?? c.log_hr);
+            const est  = c.estimate ?? c.log_hr;
             const beta = getBeta(c) ?? 0;
             const adjP = adjustP(c.p, beta, nullHyp);
-            const ci   = hrMode
-              ? (c.hr_ci_low != null && c.hr_ci_high != null ? `${c.hr_ci_low.toFixed(3)}–${c.hr_ci_high.toFixed(3)}` : "–")
-              : (c.ci_low != null    && c.ci_high != null    ? `${c.ci_low.toFixed(3)}–${c.ci_high.toFixed(3)}`        : "–");
+            const ci   = c.ci_low != null && c.ci_high != null ? `${c.ci_low.toFixed(3)}–${c.ci_high.toFixed(3)}` : "–";
             return (
               <tr key={c.variable} className={rowCls(i, adjP)} onClick={() => onSelect?.(i)}>
                 <td className="font-mono text-xs text-gray-900 pr-2">{c.variable}</td>
                 <td className="pr-2">{typeof est === "number" ? est.toFixed(4) : est}</td>
-                {!hrMode && coefs.some((row) => row.standardized_beta != null) && <td className="pr-2">{c.standardized_beta?.toFixed(4) ?? "—"}</td>}
-                {!hrMode && coefs.some((row) => row.tolerance != null) && <><td className="pr-2">{c.vif?.toFixed(3) ?? "—"}</td><td className="pr-2">{c.tolerance?.toFixed(3) ?? "—"}</td></>}
+                {coefs.some((row) => row.standardized_beta != null) && <td className="pr-2">{c.standardized_beta?.toFixed(4) ?? "—"}</td>}
+                {coefs.some((row) => row.tolerance != null) && <><td className="pr-2">{c.vif?.toFixed(3) ?? "—"}</td><td className="pr-2">{c.tolerance?.toFixed(3) ?? "—"}</td></>}
                 <td className="pr-2">{c.se?.toFixed(4)}</td>
                 <td className="pr-2">{(c.t ?? c.z)?.toFixed(3)}</td>
                 <td className="pr-2"><span className={adjP < 0.05 ? "badge-sig" : "badge-ns"}>{fmtP(adjP)}</span></td>

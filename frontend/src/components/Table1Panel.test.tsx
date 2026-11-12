@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
 import { server } from '../test/server'
-import { clearSession, installSession } from '../test/testUtils'
+import { clearSession, installSession, makeSession } from '../test/testUtils'
 import Table1Panel from './Table1Panel'
 
 afterEach(() => clearSession())
@@ -50,6 +50,23 @@ const T1_RESULT_GROUPED = {
 }
 
 describe('Table1Panel', () => {
+  it('leaves identifier columns unchecked but available to select', async () => {
+    const pid = { name: 'pid', dtype: 'int64', kind: 'numeric' as const, id_like: true }
+    const session = makeSession()
+    installSession({ ...session, columns: [pid, ...session.columns] })
+    const user = userEvent.setup()
+    const { unmount } = render(<Table1Panel />)
+
+    const checkbox = screen.getByRole('checkbox', { name: /pid/i })
+    expect(checkbox).not.toBeChecked()
+    await user.click(checkbox)
+    expect(checkbox).toBeChecked()
+    unmount()
+
+    render(<Table1Panel />)
+    expect(screen.getByRole('checkbox', { name: /pid/i })).toBeChecked()
+  })
+
   it('renders nothing without an active session', () => {
     clearSession()
     const { container } = render(<Table1Panel />)

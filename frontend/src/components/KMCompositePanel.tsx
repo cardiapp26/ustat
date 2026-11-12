@@ -1,3 +1,4 @@
+import { analysisDefaultColumns } from "../lib/columnDefaults";
 import { useMemo, useRef, useState } from "react";
 import { runKMComposite } from "../api";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
@@ -58,9 +59,10 @@ function KMCompositePanelBody({ session }: { session: Session }) {
   const numericCols = columns.filter((col) => isNumericKind(col.kind)).map((col) => col.name);
   const groupCols = columns.filter((col) => isCategoricalKind(col.kind)).map((col) => col.name);
 
-  const [groupCol, setGroupCol] = usePersistedPanelState("km_composite", "groupCol", groupCols[0] ?? "");
+  const defaultNumericCols = analysisDefaultColumns(session, numericCols);
+  const [groupCol, setGroupCol] = usePersistedPanelState("km_composite", "groupCol", analysisDefaultColumns(session, groupCols)[0] ?? "");
   const [endpoints, setEndpoints] = usePersistedPanelState<EndpointRow[]>("km_composite", "endpoints", [
-    { duration_col: numericCols[0] ?? "", event_col: numericCols[1] ?? numericCols[0] ?? "", label: "" },
+    { duration_col: defaultNumericCols[0] ?? "", event_col: defaultNumericCols[1] ?? defaultNumericCols[0] ?? "", label: "" },
   ]);
   const [riskTimesRaw, setRiskTimesRaw] = usePersistedPanelState("km_composite", "riskTimes", "0, 3, 6, 9, 12");
   const [cumInc, setCumInc] = usePersistedPanelState("km_composite", "cumInc", true);
@@ -92,7 +94,7 @@ function KMCompositePanelBody({ session }: { session: Session }) {
   };
   const addEndpoint = () => {
     if (endpoints.length >= 4) return;
-    setEndpoints([...endpoints, { duration_col: numericCols[0] ?? "", event_col: numericCols[0] ?? "", label: "" }]);
+    setEndpoints([...endpoints, { duration_col: defaultNumericCols[0] ?? "", event_col: defaultNumericCols[0] ?? "", label: "" }]);
   };
   const removeEndpoint = (idx: number) => {
     if (endpoints.length <= 1) return;
@@ -157,6 +159,7 @@ function KMCompositePanelBody({ session }: { session: Session }) {
           <div>
             <label className="text-xs text-gray-400 block mb-1">Arm / group column</label>
             <select className="select w-full" value={groupCol} onChange={(e) => setGroupCol(e.target.value)}>
+              {!groupCol && <option value="">Select group</option>}
               {groupCols.map((name) => <option key={name} value={name}>{displayName(columns.find((c) => c.name === name), name)}</option>)}
             </select>
           </div>
@@ -193,12 +196,14 @@ function KMCompositePanelBody({ session }: { session: Session }) {
               <div>
                 <label className="text-[11px] text-gray-400 block mb-0.5">Time / duration column</label>
                 <select className="select w-full" value={ep.duration_col} onChange={(e) => updateEndpoint(idx, { duration_col: e.target.value })}>
+                  {!ep.duration_col && <option value="">Select duration</option>}
                   {numericCols.map((name) => <option key={name} value={name}>{displayName(columns.find((c) => c.name === name), name)}</option>)}
                 </select>
               </div>
               <div>
                 <label className="text-[11px] text-gray-400 block mb-0.5">Event column (0/1)</label>
                 <select className="select w-full" value={ep.event_col} onChange={(e) => updateEndpoint(idx, { event_col: e.target.value })}>
+                  {!ep.event_col && <option value="">Select event</option>}
                   {numericCols.map((name) => <option key={name} value={name}>{displayName(columns.find((c) => c.name === name), name)}</option>)}
                 </select>
               </div>

@@ -25,7 +25,15 @@ import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
 import { useStampedResult } from "../hooks/useStampedResult";
 import { useMissing } from "./MissingGuard";
 
-interface DiagCol { name: string; n_missing: number; pct: number; kind: string; is_numeric: boolean; depends_on: string[]; likely: string }
+interface DiagCol {
+  name: string; n_missing: number; pct: number; kind: string; is_numeric: boolean;
+  /** Associations that survive Holm adjustment across this variable's tests. */
+  depends_on: string[];
+  /** Significant only before adjustment: weak evidence, not a classification. */
+  suggestive?: string[];
+  n_tests?: number;
+  likely: string;
+}
 interface DiagResult { columns: DiagCol[]; overall_hint: string; recommendation: string; any_mar: boolean }
 /** One "Analyze missingness" run: the dependence check and Little's test are
  *  requested together, so they are stamped together. */
@@ -234,16 +242,22 @@ export default function MissingDataPanel() {
         (r) => r[c.name] === null || r[c.name] === undefined || r[c.name] === ""
       ).length;
       const serverMissing = fullMissingInfo?.per_column[c.name];
-      const nMiss = serverMissing?.count ?? previewMissing;
+      // `count` also holds values flagged as implausible. Those are present
+      // and analysed (the Data header and the missing guard both say so), so
+      // only the blanks count as missing; flagged values are shown beside them.
+      const nMiss = serverMissing?.raw_count ?? serverMissing?.count ?? previewMissing;
+      const totalRows = fullMissingInfo?.total_rows ?? preview.length;
       return {
         name: c.name,
         kind: c.kind,
         isNum: isNumericKind(c.kind),
         nMiss,
-        pct: serverMissing?.pct ?? (preview.length > 0 ? (nMiss / preview.length) * 100 : 0),
+        nFlagged: serverMissing?.n_implausible ?? 0,
+        pct: totalRows > 0 ? (nMiss / totalRows) * 100 : 0,
       };
     })
-    .filter((m) => m.nMiss > 0);
+    // Flagged values stay listed so they can be found and cleaned here.
+    .filter((m) => m.nMiss > 0 || m.nFlagged > 0);
 
   // Selection + MICE state. The run inputs persist with the results: a result
   // restored on remount beside inputs reset to their defaults would read as
@@ -795,7 +809,14 @@ export default function MissingDataPanel() {
                   </td>
                   <td className="px-3 py-1.5 font-medium text-gray-800 truncate max-w-[10rem]">{m.name}</td>
                   <td className="px-3 py-1.5 text-gray-500">{m.kind}</td>
-                  <td className="px-3 py-1.5 text-right text-gray-600">{m.nMiss}</td>
+                  <td className="px-3 py-1.5 text-right text-gray-600">
+                    {m.nMiss}
+                    {m.nFlagged > 0 && (
+                      <span className="ml-1 text-[10px] text-amber-600" title="Flagged as implausible but present; not counted as missing">
+                        +{m.nFlagged} flagged
+                      </span>
+                    )}
+                  </td>
                   <td className="px-3 py-1.5">
                     <div className="flex items-center gap-1.5">
                       <div className="flex-1 h-1.5 rounded-full bg-gray-100 overflow-hidden">
@@ -877,7 +898,16 @@ export default function MissingDataPanel() {
                       {diag.columns.some((c) => c.depends_on.length > 0) && (
                         <ul className="mt-1 ml-3 list-disc">
                           {diag.columns.filter((c) => c.depends_on.length > 0).map((c) => (
-                            <li key={c.name}>{c.name}: missingness related to {c.depends_on.join(", ")} → MAR signal</li>
+                            <li key={c.name}>{c.name}: missingness related to {c.depends_on.join(", ")} → MAR signal (Holm-adjusted)</li>
+                          ))}
+                        </ul>
+                      )}
+                      {diag.columns.some((c) => (c.suggestive?.length ?? 0) > 0) && (
+                        <ul className="mt-1 ml-3 list-disc text-blue-700/80">
+                          {diag.columns.filter((c) => (c.suggestive?.length ?? 0) > 0).map((c) => (
+                            <li key={c.name}>
+                              {c.name}: possibly related to {c.suggestive!.join(", ")} (unadjusted p &lt; 0.05 across {c.n_tests ?? "several"} tests; exploratory)
+                            </li>
                           ))}
                         </ul>
                       )}

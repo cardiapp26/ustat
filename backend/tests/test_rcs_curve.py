@@ -75,6 +75,22 @@ def test_explicit_reference_wins_over_strategy(client, audit_df):
     assert d["ref_strategy_used"] == "value" and d["ref_value"] == 55
 
 
+def test_curve_preserves_small_scale_reference_and_knot_coordinates(client, audit_df):
+    scale = 5000
+    df = audit_df.assign(age=audit_df["age"] / scale)
+    knots = [0.00512345, 0.00812345, 0.01112345, 0.01412345]
+    ref = 0.01012345
+    r = _post(client, df, "curve_small_coordinates", ref_value=ref, knot_positions=knots)
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["ref_value"] == ref
+    assert d["knots"] == knots
+    unscaled = _post(client, audit_df, "curve_unscaled_coordinates",
+                     ref_value=ref * scale, knot_positions=[k * scale for k in knots])
+    assert unscaled.status_code == 200, unscaled.text
+    assert d["nadir"]["x"] * scale == pytest.approx(unscaled.json()["nadir"]["x"], rel=1e-3)
+
+
 def test_monotone_curve_reports_boundary_nadir():
     grid = np.linspace(0, 10, 50)
     nadir = find_nadir(lambda xs: 2.0 * xs, grid)

@@ -45,7 +45,7 @@ describe('DecisionCurvePanel', () => {
     render(<DecisionCurvePanel />)
     await user.click(screen.getByRole('button', { name: /binary outcome/i }))
     expect(screen.getByText('Probability / Risk column')).toBeInTheDocument()
-    expect(screen.getByText('Binary Outcome (0/1)')).toBeInTheDocument()
+    expect(screen.getByText('Binary Outcome', { selector: 'label' })).toBeInTheDocument()
   })
 
   it('enables Run only once duration/event/risk are all selected in survival mode', async () => {

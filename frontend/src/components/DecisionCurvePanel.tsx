@@ -631,7 +631,7 @@ export default function DecisionCurvePanel() {
                   {numericCols.map((c) => <option key={c} value={c}>{c}</option>)}
                 </select>
 
-                <label className="block text-xs text-gray-600">Binary Outcome (0/1)</label>
+                <label className="block text-xs text-gray-600">Binary Outcome</label>
                 <select value={outcomeCol} onChange={(e) => setOutcomeCol(e.target.value)} className="w-full border rounded px-3 py-2 text-sm">
                   <option value="">— select —</option>
                   {binaryCols.map((c) => <option key={c} value={c}>{c}</option>)}

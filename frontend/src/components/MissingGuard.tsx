@@ -13,8 +13,9 @@
  * currently selected imputation strategy so callers don't need to track it.
  */
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { getMissing } from "../api";
+import { useStore } from "../store";
 import { Tip } from "./Tip";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -24,12 +25,15 @@ export type ImputationStrategy = "listwise" | "median" | "mice";
 export interface PerColumnInfo {
   count: number;
   pct: number;
+  raw_count?: number;
+  n_implausible?: number;
 }
 
 export interface MissingInfo {
   total_rows: number;
   rows_affected: number;
   pct_affected: number;
+  raw_rows_affected?: number;
   per_column: Record<string, PerColumnInfo>;
 }
 
@@ -76,21 +80,36 @@ export function useMissing(sessionId: string, columns: string[], refreshKey = 0)
   const [info, setInfo] = useState<MissingInfo | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const requestId = useRef(0);
+  const caseFilter = useStore((s) => s.caseFilter);
+  const caseWeight = useStore((s) => s.caseWeight);
+  const splitFile = useStore((s) => s.splitFile);
 
   const refetch = useCallback(() => {
+    const id = ++requestId.current;
+    setInfo(null);
+    setError(null);
     if (!sessionId || columns.length === 0) {
-      setInfo(null);
+      setLoading(false);
       return;
     }
     setLoading(true);
-    setError(null);
     getMissing(sessionId, columns)
-      .then((r) => setInfo(r.data as MissingInfo))
-      .catch((e) => setError(e?.response?.data?.detail ?? "Failed to check missing data"))
-      .finally(() => setLoading(false));
-  }, [sessionId, columns.join(","), refreshKey]);  // eslint-disable-line
+      .then((r) => {
+        if (id === requestId.current) setInfo(r.data as MissingInfo);
+      })
+      .catch((e) => {
+        if (id === requestId.current) setError(e?.response?.data?.detail ?? "Failed to check missing data");
+      })
+      .finally(() => {
+        if (id === requestId.current) setLoading(false);
+      });
+  }, [sessionId, columns.join(","), refreshKey, caseFilter, caseWeight, splitFile]);  // eslint-disable-line
 
-  useEffect(() => { refetch(); }, [refetch]);
+  useEffect(() => {
+    refetch();
+    return () => { requestId.current += 1; };
+  }, [refetch]);
 
   return { info, loading, error, refetch };
 }
@@ -104,7 +123,10 @@ export function MissingGuard({
   onImputation,
   children,
 }: MissingGuardProps) {
-  const { info, loading } = useMissing(sessionId, columns);
+  const dataVersion = useStore((s) => s.dataVersion);
+  const { info, loading } = useMissing(sessionId, columns, dataVersion);
+  const missingRows = info?.raw_rows_affected ?? info?.rows_affected ?? 0;
+  const flaggedColumns = Object.entries(info?.per_column ?? {}).filter(([, col]) => (col.n_implausible ?? 0) > 0);
 
   // `children` (the run button) stays in the same slot in every state. When it
   // moved between the loading, clean and warning layouts React remounted it,
@@ -115,8 +137,18 @@ export function MissingGuard({
       {loading && (
         <div className="text-xs text-gray-400 animate-pulse mb-2">Checking missing data…</div>
       )}
-      {!loading && info && info.rows_affected > 0 && (
-        <MissingWarning info={info} imputation={imputation} onImputation={onImputation} />
+      {!loading && flaggedColumns.length > 0 && (
+        <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          <p>Flagged values are separate from missing values. Listwise deletion keeps them. MICE can treat them as missing in supported analyses.</p>
+          <ul>
+            {flaggedColumns.map(([name, { n_implausible }]) => (
+              <li key={name}>{name}: {n_implausible} flagged {n_implausible === 1 ? "value" : "values"}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {!loading && info && missingRows > 0 && (
+        <MissingWarning info={info} missingRows={missingRows} imputation={imputation} onImputation={onImputation} />
       )}
       {children}
     </>
@@ -125,12 +157,18 @@ export function MissingGuard({
 
 interface MissingWarningProps {
   info: MissingInfo;
+  missingRows: number;
   imputation: ImputationStrategy;
   onImputation: (s: ImputationStrategy) => void;
 }
 
-function MissingWarning({ info, imputation, onImputation }: MissingWarningProps) {
-  const severity = info.pct_affected >= 20 ? "red" : "amber";
+function percentage(count: number, total: number) {
+  return total > 0 ? Number((100 * count / total).toFixed(1)) : 0;
+}
+
+function MissingWarning({ info, missingRows, imputation, onImputation }: MissingWarningProps) {
+  const pct = percentage(missingRows, info.total_rows);
+  const severity = pct >= 20 ? "red" : "amber";
 
   return (
     <div className="space-y-3 mb-3">
@@ -148,21 +186,21 @@ function MissingWarning({ info, imputation, onImputation }: MissingWarningProps)
           </span>
           <div className="space-y-1 w-full">
             <p className="font-semibold">
-              {info.rows_affected} of {info.total_rows} rows have missing values (
-              {info.pct_affected}%)
+              {missingRows} of {info.total_rows} rows have missing values ({pct}%)
             </p>
 
             {/* Per-column breakdown */}
             <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 mt-1">
               {Object.entries(info.per_column)
-                .filter(([, v]) => v.count > 0)
-                .map(([col, v]) => (
+                .map(([col, v]) => [col, v.raw_count ?? v.count] as const)
+                .filter(([, count]) => count > 0)
+                .map(([col, count]) => (
                   <div key={col} className="flex justify-between">
                     <span className="truncate max-w-[120px]" title={col}>
                       {col}
                     </span>
                     <span className="font-mono ml-2 opacity-80">
-                      {v.count} ({v.pct}%)
+                      {count} ({percentage(count, info.total_rows)}%)
                     </span>
                   </div>
                 ))}

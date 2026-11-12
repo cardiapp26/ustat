@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useStore } from "../store";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
-import { runLinear, runLogistic, runFirthLogistic, runKM, runCox, runLogisticTable, runPoisson, runZeroInflatedPoisson, runZeroInflatedNegBinom, runCoxUniMulti, runOrdinal, runMultinomial, runMultiOutcomeRegression } from "../api";
+import { runLinear, runLogistic, runFirthLogistic, runLogisticTable, runPoisson, runZeroInflatedPoisson, runZeroInflatedNegBinom, runCoxUniMulti, runOrdinal, runMultinomial, runMultiOutcomeRegression } from "../api";
 import { Tip, InfoBanner } from "./Tip";
 import StaleResultNotice from "./StaleResultNotice";
 import StaleGuard from "./StaleGuard";
@@ -21,7 +21,16 @@ import { CiMethodNote, ForestBuilderButton, OutcomeOrderNote, SparklineMini } fr
 import MultiOutcomeResult from "./models/MultiOutcomeResult";
 import MultinomialResult from "./models/MultinomialResult";
 import ZeroInflatedResult from "./models/ZeroInflatedResult";
+import SaveLogisticProbabilities from "./models/SaveLogisticProbabilities";
 import { RateModelNote, OverdispersionWarning } from "./models/CountModelNotes";
+import { analysisDefaultColumns } from "../lib/columnDefaults";
+
+
+/** Models offered in the list. KM and Cox moved to Survival Advanced. */
+const MODEL_IDS = new Set([
+  "linear", "multi_outcome", "logistic", "multinomial", "ordinal", "ortable",
+  "firth", "firth_ortable", "hrtable", "poisson", "zip", "zinb",
+]);
 
 export default function ModelsPanel() {
   const session  = useStore((s) => s.session);
@@ -36,9 +45,17 @@ export default function ModelsPanel() {
   const numCols    = numColsRaw.filter((c) => !excludedSet.has(c));
   const allCols    = allColsRaw.filter((c) => !excludedSet.has(c));
   const binaryCols = binaryColsRaw.filter((c) => !excludedSet.has(c));
+  const defaultNumCols = analysisDefaultColumns(session, numCols);
+  const defaultEvent = binaryCols.length
+    ? analysisDefaultColumns(session, binaryCols)[0]
+    : defaultNumCols[1];
 
-  const [model, setModel] = usePersistedPanelState<string>("models", "model", "linear");
-  const [outcome, setOutcome] = usePersistedPanelState<string>("models", "outcome", numCols[0] ?? "");
+  const [storedModel, setModel] = usePersistedPanelState<string>("models", "model", "linear");
+  // A value saved by an older version (the KM and Cox forms that moved to
+  // Survival Advanced) would otherwise open a form with no radio selected and
+  // run the wrong endpoint.
+  const model = MODEL_IDS.has(storedModel) ? storedModel : "linear";
+  const [outcome, setOutcome] = usePersistedPanelState<string>("models", "outcome", defaultNumCols[0] ?? "");
   const [predictors, setPredictors] = usePersistedPanelState<string[]>("models", "predictors", []);
   // HR Table (Cox uni/parsimonious/full): subset of predictors that enter the
   // parsimonious (middle) model column.
@@ -58,10 +75,8 @@ export default function ModelsPanel() {
   const [robustSE,  setRobustSE]  = useState(false);
   const [scaleFactors, setScaleFactors] = useState<Record<string, string>>({}); // col → divisor string
   const [selection, setSelection] = usePersistedPanelState<string>("models", "selection", "p10"); // multivariate variable selection strategy
-  const [durationCol, setDurationCol] = usePersistedPanelState<string>("models", "durationCol", numCols[0] ?? "");
-  const [eventCol, setEventCol] = usePersistedPanelState<string>("models", "eventCol", binaryCols[0] ?? numCols[1] ?? "");
-  const [groupCol, setGroupCol] = usePersistedPanelState<string>("models", "groupCol", "");
-  const [stratifyCol, setStratifyCol] = usePersistedPanelState<string>("models", "stratifyCol", "");
+  const [durationCol, setDurationCol] = usePersistedPanelState<string>("models", "durationCol", defaultNumCols[0] ?? "");
+  const [eventCol, setEventCol] = usePersistedPanelState<string>("models", "eventCol", defaultEvent ?? "");
   // Multinomial: the baseline category every other outcome category is
   // compared with. Empty = the server's default (first in dictionary order).
   const [mnReference, setMnReference] = usePersistedPanelState<string>("models", "mnReference", "");
@@ -101,7 +116,7 @@ export default function ModelsPanel() {
   // model stale for clicking a row.
   const runParams = {
     model, outcome, predictors, parsimonious, references, glmInteractions,
-    selection, durationCol, eventCol, groupCol, stratifyCol, mnReference,
+    selection, durationCol, eventCol, mnReference,
     imputation, robustSE, scaleFactors,
     exposureCol: effectiveExposure, inflationPredictors: effectiveInflation,
     moOutcomes, moPredictors, moCovariates, moStandardize, moRobust,
@@ -154,7 +169,6 @@ export default function ModelsPanel() {
         res = await runMultinomial({ session_id: sid, outcome, predictors, imputation, reference });
       }
       else if (model === "multi_outcome") res = await runMultiOutcomeRegression({ session_id: sid, outcomes: moOutcomes, predictors: moPredictors, covariates: moCovariates, standardize: moStandardize, imputation, robust_se: moRobust });
-      else if (model === "km") res = await runKM({ session_id: sid, duration_col: durationCol, event_col: eventCol, group_col: groupCol || undefined, stratify_col: stratifyCol || undefined, imputation });
       else if (model === "hrtable") {
         const refs = Object.fromEntries(Object.entries(references).filter(([col]) => predictors.includes(col)));
         res = await runCoxUniMulti({
@@ -163,7 +177,7 @@ export default function ModelsPanel() {
           references: Object.keys(refs).length ? refs : undefined,
         });
       }
-      else res = await runCox({ session_id: sid, duration_col: durationCol, event_col: eventCol, predictors, imputation, interactions });
+      else throw new Error(`Unknown model: ${model}`);
       setResult(res.data);
     } catch (e: unknown) {
       const detail = (e as { response?: { data?: { detail?: string } } }).response?.data?.detail;
@@ -207,16 +221,14 @@ export default function ModelsPanel() {
    */
   const sendToForestBuilder = () => {
     if (!result) return;
-    const isCox = model === "cox";
-    const metric = isCox ? "HR" : "OR";
     const rows: Array<{ label: string; est: number | null; ci_low: number | null; ci_high: number | null; p: number | null; extra: string }> = [];
 
     if (result.coefficients?.length) {
       for (const c of result.coefficients) {
         if (c.variable === "const" || c.variable === "Intercept") continue;
-        const est = isCox ? c.hr : c.odds_ratio;
-        const lo = isCox ? c.hr_ci_low : c.or_ci_low;
-        const hi = isCox ? c.hr_ci_high : c.or_ci_high;
+        const est = c.odds_ratio;
+        const lo = c.or_ci_low;
+        const hi = c.or_ci_high;
         if (est == null) continue;
         rows.push({
           label: c.variable, est, ci_low: lo ?? null, ci_high: hi ?? null,
@@ -246,9 +258,9 @@ export default function ModelsPanel() {
     setForestHandoff(rows, {
       customTitle: MODEL_FOREST_TITLE[model] ?? "",
       customSubtitle: result.outcome ? `Outcome: ${result.outcome}` : "",
-      xLabel: `${isCox ? "Hazard" : "Odds"} ratio (95% CI, log scale)`,
+      xLabel: "Odds ratio (95% CI, log scale)",
       leftHeader: "Variable",
-      rightHeader: `${metric} (95% CI)`,
+      rightHeader: "OR (95% CI)",
       returnTab: "models",
       returnLabel: "← Back to the model",
     }, true);
@@ -292,7 +304,6 @@ export default function ModelsPanel() {
     setMoOutcomes([]); setMoPredictors([]); setMoCovariates([]); setResult(null);
   };
 
-  const isSurvival  = false;  // KM/Cox moved to Survival Advanced tab
   const isORTable   = model === "ortable" || model === "firth_ortable";
   const isHRTable   = model === "hrtable";
   const isMultiOutcome = model === "multi_outcome";
@@ -338,6 +349,13 @@ export default function ModelsPanel() {
               </span>
             </label>
           ))}
+          <button
+            type="button"
+            className="text-left text-xs text-indigo-600 underline"
+            onClick={() => { setVisualSubTab("models"); setActiveTab("visual"); }}
+          >
+            Negative binomial, Gamma and linear mixed models in Models &amp; Diagnostics
+          </button>
           {hasRobustSE && (
             <label className="flex items-center gap-2 cursor-pointer mt-1 pt-2 border-t border-gray-100">
               <input type="checkbox" checked={robustSE} onChange={(e) => setRobustSE(e.target.checked)} className="accent-indigo-500" />
@@ -364,6 +382,7 @@ export default function ModelsPanel() {
               <div>
                 <label className="text-xs text-gray-400 block mb-1">Duration column</label>
                 <select className="select w-full" value={durationCol} onChange={(e) => setDurationCol(e.target.value)}>
+                  {!durationCol && <option value="">Select duration</option>}
                   {numCols.map((c) => <option key={c}>{c}</option>)}
                 </select>
               </div>
@@ -373,6 +392,7 @@ export default function ModelsPanel() {
                   {binaryCols.length === 0 && <span className="ml-1 text-[10px] text-amber-600">⚠ no binary 0/1 column detected</span>}
                 </label>
                 <select className="select w-full" value={eventCol} onChange={(e) => setEventCol(e.target.value)}>
+                  {!eventCol && <option value="">Select event</option>}
                   {(binaryCols.length > 0 ? binaryCols : numCols).map((c) => <option key={c}>{c}</option>)}
                 </select>
               </div>
@@ -562,85 +582,6 @@ export default function ModelsPanel() {
                 </label>
               </div>
             </>
-          ) : isSurvival ? (
-            <>
-              <div>
-                <label className="text-xs text-gray-400 block mb-1">Duration column</label>
-                <select className="select w-full" value={durationCol} onChange={(e) => setDurationCol(e.target.value)}>
-                  {numCols.map((c) => <option key={c}>{c}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="text-xs text-gray-400 block mb-1">
-                  Event column (0/1)
-                  {binaryCols.length === 0 && <span className="ml-1 text-[10px] text-amber-600">⚠ no binary 0/1 column detected</span>}
-                </label>
-                <select className="select w-full" value={eventCol} onChange={(e) => setEventCol(e.target.value)}>
-                  {(binaryCols.length > 0 ? binaryCols : numCols).map((c) => <option key={c}>{c}</option>)}
-                </select>
-              </div>
-              {model === "km" && (
-                <>
-                  <div>
-                    <label className="text-xs text-gray-400 block mb-1">Group column (optional)</label>
-                    <select className="select w-full" value={groupCol} onChange={(e) => setGroupCol(e.target.value)}>
-                      <option value="">None</option>
-                      {allCols.map((c) => <option key={c}>{c}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="text-xs text-gray-400 block mb-1">Stratify by (optional)</label>
-                    <select className="select w-full" value={stratifyCol} onChange={(e) => setStratifyCol(e.target.value)}>
-                      <option value="">None</option>
-                      {allCols.filter((c) => c !== groupCol && c !== durationCol && c !== eventCol).map((c) => <option key={c}>{c}</option>)}
-                    </select>
-                  </div>
-                </>
-              )}
-              {model === "cox" && (
-                <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <label className="text-xs text-gray-400">Predictors</label>
-                    <button onClick={() => { setPredictors([]); setResult(null); }} className="text-[10px] px-1.5 py-0.5 rounded border border-gray-300 text-gray-500 hover:bg-red-50 hover:text-red-500 hover:border-red-300 transition-colors">Clear all</button>
-                  </div>
-                  <div className="mb-2 text-[10px] text-indigo-600 bg-indigo-50 border border-indigo-200 rounded px-2 py-1 leading-snug">
-                    Predictors enter the model linearly. For non-linear continuous effects (e.g.
-                    J-shaped LDL ↔ mortality), use the
-                    {" "}<span className="font-semibold">Restricted Cubic Spline</span> sub-tab —
-                    it fits <code>rcs(X, 4)</code> in the same Cox PH framework with knot placement
-                    (Harrell percentiles or custom), Wald non-linearity test, HR curve with 95% CI,
-                    optional <code>rcs(X) × rcs(Y)</code> interaction, and 2D/3D HR surfaces.
-                  </div>
-                  <input
-                    type="text"
-                    placeholder="Filter variables…"
-                    value={predFilter}
-                    onChange={(e) => setPredFilter(e.target.value)}
-                    className="select w-full text-xs mb-1 py-1"
-                  />
-                  <div className="max-h-40 overflow-y-auto space-y-1">
-                    {allCols
-                      .filter((c) => c !== durationCol && c !== eventCol && c.toLowerCase().includes(predFilter.toLowerCase()))
-                      .map((c) => {
-                        const spk = sparklines[c];
-                        return (
-                          <label key={c} className="flex items-center gap-2 text-sm cursor-pointer">
-                            <input type="checkbox" checked={predictors.includes(c)} onChange={() => togglePredictor(c)} className="accent-indigo-500" />
-                            <span className="text-gray-700 truncate flex-1">{c}</span>
-                            {(missingCounts[c] ?? 0) > 0 && (
-                              <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-amber-100 text-amber-600 border border-amber-200 flex-shrink-0"
-                                title={`${missingCounts[c]} missing values`}>
-                                {missingCounts[c]}✕
-                              </span>
-                            )}
-                            {spk && <SparklineMini data={spk.data} type={spk.type} />}
-                          </label>
-                        );
-                      })}
-                  </div>
-                </div>
-              )}
-            </>
           ) : (
             <>
               <div>
@@ -654,6 +595,7 @@ export default function ModelsPanel() {
                   )}
                 </label>
                 <select className="select w-full" value={outcome} onChange={(e) => setOutcome(e.target.value)}>
+                  {!outcome && <option value="">Select outcome</option>}
                   {allCols.map((c) => <option key={c}>{c}</option>)}
                 </select>
                 {suggestOrdinal && (
@@ -795,10 +737,10 @@ export default function ModelsPanel() {
               )}
             </>
           )}
-          {/* Pairwise interactions — linear / logistic / cox accept them
+          {/* Pairwise interactions: linear / logistic / Firth accept them
               server-side (Poisson + OR-table do not yet). Hidden until at
               least 2 predictors are ticked. */}
-          {(model === "linear" || model === "logistic" || model === "firth" || model === "cox") && predictors.length >= 2 && (
+          {(model === "linear" || model === "logistic" || model === "firth") && predictors.length >= 2 && (
             <div className="panel space-y-1.5">
               <p className="text-xs text-gray-500 font-medium flex items-center gap-1">
                 Interactions
@@ -855,8 +797,6 @@ export default function ModelsPanel() {
             sessionId={sid}
             columns={isHRTable
               ? [durationCol, eventCol, ...predictors]
-              : isSurvival
-              ? [durationCol, eventCol, ...(model === "cox" ? predictors : [])]
               : isMultiOutcome
               ? [...moOutcomes, ...moPredictors, ...moCovariates]
               : [...countPredictors, ...effectiveInflation, ...(effectiveExposure ? [effectiveExposure] : []), outcome]}
@@ -865,7 +805,7 @@ export default function ModelsPanel() {
           >
             <button className="btn-primary w-full" onClick={run} disabled={
               loading ||
-              (isMultiOutcome ? (moOutcomes.length < 1 || moPredictors.length < 1) : (!isSurvival && countPredictors.length === 0) || (isORTable && predictors.length < 1))
+              (isMultiOutcome ? (moOutcomes.length < 1 || moPredictors.length < 1) : countPredictors.length === 0 || (isORTable && predictors.length < 1))
             }>
               {loading ? "Fitting…" : "Fit Model"}
             </button>
@@ -938,6 +878,14 @@ export default function ModelsPanel() {
             {/* Summary cards */}
             <div className="panel">
               <h4 className="font-semibold text-gray-900 mb-3">{result.model}</h4>
+              {model === "logistic" && result.outcome && result.probability_fit && (
+                <SaveLogisticProbabilities
+                  key={result.probability_fit.token}
+                  sessionId={sid}
+                  outcome={result.outcome}
+                  fit={result.probability_fit}
+                />
+              )}
               <div className="grid grid-cols-3 gap-3">
                 {[
                   ["N",          result.n,                       "Total number of observations used to fit the model."],
@@ -962,6 +910,11 @@ export default function ModelsPanel() {
                   );
                 })}
               </div>
+              {model === "linear" && result.warnings?.map((warning) => (
+                <p key={warning} className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                  {warning}
+                </p>
+              ))}
               {/* Missing-data exclusion notice */}
               {result.n_excluded != null && result.n_excluded > 0 && (
                 <div className="mt-3">
@@ -1063,10 +1016,9 @@ export default function ModelsPanel() {
               <div className="panel">
                 <div className="flex items-center justify-between mb-1">
                   <h4 className="font-semibold text-gray-900">
-                    {model === "cox" ? "Coefficients (Hazard Ratios)" : (model === "logistic" || model === "firth" || model === "ordinal") ? "Coefficients (Odds Ratios)" : model === "poisson" ? "Coefficients (Incidence Rate Ratios)" : "Coefficients"}
+                    {(model === "logistic" || model === "firth" || model === "ordinal") ? "Coefficients (Odds Ratios)" : model === "poisson" ? "Coefficients (Incidence Rate Ratios)" : "Coefficients"}
                     {model === "linear" && <Tip text="Each β coefficient shows how much the outcome changes for a 1-unit increase in that predictor, holding all others constant. Significant predictors (p < 0.05) are highlighted." wide />}
                     {(model === "logistic" || model === "firth") && <Tip text="Odds Ratio (OR) > 1 means higher odds of the outcome; OR < 1 means lower odds. E.g. OR = 2.0 means the outcome is twice as likely per unit increase. 95% CI not crossing 1 = significant." wide />}
-                    {model === "cox" && <Tip text="Hazard Ratio (HR) > 1 means a higher rate of the event over time; HR < 1 means a protective effect. E.g. HR = 1.5 means 50% higher event rate per unit increase." wide />}
                     {model === "poisson" && <Tip text="Incidence Rate Ratio (IRR) = eβ. IRR > 1 means higher event rate; IRR < 1 means lower rate. Use for count outcomes (hospital admissions, episodes, etc.)." wide />}
                   </h4>
                   {/* Null hypothesis radio */}
@@ -1085,7 +1037,6 @@ export default function ModelsPanel() {
                 {model === "firth" && <CiMethodNote method={result.ci_method} note={result.method_note} />}
                 <CoefTable
                   coefs={result.coefficients}
-                  hrMode={model === "cox"}
                   allColumns={allCols}
                   selectedIdx={selectedCoefIdx}
                   onSelect={(i) => setSelectedCoefIdx((prev) => prev === i ? null : i)}
@@ -1147,8 +1098,8 @@ export default function ModelsPanel() {
               </div>
             )}
 
-            {/* Forest plot — logistic / firth / cox / ordinal (rendered after tables) */}
-            {result.coefficients && (model === "logistic" || model === "firth" || model === "cox" || model === "ordinal") &&
+            {/* Forest plot: logistic / firth / ordinal (rendered after tables) */}
+            {result.coefficients && (model === "logistic" || model === "firth" || model === "ordinal") &&
               result.coefficients.filter((c) => c.variable !== "const").length > 0 && (
               <div className="panel">
                 <div className="mb-2 flex items-start justify-between gap-3">
@@ -1156,7 +1107,7 @@ export default function ModelsPanel() {
                     Forest Plot
                     <Tip text="Each row shows one predictor. The square is the point estimate (OR or HR); the horizontal line is the 95% Confidence Interval. If the CI crosses 1 (the vertical dashed line), the effect is not statistically significant. Larger squares = more precise estimate." wide />
                     <span className="ml-2 text-xs font-normal text-gray-400">
-                      {model === "cox" ? "HR" : "OR"} with 95% CI — colored = <i>p</i>&lt;0.05, square size = precision
+                      OR with 95% CI — colored = <i>p</i>&lt;0.05, square size = precision
                     </span>
                   </h4>
                   <ForestBuilderButton onClick={sendToForestBuilder} />

@@ -55,10 +55,10 @@
       "variance_assumption": "welch",
       "df_method": "welch_satterthwaite",
       "significant": true,
-      "interpretation": "Significant difference between groups (t = -6.283, p = <0.001, Hedges' g = -0.724 [medium])",
+      "interpretation": "Significant difference between groups (t = -6.283, p < 0.001, Hedges' g = -0.724 [medium])",
       "methods_text": "Group differences in sbp were compared between levels of arm using an independent-samples Welch's t-test. Effect size was quantified with Hedges' g and its 95% confidence interval. Normality of each group was assessed with the Shapiro-Wilk test (n < 50), the Lilliefors-corrected Kolmogorov-Smirnov test (50 ≤ n ≤ 2000), or a skewness/CLT criterion (n > 2000). Homogeneity of variances was checked with Levene's test.",
       "r_code": "t.test(sbp ~ arm, data = data, var.equal = FALSE)",
-      "result_text": "The control group (M = 141.24) significantly differed from the treat group (M = 148.69), t(297.23) = -6.283, p = <0.001, hedges g = -0.724 (95% CI: -0.959–-0.489) [medium]."
+      "result_text": "The control group (M = 141.24) significantly differed from the treat group (M = 148.69), t(297.23) = -6.283, p < 0.001, hedges g = -0.724 (95% CI: -0.959–-0.489) [medium]."
     },
     "tolerance": "exact (strings and enums; no tolerance applies to a sentence)"
   },
@@ -238,10 +238,10 @@
       "mean": 144.93596666666667,
       "std": 10.904668543903425,
       "significant": true,
-      "interpretation": "Mean differs from 140 (t = 7.840, p = <0.001, Cohen's d = 0.453 [small])",
+      "interpretation": "Mean differs from 140 (t = 7.840, p < 0.001, Cohen's d = 0.453 [small])",
       "methods_text": "A one-sample t-test was used to compare the mean of sbp against the hypothesized value of 140. Effect size was quantified with Cohen's d.",
       "r_code": "t.test(data$sbp, mu = 140)",
-      "result_text": "The sample mean (M = 144.94) was significantly different from the test value of 140, t(299) = 7.840, p = <0.001, cohen d = 0.453 (95% CI: 0.333–0.572) [small]."
+      "result_text": "The sample mean (M = 144.94) was significantly different from the test value of 140, t(299) = 7.840, p < 0.001, cohen d = 0.453 (95% CI: 0.333–0.572) [small]."
     },
     "tolerance": "rel<=1e-12 (strings compare exactly; the numbers carry the tolerance)",
     "divergence": "assumptions[].detail on the Normality lines: R reports the Lilliefors p from nortest::lillie.test (Dallal-Wilkinson 1986 with Stephens' 1974 modification, p = 0.5265 / 0.7417 here) where Python reports statsmodels' interpolation of a table of simulated critical values (p = 0.6002 / 0.7997). The STATISTIC agrees to 1e-15 -- these are two approximations of the same null distribution and neither is wrong. Both engines return met = true, and normality does not choose the test (Levene does), so nothing downstream of this line moves. The Levene line itself is byte-identical."

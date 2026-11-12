@@ -428,7 +428,12 @@ def pool_logistic_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
 def add_missing_data_diagnostics(result: dict, missing_info: dict) -> dict:
     """Attach missing data diagnostics to an analysis result."""
     result["missing_data"] = missing_info
-    if missing_info.get("pct_affected", 0) > 10:
+    # Recommending MICE under a result that was already pooled over MICE
+    # imputations contradicts the note printed beside it.
+    already_imputed = bool(result.get("pooled_from_imputations")) or str(
+        result.get("imputation") or ""
+    ).lower().startswith("mice")
+    if missing_info.get("pct_affected", 0) > 10 and not already_imputed:
         if "warnings" not in result:
             result["warnings"] = []
         result["warnings"].append(

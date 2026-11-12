@@ -39,6 +39,7 @@ from ..errors import EngineError
 from ..jsonsafe import sanitize
 from ..registry import register
 from ..spec import AnalysisSpec
+from ..text.numbers import format_p_clause
 from ..text.ttest import (
     methods_ttest_ind, methods_ttest_one,
     results_ttest_ind, results_ttest_one,
@@ -144,7 +145,7 @@ def run_ttest(frame, params: dict) -> dict:
         classical_eta_squared = OLS(np.r_[g1, g2], group_design).fit().rsquared
         sig = bool(p < 0.05)
         es = cohen_d(g1, g2)
-        p_str = '<0.001' if p < 0.001 else f'{p:.4f}'
+        p_text = format_p_clause(p, decimals=4)
 
         ret = {
             "test": f"Independent samples t-test{' (Welch)' if use_welch else ''}",
@@ -167,7 +168,7 @@ def run_ttest(frame, params: dict) -> dict:
             "assumptions": assumptions,
             "summary": {str(groups[0]): group_summary(g1, str(groups[0])),
                         str(groups[1]): group_summary(g2, str(groups[1]))},
-            "interpretation": f"{'Significant' if sig else 'No significant'} difference between groups (t = {stat:.3f}, p = {p_str}, Hedges' g = {es['value']:.3f} [{es['magnitude']}])",
+            "interpretation": f"{'Significant' if sig else 'No significant'} difference between groups (t = {stat:.3f}, {p_text}, Hedges' g = {es['value']:.3f} [{es['magnitude']}])",
             "methods_text": methods_ttest_ind(req.column, req.group_column, use_welch),
             "r_code": r_ttest_ind(req.column, req.group_column, use_welch),
         }
@@ -180,7 +181,7 @@ def run_ttest(frame, params: dict) -> dict:
         stat, p = scipy_stats.ttest_1samp(x, req.mu)
         sig = bool(p < 0.05)
         es = cohen_d_one_sample(x, req.mu)
-        p_str = '<0.001' if p < 0.001 else f'{p:.4f}'
+        p_text = format_p_clause(p, decimals=4)
 
         ret = {
             "test": "One-sample t-test",
@@ -191,7 +192,7 @@ def run_ttest(frame, params: dict) -> dict:
             "effect_sizes": [es],
             "assumptions": [check_normality(x, req.column)],
             "summary": {"sample": group_summary(x, "Sample")},
-            "interpretation": f"Mean {'differs from' if sig else 'does not differ from'} {req.mu} (t = {stat:.3f}, p = {p_str}, Cohen's d = {es['value']:.3f} [{es['magnitude']}])",
+            "interpretation": f"Mean {'differs from' if sig else 'does not differ from'} {req.mu} (t = {stat:.3f}, {p_text}, Cohen's d = {es['value']:.3f} [{es['magnitude']}])",
             "methods_text": methods_ttest_one(req.column, req.mu),
             "r_code": r_ttest_one(req.column, req.mu),
         }

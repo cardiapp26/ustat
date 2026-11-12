@@ -134,7 +134,9 @@ describe('MissingDataPanel', () => {
 
     const table = await screen.findByRole('table')
     expect(within(table).getByText('CREATININ')).toBeInTheDocument()
-    expect(within(table).getByText('33.3%')).toBeInTheDocument()
+    // The sentinel is present, not blank: listed for cleaning, not counted as missing.
+    expect(within(table).getByText('+1 flagged')).toBeInTheDocument()
+    expect(within(table).getByText('0.0%')).toBeInTheDocument()
   })
 
   it('runs Little\'s MCAR test + missingness diagnostics after selecting columns', async () => {
@@ -144,7 +146,7 @@ describe('MissingDataPanel', () => {
         HttpResponse.json({
           columns: [
             { name: 'AGE', n_missing: 1, pct: 33.3, kind: 'numeric', is_numeric: true, depends_on: ['LDL'], likely: 'MAR' },
-            { name: 'LDL', n_missing: 1, pct: 33.3, kind: 'numeric', is_numeric: true, depends_on: [], likely: 'MCAR' },
+            { name: 'LDL', n_missing: 1, pct: 33.3, kind: 'numeric', is_numeric: true, depends_on: [], suggestive: ['AGE'], n_tests: 30, likely: 'possible MAR' },
           ],
           overall_hint: 'Some dependence detected.',
           recommendation: 'Use MICE.',
@@ -176,6 +178,8 @@ describe('MissingDataPanel', () => {
     expect(screen.getByText(/Some dependence detected\./)).toBeInTheDocument()
     expect(screen.getByText(/Use MICE\./)).toBeInTheDocument()
     expect(screen.getByText(/missingness related to LDL/)).toBeInTheDocument()
+    // Unadjusted hits are shown apart and labelled as exploratory, not as MAR.
+    expect(screen.getByText(/LDL: possibly related to AGE \(unadjusted p < 0.05 across 30 tests; exploratory\)/)).toBeInTheDocument()
   })
 
   it('shows a diagnostics error from the backend', async () => {

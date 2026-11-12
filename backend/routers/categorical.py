@@ -12,6 +12,7 @@ from services import store
 from services.level_order import SOURCE_RECOGNISED, resolve_level_order
 from services.category_health import clean_two_level
 from services.diagnostic_ci import wilson_ci
+from services.number_format import format_p_clause
 from services.risk_measures import (
     compute_risk_measures, risk_measures_export_rows, risk_measures_text,
 )
@@ -1128,7 +1129,7 @@ def mantel_haenszel_test(req: MantelHaenszelRequest):
         raise HTTPException(400, f"CMH test failed: {exc}")
 
     sig = bool(p < req.alpha)
-    ps = _p_str(p)
+    p_text = format_p_clause(p, decimals=4)
 
     # Estimate the common odds ratio and its alpha-aware normal-approximation
     # interval from the same StratifiedTable used for the CMH test. Zero cells
@@ -1213,7 +1214,7 @@ def mantel_haenszel_test(req: MantelHaenszelRequest):
     if homogeneity_test is not None and not homogeneity_test["homogeneous"]:
         warnings.append(
             f"The odds ratios differ across strata of {req.strata_col} "
-            f"(Breslow-Day test, Tarone adjusted, p = {_p_str(homogeneity_test['p'])}). "
+            f"(Breslow-Day test, Tarone adjusted, {format_p_clause(homogeneity_test['p'], decimals=4)}). "
             "A single pooled odds ratio may be misleading because of effect "
             "modification; report the stratum-specific odds ratios as well."
         )
@@ -1223,7 +1224,7 @@ def mantel_haenszel_test(req: MantelHaenszelRequest):
         homogeneity_text = (
             f" Homogeneity of odds ratios (Breslow-Day, Tarone adjusted): "
             f"chi-square({homogeneity_test['df']}) = {homogeneity_test['statistic']:.3f}, "
-            f"p = {_p_str(homogeneity_test['p'])}"
+            f"{format_p_clause(homogeneity_test['p'], decimals=4)}"
             f" ({'homogeneous' if homogeneity_test['homogeneous'] else 'heterogeneous, interpret the pooled OR with caution'})."
         )
     else:
@@ -1262,14 +1263,14 @@ def mantel_haenszel_test(req: MantelHaenszelRequest):
         "interpretation": (
             f"{'Significant' if sig else 'No significant'} association between {req.row_col} and {req.col_col} "
             f"after stratifying by {req.strata_col} "
-            f"(CMH statistic = {stat:.3f}, p = {ps}, common OR = {or_str}, "
+            f"(CMH statistic = {stat:.3f}, {p_text}, common OR = {or_str}, "
             f"{confidence_label} [{or_ci_str}])"
         ),
         "result_text": (
             f"A Cochran-Mantel-Haenszel test examined the association between {req.row_col} and {req.col_col} "
             f"across {len(strata)} strata of {req.strata_col} (n = {len(sub)}). "
             f"The result was {'statistically significant' if sig else 'not statistically significant'} "
-            f"(CMH statistic = {stat:.3f}, p = {ps}). "
+            f"(CMH statistic = {stat:.3f}, {p_text}). "
             f"Common odds ratio = {or_str} ({confidence_label} [{or_ci_str}])."
             f"{homogeneity_text}"
         ),

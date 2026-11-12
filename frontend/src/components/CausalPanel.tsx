@@ -628,9 +628,9 @@ function RDDTab() {
               <p className="text-sm text-gray-800 leading-relaxed">{result.result_text}</p></div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <div className="rounded-xl border border-gray-200 bg-white p-3"><div className="text-[10px] uppercase tracking-wider text-gray-500">LATE at cutoff</div>
-                <div className={`text-xl font-semibold mt-1 ${result.significant ? "text-emerald-600" : "text-gray-900"}`}>{result.late > 0 ? "+" : ""}{result.late}</div>
-                <div className="text-[11px] text-gray-500 mt-0.5">95% CI {result.ci_low} to {result.ci_high} · <i>p</i>={fmtP(result.p)}</div></div>
-              <div className="rounded-xl border border-gray-200 bg-white p-3"><div className="text-[10px] uppercase tracking-wider text-gray-500">Bandwidth</div><div className="text-xl font-semibold mt-1 text-gray-900">±{result.bandwidth}</div></div>
+                <div className={`text-xl font-semibold mt-1 ${result.significant ? "text-emerald-600" : "text-gray-900"}`}>{result.late > 0 ? "+" : ""}{sig4(result.late)}</div>
+                <div className="text-[11px] text-gray-500 mt-0.5">95% CI {sig4(result.ci_low)} to {sig4(result.ci_high)} · <i>p</i>={fmtP(result.p)}</div></div>
+              <div className="rounded-xl border border-gray-200 bg-white p-3"><div className="text-[10px] uppercase tracking-wider text-gray-500">Bandwidth</div><div className="text-xl font-semibold mt-1 text-gray-900">±{sig4(result.bandwidth)}</div></div>
               <div className="rounded-xl border border-gray-200 bg-white p-3"><div className="text-[10px] uppercase tracking-wider text-gray-500">N in bandwidth</div><div className="text-xl font-semibold mt-1 text-gray-900">{result.n_in_bandwidth}</div><div className="text-[11px] text-gray-500 mt-0.5">{result.n_left} below / {result.n_right} above</div></div>
             </div>
             <ResultExporter title="rdd" />
@@ -640,6 +640,11 @@ function RDDTab() {
       </div>
     </div>
   );
+}
+
+/** Four significant digits: the RDD fields arrive with six decimals. */
+function sig4(v: number | null | undefined): string {
+  return typeof v === "number" && Number.isFinite(v) ? String(Number(v.toPrecision(4))) : "n/a";
 }
 
 function DAGTab() {

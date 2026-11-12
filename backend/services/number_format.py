@@ -18,7 +18,7 @@ from __future__ import annotations
 # quotes, so a browser-side run that spelled a p differently would contradict
 # the numeric `p` sitting beside it in the same payload. DASH and _finite came
 # with it because the formatters below are written against them.
-from ustat_engine.text.numbers import DASH, _finite, format_p  # noqa: F401
+from ustat_engine.text.numbers import DASH, _finite, format_p, format_p_clause  # noqa: F401
 
 
 def format_pct(x, decimals: int = 1) -> str:

@@ -258,7 +258,7 @@ def _eval_formula_with_custom_functions(df: pd.DataFrame, formula: str) -> pd.Se
     import ast
     import operator as op
 
-    from simpleeval import DEFAULT_OPERATORS, InvalidExpression, SimpleEval
+    from simpleeval import DEFAULT_OPERATORS, FunctionNotDefined, InvalidExpression, SimpleEval
 
     def _days(d1, d2):
         return (pd.to_datetime(d1) - pd.to_datetime(d2)).dt.days
@@ -332,8 +332,17 @@ def _eval_formula_with_custom_functions(df: pd.DataFrame, formula: str) -> pd.Se
         result = evaluator.eval(formula)
     except SyntaxError as exc:
         raise ValueError(_syntax_error_help(df, formula, exc))
+    except FunctionNotDefined as exc:
+        name = exc.func_name
+        upper = name.upper()
+        detail = f"Function '{name}' is not supported."
+        if upper == "LOG":
+            detail += " Use LOG in a formula or the Transform tab for a natural log."
+        elif upper in functions:
+            detail += f" Formula function names are case-sensitive. Use {upper}."
+        raise ValueError(detail) from exc
     except InvalidExpression as exc:
-        # NameNotDefined / FunctionNotDefined / FeatureNotAvailable / numeric
+        # NameNotDefined / FeatureNotAvailable / numeric
         # guards all subclass InvalidExpression.
         raise ValueError(str(exc))
 
@@ -1907,6 +1916,18 @@ def fill_blanks(session_id: str, req: FillBlanksRequest):
     return result
 
 
+def _holm_split(names: List[str], pvalues: List[float], alpha: float = 0.05) -> tuple[list, list]:
+    """(Holm-significant names, names significant only before adjustment)."""
+    if not names:
+        return [], []
+    from statsmodels.stats.multitest import multipletests
+
+    reject, _, _, _ = multipletests(pvalues, alpha=alpha, method="holm")
+    adjusted = [n for n, r in zip(names, reject) if r]
+    raw_only = [n for n, p, r in zip(names, pvalues, reject) if p < alpha and not r]
+    return adjusted, raw_only
+
+
 # ── 6b. Missing-data diagnostics (MCAR vs MAR heuristic) ────────────────────────
 
 class MissingDiagnosticsRequest(BaseModel):
@@ -1917,9 +1938,13 @@ class MissingDiagnosticsRequest(BaseModel):
 def missing_diagnostics(session_id: str, req: Optional[MissingDiagnosticsRequest] = None):
     """Heuristic MCAR-vs-MAR hint (no AI). For each column with missing values,
     test whether its missingness indicator is associated with the OTHER numeric
-    columns (Welch t-test of each other column, missing vs observed rows). Any
-    association → the data depend on observed values → consistent with MAR, so
-    MICE is appropriate; none → consistent with MCAR."""
+    columns (Welch t-test of each other column, missing vs observed rows).
+
+    The tests for one column are Holm-adjusted as a family. Unadjusted, about
+    30 comparisons at 0.05 flagged one or two spurious "dependencies" for a
+    column that was missing completely at random, so nearly every column came
+    out "MAR". Associations that pass only before adjustment are kept apart as
+    `suggestive`: weak evidence, worth a look, not a classification."""
     df = store.get_filtered(session_id)
     if df is None:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -1944,7 +1969,7 @@ def missing_diagnostics(session_id: str, req: Optional[MissingDiagnosticsRequest
         n_implausible = int(implausible.sum())
         if n_miss == 0:
             continue
-        depends_on = []
+        tested: list[tuple[str, float]] = []
         for o in num_cols:
             if o == c:
                 continue
@@ -1953,11 +1978,12 @@ def missing_diagnostics(session_id: str, req: Optional[MissingDiagnosticsRequest
             if len(a) >= 3 and len(b) >= 3:
                 try:
                     _, p = _stats.ttest_ind(a, b, equal_var=False)
-                    if pd.notna(p) and p < 0.05:
-                        depends_on.append(o)
                 except Exception:
-                    pass
-        likely = "MAR" if depends_on else "MCAR-consistent"
+                    continue
+                if pd.notna(p):
+                    tested.append((o, float(p)))
+        depends_on, suggestive = _holm_split([name for name, _ in tested], [p for _, p in tested])
+        likely = "MAR" if depends_on else ("possible MAR" if suggestive else "MCAR-consistent")
         if depends_on:
             any_mar = True
         columns.append({
@@ -1971,12 +1997,21 @@ def missing_diagnostics(session_id: str, req: Optional[MissingDiagnosticsRequest
             "kind": _col_kind(df[c]),
             "is_numeric": bool(pd.api.types.is_numeric_dtype(df[c])),
             "depends_on": depends_on,
+            "suggestive": suggestive,
+            "n_tests": len(tested),
             "likely": likely,
         })
 
+    any_suggestive = any(col["suggestive"] for col in columns)
     if not columns:
         overall = "No missing values detected in the selected variables."
         recommendation = ""
+    elif not any_mar and any_suggestive:
+        overall = ("No association survived the Holm adjustment across each variable's comparisons. "
+                   "Some unadjusted associations are listed as possible: with this many tests a few "
+                   "are expected by chance, and a small number of missing values gives little power.")
+        recommendation = ("The data are compatible with MCAR, but MAR cannot be ruled out. MICE is "
+                          "valid under either and is the safer choice.")
     elif any_mar:
         overall = ("At least one selected variable's missingness is associated with other observed "
                    "variables — consistent with MAR (not MCAR).")
@@ -1995,6 +2030,7 @@ def missing_diagnostics(session_id: str, req: Optional[MissingDiagnosticsRequest
         "overall_hint": overall,
         "recommendation": recommendation,
         "any_mar": any_mar,
+        "multiplicity": "Holm, within each variable's comparisons",
     }
 
 

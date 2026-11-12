@@ -6,7 +6,7 @@
  *   size-matched export (PNG / TIFF / JPEG / SVG + DPI) via TitledPlot
  * + All charts respect the global plot theme (usePlotLayout / usePalette)
  */
-import { useState, useRef, type ReactNode } from "react";
+import { useEffect, useState, useRef, type ReactNode } from "react";
 import { useStore, isNumericKind, type Session } from "../store";
 import { usePlotLayout, usePalette, useTraceDefaults } from "../plotStyle";
 import {
@@ -19,6 +19,7 @@ import TitledPlot from "./TitledPlot";
 import StaleResultNotice from "./StaleResultNotice";
 import StaleGuard from "./StaleGuard";
 import { fmtP } from "../lib/format";
+import { analysisDefaultColumns, hasIdentifierName, isIdLike } from "../lib/columnDefaults";
 import { describeStale } from "../lib/resultStamp";
 import { useResizableRightCol } from "../hooks/useResizableRightCol";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
@@ -167,7 +168,9 @@ function StatCards({ pairs }: { pairs: [ReactNode, StatValue, string?][] }) {
 }
 
 // ── Polynomial model panel ─────────────────────────────────────────────────────
-function PolynomialSection({ sessionId, numCols }: { sessionId: string; numCols: string[] }) {
+type NumericChoices = { numCols: string[]; defaultNumCols: string[] };
+
+function PolynomialSection({ sessionId, numCols, defaultNumCols }: { sessionId: string } & NumericChoices) {
   const layout = usePlotLayout();
   const pal    = usePalette();
   const td     = useTraceDefaults();
@@ -178,8 +181,8 @@ function PolynomialSection({ sessionId, numCols }: { sessionId: string; numCols:
   // Each section's fit survives a section switch, so its settings must too:
   // otherwise it comes back flagged stale with the defaults on screen.
   const P = "visual_model_poly";
-  const [outcome,    setOutcome]    = usePersistedPanelState(P, "outcome", numCols[0] ?? "");
-  const [predictor,  setPredictor]  = usePersistedPanelState(P, "predictor", numCols[1] ?? numCols[0] ?? "");
+  const [outcome,    setOutcome]    = usePersistedPanelState(P, "outcome", defaultNumCols[0] ?? "");
+  const [predictor,  setPredictor]  = usePersistedPanelState(P, "predictor", defaultNumCols[1] ?? defaultNumCols[0] ?? "");
   const [degree,     setDegree]     = usePersistedPanelState(P, "degree", 2);
   const [covariates, setCovariates] = usePersistedPanelState<string[]>(P, "covariates", []);
   const [robustSE,   setRobustSE]   = usePersistedPanelState(P, "robustSE", false);
@@ -209,12 +212,14 @@ function PolynomialSection({ sessionId, numCols }: { sessionId: string; numCols:
           <div>
             <label className="text-xs text-gray-400 block mb-1">Outcome (continuous)</label>
             <select className="select w-full" value={outcome} onChange={e => setOutcome(e.target.value)}>
+              {!outcome && <option value="">Select outcome</option>}
               {numCols.map(c => <option key={c}>{c}</option>)}
             </select>
           </div>
           <div>
             <label className="text-xs text-gray-400 block mb-1">Predictor</label>
             <select className="select w-full" value={predictor} onChange={e => setPredictor(e.target.value)}>
+              {!predictor && <option value="">Select predictor</option>}
               {numCols.filter(c => c !== outcome).map(c => <option key={c}>{c}</option>)}
             </select>
           </div>
@@ -250,7 +255,7 @@ function PolynomialSection({ sessionId, numCols }: { sessionId: string; numCols:
             <span className="text-gray-600">Robust SE (HC3)</span>
           </label>
           <MissingGuard sessionId={sessionId} columns={[outcome, predictor, ...covariates]} imputation={imputation} onImputation={setImputation}>
-            <button className="btn-primary w-full" onClick={run} disabled={loading}>
+            <button className="btn-primary w-full" onClick={run} disabled={loading || !outcome || !predictor}>
               {loading ? "Fitting…" : "Fit Polynomial"}
             </button>
           </MissingGuard>
@@ -337,14 +342,6 @@ function PolynomialSection({ sessionId, numCols }: { sessionId: string; numCols:
 
 // ── LMM helpers ────────────────────────────────────────────────────────────────
 
-/** Detect likely patient/subject ID columns by name pattern. */
-function isIdLike(col: string): boolean {
-  const lo = col.toLowerCase();
-  return ["id", "no", "num", "number", "patient", "subject", "case", "record"].some(
-    tok => lo === tok || lo.endsWith(tok) || lo.startsWith(tok)
-  );
-}
-
 /**
  * Detect repeated-measures column clusters.
  * Returns groups of columns that share a common suffix of ≥3 chars.
@@ -382,7 +379,7 @@ function detectRepeatClusters(cols: string[]): { base: string; members: string[]
 }
 
 // ── LMM panel ──────────────────────────────────────────────────────────────────
-function LMMSection({ sessionId, allCols, numCols }: { sessionId: string; allCols: string[]; numCols: string[] }) {
+function LMMSection({ sessionId, allCols, defaultNumCols }: { sessionId: string; allCols: string[]; defaultNumCols: string[] }) {
   const session    = useStore(s => s.session);
   const setSession = useStore(s => s.setSession);
   const bumpDataVersion = useStore(s => s.bumpDataVersion);
@@ -397,11 +394,34 @@ function LMMSection({ sessionId, allCols, numCols }: { sessionId: string; allCol
       .map(c => c.name)
   );
 
+  const idCols = new Set(session?.columns.filter((c) => isIdLike(c, session)).map((c) => c.name));
   const P = "visual_model_lmm";
-  const [outcome, setOutcome] = usePersistedPanelState(P, "outcome", numCols[0] ?? "");
+  const [outcome, setOutcome] = usePersistedPanelState(P, "outcome", defaultNumCols[0] ?? "");
   const [fixedEffects, setFixedEffects] = usePersistedPanelState<string[]>(P, "fixedEffects", []);
-  // Auto-suggest first ID-like col as grouping variable
-  const [groupCol, setGroupCol] = usePersistedPanelState(P, "groupCol", allCols.find(isIdLike) ?? allCols[0] ?? "");
+  const groupChoices = allCols.filter((c) => c !== outcome);
+  const groupIds = new Set(session?.columns
+    .filter((column) => column.role === "id" || hasIdentifierName(column.name))
+    .map((column) => column.name));
+  const hasRepeats = (c: string) => {
+    const seen = new Set();
+    return session?.preview.some((row) => {
+      const value = row[c];
+      if (value == null) return false;
+      if (seen.has(value)) return true;
+      seen.add(value);
+      return false;
+    }) ?? false;
+  };
+  // An ID column is the right cluster only in long data, where it repeats.
+  // In wide data (one row per patient) it was still picked, and the backend
+  // now refuses a random intercept with one row per group.
+  const defaultGroup = groupChoices.find((c) => groupIds.has(c) && hasRepeats(c))
+    ?? groupChoices.find((c) => !idCols.has(c) && hasRepeats(c))
+    // Nothing repeats: still offer the ID, so a wide file can be melted to long.
+    ?? groupChoices.find((c) => groupIds.has(c))
+    ?? groupChoices[0] ?? "";
+  const [selectedGroup, setGroupCol] = usePersistedPanelState(P, "groupCol", defaultGroup);
+  const groupCol = groupChoices.includes(selectedGroup) ? selectedGroup : "";
   const [imputation, setImputation] = usePersistedPanelState<ImputationStrategy>(P, "imputation", "listwise");
   const runParams = { outcome, fixedEffects, groupCol, imputation };
   const { result, setResult, stale, staleReasons: staleWhy } = useStampedResult<LMMResult>(P, runParams);
@@ -419,13 +439,14 @@ function LMMSection({ sessionId, allCols, numCols }: { sessionId: string; allCol
   const repeatClusters = detectRepeatClusters(allCols);
 
   const toggle = (c: string) => {
-    if (isIdLike(c)) return;  // hard block
+    if (idCols.has(c)) return;
     setFixedEffects(p => p.includes(c) ? p.filter(x => x !== c) : [...p, c]);
   };
 
   const run = async () => {
+    if (!groupCol) { setError("Select a grouping variable different from the outcome"); return; }
     if (fixedEffects.length === 0) { setError("Select at least one fixed effect"); return; }
-    const idInFe = fixedEffects.filter(isIdLike);
+    const idInFe = fixedEffects.filter((c) => idCols.has(c));
     if (idInFe.length > 0) {
       setError(`"${idInFe.join(", ")}" looks like an ID column — move it to Grouping variable.`);
       return;
@@ -489,6 +510,7 @@ function LMMSection({ sessionId, allCols, numCols }: { sessionId: string; allCol
         <div>
           <label className="text-xs text-gray-400 block mb-1">Outcome</label>
           <select className="select w-full" value={outcome} onChange={e => { setOutcome(e.target.value); setResult(null); }}>
+            {!outcome && <option value="">Select outcome</option>}
             {allCols.map(c => (
               <option key={c} value={c}>
                 {c}{binaryCols.has(c) ? " (binary→GEE)" : ""}
@@ -503,13 +525,14 @@ function LMMSection({ sessionId, allCols, numCols }: { sessionId: string; allCol
             <Tip text="The clustering unit — e.g. PatientID for repeated measures, or HospitalID for multilevel data. This becomes the Random Intercept. Must NOT be a fixed effect." wide />
           </label>
           <select className="select w-full" value={groupCol} onChange={e => setGroupCol(e.target.value)}>
-            {allCols.filter(c => c !== outcome).map(c => (
+            {!groupCol && <option value="">Select grouping variable</option>}
+            {groupChoices.map(c => (
               <option key={c} value={c}>
-                {c}{isIdLike(c) ? " ✓ ID" : ""}
+                {c}{groupIds.has(c) || idCols.has(c) ? " ✓ ID" : ""}
               </option>
             ))}
           </select>
-          {!isIdLike(groupCol) && (
+          {groupCol && !groupIds.has(groupCol) && !idCols.has(groupCol) && (
             <p className="text-[10px] text-amber-600 mt-0.5">⚠ Selected grouping variable doesn't look like an ID column</p>
           )}
         </div>
@@ -518,7 +541,7 @@ function LMMSection({ sessionId, allCols, numCols }: { sessionId: string; allCol
           <label className="text-xs text-gray-400 block mb-1">Fixed effects (predictors)</label>
           <div className="max-h-44 overflow-y-auto space-y-0.5 border border-gray-100 rounded p-1">
             {allCols.filter(c => c !== outcome && c !== groupCol).map(c => {
-              const blocked = isIdLike(c);
+              const blocked = idCols.has(c);
               return (
                 <label key={c}
                   className={`flex items-center gap-1.5 text-xs rounded px-1 py-0.5 ${blocked ? "opacity-50 cursor-not-allowed bg-red-50" : "cursor-pointer hover:bg-gray-50"}`}
@@ -536,7 +559,7 @@ function LMMSection({ sessionId, allCols, numCols }: { sessionId: string; allCol
         </div>
 
         <MissingGuard sessionId={sessionId} columns={[outcome, groupCol, ...fixedEffects]} imputation={imputation} onImputation={setImputation}>
-          <button className="btn-primary w-full" onClick={run} disabled={loading || fixedEffects.length === 0}>
+          <button className="btn-primary w-full" onClick={run} disabled={loading || !outcome || !groupCol || fixedEffects.length === 0}>
             {loading ? "Fitting…" : isBinaryOutcome ? "Fit GEE (Binomial)" : "Fit LMM"}
           </button>
         </MissingGuard>
@@ -642,10 +665,21 @@ function LMMSection({ sessionId, allCols, numCols }: { sessionId: string; allCol
 }
 
 // ── GLM Section (Gamma + NegBinom) ────────────────────────────────────────────
-function GLMSection({ sessionId, allCols, numCols }: { sessionId: string; allCols: string[]; numCols: string[] }) {
+function GLMSection({ sessionId, allCols, numCols, defaultNumCols, initialFamily }: {
+  sessionId: string; allCols: string[]; initialFamily?: "gamma" | "negbinom";
+} & NumericChoices) {
   const P = "visual_model_glm";
-  const [glmType, setGlmType] = usePersistedPanelState<"gamma" | "negbinom">(P, "glmType", "gamma");
-  const [outcome,    setOutcome]    = usePersistedPanelState(P, "outcome", numCols[0] ?? "");
+  const [savedFamily, setSavedFamily] = usePersistedPanelState<"gamma" | "negbinom">(P, "glmType", "gamma");
+  const [requestedFamily, setRequestedFamily] = useState(initialFamily);
+  const glmType = requestedFamily ?? savedFamily;
+  useEffect(() => {
+    if (initialFamily) setSavedFamily(initialFamily);
+  }, [initialFamily, setSavedFamily]);
+  const setGlmType = (family: "gamma" | "negbinom") => {
+    setRequestedFamily(undefined);
+    setSavedFamily(family);
+  };
+  const [outcome,    setOutcome]    = usePersistedPanelState(P, "outcome", defaultNumCols[0] ?? "");
   const [predictors, setPredictors] = usePersistedPanelState<string[]>(P, "predictors", []);
   const [link,       setLink]       = usePersistedPanelState(P, "link", "log");
   const [robustSE,   setRobustSE]   = usePersistedPanelState(P, "robustSE", false);
@@ -716,6 +750,7 @@ function GLMSection({ sessionId, allCols, numCols }: { sessionId: string; allCol
               : "Negative Binomial is for count outcomes with overdispersion (variance > mean). More flexible than Poisson — use when Poisson goodness-of-fit is poor."} wide />
           </label>
           <select className="select w-full" value={outcome} onChange={e => setOutcome(e.target.value)}>
+            {!outcome && <option value="">Select outcome</option>}
             {numCols.map(c => <option key={c}>{c}</option>)}
           </select>
         </div>
@@ -747,7 +782,7 @@ function GLMSection({ sessionId, allCols, numCols }: { sessionId: string; allCol
           <span className="text-gray-600">Robust SE (HC3)</span>
         </label>
         <MissingGuard sessionId={sessionId} columns={[outcome, ...predictors.filter(c => c !== effectiveExposure), ...(effectiveExposure ? [effectiveExposure] : [])]} imputation={imputation} onImputation={setImputation}>
-          <button className="btn-primary w-full" onClick={run} disabled={loading || predictors.filter(c => c !== effectiveExposure).length === 0}>
+          <button className="btn-primary w-full" onClick={run} disabled={loading || !outcome || predictors.filter(c => c !== effectiveExposure).length === 0}>
             {loading ? "Fitting…" : "Fit GLM"}
           </button>
         </MissingGuard>
@@ -795,14 +830,14 @@ function GLMSection({ sessionId, allCols, numCols }: { sessionId: string; allCol
 }
 
 // ── Diagnostic Plots Section ──────────────────────────────────────────────────
-function DiagnosticsSection({ sessionId, allCols, numCols }: { sessionId: string; allCols: string[]; numCols: string[] }) {
+function DiagnosticsSection({ sessionId, allCols, numCols, defaultNumCols }: { sessionId: string; allCols: string[] } & NumericChoices) {
   const layout = usePlotLayout();
   const pal    = usePalette();
   const td     = useTraceDefaults();
   const showGrid = useStore(s => s.showGrid);
 
   const P = "visual_model_diag";
-  const [outcome,    setOutcome]    = usePersistedPanelState(P, "outcome", numCols[0] ?? "");
+  const [outcome,    setOutcome]    = usePersistedPanelState(P, "outcome", defaultNumCols[0] ?? "");
   const [predictors, setPredictors] = usePersistedPanelState<string[]>(P, "predictors", []);
   const [imputation, setImputation] = usePersistedPanelState<ImputationStrategy>(P, "imputation", "listwise");
   const runParams = { outcome, predictors, imputation };
@@ -847,6 +882,7 @@ function DiagnosticsSection({ sessionId, allCols, numCols }: { sessionId: string
           <div>
             <label className="text-xs text-gray-400 block mb-1">Outcome</label>
             <select className="select w-full" value={outcome} onChange={e => setOutcome(e.target.value)}>
+              {!outcome && <option value="">Select outcome</option>}
               {numCols.map(c => <option key={c}>{c}</option>)}
             </select>
           </div>
@@ -863,7 +899,7 @@ function DiagnosticsSection({ sessionId, allCols, numCols }: { sessionId: string
             </div>
           </div>
           <MissingGuard sessionId={sessionId} columns={[outcome, ...predictors]} imputation={imputation} onImputation={setImputation}>
-            <button className="btn-primary w-full" onClick={run} disabled={loading || predictors.length === 0}>
+            <button className="btn-primary w-full" onClick={run} disabled={loading || !outcome || predictors.length === 0}>
               {loading ? "Computing…" : "Run Diagnostics"}
             </button>
           </MissingGuard>
@@ -1001,25 +1037,27 @@ const SECTIONS = [
 
 type SectionId = typeof SECTIONS[number]["id"];
 
-export default function VisualModelPanel() {
+export default function VisualModelPanel({ initialModel }: { initialModel?: "gamma" | "negbinom" | "lmm" }) {
   const session = useStore(s => s.session);
   if (!session) return null;
-  return <VisualModelPanelBody session={session} />;
+  return <VisualModelPanelBody session={session} initialModel={initialModel} />;
 }
 
-function VisualModelPanelBody({ session }: { session: Session }) {
+function VisualModelPanelBody({ session, initialModel }: { session: Session; initialModel?: "gamma" | "negbinom" | "lmm" }) {
   const numCols = session.columns.filter(c => isNumericKind(c.kind)).map(c => c.name);
+  const numericChoices = { numCols, defaultNumCols: analysisDefaultColumns(session, numCols) };
   const allCols = session.columns.map(c => c.name);
   const sid = session.session_id;
 
-  const [active, setActive] = useState<SectionId>("polynomial");
+  const [active, setActive] = useState<SectionId>(initialModel === "lmm" ? "lmm" : initialModel ? "glm" : "polynomial");
+  const [initialFamily, setInitialFamily] = useState(initialModel === "lmm" ? undefined : initialModel);
 
   return (
     <div className="space-y-4">
       {/* Section tabs */}
       <div className="flex gap-1 flex-wrap">
         {SECTIONS.map(({ id, label }) => (
-          <button key={id} onClick={() => setActive(id)}
+          <button key={id} onClick={() => { if (id !== "glm") setInitialFamily(undefined); setActive(id); }}
             className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors
               ${active === id ? "bg-indigo-600 text-white" : "text-gray-600 hover:bg-gray-100"}`}>
             {label}
@@ -1028,10 +1066,10 @@ function VisualModelPanelBody({ session }: { session: Session }) {
       </div>
 
       {/* Active section */}
-      {active === "polynomial" && <PolynomialSection sessionId={sid} numCols={numCols} />}
-      {active === "lmm"        && <LMMSection        sessionId={sid} allCols={allCols} numCols={numCols} />}
-      {active === "glm"        && <GLMSection        sessionId={sid} allCols={allCols} numCols={numCols} />}
-      {active === "diag"       && <DiagnosticsSection sessionId={sid} allCols={allCols} numCols={numCols} />}
+      {active === "polynomial" && <PolynomialSection sessionId={sid} {...numericChoices} />}
+      {active === "lmm"        && <LMMSection sessionId={sid} allCols={allCols} defaultNumCols={numericChoices.defaultNumCols} />}
+      {active === "glm"        && <GLMSection sessionId={sid} allCols={allCols} {...numericChoices} initialFamily={initialFamily} />}
+      {active === "diag"       && <DiagnosticsSection sessionId={sid} allCols={allCols} {...numericChoices} />}
     </div>
   );
 }

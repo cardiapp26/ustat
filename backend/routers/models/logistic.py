@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Annotated, List, Optional
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 from loguru import logger
 
@@ -151,8 +151,13 @@ class LogisticRequest(BaseModel):
 
 
 @router.post("/logistic")
-def logistic_regression(req: LogisticRequest):
-    df_full = _get_df(req.session_id)
+def logistic_regression(
+    req: LogisticRequest,
+    saveable_predictions: Annotated[bool, Header(alias="X-Ustat-Save-Probabilities")] = False,
+):
+    df_full, scope = store.get_filtered_with_scope(req.session_id)
+    if df_full is None or scope is None:
+        raise HTTPException(status_code=404, detail="Session not found")
     n_total = len(df_full)
     imputation_method = req.imputation or "listwise"
     cov_type = LOGIT_ROBUST_COV if req.robust_se else "nonrobust"
@@ -356,7 +361,37 @@ def logistic_regression(req: LogisticRequest):
     missing_info = missing_pattern_summary(df_full, [req.outcome] + req.predictors)
     result = add_missing_data_diagnostics(result, missing_info)
 
+    if saveable_predictions and np.isfinite(pred_probs).all():
+        values = pd.Series(pred_probs, index=X_const.index)
+        token = store.remember_fitted_probabilities(req.session_id, scope, req.outcome, values)
+        if token is not None:
+            result["probability_fit"] = {
+                "token": token,
+                "source": "first imputed dataset" if imputation_method == "mice" else "fitted sample",
+                "event_level": outcome_info["event_level"],
+            }
     return result
+
+
+class SaveLogisticProbabilitiesRequest(BaseModel):
+    session_id: str
+    fit_token: str
+
+
+@router.post("/logistic/save_probabilities")
+def save_logistic_probabilities(req: SaveLogisticProbabilitiesRequest):
+    from routers.session import _session_preview
+
+    df, name, undo_depth = store.append_fitted_probabilities(req.session_id, req.fit_token)
+    values = df[name]
+    n_computed = int(values.notna().sum())
+    return {
+        **_session_preview(df, req.session_id),
+        "name": name,
+        "n_computed": n_computed,
+        "n_missing": len(values) - n_computed,
+        "undo_depth": undo_depth,
+    }
 
 
 def _ignored_option_warnings(req: "LogisticRequest") -> list:

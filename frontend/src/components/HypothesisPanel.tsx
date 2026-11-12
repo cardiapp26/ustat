@@ -13,6 +13,7 @@ import { useStampedResult } from "../hooks/useStampedResult";
 import { describeStale } from "../lib/resultStamp";
 import type { Provenance } from "../lib/engine/provenance";
 import { fmtP, warningText } from "../lib/format";
+import { analysisDefaultColumns } from "../lib/columnDefaults";
 
 /** True when a stat-grid key holds a p-value (route through the canonical fmtP). */
 function isPKey(k: string): boolean {
@@ -207,7 +208,35 @@ interface TestResult {
   risk_measures?: RiskMeasures;
   /** Mann-Whitney and one-sample Wilcoxon: location estimate with a CI. */
   hodges_lehmann?: HodgesLehmann;
+  /** MANCOVA: Pillai, Wilks, Hotelling-Lawley and Roy rows. */
+  multivariate_tests?: MultivariateTestRow[];
   [key: string]: unknown;
+}
+
+interface MultivariateTestRow {
+  test: string;
+  value: number;
+  F: number;
+  num_df: number;
+  den_df: number;
+  p: number;
+}
+
+interface NamedEffectSize {
+  name: string;
+  value: number;
+  magnitude?: string;
+}
+
+function isEffectSize(v: unknown): v is NamedEffectSize {
+  return typeof v === "object" && v !== null && typeof (v as NamedEffectSize).value === "number"
+    && typeof (v as NamedEffectSize).name === "string";
+}
+
+/** Values the key / value grid can print: scalars and lists of scalars, not nested objects. */
+function isPlainValue(v: unknown): boolean {
+  if (v === null || typeof v !== "object") return true;
+  return Array.isArray(v) && v.every((x) => x === null || typeof x !== "object");
 }
 
 function CellMatrix({ value, title }: { value: unknown; title: string }) {
@@ -250,7 +279,8 @@ function ResultCard({ result, stale = false, staleReason, provenance }: {
                 "posthoc_note", "effects", "emms", "emm_marginal", "emm_note",
                 "simple_effects", "covariate_effects", "expected", "relative_risk_ci",
                 "anova_table", "anova_table_note", "standardized_residuals",
-                "result_text", "export_rows", "risk_measures", "hodges_lehmann"];
+                "result_text", "export_rows", "risk_measures", "hodges_lehmann",
+                "multivariate_tests", "pillai", "effect_size"];
 
   const statEntries = Object.entries(result).filter(([k]) => !skip.includes(k) && typeof result[k] !== "object");
   const exportHeaders = ["Statistic", "Value"];
@@ -304,7 +334,7 @@ function ResultCard({ result, stale = false, staleReason, provenance }: {
 
       <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
         {Object.entries(result)
-          .filter(([k]) => !skip.includes(k))
+          .filter(([k, v]) => !skip.includes(k) && isPlainValue(v))
           .map(([k, v]) => (
             <div key={k} className="flex justify-between border-b border-gray-100 py-1">
               <span className="text-gray-400">{k}</span>
@@ -312,6 +342,40 @@ function ResultCard({ result, stale = false, staleReason, provenance }: {
             </div>
           ))}
       </div>
+
+      {(result.multivariate_tests?.length ?? 0) > 0 && (
+        <div className="overflow-auto rounded border border-gray-200">
+          <p className="px-2 py-1 text-xs font-semibold text-gray-600">Multivariate tests</p>
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="bg-gray-50">
+                <th className="px-2 py-1 text-left">Test</th>
+                <th className="px-2 py-1 text-right">Value</th>
+                <th className="px-2 py-1 text-right">F</th>
+                <th className="px-2 py-1 text-right">df</th>
+                <th className="px-2 py-1 text-right"><i>p</i></th>
+              </tr>
+            </thead>
+            <tbody>
+              {(result.multivariate_tests ?? []).map((t) => (
+                <tr key={t.test} className="border-t border-gray-100">
+                  <td className="px-2 py-1 font-medium">{t.test}</td>
+                  <td className="px-2 py-1 text-right font-mono">{t.value.toFixed(4)}</td>
+                  <td className="px-2 py-1 text-right font-mono">{t.F.toFixed(3)}</td>
+                  <td className="px-2 py-1 text-right font-mono">{t.num_df}, {t.den_df}</td>
+                  <td className="px-2 py-1 text-right font-mono">{fmtP(t.p)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {isEffectSize(result.effect_size) && (
+        <p className="text-xs text-gray-600">
+          {result.effect_size.name} = {result.effect_size.value.toFixed(3)}
+          {result.effect_size.magnitude ? ` (${result.effect_size.magnitude})` : ""}
+        </p>
+      )}
 
       {Array.isArray(result.relative_risk_ci) && result.relative_risk_ci.length === 2 && (
         <p className="text-xs text-gray-600">Relative risk 95% CI: [{Number(result.relative_risk_ci[0]).toFixed(3)}, {Number(result.relative_risk_ci[1]).toFixed(3)}]</p>
@@ -634,19 +698,22 @@ export default function HypothesisPanel() {
 function HypothesisPanelBody({ session }: { session: Session }) {
   const numCols = session.columns.filter((c) => isNumericKind(c.kind) && !c.analysis_excluded).map((c) => c.name);
   const catCols = session.columns.filter((c) => isCategoricalKind(c.kind) && !c.analysis_excluded).map((c) => c.name);
+  const defaultNumCols = analysisDefaultColumns(session, numCols);
+  const defaultCatCols = analysisDefaultColumns(session, catCols);
+  const defaultSecondCat = defaultCatCols[1] ?? defaultCatCols[0] ?? "";
 
   const [test, setTest] = usePersistedPanelState<string>("hypothesis", "test", "ttest_1sample");
-  const [col, setCol] = usePersistedPanelState<string>("hypothesis", "col", numCols[0] ?? "");
-  const [col2, setCol2] = usePersistedPanelState<string>("hypothesis", "col2", catCols[1] ?? catCols[0] ?? "");
-  const [pairedCol, setPairedCol] = usePersistedPanelState<string>("hypothesis", "pairedCol", numCols[1] ?? numCols[0] ?? "");
+  const [col, setCol] = usePersistedPanelState<string>("hypothesis", "col", defaultNumCols[0] ?? "");
+  const [col2, setCol2] = usePersistedPanelState<string>("hypothesis", "col2", defaultSecondCat);
+  const [pairedCol, setPairedCol] = usePersistedPanelState<string>("hypothesis", "pairedCol", defaultNumCols[1] ?? "");
   const [signAlternative, setSignAlternative] = usePersistedPanelState<"two-sided" | "greater" | "less">("hypothesis", "signAlternative", "two-sided");
   const [rowOrderText, setRowOrderText] = usePersistedPanelState<string>("hypothesis", "rowOrderText", "");
   const [colOrderText, setColOrderText] = usePersistedPanelState<string>("hypothesis", "colOrderText", "");
-  const [groupCol, setGroupCol] = usePersistedPanelState<string>("hypothesis", "groupCol", catCols[0] ?? "");
+  const [groupCol, setGroupCol] = usePersistedPanelState<string>("hypothesis", "groupCol", defaultCatCols[0] ?? "");
   const [mu, setMu] = useState("0");
   const [covariates, setCovariates] = usePersistedPanelState<string[]>("hypothesis", "covariates", []);
   const [outcomes, setOutcomes] = usePersistedPanelState<string[]>("hypothesis", "outcomes", []);  // MANCOVA: ≥2 dependent vars
-  const [factor2, setFactor2] = usePersistedPanelState<string>("hypothesis", "factor2", catCols[1] ?? catCols[0] ?? "");
+  const [factor2, setFactor2] = usePersistedPanelState<string>("hypothesis", "factor2", defaultSecondCat);
   // Dunn's post-hoc correction for Kruskal-Wallis. Bonferroni is the
   // conventional reporting choice in clinical journals; Holm is the
   // default because it strictly dominates Bonferroni while controlling
@@ -692,10 +759,11 @@ function HypothesisPanelBody({ session }: { session: Session }) {
   // selection back at a member of its own list.
   useEffect(() => {
     const primary = isCat ? catCols : numCols;
-    if (primary.length && !primary.includes(col)) setCol(primary[0]);
-    if (catCols.length && !catCols.includes(groupCol)) setGroupCol(catCols[0]);
-    if (catCols.length && !catCols.includes(col2)) setCol2(catCols[1] ?? catCols[0]);
-    if (catCols.length && !catCols.includes(factor2)) setFactor2(catCols[1] ?? catCols[0]);
+    const defaultPrimary = isCat ? defaultCatCols : defaultNumCols;
+    if (!primary.includes(col)) setCol(defaultPrimary[0] ?? "");
+    if (!catCols.includes(groupCol)) setGroupCol(defaultCatCols[0] ?? "");
+    if (!catCols.includes(col2)) setCol2(defaultSecondCat);
+    if (!catCols.includes(factor2)) setFactor2(defaultSecondCat);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [test, isCat, numCols.join("|"), catCols.join("|")]);
 
@@ -760,6 +828,7 @@ function HypothesisPanelBody({ session }: { session: Session }) {
                 {isCat ? "Row column" : "Outcome column"}
               </label>
               <select className="select w-full" value={col} onChange={(e) => setCol(e.target.value)}>
+                {!col && <option value="">Select variable</option>}
                 {(isCat ? catCols : numCols).map((c) => <option key={c}>{c}</option>)}
               </select>
             </div>
@@ -788,6 +857,7 @@ function HypothesisPanelBody({ session }: { session: Session }) {
             <div>
               <label className="text-xs text-gray-400 block mb-1">Matched comparison column</label>
               <select className="select w-full" value={pairedCol} onChange={(e) => setPairedCol(e.target.value)}>
+                {!pairedCol && <option value="">Select comparison</option>}
                 {numCols.filter((c) => c !== col).map((c) => <option key={c}>{c}</option>)}
               </select>
             </div>
@@ -814,6 +884,7 @@ function HypothesisPanelBody({ session }: { session: Session }) {
             <div>
               <label className="text-xs text-gray-400 block mb-1">Group column</label>
               <select className="select w-full" value={groupCol} onChange={(e) => setGroupCol(e.target.value)}>
+                {!groupCol && <option value="">Select group</option>}
                 {catCols.map((c) => <option key={c}>{c}</option>)}
               </select>
               {suggestJonckheere && (
@@ -884,6 +955,7 @@ function HypothesisPanelBody({ session }: { session: Session }) {
             <div>
               <label className="text-xs text-gray-400 block mb-1">Column variable</label>
               <select className="select w-full" value={col2} onChange={(e) => setCol2(e.target.value)}>
+                {!col2 && <option value="">Select variable</option>}
                 {catCols.map((c) => <option key={c}>{c}</option>)}
               </select>
             </div>
@@ -906,12 +978,16 @@ function HypothesisPanelBody({ session }: { session: Session }) {
             <div>
               <label className="text-xs text-gray-400 block mb-1">Factor 2</label>
               <select className="select w-full" value={factor2} onChange={(e) => setFactor2(e.target.value)}>
+                {!factor2 && <option value="">Select factor</option>}
                 {catCols.filter(c => c !== groupCol).map((c) => <option key={c}>{c}</option>)}
               </select>
             </div>
           )}
 
-          <button className="btn-primary w-full" onClick={run} disabled={loading || (isAncova && covariates.length === 0) || (isMancova && outcomes.length < 2)}>
+          <button className="btn-primary w-full" onClick={run} disabled={loading
+            || (!isMancova && !col) || (needsGroup && !groupCol) || (isCat && !col2)
+            || (test === "sign_paired" && (!pairedCol || pairedCol === col)) || (isTwoWay && !factor2)
+            || (isAncova && covariates.length === 0) || (isMancova && outcomes.length < 2)}>
             {loading ? "Running…" : "Run Test"}
           </button>
           {error && <p className="text-red-500 text-xs">{error}</p>}

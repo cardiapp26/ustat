@@ -1,3 +1,4 @@
+import { analysisDefaultColumns } from "../lib/columnDefaults";
 import { useState, useRef, type ReactNode } from "react";
 import { useStore, isNumericKind } from "../store";
 import { usePlotLayout, usePalette } from "../plotStyle";
@@ -53,7 +54,7 @@ export default function TimeSeriesPanel() {
   // drawn, and a restored decomposition read under the default ARIMA layout
   // would throw on its missing coefficient table.
   const [mode, setMode] = usePersistedPanelState<Mode>("timeseries", "mode", "arima");
-  const [valueCol, setValueCol] = usePersistedPanelState("timeseries", "valueCol", numCols[0] ?? "");
+  const [valueCol, setValueCol] = usePersistedPanelState("timeseries", "valueCol", analysisDefaultColumns(session, numCols)[0] ?? "");
   const [timeCol, setTimeCol] = usePersistedPanelState("timeseries", "timeCol", "");
   // ARIMA params
   const [p, setP] = usePersistedPanelState("timeseries", "p", 1);

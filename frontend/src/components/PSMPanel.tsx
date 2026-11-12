@@ -8,6 +8,7 @@
  * 4. Love Plot — the publication-standard balance visualization
  * 5. Optional outcome analysis on matched cohort
  */
+import { analysisDefaultColumns } from "../lib/columnDefaults";
 import { TreatedLevelPicker } from "./models/TreatedLevelPicker";
 import { treatedLevelParam, treatmentCandidates } from "../lib/treatmentLevels";
 import { useState, useRef, useMemo } from "react";
@@ -328,7 +329,7 @@ function PSMPanelBody({ session }: { session: Session }) {
   const binaryCols = useMemo(() => Object.keys(treatLevels), [treatLevels]);
 
   // Form State — genuine selections persisted across tab switches (per-session cache)
-  const [treatCol, setTreatCol] = usePersistedPanelState<string>("psm", "treatCol", binaryCols[0] ?? allCols[0] ?? "");
+  const [treatCol, setTreatCol] = usePersistedPanelState<string>("psm", "treatCol", analysisDefaultColumns(session, binaryCols.length ? binaryCols : allCols)[0] ?? "");
   const [treatedLevel, setTreatedLevel] = usePersistedPanelState<string>("psm", "treatedLevel", "");
   const treatColLevels = treatLevels[treatCol] ?? null;
   const [outcomeCol, setOutcomeCol] = usePersistedPanelState<string>("psm", "outcomeCol", "");
@@ -474,6 +475,7 @@ function PSMPanelBody({ session }: { session: Session }) {
             className="select w-full"
             value={treatCol}
             onChange={(e) => { setTreatCol(e.target.value); setResult(null); }}>
+            {!treatCol && <option value="">Select treatment</option>}
             {binaryCols.length > 0
               ? binaryCols.map((c) => <option key={c} value={c}>{c}</option>)
               : allCols.map((c) => <option key={c} value={c}>{c}</option>)}

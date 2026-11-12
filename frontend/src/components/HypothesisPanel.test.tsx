@@ -284,3 +284,39 @@ describe('HypothesisPanel', () => {
     expect(screen.getByText('Group column')).toBeInTheDocument()
   })
 })
+
+describe('HypothesisPanel MANCOVA result', () => {
+  it('shows the multivariate tests as a table instead of raw objects', async () => {
+    installSession()
+    server.use(
+      http.post('/api/advanced_anova/mancova', () =>
+        HttpResponse.json({
+          test: 'MANCOVA',
+          interpretation: 'No significant multivariate effect.',
+          significant: false,
+          outcomes: ['AGE', 'LDL'],
+          n: 89,
+          multivariate_tests: [
+            { test: "Pillai's trace", value: 0.0412, F: 1.82, num_df: 2, den_df: 85, p: 0.168 },
+            { test: "Wilks' lambda", value: 0.9588, F: 1.82, num_df: 2, den_df: 85, p: 0.168 },
+          ],
+          pillai: { test: "Pillai's trace", value: 0.0412, F: 1.82, num_df: 2, den_df: 85, p: 0.168 },
+          effect_size: { name: 'partial η² (multivariate, from Pillai)', value: 0.0412, magnitude: 'small' },
+        }),
+      ),
+    )
+
+    const user = userEvent.setup()
+    render(<HypothesisPanel />)
+    await user.click(screen.getByRole('radio', { name: /^mancova$/i }))
+    await user.selectOptions(screen.getAllByRole('listbox')[0], ['AGE', 'LDL'])
+    await user.click(screen.getByRole('button', { name: /run test/i }))
+
+    await waitFor(() => expect(screen.getByText('Multivariate tests')).toBeInTheDocument())
+    expect(screen.getByText("Wilks' lambda")).toBeInTheDocument()
+    expect(screen.getByText(/partial η² \(multivariate, from Pillai\) = 0\.041 \(small\)/)).toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('[object Object]')
+    // Lists of plain values still show in the key / value grid.
+    expect(screen.getByText('AGE,LDL')).toBeInTheDocument()
+  })
+})

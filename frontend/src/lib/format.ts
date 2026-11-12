@@ -24,6 +24,12 @@ export function fmtP(p: number | null | undefined): string {
   return n.toFixed(3);
 }
 
+/** Format the comparison after an inline, separately styled p. */
+export function fmtPRelation(p: number | null | undefined): string {
+  const body = fmtP(p);
+  return body.startsWith("<") ? ` < ${body.slice(1)}` : ` = ${body}`;
+}
+
 /**
  * Prefixed variant for publication tables / figure labels: "p<0.001" / "p=0.035".
  * Same precision as `fmtP`.

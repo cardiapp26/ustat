@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo, type ReactNode, type RefObject } from "react";
+import { CoxModelDetails, type CoxPHTest } from "./survival/CoxModelDetails";
 import type { Data, Annotations } from "plotly.js";
 import Plot from "../PlotComponent";
 import { analysisScope, useStore, analysisCols, isCategoricalKind, type Session } from "../store";
@@ -109,8 +110,13 @@ interface CoxCoefficient {
 interface CoxResult {
   coefficients?: CoxCoefficient[];
   n?: number;
+  n_analyzed?: number;
+  n_excluded?: number;
   concordance?: number;
   log_likelihood?: number;
+  ph_test?: CoxPHTest | null;
+  pooling_note?: string;
+  warnings?: unknown[];
 }
 
 /** Row produced by the univariable Cox screening scan. */
@@ -592,6 +598,38 @@ const SURV_METHODS: { id: SurvMethod; title: string; desc: string }[] = [
   { id: "evalue",      title: "E-value",             desc: "Unmeasured confounding" },
 ];
 
+const LEGACY_COLUMN_PREFIXES: Partial<Record<SurvMethod, string>> = {
+  km: "km", cox: "cox", timehorizon: "ch", landmark: "lm",
+  rmst: "rmst", finegray: "fg", frailty: "frailty",
+};
+
+function legacySurvivalColumns(activeMethod: SurvMethod) {
+  const cache = useStore.getState().panelCache.survival as Record<string, unknown> | undefined;
+  const preferred = LEGACY_COLUMN_PREFIXES[activeMethod];
+  function read(key: string): string | undefined {
+    const value = cache?.[key];
+    return typeof value === "string" ? value : undefined;
+  }
+  function first(suffix: string, exclude?: string): string {
+    if (preferred && preferred !== exclude) {
+      const value = read(preferred + suffix);
+      if (value !== undefined) return value;
+    }
+    for (const prefix of Object.values(LEGACY_COLUMN_PREFIXES)) {
+      if (prefix === exclude) continue;
+      const value = read(prefix + suffix);
+      if (value) return value;
+    }
+    return "";
+  }
+  return {
+    duration: first("Duration"),
+    event: first("Event", "fg"),
+    group: first("Group"),
+    competingEvent: read("fgEvent") || null,
+  };
+}
+
 /** Ordinal (ordered categorical) is eligible wherever numeric OR categorical is. */
 function kindMatches(kinds: string[] | undefined, kind: string): boolean {
   if (!kinds) return true;
@@ -920,7 +958,7 @@ function ResultBlock({ result }: { result: ResultBlockData | null | undefined })
 export default function SurvivalAdvancedPanel() {
   const session = useStore((s) => s.session);
   if (!session) return <p className="text-gray-400 text-sm p-6">Upload data first.</p>;
-  return <SurvivalAdvancedPanelBody session={session} />;
+  return <SurvivalAdvancedPanelBody key={session.session_id} session={session} />;
 }
 
 function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
@@ -932,6 +970,10 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
   const sid = session.session_id;
   // 2-grid layout: left method nav, right active method panel.
   const [activeMethod, setActiveMethod] = usePersistedPanelState<SurvMethod>("survival", "activeMethod", "km");
+  const [legacyColumns] = useState(() => legacySurvivalColumns(activeMethod));
+  const [duration, setDuration] = usePersistedPanelState("survival", "duration", legacyColumns.duration);
+  const [event, setEvent] = usePersistedPanelState("survival", "event", legacyColumns.event);
+  const [group, setGroup] = usePersistedPanelState("survival", "group", legacyColumns.group);
   // Binary 0/1-like columns for Cox event selectors (the `kind` enum has
   // no "binary", so a numeric filter would leak continuous columns).
   const binaryCols = useMemo(
@@ -962,14 +1004,15 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
   // predictors is the same analysis under either strategy.
 
   // Fine-Gray state
-  const [fgDuration, setFgDuration] = usePersistedPanelState("survival", "fgDuration", "");
-  const [fgEvent, setFgEvent] = usePersistedPanelState("survival", "fgEvent", "");
+  // A competing-event column can contain multiple event codes. Keep it
+  // independent of the binary event while inheriting the latter by default.
+  const [competingEvent, setFgEvent] = usePersistedPanelState("survival", "competingEvent", legacyColumns.competingEvent);
+  const fgEvent = competingEvent ?? event;
   const [fgInterest, setFgInterest] = usePersistedPanelState("survival", "fgInterest", 1);
-  const [fgGroup, setFgGroup] = usePersistedPanelState("survival", "fgGroup", "");
   const [fgPredictors, setFgPredictors] = usePersistedPanelState<string[]>("survival", "fgPredictors", []);
   const [fgPredFilter, setFgPredFilter] = useState("");
   const fgParams = {
-    fgDuration, fgEvent, fgInterest, fgGroup, fgPredictors,
+    fgDuration: duration, fgEvent, fgInterest, fgGroup: group, fgPredictors,
     imputation: fgPredictors.length > 0 ? survImputation : null,
   };
   const {
@@ -994,19 +1037,16 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
   const [evError, setEvError] = useState<string | null>(null);
 
   // KM state
-  const [kmDuration, setKmDuration] = usePersistedPanelState("survival", "kmDuration", "");
-  const [kmEvent, setKmEvent] = usePersistedPanelState("survival", "kmEvent", "");
-  const [kmGroup, setKmGroup] = usePersistedPanelState("survival", "kmGroup", "");
   const [kmStratify, setKmStratify] = usePersistedPanelState("survival", "kmStratify", "");
   const [kmSurvTimes, setKmSurvTimes] = usePersistedPanelState("survival", "kmSurvTimes", "");          // e.g. "365, 1825"
   const [kmPairwise, setKmPairwise] = usePersistedPanelState("survival", "kmPairwise", false);
   const [kmCorrection, setKmCorrection] = usePersistedPanelState("survival", "kmCorrection", "holm");    // none|bonferroni|holm|bh
   const kmSurvTimeList = parseTimes(kmSurvTimes);
-  const kmPairwiseOn = kmPairwise && !!kmGroup;
+  const kmPairwiseOn = kmPairwise && !!group;
   // The censor-mark and number-at-risk toggles are left out: they add
   // drawing extras to the same estimates (fetched lazily, below).
   const kmParams = {
-    kmDuration, kmEvent, kmGroup, kmStratify,
+    kmDuration: duration, kmEvent: event, kmGroup: group, kmStratify,
     survivalTimes: kmSurvTimeList,
     pairwise: kmPairwiseOn,
     correction: kmPairwiseOn ? kmCorrection : null,
@@ -1021,7 +1061,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
   const kmScanCols = pickCols.filter((c) => isCategoricalKind(c.kind)).map((c) => c.name);
   const {
     result: kmScanRows, setResult: setKmScanResult, stale: kmScanStale, staleReasons: kmScanWhy,
-  } = useStampedResult<KMScanRow[]>("survival_km_scan", { kmDuration, kmEvent, kmScanCols });
+  } = useStampedResult<KMScanRow[]>("survival_km_scan", { kmDuration: duration, kmEvent: event, kmScanCols });
   const kmScanResult = kmScanRows ?? [];
   const [kmScanLoading, setKmScanLoading] = useState(false);
   // Group rename state
@@ -1081,8 +1121,8 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
     (async () => {
       try {
         const res = await runKM({
-          session_id: sid, duration_col: kmDuration, event_col: kmEvent,
-          group_col: kmGroup || undefined, stratify_col: kmStratify || undefined,
+          session_id: sid, duration_col: duration, event_col: event,
+          group_col: group || undefined, stratify_col: kmStratify || undefined,
           survival_times: kmResult.survival_times?.length ? kmResult.survival_times : undefined,
           pairwise: !!kmResult.pairwise, pairwise_correction: kmCorrection,
           risk_times: kmRiskTable && times.length ? times : undefined,
@@ -1099,8 +1139,6 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
   }, [kmRiskTable, kmShowCensors, kmResult, kmStale]);
 
   // Cox state
-  const [coxDuration, setCoxDuration] = usePersistedPanelState("survival", "coxDuration", "");
-  const [coxEvent, setCoxEvent] = usePersistedPanelState("survival", "coxEvent", "");
   const [coxPreds, setCoxPreds] = usePersistedPanelState<string[]>("survival", "coxPreds", []);
   const [coxInteractions, setCoxInteractions] = usePersistedPanelState<Array<[string, string]>>("survival", "coxInteractions", []);
   const [coxIxA, setCoxIxA] = useState<string>("");
@@ -1108,13 +1146,13 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
   // The interaction pickers (coxIxA/B) are not in here: only the added pairs are sent.
   const {
     result: coxResult, setResult: setCoxResult, stale: coxStale, staleReasons: coxWhy,
-  } = useStampedResult<CoxResult>("survival_cox", { coxDuration, coxEvent, coxPreds, coxInteractions });
+  } = useStampedResult<CoxResult>("survival_cox", { coxDuration: duration, coxEvent: event, coxPreds, coxInteractions, imputation: survImputation });
   const [coxLoading, setCoxLoading] = useState(false);
   const [coxError, setCoxError] = useState<string | null>(null);
   // Cox univariable screening state
   const {
     result: coxScanRows, setResult: setCoxScanResult, stale: coxScanStale, staleReasons: coxScanWhy,
-  } = useStampedResult<CoxScanRow[]>("survival_cox_scan", { coxDuration, coxEvent, coxPreds });
+  } = useStampedResult<CoxScanRow[]>("survival_cox_scan", { coxDuration: duration, coxEvent: event, coxPreds });
   const coxScanResult = coxScanRows ?? [];
   const [coxScanLoading, setCoxScanLoading] = useState(false);
   // Unadjusted-vs-adjusted paired forest (publication "Figure 4"). The
@@ -1122,7 +1160,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
   const [coxUMRefs, setCoxUMRefs] = usePersistedPanelState<Record<string, string>>("survival", "coxUMRefs", {});  // per-predictor reference level
   const {
     result: coxUMResult, setResult: setCoxUMResult, stale: coxUMStale, staleReasons: coxUMWhy,
-  } = useStampedResult<CoxUniMultiResult>("survival_cox_um", { coxDuration, coxEvent, coxPreds, references: coxUMRefs });
+  } = useStampedResult<CoxUniMultiResult>("survival_cox_um", { coxDuration: duration, coxEvent: event, coxPreds, references: coxUMRefs });
   const [coxUMLoading, setCoxUMLoading] = useState(false);
   const coxUMRef = useRef<HTMLDivElement | null>(null);
 
@@ -1130,7 +1168,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
     setCoxUMLoading(true);
     try {
       const res = await runCoxUniMulti({
-        session_id: sid, duration_col: coxDuration, event_col: coxEvent,
+        session_id: sid, duration_col: duration, event_col: event,
         predictors: coxPreds, references: Object.keys(refs).length ? refs : undefined,
       });
       setCoxUMResult(res.data);
@@ -1165,7 +1203,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
   const [specLoading, setSpecLoading] = useState(false);
 
   const runSpecForest = async () => {
-    if (!coxDuration || !coxEvent || !specExposure) { setCoxError("Select duration, event, and an exposure."); return; }
+    if (!duration || !event || !specExposure) { setCoxError("Select duration, event, and an exposure."); return; }
     setSpecLoading(true); setCoxError(null);
     // Fitted and handed off in one step, so nothing is kept to go stale; but
     // an edit or filter change while the fit runs would send rows computed
@@ -1176,7 +1214,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
       const meta = columns.find((c) => c.name === specExposure);
       const vlab = (code: string | null) => (code == null ? "" : labelFor(meta?.value_labels, code, String(code)));
       const res = await runCoxModelSpecs({
-        session_id: sid, duration_col: coxDuration, event_col: coxEvent,
+        session_id: sid, duration_col: duration, event_col: event,
         exposure: specExposure,
         exposure_reference: specExposureRef || undefined,
         specs: specRows.filter((s) => s.label.trim()).map((s) => ({ label: s.label, covariates: s.covariates })),
@@ -1246,8 +1284,6 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
 
 
   // Time-horizon sensitivity (Cox at multiple administrative-censoring windows)
-  const [chDuration, setChDuration] = usePersistedPanelState("survival", "chDuration", "");
-  const [chEvent, setChEvent] = usePersistedPanelState("survival", "chEvent", "");
   const [chPredictor, setChPredictor] = usePersistedPanelState("survival", "chPredictor", "");
   const [chCovariates, setChCovariates] = usePersistedPanelState<string[]>("survival", "chCovariates", []);
   const [chHorizons, setChHorizons] = usePersistedPanelState("survival", "chHorizons", "365, 730");
@@ -1260,22 +1296,19 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
   const {
     result: chResult, setResult: setChResult, stale: chStale, staleReasons: chWhy,
   } = useStampedResult<CoxHorizonsResult>("survival_horizons", {
-    chDuration, chEvent, chPredictor, chCovariates, horizons: chHorizonList, labels: chSentLabels,
+    chDuration: duration, chEvent: event, chPredictor, chCovariates, horizons: chHorizonList, labels: chSentLabels,
   });
   const [chLoading, setChLoading] = useState(false);
   const [chError, setChError] = useState<string | null>(null);
 
   // RMST state — Restricted Mean Survival Time (PH-free alternative)
-  const [rmstDuration, setRmstDuration] = usePersistedPanelState("survival", "rmstDuration", "");
-  const [rmstEvent, setRmstEvent] = usePersistedPanelState("survival", "rmstEvent", "");
-  const [rmstGroup, setRmstGroup] = usePersistedPanelState("survival", "rmstGroup", "");
   const [rmstTau, setRmstTau] = usePersistedPanelState<string>("survival", "rmstTau", "");
   // τ is stamped as typed, as the hypothesis panel does with its μ.
   const {
     result: rmstResult, setResult: setRmstResult, stale: rmstStale, staleReasons: rmstWhy,
   } = useStampedResult<RmstResult>("survival_rmst", {
-    rmstDuration, rmstEvent, rmstGroup, rmstTau,
-    imputation: rmstGroup ? survImputation : null,
+    rmstDuration: duration, rmstEvent: event, rmstGroup: group, rmstTau,
+    imputation: group ? survImputation : null,
   });
   const [rmstLoading, setRmstLoading] = useState(false);
   const [rmstError, setRmstError] = useState<string | null>(null);
@@ -1284,15 +1317,13 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
   // Shared frailty state — clustered / multi-centre Cox with a random
   // cluster effect. Advanced knobs (nested/correlated clusters, parametric
   // baseline, estimation method, penalizer) stay at their backend defaults.
-  const [frDuration, setFrDuration] = usePersistedPanelState("survival", "frailtyDuration", "");
-  const [frEvent, setFrEvent] = usePersistedPanelState("survival", "frailtyEvent", "");
   const [frCluster, setFrCluster] = usePersistedPanelState("survival", "frailtyCluster", "");
   const [frPredictors, setFrPredictors] = usePersistedPanelState<string[]>("survival", "frailtyPredictors", []);
   const [frDist, setFrDist] = usePersistedPanelState("survival", "frailtyDistribution", "gamma");
   const {
     result: frailtyResult, setResult: setFrailtyResult, stale: frStale, staleReasons: frWhy,
   } = useStampedResult<FrailtyResult>("survival_frailty", {
-    frDuration, frEvent, frCluster, frPredictors, frDist, imputation: survImputation,
+    frDuration: duration, frEvent: event, frCluster, frPredictors, frDist, imputation: survImputation,
   });
   const [frLoading, setFrLoading] = useState(false);
   const [frError, setFrError] = useState<string | null>(null);
@@ -1343,15 +1374,12 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
   const lwPlotRef = useRef<PlotCaptureHandle | null>(null);
 
   // Landmark state
-  const [lmDuration, setLmDuration] = usePersistedPanelState("survival", "lmDuration", "");
-  const [lmEvent, setLmEvent] = usePersistedPanelState("survival", "lmEvent", "");
   const [lmTime, setLmTime] = usePersistedPanelState("survival", "lmTime", "");
-  const [lmGroup, setLmGroup] = usePersistedPanelState("survival", "lmGroup", "");
   const [lmPreds, setLmPreds] = usePersistedPanelState<string[]>("survival", "lmPreds", []);
   const {
     result: lmResult, setResult: setLmResult, stale: lmStale, staleReasons: lmWhy,
   } = useStampedResult<LandmarkResult>("survival_landmark", {
-    lmDuration, lmEvent, lmTime, lmGroup, lmPreds,
+    lmDuration: duration, lmEvent: event, lmTime, lmGroup: group, lmPreds,
     imputation: lmPreds.length > 0 ? survImputation : null,
   });
   const [lmLoading, setLmLoading] = useState(false);
@@ -1359,12 +1387,12 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
 
   // ── Fine-Gray handler
   const handleFineGray = async () => {
-    if (!fgDuration || !fgEvent) { setFgError("Select duration and event columns"); return; }
+    if (!duration || !fgEvent) { setFgError("Select duration and event columns"); return; }
     setFgResult(null); setFgError(null); setFgLoading(true);
     try {
       const res = await runFineGray({
-        session_id: sid, duration_col: fgDuration, event_col: fgEvent,
-        event_of_interest: fgInterest, group_col: fgGroup || undefined,
+        session_id: sid, duration_col: duration, event_col: fgEvent,
+        event_of_interest: fgInterest, group_col: group || undefined,
         predictors: fgPredictors.length > 0 ? fgPredictors : undefined,
         imputation: survImputation,
       });
@@ -1377,14 +1405,14 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
 
   // ── RMST handler
   const handleRMST = async () => {
-    if (!rmstDuration || !rmstEvent) { setRmstError("Select duration and event columns"); return; }
+    if (!duration || !event) { setRmstError("Select duration and event columns"); return; }
     const tau = parseFloat(rmstTau);
     if (!Number.isFinite(tau) || tau <= 0) { setRmstError("Enter a positive time horizon τ"); return; }
     setRmstResult(null); setRmstError(null); setRmstLoading(true);
     try {
       const res = await runRMST({
-        session_id: sid, duration_col: rmstDuration, event_col: rmstEvent,
-        tau, group_col: rmstGroup || undefined,
+        session_id: sid, duration_col: duration, event_col: event,
+        tau, group_col: group || undefined,
         imputation: survImputation,
       });
       setRmstResult(res.data);
@@ -1394,12 +1422,12 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
 
   // ── Shared frailty handler
   const handleFrailty = async () => {
-    if (!frDuration || !frEvent || !frCluster) { setFrError("Select duration, event, and cluster columns"); return; }
+    if (!duration || !event || !frCluster) { setFrError("Select duration, event, and cluster columns"); return; }
     if (frPredictors.length === 0) { setFrError("Select at least one predictor"); return; }
     setFrailtyResult(null); setFrError(null); setFrLoading(true);
     try {
       const res = await runFrailty({
-        session_id: sid, duration_col: frDuration, event_col: frEvent,
+        session_id: sid, duration_col: duration, event_col: event,
         cluster_col: frCluster, predictors: frPredictors,
         frailty_distribution: frDist,
         imputation: survImputation,
@@ -1425,12 +1453,12 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
 
   // ── Landmark handler
   const handleLandmark = async () => {
-    if (!lmDuration || !lmEvent || !lmTime) { setLmError("Select duration, event, and landmark time"); return; }
+    if (!duration || !event || !lmTime) { setLmError("Select duration, event, and landmark time"); return; }
     setLmResult(null); setLmError(null); setLmLoading(true);
     try {
       const res = await runLandmark({
-        session_id: sid, duration_col: lmDuration, event_col: lmEvent,
-        landmark_time: parseFloat(lmTime), group_col: lmGroup || undefined,
+        session_id: sid, duration_col: duration, event_col: event,
+        landmark_time: parseFloat(lmTime), group_col: group || undefined,
         predictors: lmPreds.length > 0 ? lmPreds : undefined,
         imputation: survImputation,
       });
@@ -1443,10 +1471,10 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
   // user perceives a re-Run as 'nothing happened' because the previous
   // result panel stays on screen even when the new fetch fails or returns
   // a near-identical table. Not on mount: see useClearOnChange.
-  useClearOnChange(() => { setFgResult(null); setFgError(null); }, [fgDuration, fgEvent, fgInterest, fgGroup, fgPredictors]);
-  useClearOnChange(() => { setRmstResult(null); setRmstError(null); }, [rmstDuration, rmstEvent, rmstGroup, rmstTau]);
+  useClearOnChange(() => { setFgResult(null); setFgError(null); }, [duration, fgEvent, fgInterest, group, fgPredictors]);
+  useClearOnChange(() => { setRmstResult(null); setRmstError(null); }, [duration, event, group, rmstTau]);
   useClearOnChange(() => { setLwResult(null); setLwError(null); }, [lwId, lwStart, lwStop, lwEvent, lwPreds, lwGroup]);
-  useClearOnChange(() => { setFrailtyResult(null); setFrError(null); }, [frDuration, frEvent, frCluster, frPredictors, frDist]);
+  useClearOnChange(() => { setFrailtyResult(null); setFrError(null); }, [duration, event, frCluster, frPredictors, frDist]);
 
   // ── Multi-state handlers. Both endpoints share the same long-format columns.
   const msColumnsPayload = () => ({
@@ -1514,19 +1542,19 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
     } finally { setLwLoading(false); }
   };
   useClearOnChange(() => { setEvResult(null); setEvError(null); }, [evEst, evLo, evHi, evType, evP0]);
-  useClearOnChange(() => { setLmResult(null); setLmError(null); }, [lmDuration, lmEvent, lmTime, lmGroup, lmPreds]);
-  useClearOnChange(() => { setKmResult(null); setKmError(null); }, [kmDuration, kmEvent, kmGroup, kmStratify]);
-  useClearOnChange(() => { setCoxResult(null); setCoxError(null); }, [coxDuration, coxEvent, coxPreds, coxInteractions]);
+  useClearOnChange(() => { setLmResult(null); setLmError(null); }, [duration, event, lmTime, group, lmPreds]);
+  useClearOnChange(() => { setKmResult(null); setKmError(null); }, [duration, event, group, kmStratify]);
+  useClearOnChange(() => { setCoxResult(null); setCoxError(null); }, [duration, event, coxPreds, coxInteractions]);
 
   // ── Kaplan-Meier, Cox and time-horizon handlers. Named so the out-of-date
   // notice can offer the same run as its Recompute button.
   const handleKM = async () => {
-    if (!kmDuration || !kmEvent) { setKmError("Select duration and event columns"); return; }
+    if (!duration || !event) { setKmError("Select duration and event columns"); return; }
     setKmResult(null); setKmError(null); setKmLoading(true);
     try {
       const res = await runKM({
-        session_id: sid, duration_col: kmDuration, event_col: kmEvent,
-        group_col: kmGroup || undefined, stratify_col: kmStratify || undefined,
+        session_id: sid, duration_col: duration, event_col: event,
+        group_col: group || undefined, stratify_col: kmStratify || undefined,
         survival_times: kmSurvTimeList.length ? kmSurvTimeList : undefined,
         pairwise: kmPairwiseOn,
         pairwise_correction: kmCorrection,
@@ -1543,7 +1571,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
     const results: KMScanRow[] = [];
     for (const col of kmScanCols) {
       try {
-        const res = await runKM({ session_id: sid, duration_col: kmDuration, event_col: kmEvent, group_col: col });
+        const res = await runKM({ session_id: sid, duration_col: duration, event_col: event, group_col: col });
         results.push({
           variable: col,
           groups: res.data.groups?.length ?? 0,
@@ -1558,15 +1586,16 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
   };
 
   const handleCox = async () => {
-    if (!coxDuration || !coxEvent || coxPreds.length === 0) { setCoxError("Select duration, event, and at least one predictor"); return; }
+    if (!duration || !event || coxPreds.length === 0) { setCoxError("Select duration, event, and at least one predictor"); return; }
     setCoxResult(null); setCoxError(null); setCoxLoading(true);
     try {
       const res = await runCox({
         session_id: sid,
-        duration_col: coxDuration,
-        event_col: coxEvent,
+        duration_col: duration,
+        event_col: event,
         predictors: coxPreds,
         interactions: coxInteractions.length > 0 ? coxInteractions : undefined,
+        imputation: survImputation,
       });
       setCoxResult(res.data);
     } catch (e: unknown) { setCoxError(errorMessage(e, "Cox failed")); }
@@ -1578,7 +1607,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
     const results: CoxScanRow[] = [];
     for (const pred of coxPreds) {
       try {
-        const res = await runCox({ session_id: sid, duration_col: coxDuration, event_col: coxEvent, predictors: [pred] });
+        const res = await runCox({ session_id: sid, duration_col: duration, event_col: event, predictors: [pred] });
         const coef = res.data.coefficients?.[0];
         results.push({
           variable: pred,
@@ -1596,7 +1625,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
   };
 
   const handleHorizons = async () => {
-    if (!chDuration || !chEvent || !chPredictor) {
+    if (!duration || !event || !chPredictor) {
       setChError("Select duration, event, and a predictor.");
       return;
     }
@@ -1608,8 +1637,8 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
     try {
       const res = await runCoxHorizons({
         session_id: sid,
-        duration_col: chDuration,
-        event_col: chEvent,
+        duration_col: duration,
+        event_col: event,
         predictor: chPredictor,
         covariates: chCovariates.length ? chCovariates : undefined,
         horizons: chHorizonList,
@@ -1660,14 +1689,14 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
           left={
             <>
               <div className="grid grid-cols-1 gap-2">
-                <VarSelect label="Duration" value={fgDuration} onChange={setFgDuration} columns={pickCols} kinds={["numeric"]} />
+                <VarSelect label="Duration" value={duration} onChange={setDuration} columns={pickCols} kinds={["numeric"]} />
                 <VarSelect label="Event (0=censor, 1,2..=events)" value={fgEvent} onChange={setFgEvent} columns={pickCols} />
                 <label className="flex flex-col gap-1">
                   <span className="text-xs text-gray-500 font-medium">Event of interest</span>
                   <input type="number" value={fgInterest} onChange={(e) => setFgInterest(Number(e.target.value))} min={1}
                     className="text-sm border border-gray-300 rounded-lg px-3 py-1.5 w-20 focus:outline-none focus:border-indigo-400" />
                 </label>
-                <VarSelect label="Group (optional)" value={fgGroup} onChange={setFgGroup} columns={pickCols} kinds={["categorical"]} />
+                <VarSelect label="Group (optional)" value={group} onChange={setGroup} columns={pickCols} kinds={["categorical"]} />
               </div>
               {/* Predictors for subdistribution-hazard regression (Fine-Gray 1999) */}
               <div className="space-y-1.5">
@@ -1692,7 +1721,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
                   {pickCols
                     .map((c) => c.name)
                     .filter((n: string) =>
-                      n !== fgDuration && n !== fgEvent && n !== fgGroup
+                      n !== duration && n !== fgEvent && n !== group
                       && n.toLowerCase().includes(fgPredFilter.toLowerCase()))
                     .slice(0, 100)
                     .map((n: string) => (
@@ -1794,10 +1823,10 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
         </StaleGuard>
         {/* Outside the guard: Gray's test is its own result, current or not
             independently of the Fine-Gray fit above it. */}
-        {fgGroup && (
+        {group && (
           <div className="mt-3 max-w-xl">
-            <GrayTestCard sessionId={sid} durationCol={fgDuration} eventCol={fgEvent}
-              groupCol={fgGroup} eventOfInterest={fgInterest} />
+            <GrayTestCard sessionId={sid} durationCol={duration} eventCol={fgEvent}
+              groupCol={group} eventOfInterest={fgInterest} />
           </div>
         )}
       </Section>
@@ -1816,8 +1845,8 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
           left={
             <>
               <div className="grid grid-cols-1 gap-2">
-                <VarSelect label="Duration" value={rmstDuration} onChange={setRmstDuration} columns={pickCols} kinds={["numeric"]} />
-                <VarSelect label="Event (0/1)" value={rmstEvent} onChange={setRmstEvent} columns={binaryCols} />
+                <VarSelect label="Duration" value={duration} onChange={setDuration} columns={pickCols} kinds={["numeric"]} />
+                <VarSelect label="Event (0/1)" value={event} onChange={setEvent} columns={binaryCols} />
                 <label className="flex flex-col gap-1">
                   <span className="text-xs text-gray-500 font-medium">τ (time horizon)</span>
                   <input type="number" min="0" step="any" value={rmstTau}
@@ -1825,10 +1854,10 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
                     placeholder="e.g. 1825"
                     className="text-sm border border-gray-300 rounded-lg px-3 py-1.5 focus:outline-none focus:border-indigo-400" />
                 </label>
-                <VarSelect label="Group (optional)" value={rmstGroup} onChange={setRmstGroup} columns={pickCols} kinds={["categorical"]} />
+                <VarSelect label="Group (optional)" value={group} onChange={setGroup} columns={pickCols} kinds={["categorical"]} />
               </div>
               <div className="flex items-center gap-3">
-                {rmstGroup && <ImputeToggle value={survImputation} onChange={setSurvImputation} />}
+                {group && <ImputeToggle value={survImputation} onChange={setSurvImputation} />}
                 <RunButton onClick={handleRMST} loading={rmstLoading} label="Run RMST" />
               </div>
               {rmstError && <p className="text-xs text-red-500">{rmstError}</p>}
@@ -1931,11 +1960,11 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
           left={
             <>
               <div className="grid grid-cols-1 gap-2">
-                <VarSelect label="Duration (time)" value={frDuration} onChange={setFrDuration} columns={pickCols} kinds={["numeric"]} />
-                <VarSelect label="Event (0/1)" value={frEvent} onChange={setFrEvent} columns={binaryCols} />
+                <VarSelect label="Duration (time)" value={duration} onChange={setDuration} columns={pickCols} kinds={["numeric"]} />
+                <VarSelect label="Event (0/1)" value={event} onChange={setEvent} columns={binaryCols} />
                 <VarSelect label="Cluster (centre / family)" value={frCluster} onChange={setFrCluster} columns={pickCols} kinds={["categorical"]} />
                 <MultiSelect label="Predictors" columns={pickCols} selected={frPredictors} onChange={setFrPredictors}
-                  excludeNames={[frDuration, frEvent, frCluster].filter(Boolean)} />
+                  excludeNames={[duration, event, frCluster].filter(Boolean)} />
                 <label className="flex flex-col gap-1">
                   <span className="text-xs text-gray-500 font-medium">Frailty distribution</span>
                   <select value={frDist} onChange={(e) => setFrDist(e.target.value)}
@@ -2436,16 +2465,16 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
           left={
             <>
               <div className="grid grid-cols-1 gap-2">
-                <VarSelect label="Duration" value={lmDuration} onChange={setLmDuration} columns={pickCols} kinds={["numeric"]} />
-                <VarSelect label="Event (0/1)" value={lmEvent} onChange={setLmEvent} columns={binaryCols} />
+                <VarSelect label="Duration" value={duration} onChange={setDuration} columns={pickCols} kinds={["numeric"]} />
+                <VarSelect label="Event (0/1)" value={event} onChange={setEvent} columns={binaryCols} />
                 <label className="flex flex-col gap-1">
                   <span className="text-xs text-gray-500 font-medium">Landmark time</span>
                   <input type="number" step="1" value={lmTime} onChange={(e) => setLmTime(e.target.value)}
                     className="text-sm border border-gray-300 rounded-lg px-3 py-1.5 focus:outline-none focus:border-indigo-400" placeholder="e.g. 30" />
                 </label>
-                <VarSelect label="Group (optional)" value={lmGroup} onChange={setLmGroup} columns={pickCols} kinds={["categorical"]} />
+                <VarSelect label="Group (optional)" value={group} onChange={setGroup} columns={pickCols} kinds={["categorical"]} />
               </div>
-              <MultiSelect label="Predictors for Cox (optional)" columns={pickCols} selected={lmPreds} onChange={setLmPreds} excludeNames={[lmDuration, lmEvent].filter(Boolean)} />
+              <MultiSelect label="Predictors for Cox (optional)" columns={pickCols} selected={lmPreds} onChange={setLmPreds} excludeNames={[duration, event].filter(Boolean)} />
               <div className="flex items-center gap-3">
                 {lmPreds.length > 0 && <ImputeToggle value={survImputation} onChange={setSurvImputation} />}
                 <RunButton onClick={handleLandmark} loading={lmLoading} label="Run Landmark" />
@@ -2517,9 +2546,9 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
       {activeMethod === "km" && (
       <Section title="Kaplan-Meier Survival" description="Visualise time-to-event data with survival curves and log-rank test">
         <div className="grid grid-cols-4 gap-3">
-          <VarSelect label="Duration (time)" value={kmDuration} onChange={setKmDuration} columns={pickCols} kinds={["numeric"]} />
-          <VarSelect label="Event (0/1)" value={kmEvent} onChange={setKmEvent} columns={binaryCols} />
-          <VarSelect label="Group (optional)" value={kmGroup} onChange={setKmGroup} columns={pickCols} kinds={["categorical"]} />
+          <VarSelect label="Duration (time)" value={duration} onChange={setDuration} columns={pickCols} kinds={["numeric"]} />
+          <VarSelect label="Event (0/1)" value={event} onChange={setEvent} columns={binaryCols} />
+          <VarSelect label="Group (optional)" value={group} onChange={setGroup} columns={pickCols} kinds={["categorical"]} />
           <VarSelect label="Stratify by (optional)" value={kmStratify} onChange={setKmStratify} columns={pickCols} kinds={["categorical"]} />
         </div>
 
@@ -2559,7 +2588,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
           <RunButton onClick={handleKM} loading={kmLoading} label="Run Kaplan-Meier" />
 
           {/* Log-rank screening button */}
-          {kmDuration && kmEvent && (
+          {duration && event && (
             <button
               disabled={kmScanLoading}
               onClick={handleKmScan}
@@ -2601,7 +2630,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
                     </td>
                     <td className="px-3 py-1">
                       {r.logrank_p !== null && r.logrank_p < 0.05 && (
-                        <button onClick={() => { setKmGroup(r.variable); setKmScanResult(null); }}
+                        <button onClick={() => { setGroup(r.variable); setKmScanResult(null); }}
                           className="text-[10px] text-indigo-500 hover:text-indigo-700 underline">
                           Add to chart
                         </button>
@@ -2621,7 +2650,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
         <StaleGuard stale={kmStale} reason={describeStale(kmWhy)}>
         {kmResult?.groups && (() => {
           // Resolve group display name: custom rename > value_labels > raw value
-          const groupColMeta = columns.find((c) => c.name === kmGroup);
+          const groupColMeta = columns.find((c) => c.name === group);
           const vLabels = groupColMeta?.value_labels ?? {};
           const resolveGroupName = (raw: string) =>
             kmGroupLabels[raw] ?? labelFor(vLabels, raw, raw);
@@ -2630,9 +2659,9 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
           const legendLabel = (g: KMGroup) => {
             const resolved = resolveGroupName(String(g.group));
             const nSuffix = kmShowNInLegend ? ` (<i>n</i>=${g.n})` : "";
-            if (!kmGroup) return `${resolved}${nSuffix}`;
+            if (!group) return `${resolved}${nSuffix}`;
             if (kmHidePrefix) return `${resolved}${nSuffix}`;
-            return `${kmCustomGroupTitle || kmGroup} = ${resolved}${nSuffix}`;
+            return `${kmCustomGroupTitle || group} = ${resolved}${nSuffix}`;
           };
 
           // Compute Y-axis range
@@ -2651,7 +2680,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
           // Build plot title
           const lrP = kmResult.logrank?.p;
           const pStr = lrP == null ? null : fmtP(lrP);
-          const baseTitle = kmCustomPlotTitle || (kmGroup ? `Kaplan–Meier survival by ${kmCustomGroupTitle || kmGroup}` : "Kaplan–Meier survival");
+          const baseTitle = kmCustomPlotTitle || (group ? `Kaplan–Meier survival by ${kmCustomGroupTitle || group}` : "Kaplan–Meier survival");
           const titleText = (kmShowPInTitle && pStr) ? `${baseTitle} (log-rank p=${pStr})` : baseTitle;
 
           // Number-at-risk rendered INSIDE the figure (Plotly annotations) so it
@@ -2711,7 +2740,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
               <button
                 onClick={(e) => {
                   setKmContextMenu({ type: "plotTitle", x: e.clientX, y: e.clientY });
-                  setKmRenameValue(kmCustomPlotTitle || (kmGroup ? `Kaplan–Meier survival by ${kmCustomGroupTitle || kmGroup}` : "Kaplan–Meier survival"));
+                  setKmRenameValue(kmCustomPlotTitle || (group ? `Kaplan–Meier survival by ${kmCustomGroupTitle || group}` : "Kaplan–Meier survival"));
                 }}
                 className="text-[10px] px-2 py-0.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50"
               >✏️ Plot title</button>
@@ -2725,7 +2754,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
               </label>
               <label className="flex items-center gap-1 cursor-pointer">
                 <input type="checkbox" checked={kmHidePrefix} onChange={(e) => setKmHidePrefix(e.target.checked)} className="accent-indigo-500" />
-                hide "{kmCustomGroupTitle || kmGroup || "group"} =" prefix
+                hide "{kmCustomGroupTitle || group || "group"} =" prefix
               </label>
               <label className="flex items-center gap-1 cursor-pointer">
                 <input type="checkbox" checked={kmAutoZoomY} onChange={(e) => setKmAutoZoomY(e.target.checked)} className="accent-indigo-500" />
@@ -2762,7 +2791,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 mb-2 px-1">
               <span className="text-[10px] text-gray-400 inline-flex items-center">Axis &amp; size<Tip wide text="Rename the X/Y axis titles for publication (e.g. 'Time since primary PCI (days)', 'Overall survival'). Drag Width/Height to size the figure; Width 'auto' fills the column. Export (↓ top-right of the plot) keeps these labels — SVG/PDF are vector, journal-ready." /></span>
               <input value={kmCustomDurationTitle} onChange={(e) => setKmCustomDurationTitle(e.target.value)}
-                placeholder={`X-axis (Time (${kmDuration || "time"}))`}
+                placeholder={`X-axis (Time (${duration || "time"}))`}
                 className="text-[11px] border border-gray-200 rounded px-2 py-1 focus:outline-none focus:border-indigo-400" style={{ width: 200 }} />
               <input value={kmYTitle} onChange={(e) => setKmYTitle(e.target.value)}
                 placeholder="Y-axis label"
@@ -2785,7 +2814,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
             </div>
 
             {/* Editable group (legend) labels */}
-            {kmGroup && kmResult.groups?.length > 0 && (
+            {group && kmResult.groups?.length > 0 && (
               <div className="flex flex-wrap items-center gap-2 mb-2 px-1">
                 <span className="text-[10px] text-gray-400 inline-flex items-center">Legend labels<Tip wide text="Rename each group as it appears in the legend, number-at-risk row, tables, and the auto-narrative — e.g. code '1' → '<100 mg/dL'. Leave blank to keep the original. Also editable by right-clicking a row in the summary table." /></span>
                 {kmResult.groups.map((g, i) => (
@@ -2852,7 +2881,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
                   xaxis: {
                     ...(baseLayout.xaxis as Record<string, unknown>),
                      // Using custom duration title if available
-                    title: { text: kmCustomDurationTitle ? kmCustomDurationTitle : `Time (${kmDuration})` },
+                    title: { text: kmCustomDurationTitle ? kmCustomDurationTitle : `Time (${duration})` },
                   },
                   yaxis: {
                     ...(baseLayout.yaxis as Record<string, unknown>),
@@ -2866,7 +2895,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
                   // The plotting area follows the theme, as everywhere else.
                   paper_bgcolor: "#ffffff",
                   margin: { t: 20, r: 20, b: riskBottomMargin, l: riskLeftMargin }, showlegend: true,
-                  legend: { title: { text: kmCustomGroupTitle || kmGroup || "Group" } },
+                  legend: { title: { text: kmCustomGroupTitle || group || "Group" } },
                   annotations: riskAnnotations,
                 }}
                 useResizeHandler
@@ -2886,10 +2915,10 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
                     onContextMenu={(e) => {
                       e.preventDefault();
                       setKmContextMenu({ type: "groupTitle", x: e.clientX, y: e.clientY });
-                      setKmRenameValue(kmCustomGroupTitle || kmGroup || "Group");
+                      setKmRenameValue(kmCustomGroupTitle || group || "Group");
                     }}
                   >
-                    {kmCustomGroupTitle || kmGroup || "Group"}
+                    {kmCustomGroupTitle || group || "Group"}
                     <span className="ml-1 font-normal text-gray-400 normal-case tracking-normal">(right-click to rename)</span>
                   </th>
                   <th className="px-3 py-1.5 text-right text-[9px] font-bold text-gray-500 uppercase tracking-wider"><i>n</i></th>
@@ -2898,10 +2927,10 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
                     onContextMenu={(e) => {
                        e.preventDefault();
                        setKmContextMenu({ type: "durationTitle", x: e.clientX, y: e.clientY });
-                       setKmRenameValue(kmCustomDurationTitle || kmDuration);
+                       setKmRenameValue(kmCustomDurationTitle || duration);
                     }}
                   >
-                    Median ({kmCustomDurationTitle || kmDuration})
+                    Median ({kmCustomDurationTitle || duration})
                     <span className="ml-1 font-normal text-gray-400 normal-case tracking-normal">(right-click to rename)</span>
                   </th>
                   <th className="px-3 py-1.5 text-right text-[9px] font-bold text-gray-500 uppercase tracking-wider"
@@ -2960,7 +2989,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
                     {kmResult.median_follow_up.median.toFixed(0)}
                     {kmResult.median_follow_up.q1 != null && kmResult.median_follow_up.q3 != null &&
                       ` [${kmResult.median_follow_up.q1.toFixed(0)}–${kmResult.median_follow_up.q3.toFixed(0)}]`}
-                    {" "}{kmCustomDurationTitle || kmDuration}
+                    {" "}{kmCustomDurationTitle || duration}
                   </span>
                 </div>
               )}
@@ -3052,7 +3081,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
 
               {/* Auto-generated standard interpretation */}
               {(() => {
-                const narrative = buildKmNarrative(kmResult, kmGroupLabels, kmCustomGroupTitle || kmGroup);
+                const narrative = buildKmNarrative(kmResult, kmGroupLabels, kmCustomGroupTitle || group);
                 if (!narrative) return null;
                 return (
                   <div className="border-t border-gray-100 bg-amber-50/60 px-4 py-3">
@@ -3173,7 +3202,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
 
           const stratColMeta = columns.find((c) => c.name === kmStratify);
           const stratLabels = stratColMeta?.value_labels ?? {};
-          const groupColMeta = columns.find((c) => c.name === kmGroup);
+          const groupColMeta = columns.find((c) => c.name === group);
           const grpLabels = groupColMeta?.value_labels ?? {};
 
           const buildTraces = (groups: KMGroup[]) =>
@@ -3181,8 +3210,8 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
               x: g.curve.map((p) => p.time),
               y: g.curve.map((p) => p.survival),
               type: "scatter" as const, mode: "lines" as const,
-              name: kmGroup
-                ? `${kmCustomGroupTitle || kmGroup} = ${labelFor(grpLabels, g.group, String(g.group))}`
+              name: group
+                ? `${kmCustomGroupTitle || group} = ${labelFor(grpLabels, g.group, String(g.group))}`
                 : String(g.group),
               line: { width: traceDefaults.lineWidth, color: pal[i % pal.length], shape: "hv" as const },
             }));
@@ -3192,7 +3221,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
               <div className="flex items-center justify-between">
                 <h4 className="text-sm font-semibold text-gray-700">
                   Stratified by <span className="text-indigo-600">{kmStratify}</span>
-                  {kmGroup && <span className="text-gray-400 font-normal ml-2">— curves by {kmGroup}</span>}
+                  {group && <span className="text-gray-400 font-normal ml-2">· curves by {group}</span>}
                 </h4>
                 <span className="text-xs text-gray-400">{strata.length} strata · {kmResult.n_total ?? "?"} total</span>
               </div>
@@ -3220,7 +3249,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
                           autosize: true,
                           height: miniH,
                           margin: { t: 10, r: 10, b: 40, l: 50 },
-                          xaxis: { ...(baseLayout.xaxis as Record<string, unknown>), title: { text: kmCustomDurationTitle || kmDuration } },
+                          xaxis: { ...(baseLayout.xaxis as Record<string, unknown>), title: { text: kmCustomDurationTitle || duration } },
                           yaxis: { ...(baseLayout.yaxis as Record<string, unknown>), range: [0, 1.05], tickformat: ".0%", title: { text: "Survival" } },
                           legend: { font: { size: 9 }, orientation: "h", y: -0.22 },
                           annotations: pAnnot as Partial<Annotations>[],
@@ -3244,8 +3273,8 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
       {activeMethod === "cox" && (
       <Section title="Cox Proportional Hazards" description="Regression for time-to-event data — outputs Hazard Ratios (HR)">
         <div className="grid grid-cols-2 gap-3">
-          <VarSelect label="Duration (time)" value={coxDuration} onChange={setCoxDuration} columns={pickCols} kinds={["numeric"]} />
-          <VarSelect label="Event (0/1)" value={coxEvent} onChange={setCoxEvent} columns={binaryCols} />
+          <VarSelect label="Duration (time)" value={duration} onChange={setDuration} columns={pickCols} kinds={["numeric"]} />
+          <VarSelect label="Event (0/1)" value={event} onChange={setEvent} columns={binaryCols} />
         </div>
 
         {/* Checkbox predictor list */}
@@ -3351,11 +3380,12 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
           </div>
         )}
 
+        {coxPreds.length > 0 && <ImputeToggle value={survImputation} onChange={setSurvImputation} />}
         <div className="flex items-center gap-3 flex-wrap">
           <RunButton onClick={handleCox} loading={coxLoading} label="Run Cox Regression" />
 
           {/* Univariable screening button */}
-          {coxDuration && coxEvent && coxPreds.length > 0 && (
+          {duration && event && coxPreds.length > 0 && (
             <button
               disabled={coxScanLoading}
               onClick={handleCoxScan}
@@ -3367,7 +3397,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
           )}
 
           {/* Paired unadjusted-vs-adjusted forest (publication Figure 4) */}
-          {coxDuration && coxEvent && coxPreds.length > 0 && (
+          {duration && event && coxPreds.length > 0 && (
             <button
               disabled={coxUMLoading}
               onClick={() => runCoxUMForest(coxUMRefs)}
@@ -3459,7 +3489,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
                     <MultiSelect label="Covariates" columns={pickCols}
                       selected={s.covariates}
                       onChange={(next) => setSpecRows(specRows.map((r, j) => j === i ? { ...r, covariates: next } : r))}
-                      excludeNames={[coxDuration, coxEvent, specExposure].filter(Boolean)} />
+                      excludeNames={[duration, event, specExposure].filter(Boolean)} />
                   </div>
                 ))}
 
@@ -3568,6 +3598,8 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
               </tbody>
             </table>
           </div>
+          <CoxModelDetails phTest={coxResult.ph_test} nAnalyzed={coxResult.n_analyzed}
+            nExcluded={coxResult.n_excluded} poolingNote={coxResult.pooling_note} warnings={coxResult.warnings} />
           </StaleGuard>
         )}
       </Section>
@@ -3582,8 +3614,8 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
         description="Run the same Cox model at several follow-up windows (1-year, 2-year, full) and send the hazard ratios straight to the Forest Builder. Answers 'does the effect hold early vs. late?'."
       >
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <VarSelect label="Duration / Time" value={chDuration} onChange={setChDuration} columns={pickCols} kinds={["numeric"]} />
-          <VarSelect label="Event (0/1)" value={chEvent} onChange={setChEvent} columns={binaryCols} />
+          <VarSelect label="Duration / Time" value={duration} onChange={setDuration} columns={pickCols} kinds={["numeric"]} />
+          <VarSelect label="Event (0/1)" value={event} onChange={setEvent} columns={binaryCols} />
           <VarSelect label="Predictor (HR tracked)" value={chPredictor} onChange={setChPredictor} columns={pickCols} />
         </div>
 
@@ -3611,7 +3643,7 @@ function SurvivalAdvancedPanelBody({ session }: { session: Session }) {
         <div className="mt-2">
           <MultiSelect label="Adjustment covariates (optional)" columns={pickCols}
             selected={chCovariates} onChange={setChCovariates}
-            excludeNames={[chDuration, chEvent, chPredictor].filter(Boolean)} />
+            excludeNames={[duration, event, chPredictor].filter(Boolean)} />
         </div>
 
         <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mt-1">

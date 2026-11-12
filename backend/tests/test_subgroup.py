@@ -198,3 +198,65 @@ def test_a_ratio_outcome_gets_a_null_of_one(client, trial):
     out = _run(client, trial, outcome="event", outcome_kind="binary")
     assert out["null_value"] == 1.0
     assert out["effect_label"] == "Odds ratio"
+
+
+def _walkthrough_sid(name: str) -> str:
+    from pathlib import Path
+
+    import pandas as pd
+    from conftest import make_session
+
+    path = Path(__file__).resolve().parents[2] / "qa" / "full_walkthrough_100x40" / "dataset.csv"
+    return make_session(pd.read_csv(path), name)
+
+
+def test_text_exposure_needs_an_exposed_level():
+    from fastapi import HTTPException
+
+    from routers.subgroup import SubgroupRequest, subgroup_analysis
+
+    with pytest.raises(HTTPException) as err:
+        subgroup_analysis(SubgroupRequest(
+            session_id=_walkthrough_sid("sg_text_nolevel"), outcome="event_binary", exposure="arm",
+            subgroups=["sex"], outcome_kind="binary"))
+    assert err.value.status_code == 422
+    assert "exposure_level" in err.value.detail
+
+
+def test_text_exposure_by_subgroup_matches_a_0_1_coding():
+    """Treatment effect by sex: arm (control/treat) used to be rejected outright."""
+    import numpy as np
+    import pandas as pd
+    from conftest import make_session
+
+    from routers.subgroup import SubgroupRequest, subgroup_analysis
+
+    sid = _walkthrough_sid("sg_text_level")
+    text = subgroup_analysis(SubgroupRequest(
+        session_id=sid, outcome="event_binary", exposure="arm", exposure_level="treat",
+        subgroups=["sex"], outcome_kind="binary"))
+    assert text["exposure_coding"] == {"column": "arm", "exposed": "treat", "reference": "control"}
+    assert "compares arm = 'treat' with 'control'" in text["result_text"]
+
+    from pathlib import Path
+    path = Path(__file__).resolve().parents[2] / "qa" / "full_walkthrough_100x40" / "dataset.csv"
+    df = pd.read_csv(path).assign(treat01=lambda d: np.where(d["arm"] == "treat", 1, 0))
+    num = subgroup_analysis(SubgroupRequest(
+        session_id=make_session(df, "sg_num_level"), outcome="event_binary", exposure="treat01",
+        subgroups=["sex"], outcome_kind="binary"))
+    assert text["overall"]["ratio"] == pytest.approx(num["overall"]["ratio"], rel=1e-9)
+    assert text["subgroups"][0]["p_interaction"] == pytest.approx(num["subgroups"][0]["p_interaction"], rel=1e-9)
+    assert num["exposure_coding"] is None
+
+
+def test_separated_stratum_is_reported_as_not_estimable():
+    """diabetes = 1 (10 rows): the treated had no events, so the OR ran to 7e-14 with p = 1."""
+    from routers.subgroup import SubgroupRequest, subgroup_analysis
+
+    out = subgroup_analysis(SubgroupRequest(
+        session_id=_walkthrough_sid("sg_separation"), outcome="event_binary", exposure="arm",
+        exposure_level="treat", subgroups=["diabetes"], outcome_kind="binary"))
+    rows = {r["level"]: r for r in out["subgroups"][0]["rows"]}
+    assert "separated" in rows["1"]["note"]
+    assert "ratio" not in rows["1"]
+    assert rows["0"]["ratio"] == pytest.approx(0.5645, abs=1e-3)

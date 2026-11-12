@@ -1,3 +1,4 @@
+import { analysisDefaultColumns } from "../lib/columnDefaults";
 import { useEffect, useLayoutEffect, useState, useCallback, useRef, type ReactNode } from "react";
 import { Pencil, Trash2 } from "lucide-react";
 import {
@@ -15,7 +16,7 @@ import ResultExporter from "./ResultExporter";
 import TitledPlot from "./TitledPlot";
 import StaleResultNotice from "./StaleResultNotice";
 import StaleGuard from "./StaleGuard";
-import { fmtP } from "../lib/format";
+import { fmtP, fmtPRelation } from "../lib/format";
 import { describeStale } from "../lib/resultStamp";
 import { labelFor } from "../lib/valueLabels";
 import { categoryColors } from "../lib/categoryColors";
@@ -775,16 +776,18 @@ function ScatterView({
   numCols,
   catCols,
   defaultX,
+  defaultNumCols,
 }: {
   sessionId: string;
   numCols: string[];
   catCols: string[];
   defaultX: string;
+  defaultNumCols: string[];
 }) {
   const themedBase = { ...usePlotLayout(), ...BASE_LAYOUT };
   const showGrid = useStore((s) => s.showGrid);
-  const [xCol,    setXCol]    = usePersistedPanelState<string>("descriptive_numeric", "xCol", defaultX || numCols[0] || "");
-  const [yCol,    setYCol]    = usePersistedPanelState<string>("descriptive_numeric", "yCol", numCols.find((c) => c !== defaultX) ?? "");
+  const [xCol,    setXCol]    = usePersistedPanelState<string>("descriptive_numeric", "xCol", defaultX);
+  const [yCol,    setYCol]    = usePersistedPanelState<string>("descriptive_numeric", "yCol", defaultNumCols.find((c) => c !== defaultX) ?? "");
   const [color,   setColor]   = usePersistedPanelState<string>("descriptive_numeric", "color", "");
   const [shape,   setShape]   = usePersistedPanelState<string>("descriptive_numeric", "shape", "");
   const scatterCache = useStore((s) => s.panelCache.descriptive_numeric) as
@@ -811,7 +814,7 @@ function ScatterView({
     const cachedY = typeof scatterCache?.yCol === "string" ? scatterCache.yCol : yCol;
     const cachedColor = typeof scatterCache?.color === "string" ? scatterCache.color : color;
     const cachedShape = typeof scatterCache?.shape === "string" ? scatterCache.shape : shape;
-    const nextX = numCols.includes(cachedX) ? cachedX : (numCols[0] ?? "");
+    const nextX = numCols.includes(cachedX) ? cachedX : defaultX;
     const nextY = numCols.includes(cachedY) ? cachedY : "";
     const nextColor = catCols.includes(cachedColor) ? cachedColor : "";
     const nextShape = catCols.includes(cachedShape) ? cachedShape : "";
@@ -819,7 +822,7 @@ function ScatterView({
     if (nextY !== yCol) setYCol(nextY);
     if (nextColor !== color) setColor(nextColor);
     if (nextShape !== shape) setShape(nextShape);
-  }, [scatterCache, numCols, catCols, xCol, yCol, color, shape, setXCol, setYCol, setColor, setShape]);
+  }, [scatterCache, numCols, catCols, defaultX, xCol, yCol, color, shape, setXCol, setYCol, setColor, setShape]);
 
   useEffect(() => {
     if (!xCol || !yCol) {
@@ -943,6 +946,7 @@ function ScatterView({
           <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider">X axis</label>
           <select className="select text-xs min-w-[150px]" value={xCol}
             onChange={(e) => setXCol(e.target.value)}>
+            {!xCol && <option value="">Select X variable</option>}
             {numCols.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
         </div>
@@ -1608,8 +1612,10 @@ export default function DescriptivePanel() {
   };
 
   useEffect(() => {
-    if (session && !selected && session.columns.length > 0) {
-      loadSummary(session.columns[0].name);
+    if (session && !selected) {
+      const names = session.columns.filter((c) => !c.analysis_excluded).map((c) => c.name);
+      const defaultColumn = analysisDefaultColumns(session, names)[0];
+      if (defaultColumn) loadSummary(defaultColumn);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.session_id]);
@@ -1617,6 +1623,7 @@ export default function DescriptivePanel() {
   if (!session) return null;
 
   const numCols = session.columns.filter((c) => isNumericKind(c.kind) && !c.analysis_excluded).map((c) => c.name);
+  const defaultNumCols = analysisDefaultColumns(session, numCols);
   const catCols = session.columns.filter((c) => !isNumericKind(c.kind) && !c.analysis_excluded).map((c) => c.name);
 
   const filtered = session.columns.filter((c) =>
@@ -1920,7 +1927,8 @@ export default function DescriptivePanel() {
                 sessionId={session.session_id}
                 numCols={numCols}
                 catCols={catCols}
-                defaultX={selected && numCols.includes(selected) ? selected : (numCols[0] ?? "")}
+                defaultX={selected && numCols.includes(selected) ? selected : (defaultNumCols[0] ?? "")}
+                defaultNumCols={defaultNumCols}
               />
 
               {/* Red vertical resize line on the right (drag to change scatter width) */}
@@ -1980,7 +1988,7 @@ export default function DescriptivePanel() {
                     )}
                     {summary.type === "numeric" && summary.normality_p != null && (
                       <span className={`text-xs ${summary.normal ? "text-emerald-600" : "text-amber-600"}`}>
-                        · {summary.normal ? "Normal" : "Non-normal"} (<i>p</i>={fmtP(summary.normality_p)})
+                        · {summary.normal ? "Normal" : "Non-normal"} (<i>p</i>{fmtPRelation(summary.normality_p)})
                       </span>
                     )}
                   </div>
@@ -2040,7 +2048,7 @@ export default function DescriptivePanel() {
                         : "bg-red-50 border-red-300 text-red-600"}`}>
                       {summary.normality_label}
                       <span className="font-normal text-gray-400 ml-1">
-                        ({summary.normality_test ?? "Shapiro-Wilk"} <i>p</i> = {fmt(summary.normality_p ?? summary.shapiro_p, 3)})
+                        ({summary.normality_test ?? "Shapiro-Wilk"} <i>p</i>{fmtPRelation(summary.normality_p ?? summary.shapiro_p)})
                       </span>
                       <div className="text-[10px] font-normal text-gray-400 mt-0.5">
                         {(summary.n ?? 0) < 50 ? "n < 50 → Shapiro-Wilk" : "n ≥ 50 → Kolmogorov-Smirnov"}
@@ -2100,10 +2108,10 @@ export default function DescriptivePanel() {
                         const d = colDecimals(selected);
                         const f = (v?: number) =>
                           typeof v === "number" ? v.toFixed(d) : "\u2014";
-                        const pNorm = fmtP(summary.normality_p);
+                        const pNorm = fmtPRelation(summary.normality_p ?? summary.shapiro_p);
                         return summary.normal
-                          ? <>Normal distribution ({summary.normality_test}, <i>p</i>={pNorm}): report Mean ± SD ({f(summary.mean)} ± {f(summary.std)}).</>
-                          : <>Non-normal ({summary.normality_test}, <i>p</i>={pNorm}): report Median [IQR] ({f(summary.median)} [{f(summary.q1)}–{f(summary.q3)}]).</>;
+                          ? <>Normal distribution ({summary.normality_test}, <i>p</i>{pNorm}): report Mean ± SD ({f(summary.mean)} ± {f(summary.std)}).</>
+                          : <>Non-normal ({summary.normality_test}, <i>p</i>{pNorm}): report Median [IQR] ({f(summary.median)} [{f(summary.q1)}–{f(summary.q3)}]).</>;
                       })()}
                       {Math.abs(summary.skewness ?? 0) > 2 ? " Highly skewed \u2014 consider log-transformation." :
                        Math.abs(summary.skewness ?? 0) > 1 ? " Moderately skewed." : ""}

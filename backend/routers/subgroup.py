@@ -53,6 +53,36 @@ class SubgroupRequest(BaseModel):
     time_col: Optional[str] = None
     covariates: List[str] = []
     categorical: List[str] = []
+    # For a two-level text exposure (control / treat): the level coded 1.
+    exposure_level: Optional[str] = None
+
+
+def _exposure_values(raw: pd.Series, name: str, level: Optional[str]) -> tuple[pd.Series, Optional[dict]]:
+    """The exposure as numbers, or a two-level text exposure coded 0/1.
+
+    Coercing control / treat to numbers left no values and the request failed,
+    so the commonest subgroup question (does the treatment effect differ by
+    sex?) could not be asked. Which level is "1" sets the sign of the effect,
+    so it is taken from the request, never guessed.
+    """
+    x = coerce_numeric(raw).replace([np.inf, -np.inf], np.nan)
+    if int(x.notna().sum()) == int(raw.notna().sum()):
+        if x.notna().sum() == 0:
+            raise HTTPException(status_code=400, detail=f"'{name}' has no values")
+        return x, None
+    text = raw.map(lambda v: None if pd.isna(v) else str(v))
+    levels = sorted({v for v in text if v is not None})
+    if len(levels) != 2:
+        raise HTTPException(
+            status_code=422,
+            detail=f"'{name}' must be numeric or have exactly two levels; found {len(levels)}: {levels[:6]}")
+    if level is None or str(level) not in levels:
+        raise HTTPException(
+            status_code=422,
+            detail=f"'{name}' is text with levels {levels}. Choose which level is the exposed group (exposure_level).")
+    reference = next(v for v in levels if v != str(level))
+    coded = text.map(lambda v: np.nan if v is None else float(v == str(level)))
+    return coded.astype(float), {"column": name, "exposed": str(level), "reference": reference}
 
 
 def _get_df(session_id: str) -> pd.DataFrame:
@@ -164,9 +194,7 @@ def subgroup_analysis(req: SubgroupRequest):
         raise HTTPException(status_code=400, detail="The exposure cannot also be a subgroup variable")
 
     y = coerce_numeric(df[req.outcome]).replace([np.inf, -np.inf], np.nan)
-    x = coerce_numeric(df[req.exposure]).replace([np.inf, -np.inf], np.nan)
-    if x.notna().sum() == 0:
-        raise HTTPException(status_code=400, detail=f"'{req.exposure}' has no numeric values")
+    x, exposure_coding = _exposure_values(df[req.exposure], req.exposure, req.exposure_level)
     t = coerce_numeric(df[req.time_col]).replace([np.inf, -np.inf], np.nan) if kind == "survival" else None
     if kind == "binary":
         lv = set(pd.unique(y.dropna()))
@@ -218,7 +246,13 @@ def subgroup_analysis(req: SubgroupRequest):
                 row["note"] = "the model did not converge in this stratum"
             else:
                 params, cov_m, names, df_resid, _ = fit
-                row.update(_term(params, cov_m, names, df_resid, "exp", kind))
+                term = _term(params, cov_m, names, df_resid, "exp", kind)
+                if _separated(term, kind):
+                    # An odds ratio of 7e-14 with p = 1 is the optimiser
+                    # running off to infinity, not an estimate.
+                    row["note"] = "not estimable: the outcome is completely separated by the exposure in this stratum"
+                else:
+                    row.update(term)
                 if n_lv < THIN_STRATUM:
                     row["thin"] = True
             rows.append(row)
@@ -241,7 +275,8 @@ def subgroup_analysis(req: SubgroupRequest):
         "outcome": req.outcome, "exposure": req.exposure, "outcome_kind": kind,
         "effect_label": label, "null_value": 0.0 if kind == "continuous" else 1.0,
         "overall": overall, "subgroups": blocks, "warnings": warnings,
-        "result_text": _results_text(req, kind, label, overall, blocks),
+        "exposure_coding": exposure_coding,
+        "result_text": _results_text(req, kind, label, overall, blocks, exposure_coding),
         # Shipped with the result so an export cannot lose it.
         "caveat": (
             "Significance within a stratum is not evidence that the effect differs between strata — "
@@ -250,6 +285,19 @@ def subgroup_analysis(req: SubgroupRequest):
             "is being asked several times."
         ),
     })
+
+
+# Beyond these a logistic or Cox coefficient has run off towards infinity
+# (complete or quasi-complete separation): exp(10) is an odds ratio of 22,000.
+SEPARATION_ABS_BETA = 10.0
+SEPARATION_SE = 100.0
+
+
+def _separated(term: dict, kind: str) -> bool:
+    if kind == "continuous" or term.get("beta") is None:
+        return False
+    se = term.get("se")
+    return abs(term["beta"]) > SEPARATION_ABS_BETA or se is None or se > SEPARATION_SE
 
 
 def _overall(kind, y, x, cov, t, req) -> dict:
@@ -297,7 +345,7 @@ def _interaction(kind, y, x, g, levels, cov, t, keep) -> tuple[Optional[float], 
     return _finite(scipy_stats.chi2.sf(stat, dfree)), f"likelihood-ratio test on {dfree} df"
 
 
-def _results_text(req, kind, label, overall, blocks) -> str:
+def _results_text(req, kind, label, overall, blocks, coding: Optional[dict] = None) -> str:
     word = "mean difference" if kind == "continuous" else ("odds ratio" if kind == "binary" else "hazard ratio")
 
     def val(e):
@@ -314,5 +362,6 @@ def _results_text(req, kind, label, overall, blocks) -> str:
         f"Overall the {word} for {req.exposure} was {val(overall)} (n = {overall.get('n')}). "
         f"The effect was examined across {len(blocks)} subgroup "
         f"{'variable' if len(blocks) == 1 else 'variables'}; P for interaction: {named}. "
-        f"{label} is reported per one-unit increase in {req.exposure}."
+        + (f"{label} compares {req.exposure} = '{coding['exposed']}' with '{coding['reference']}'."
+           if coding else f"{label} is reported per one-unit increase in {req.exposure}.")
     )

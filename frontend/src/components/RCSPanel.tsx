@@ -11,6 +11,7 @@ import StaleResultNotice from "./StaleResultNotice";
 import StaleGuard from "./StaleGuard";
 import { MissingGuard, type ImputationStrategy } from "./MissingGuard";
 import { fmtP } from "../lib/format";
+import { analysisDefaultColumns } from "../lib/columnDefaults";
 import { RCSTestChips, KnotComparisonTable, type RCSTestFields } from "./RCSInference";
 import { SUPPORTED_KNOTS, knotBudget, KNOT_BUDGET_EVENTS, harrellPercentiles } from "../lib/rcsKnots";
 import { AbsoluteRiskPlot, RCSViewToggle, type AbsoluteRiskData, type RCSView } from "./RCSAbsoluteRisk";
@@ -29,6 +30,15 @@ const PLOT_LAYOUT = {
   xaxis: { gridcolor: "#e5e7eb" },
   yaxis: { gridcolor: "#e5e7eb" },
 };
+
+function rcsCoordinateFormatter(coordinates: number[]): (value: number) => string {
+  const unique = [...new Set(coordinates)];
+  let digits = 4;
+  while (digits < 17 && new Set(unique.map((value) => value.toPrecision(digits))).size < unique.length) {
+    digits += 1;
+  }
+  return (value) => value.toPrecision(digits);
+}
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -297,6 +307,7 @@ function SplineTermCard({ label, term, onChange, numCols }: {
         <label className="text-[10px] text-gray-400 block">Column</label>
         <select className="select w-full text-xs py-0.5" value={term.column}
           onChange={(e) => patch({ column: e.target.value })}>
+          <option value="">Select a column</option>
           {numCols.map((c) => <option key={c}>{c}</option>)}
         </select>
       </div>
@@ -382,9 +393,13 @@ export default function RCSPanel() {
   const [imputation, setImputation] = usePersistedPanelState<ImputationStrategy>("rcs", "imputation", "listwise");
   const rcsPlotRef = useRef<PlotCaptureHandle | null>(null);
 
+  const defaultNumCols = analysisDefaultColumns(session, numCols);
+  const defaultBinaryCols = analysisDefaultColumns(session, binaryCols);
+  const defaultCoxEvent = (binaryCols.length > 0 ? defaultBinaryCols[0] : defaultNumCols[1]) ?? "";
+
   // ── RCS univariate state ──────────────────────────────────────────────────
-  const [rcsPredictor, setRcsPredictor] = usePersistedPanelState("rcs", "predictor", numCols[0] ?? "");
-  const [rcsOutcome, setRcsOutcome] = usePersistedPanelState("rcs", "outcome", numCols[1] ?? numCols[0] ?? "");
+  const [rcsPredictor, setRcsPredictor] = usePersistedPanelState("rcs", "predictor", defaultNumCols[0] ?? "");
+  const [selectedRcsOutcome, setRcsOutcome] = usePersistedPanelState("rcs", "outcome", defaultNumCols[1] ?? defaultNumCols[0] ?? "");
   const [rcsNKnots, setRcsNKnots] = usePersistedPanelState("rcs", "nKnots", 4);
   const [rcsRefValue, setRcsRefValue] = usePersistedPanelState("rcs", "refValue", "");
   const [rcsCovariates, setRcsCovariates] = usePersistedPanelState<string[]>("rcs", "covariates", []);
@@ -392,10 +407,16 @@ export default function RCSPanel() {
   const [rcsLogScale, setRcsLogScale] = useState(true);
   const [rcsShowData, setRcsShowData] = useState(true);
   const [rcsOutcomeType, setRcsOutcomeType] = usePersistedPanelState<RCSModelType>("rcs", "outcomeType", "cox");
+  const rcsOutcomeCols = rcsOutcomeType === "logistic"
+    ? (binaryCols.length > 0 ? binaryCols : allCols)
+    : numCols;
+  const rcsOutcome = rcsOutcomeCols.includes(selectedRcsOutcome)
+    ? selectedRcsOutcome
+    : (rcsOutcomeType === "logistic" ? defaultBinaryCols[0] : defaultNumCols[1] ?? defaultNumCols[0]) ?? "";
   // Count models only: optional exposure (person-time) column, "" = none.
   const [rcsExposure, setRcsExposure] = usePersistedPanelState("rcs", "exposure", "");
-  const [rcsCoxDuration, setRcsCoxDuration] = usePersistedPanelState("rcs", "coxDuration", numCols[0] ?? "");
-  const [rcsCoxEvent, setRcsCoxEvent] = usePersistedPanelState("rcs", "coxEvent", binaryCols[0] ?? numCols[1] ?? "");
+  const [rcsCoxDuration, setRcsCoxDuration] = usePersistedPanelState("rcs", "coxDuration", defaultNumCols[0] ?? "");
+  const [rcsCoxEvent, setRcsCoxEvent] = usePersistedPanelState("rcs", "coxEvent", defaultCoxEvent);
   const [rcsKnotMode, setRcsKnotMode] = usePersistedPanelState<"harrell" | "custom">("rcs", "knotMode", "harrell");
   const [rcsCustomKnots, setRcsCustomKnots] = usePersistedPanelState("rcs", "customKnots", "");
   const [rcsRiskHorizon, setRcsRiskHorizon] = usePersistedPanelState("rcs", "riskHorizon", "");
@@ -404,10 +425,10 @@ export default function RCSPanel() {
   const [rcsShowDist, setRcsShowDist] = useState(true);
 
   // ── Cox-RCS multivariable state ───────────────────────────────────────────
-  const [crxDuration, setCrxDuration] = usePersistedPanelState("rcs", "crxDuration", numCols[0] ?? "");
-  const [crxEvent, setCrxEvent] = usePersistedPanelState("rcs", "crxEvent", binaryCols[0] ?? numCols[1] ?? "");
-  const [crxTerm1, setCrxTerm1] = usePersistedPanelState<SplineTermState>("rcs", "crxTerm1", { column: numCols[0] ?? "", n_knots: 4, knot_positions: "", ref_value: "" });
-  const [crxTerm2, setCrxTerm2] = usePersistedPanelState<SplineTermState>("rcs", "crxTerm2", { column: numCols[1] ?? "", n_knots: 4, knot_positions: "", ref_value: "" });
+  const [crxDuration, setCrxDuration] = usePersistedPanelState("rcs", "crxDuration", defaultNumCols[0] ?? "");
+  const [crxEvent, setCrxEvent] = usePersistedPanelState("rcs", "crxEvent", defaultCoxEvent);
+  const [crxTerm1, setCrxTerm1] = usePersistedPanelState<SplineTermState>("rcs", "crxTerm1", { column: defaultNumCols[0] ?? "", n_knots: 4, knot_positions: "", ref_value: "" });
+  const [crxTerm2, setCrxTerm2] = usePersistedPanelState<SplineTermState>("rcs", "crxTerm2", { column: defaultNumCols[1] ?? "", n_knots: 4, knot_positions: "", ref_value: "" });
   const [crxUseTerm2, setCrxUseTerm2] = usePersistedPanelState("rcs", "crxUseTerm2", false);
   const [crxInteraction, setCrxInteraction] = usePersistedPanelState("rcs", "crxInteraction", false);
   const [crxCovariates, setCrxCovariates] = usePersistedPanelState<string[]>("rcs", "crxCovariates", []);
@@ -443,6 +464,7 @@ export default function RCSPanel() {
     try {
       let res: Awaited<ReturnType<typeof runRCS>>;
       if (mode === "rcs") {
+        if (!rcsPredictor) throw new Error("Select a predictor column.");
         const customKnotsArr = rcsKnotMode === "custom"
           ? rcsCustomKnots.split(/[,\s]+/).filter(Boolean).map(Number).filter((n) => !Number.isNaN(n))
           : undefined;
@@ -463,6 +485,7 @@ export default function RCSPanel() {
             : undefined,
         };
         if (rcsOutcomeType === "cox") {
+          if (!rcsCoxDuration || !rcsCoxEvent) throw new Error("Select duration and event columns.");
           payload.duration_col = rcsCoxDuration;
           payload.event_col = rcsCoxEvent;
           const horizon = rcsRiskHorizon.trim() === "" ? undefined : Number(rcsRiskHorizon);
@@ -471,12 +494,15 @@ export default function RCSPanel() {
           }
           payload.risk_horizon = horizon;
         } else {
+          if (!rcsOutcome) throw new Error("Select an outcome column.");
           payload.outcome = rcsOutcome;
           if (isCountModel(rcsOutcomeType) && rcsExposure) payload.exposure_col = rcsExposure;
         }
         res = await runRCS(payload);
       } else {
+        if (!crxDuration || !crxEvent) throw new Error("Select duration and event columns.");
         const buildTerm = (t: SplineTermState) => {
+          if (!t.column) throw new Error("Select a column for each spline term.");
           const kp = t.knot_positions.split(/[,\s]+/).filter(Boolean).map(Number).filter((n) => !Number.isNaN(n));
           if (kp.length > 0 && kp.length !== t.n_knots) {
             throw new Error(`Custom knots for '${t.column}': provide exactly ${t.n_knots} numeric values (got ${kp.length}).`);
@@ -539,6 +565,7 @@ export default function RCSPanel() {
               <div>
                 <label className="text-xs text-gray-400 block mb-1">Predictor (continuous)</label>
                 <select className="select w-full" value={rcsPredictor} onChange={(e) => setRcsPredictor(e.target.value)}>
+                  <option value="">Select a column</option>
                   {numCols.map((c) => <option key={c}>{c}</option>)}
                 </select>
               </div>
@@ -561,6 +588,7 @@ export default function RCSPanel() {
                   <div>
                     <label className="text-xs text-gray-400 block mb-1">Duration column</label>
                     <select className="select w-full" value={rcsCoxDuration} onChange={(e) => setRcsCoxDuration(e.target.value)}>
+                      <option value="">Select a column</option>
                       {numCols.map((c) => <option key={c}>{c}</option>)}
                     </select>
                   </div>
@@ -570,6 +598,7 @@ export default function RCSPanel() {
                       {binaryCols.length === 0 && <span className="ml-1 text-[10px] text-amber-600">⚠ no binary 0/1 column detected — recode one in the Dictionary</span>}
                     </label>
                     <select className="select w-full" value={rcsCoxEvent} onChange={(e) => setRcsCoxEvent(e.target.value)}>
+                      <option value="">Select a column</option>
                       {(binaryCols.length > 0 ? binaryCols : numCols).map((c) => <option key={c}>{c}</option>)}
                     </select>
                   </div>
@@ -592,10 +621,8 @@ export default function RCSPanel() {
                     )}
                   </label>
                   <select className="select w-full" value={rcsOutcome} onChange={(e) => setRcsOutcome(e.target.value)}>
-                    {(rcsOutcomeType === "logistic"
-                      ? (binaryCols.length > 0 ? binaryCols : allCols)
-                      : numCols
-                    ).map((c) => <option key={c}>{c}</option>)}
+                    <option value="" disabled>Select a column</option>
+                    {rcsOutcomeCols.map((c) => <option key={c}>{c}</option>)}
                   </select>
                 </div>
                 {isCountModel(rcsOutcomeType) && (
@@ -739,6 +766,7 @@ export default function RCSPanel() {
               <div>
                 <label className="text-xs text-gray-400 block mb-1">Duration column</label>
                 <select className="select w-full" value={crxDuration} onChange={(e) => setCrxDuration(e.target.value)}>
+                  <option value="">Select a column</option>
                   {numCols.map((c) => <option key={c}>{c}</option>)}
                 </select>
               </div>
@@ -748,6 +776,7 @@ export default function RCSPanel() {
                   {binaryCols.length === 0 && <span className="ml-1 text-[10px] text-amber-600">⚠ no binary 0/1 column detected</span>}
                 </label>
                 <select className="select w-full" value={crxEvent} onChange={(e) => setCrxEvent(e.target.value)}>
+                  <option value="">Select a column</option>
                   {(binaryCols.length > 0 ? binaryCols : numCols).map((c) => <option key={c}>{c}</option>)}
                 </select>
               </div>
@@ -842,6 +871,11 @@ export default function RCSPanel() {
         {result && mode === "rcs" && Array.isArray(result.x_values) && (() => {
           const mt = (result.model_type as string | undefined) ?? "logistic";
           const eff = effectMeta(mt);
+          const knots = result.knots ?? [];
+          const formatCoordinate = rcsCoordinateFormatter([
+            ...knots, result.ref_value, ...(result.nadir ? [result.nadir.x] : []),
+          ]);
+          const refLabel = formatCoordinate(result.ref_value);
           const dispNote = dispersionNote(mt, result.dispersion);
           const useLogY = rcsLogScale && eff.axisType === "log";
           const outcomeLabel = mt === "cox"
@@ -892,14 +926,14 @@ export default function RCSPanel() {
 
               <div className="flex flex-wrap gap-1.5 text-[11px]">
                 <span className="text-gray-400">{result.n_knots} knots at:</span>
-                {((result.knots as number[]) ?? []).map((k: number, i: number) => (
-                  <span key={i} className="bg-indigo-50 border border-indigo-100 text-indigo-600 rounded px-1.5 py-0.5">{k}</span>
+                {knots.map((k, i) => (
+                  <span key={i} className="bg-indigo-50 border border-indigo-100 text-indigo-600 rounded px-1.5 py-0.5">{formatCoordinate(k)}</span>
                 ))}
-                <span className="text-gray-400 ml-2">reference = <strong>{result.ref_value}</strong> ({eff.abbr} = {eff.refValue.toFixed(1)}){result.ref_strategy_used && result.ref_strategy_used !== "value" ? `, ${result.ref_strategy_used}` : ""}</span>
+                <span className="text-gray-400 ml-2">reference = <strong>{refLabel}</strong> ({eff.abbr} = {eff.refValue.toFixed(1)}){result.ref_strategy_used && result.ref_strategy_used !== "value" ? `, ${result.ref_strategy_used}` : ""}</span>
                 {result.nadir && (
                   <span className={`ml-2 rounded px-1.5 py-0.5 border ${result.nadir.at_boundary ? "bg-amber-50 text-amber-700 border-amber-200" : "bg-teal-50 text-teal-700 border-teal-200"}`}
                     title={result.nadir.at_boundary ? "The curve is lowest at the edge of the plotted range, so it has no interior minimum." : "Predictor value with the lowest predicted risk / mean, other covariates at their mean."}>
-                    {result.nadir.at_boundary ? `no interior nadir (lowest at ${result.nadir.x})${result.ref_fallback ? ", median used as reference" : ""}` : `nadir = ${result.nadir.x}`}
+                    {result.nadir.at_boundary ? `no interior nadir (lowest at ${formatCoordinate(result.nadir.x)})${result.ref_fallback ? ", median used as reference" : ""}` : `nadir = ${formatCoordinate(result.nadir.x)}`}
                   </span>
                 )}
               </div>
@@ -973,7 +1007,7 @@ export default function RCSPanel() {
               {showRisk && riskData ? (
                 <AbsoluteRiskPlot data={riskData} predictor={result.predictor}
                   timeLabel={result.duration_col ?? "time"} eventLabel={result.event_col ?? "event"}
-                  knots={(result.knots as number[]) ?? []} layout={themedLayout} showGrid={showGrid}
+                  knots={knots} layout={themedLayout} showGrid={showGrid}
                   plotRefOut={rcsPlotRef} distribution={rcsShowDist ? result.x_distribution ?? null : null} />
               ) : (() => {
                 // Build dose-response figure data, optionally overlaying the
@@ -1022,8 +1056,9 @@ export default function RCSPanel() {
                 // Knot markers
                 traces.push({
                   type: "scatter", mode: "markers",
-                  x: (result.knots as number[]) ?? [],
-                  y: ((result.knots as number[]) ?? []).map((k: number) => {
+                  x: knots,
+                  customdata: knots.map(formatCoordinate),
+                  y: knots.map((k) => {
                     const xs = result.x_values as number[];
                     const ys = result.or_values as number[];
                     const idx = xs.reduce((best: number, x: number, i: number) =>
@@ -1033,7 +1068,7 @@ export default function RCSPanel() {
                   marker: { color: crude ? "#dc2626" : "#6366f1", size: 7, line: { color: "#fff", width: 1.5 } },
                   name: "Knots",
                   showlegend: false,
-                  hovertemplate: `Knot: %{x:.2f}<br>${eff.abbr}: %{y:.3f}<extra></extra>`,
+                  hovertemplate: `Knot: %{customdata}<br>${eff.abbr}: %{y:.3f}<extra></extra>`,
                 });
 
                 if (rcsShowData) {
@@ -1049,7 +1084,7 @@ export default function RCSPanel() {
                 // Clean axis label, no redundant "HR = 1.0": e.g.
                 // "Hazard ratio (reference: LDL-C 130)".
                 const effLabelLc = eff.label.replace(/ Ratio$/, " ratio");
-                const yTitle = `${effLabelLc} (reference: ${result.predictor} ${result.ref_value})`;
+                const yTitle = `${effLabelLc} (reference: ${result.predictor} ${refLabel})`;
 
                 // Clamp the x-axis to the spline's evaluated range. The curve
                 // is only fit over result.x_values (typically the inner
@@ -1068,7 +1103,7 @@ export default function RCSPanel() {
                   <>
                   <p className="text-[11px] text-gray-600" title="Shaded on the plot. These ranges depend on the reference value, so report them together with it.">
                     {regions.length > 0
-                      ? <>95% CI excludes {eff.abbr} = {eff.refValue} for {result.predictor} {describeRegions(regions)}, relative to {result.ref_value}.</>
+                      ? <>95% CI excludes {eff.abbr} = {eff.refValue} for {result.predictor} {describeRegions(regions)}, relative to {refLabel}.</>
                       : <>95% CI includes {eff.abbr} = {eff.refValue} across the plotted range of {result.predictor}.</>}
                   </p>
                   <TitledPlot
@@ -1081,7 +1116,7 @@ export default function RCSPanel() {
                     // manuscript. The caption avoids raw column names (uses the
                     // predictor only) and explains the knot dots.
                     defaultTitle=""
-                    defaultSubtitle={`Restricted cubic spline (${result.n_knots} knots) · reference ${result.predictor} = ${result.ref_value}${nlAdjStr ? ` · non-linearity ${crude ? "adjusted " : ""}p=${nlAdjStr}` : ""}${result.n_events != null ? ` · n=${result.n}, events=${result.n_events}` : ` · n=${result.n}`}${result.dispersion != null && mt === "quasipoisson" ? ` · dispersion=${result.dispersion.toFixed(2)}` : ""}${result.aic != null ? ` · AIC=${(result.aic as number).toFixed(1)}` : ""} · dots = knot locations`}
+                    defaultSubtitle={`Restricted cubic spline (${result.n_knots} knots) · reference ${result.predictor} = ${refLabel}${nlAdjStr ? ` · non-linearity ${crude ? "adjusted " : ""}p=${nlAdjStr}` : ""}${result.n_events != null ? ` · n=${result.n}, events=${result.n_events}` : ` · n=${result.n}`}${result.dispersion != null && mt === "quasipoisson" ? ` · dispersion=${result.dispersion.toFixed(2)}` : ""}${result.aic != null ? ` · AIC=${(result.aic as number).toFixed(1)}` : ""} · dots = knot locations`}
                     defaultXAxis={result.predictor}
                     defaultYAxis={yTitle}
                     data={traces}

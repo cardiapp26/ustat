@@ -188,3 +188,45 @@ def test_the_sentence_reports_the_fully_adjusted_model(client, cohort):
     assert "Model 2" in out["result_text"]
     assert "P for trend" in out["result_text"]
     assert f"same {out['n_used']} complete cases" in out["result_text"]
+
+
+def _walkthrough_session(name: str) -> str:
+    from pathlib import Path
+
+    import pandas as pd
+    from conftest import make_session
+
+    path = Path(__file__).resolve().parents[2] / "qa" / "full_walkthrough_100x40" / "dataset.csv"
+    return make_session(pd.read_csv(path), name)
+
+
+def test_text_exposure_is_reported_by_level_instead_of_failing():
+    """arm (control/treat) used to return 'No model converged on these variables'."""
+    from routers.multimodel import ModelSpec, MultiModelRequest, multi_model
+
+    out = multi_model(MultiModelRequest(
+        session_id=_walkthrough_session("mm_text_exposure"), outcome="event_binary", exposure="arm",
+        outcome_kind="binary", categorical=["stage"],
+        models=[ModelSpec(label="Crude"), ModelSpec(label="Adjusted", covariates=["age", "stage"])],
+    ))
+    assert out["exposure_categorical"] is True
+    assert [e["level"] for e in out["models"][0]["effects"]] == ["control", "treat"]
+    assert out["models"][1]["effects"][1]["ratio"] < 1
+    assert any("not numeric" in w for w in out["warnings"])
+    # Two levels: no separate trend row and no rank warning.
+    assert "trend" not in out["models"][0]
+    assert not any("rank" in w for w in out["warnings"])
+
+
+def test_rows_with_a_missing_exposure_are_dropped_not_fatal():
+    """crp has 15 missing values; every model used to fail on NaN."""
+    from routers.multimodel import ModelSpec, MultiModelRequest, multi_model
+
+    out = multi_model(MultiModelRequest(
+        session_id=_walkthrough_session("mm_missing_exposure"), outcome="qol", exposure="crp",
+        outcome_kind="continuous", models=[ModelSpec(label="Crude"), ModelSpec(label="Age", covariates=["age"])],
+    ))
+    # qol has 9 missing, crp 15; together 23 rows lack one of them.
+    assert out["n_dropped"] == 23
+    assert out["n_used"] == 77
+    assert len(out["models"]) == 2

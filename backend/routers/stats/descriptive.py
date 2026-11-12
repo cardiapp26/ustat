@@ -400,7 +400,7 @@ def refresh_session(session_id: str):
     """Return updated session metadata after in-place operations.
 
     Honours user kind overrides and re-attaches per-column metadata
-    (value_labels, analysis_excluded, display_name) so flows that refresh after
+    (value_labels, role, analysis_excluded, display_name) so flows that refresh after
     a mutation (rename, fill, duplicate…) don't silently drop them.
     """
     df = _get_df(session_id)
@@ -415,6 +415,8 @@ def refresh_session(session_id: str):
         m = meta.get(col, {}) or {}
         if m.get("value_labels"):
             c["value_labels"] = m["value_labels"]
+        if m.get("role"):
+            c["role"] = m["role"]
         if m.get("analysis_excluded") is not None:
             c["analysis_excluded"] = bool(m["analysis_excluded"])
         if m.get("display_name"):

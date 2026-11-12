@@ -1,3 +1,4 @@
+import { analysisDefaultColumns } from "../lib/columnDefaults";
 import { useState, useRef, useEffect } from "react";
 import Plot from "../PlotComponent";
 import { useStore, isCategoricalKind, type Session } from "../store";
@@ -33,11 +34,12 @@ function SubgroupBarPanelBody({ session }: { session: Session }) {
   // Run settings are persisted with the chart: the chart survives a tab
   // switch, and settings that did not would bring it back looking stale, with
   // a Recompute that draws something else.
-  const [yCol, setYCol] = usePersistedPanelState(PANEL, "yCol", allCols[0] ?? "");
+  const defaultCatCols = analysisDefaultColumns(session, catCols);
+  const [yCol, setYCol] = usePersistedPanelState(PANEL, "yCol", analysisDefaultColumns(session, allCols)[0] ?? "");
   const [yMode, setYMode] = usePersistedPanelState(PANEL, "yMode", "mean"); // "mean" | "percentage"
   const [targetValue, setTargetValue] = usePersistedPanelState(PANEL, "targetValue", "");
-  const [subgroupCol, setSubgroupCol] = usePersistedPanelState(PANEL, "subgroupCol", catCols[0] ?? "");
-  const [xaxisCol, setXaxisCol] = usePersistedPanelState(PANEL, "xaxisCol", catCols[1] ?? catCols[0] ?? "");
+  const [subgroupCol, setSubgroupCol] = usePersistedPanelState(PANEL, "subgroupCol", defaultCatCols[0] ?? "");
+  const [xaxisCol, setXaxisCol] = usePersistedPanelState(PANEL, "xaxisCol", defaultCatCols[1] ?? defaultCatCols[0] ?? "");
   const [colorCol, setColorCol] = usePersistedPanelState(PANEL, "colorCol", "");
   const [errorType, setErrorType] = usePersistedPanelState(PANEL, "errorType", "ci"); // "ci" | "se" | "sd" | "none"
 
@@ -347,6 +349,7 @@ function SubgroupBarPanelBody({ session }: { session: Session }) {
           <div>
             <label className="text-xs font-medium text-gray-500 block mb-1">Y-Axis Variable (Value)</label>
             <select className="select w-full" value={yCol} onChange={(e) => setYCol(e.target.value)}>
+              {!yCol && <option value="">Select outcome</option>}
               {allCols.map((c) => (
                 <option key={c}>{c}</option>
               ))}
@@ -401,6 +404,7 @@ function SubgroupBarPanelBody({ session }: { session: Session }) {
           <div>
             <label className="text-xs font-medium text-gray-500 block mb-1">Subgroup Variable (Outer X-Axis)</label>
             <select className="select w-full" value={subgroupCol} onChange={(e) => setSubgroupCol(e.target.value)}>
+              {!subgroupCol && <option value="">Select subgroup</option>}
               {catCols.map((c) => (
                 <option key={c}>{c}</option>
               ))}
@@ -412,6 +416,7 @@ function SubgroupBarPanelBody({ session }: { session: Session }) {
           <div>
             <label className="text-xs font-medium text-gray-500 block mb-1">Inner Variable (Inner X-Axis)</label>
             <select className="select w-full" value={xaxisCol} onChange={(e) => setXaxisCol(e.target.value)}>
+              {!xaxisCol && <option value="">Select variable</option>}
               {catCols.map((c) => (
                 <option key={c}>{c}</option>
               ))}

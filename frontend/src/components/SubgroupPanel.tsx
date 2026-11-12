@@ -20,6 +20,8 @@ import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
 import { useStampedResult } from "../hooks/useStampedResult";
 import { runSubgroup } from "../api";
 import { Tip } from "./Tip";
+import { TreatedLevelPicker } from "./models/TreatedLevelPicker";
+import { treatmentCandidates } from "../lib/treatmentLevels";
 import ResultExporter from "./ResultExporter";
 import StaleResultNotice from "./StaleResultNotice";
 import StaleGuard from "./StaleGuard";
@@ -45,6 +47,8 @@ export interface SubgroupResult {
   effect_label: string; null_value: number;
   overall: Row & { note?: string };
   subgroups: Block[]; warnings: string[]; result_text: string; caveat: string;
+  /** Set when a two-level text exposure was coded 0/1. */
+  exposure_coding?: { column: string; exposed: string; reference: string } | null;
 }
 
 export default function SubgroupPanel() {
@@ -60,10 +64,23 @@ function SubgroupPanelBody({ session }: { session: Session }) {
   const numCols = useMemo(() => cols.filter((c) => isNumericKind(c.kind)).map((c) => c.name), [cols]);
   const catCols = useMemo(() => cols.filter((c) => isCategoricalKind(c.kind)).map((c) => c.name), [cols]);
   const allCols = useMemo(() => cols.map((c) => c.name), [cols]);
+  // Two-level text columns (control / treat) can be an exposure once the
+  // exposed level is chosen; numeric columns are read per unit as before.
+  const textExposureLevels = useMemo(() => {
+    const nonNumeric = cols.filter((c) => !isNumericKind(c.kind)).map((c) => c.name);
+    return Object.fromEntries(
+      Object.entries(treatmentCandidates(session.preview, nonNumeric))
+        .filter((entry): entry is [string, string[]] => entry[1] !== null),
+    );
+  }, [cols, session.preview]);
+  const exposureCols = useMemo(() => [...numCols, ...Object.keys(textExposureLevels)], [numCols, textExposureLevels]);
 
   const [kind, setKind] = usePersistedPanelState<"continuous" | "binary" | "survival">("subgroup", "kind", "continuous");
   const [outcome, setOutcome] = usePersistedPanelState<string>("subgroup", "outcome", "");
   const [exposure, setExposure] = usePersistedPanelState<string>("subgroup", "exposure", "");
+  const [exposureLevel, setExposureLevel] = usePersistedPanelState<string>("subgroup", "exposureLevel", "");
+  const exposureLevels = textExposureLevels[exposure] ?? null;
+  const chosenLevel = exposureLevels?.includes(exposureLevel) ? exposureLevel : undefined;
   const [timeCol, setTimeCol] = usePersistedPanelState<string>("subgroup", "time", "");
   const [subgroups, setSubgroups] = usePersistedPanelState<string[]>("subgroup", "subgroups", []);
   const [covariates, setCovariates] = usePersistedPanelState<string[]>("subgroup", "covs", []);
@@ -72,6 +89,7 @@ function SubgroupPanelBody({ session }: { session: Session }) {
   const runParams = {
     kind, outcome, exposure, subgroups, covariates, categorical,
     timeCol: kind === "survival" ? timeCol : undefined,
+    exposureLevel: chosenLevel,
   };
   const {
     result, setResult, stale, staleReasons: staleWhy,
@@ -91,12 +109,14 @@ function SubgroupPanelBody({ session }: { session: Session }) {
     if (!outcome || !exposure) { setError("Choose an outcome and an exposure."); return; }
     if (!subgroups.length) { setError("Choose at least one subgroup variable."); return; }
     if (kind === "survival" && !timeCol) { setError("A time-to-event outcome needs a follow-up time column."); return; }
+    if (exposureLevels && !chosenLevel) { setError("Choose which level of the exposure is the exposed group."); return; }
     setLoading(true); setError(null);
     try {
       const res = await runSubgroup({
         session_id: session.session_id, outcome, exposure, subgroups, covariates,
         outcome_kind: kind, time_col: kind === "survival" ? timeCol : undefined,
         categorical,
+        ...(chosenLevel ? { exposure_level: chosenLevel } : {}),
       });
       setResult(res.data as SubgroupResult);
     } catch (e: unknown) {
@@ -111,9 +131,14 @@ function SubgroupPanelBody({ session }: { session: Session }) {
   const lo = (r?: Row) => (ratio ? r?.ratio_ci_low : r?.ci_low) ?? null;
   const hi = (r?: Row) => (ratio ? r?.ratio_ci_high : r?.ci_high) ?? null;
   const fmt = (r?: Row) => {
-    if (!r || est(r) == null) return r?.note ?? "—";
+    const e = est(r);
+    if (!r || e == null) return r?.note ?? "\u2014";
     const d = ratio ? 2 : 3;
-    return `${est(r)!.toFixed(d)} (${lo(r)!.toFixed(d)}–${hi(r)!.toFixed(d)})`;
+    const l = lo(r), h = hi(r);
+    // A stratum with very few events can have an estimate but no finite
+    // interval (the backend sends null); calling toFixed on it crashed the panel.
+    if (l == null || h == null) return `${e.toFixed(d)} (CI not estimable)`;
+    return `${e.toFixed(d)} (${l.toFixed(d)}–${h.toFixed(d)})`;
   };
 
   /** Every plotted row, top to bottom, with its label. */
@@ -129,7 +154,7 @@ function SubgroupPanelBody({ session }: { session: Session }) {
   }, [result]);
 
   const traces: PlotData[] = useMemo(() => {
-    const plotted = forestRows.filter((r) => !r.header && est(r.row) != null);
+    const plotted = forestRows.filter((r) => !r.header && est(r.row) != null && lo(r.row) != null && hi(r.row) != null);
     if (!plotted.length) return [];
     const yv = plotted.map((r) => r.label.trim());
     return [{
@@ -168,7 +193,7 @@ function SubgroupPanelBody({ session }: { session: Session }) {
     // result would reach the figure with nothing to say what it predates.
     if (!result || stale) return;
     const rows = forestRows
-      .filter((r) => !r.header && est(r.row) != null)
+      .filter((r) => !r.header && est(r.row) != null && lo(r.row) != null && hi(r.row) != null)
       .map((r) => ({
         label: r.label.trim(), est: est(r.row), ci_low: lo(r.row), ci_high: hi(r.row),
         p: r.row.p ?? null,
@@ -235,9 +260,13 @@ function SubgroupPanelBody({ session }: { session: Session }) {
             <select className="w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm bg-white"
               value={exposure} onChange={(e) => setExposure(e.target.value)}>
               <option value="">— select —</option>
-              {numCols.map((c) => <option key={c} value={c}>{c}</option>)}
+              {exposureCols.map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
           </label>
+          {exposureLevels && (
+            <TreatedLevelPicker levels={exposureLevels} value={exposureLevel} onChange={setExposureLevel}
+              label="Exposed level (the other one is the reference)" placeholder="Select the exposed level…" />
+          )}
 
           <div className="space-y-1">
             <span className="text-xs font-medium text-gray-500">Subgroup variables</span>
@@ -296,6 +325,11 @@ function SubgroupPanelBody({ session }: { session: Session }) {
                 </div>
               </div>
 
+              {result.exposure_coding && (
+                <p className="mb-2 text-xs text-gray-500">
+                  {result.effect_label} compares {result.exposure} = {result.exposure_coding.exposed} with {result.exposure_coding.reference}.
+                </p>
+              )}
               <div className="grid gap-3 lg:grid-cols-2">
                 <div className="overflow-auto rounded border border-gray-200">
                   <table className="w-full text-xs">

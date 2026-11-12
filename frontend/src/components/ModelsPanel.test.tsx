@@ -57,6 +57,20 @@ function checkPredictor(name: string) {
 }
 
 describe('ModelsPanel', () => {
+  it('does not default to an identifier, but keeps it available for selection', async () => {
+    stubBackgroundEndpoints()
+    const session = regressionSession()
+    const pid = { name: 'pid', dtype: 'int64', kind: 'numeric' as const, id_like: true }
+    installSession({ ...session, columns: [pid, ...session.columns] })
+    const user = userEvent.setup()
+    render(<ModelsPanel />)
+
+    const outcome = selectAfterLabel('Outcome')
+    expect(outcome).toHaveValue('AGE')
+    await user.selectOptions(outcome, 'pid')
+    expect(outcome).toHaveValue('pid')
+  })
+
   it('renders nothing without an active session', () => {
     clearSession()
     const { container } = render(<ModelsPanel />)
@@ -167,6 +181,68 @@ describe('ModelsPanel', () => {
     await waitFor(() =>
       expect(screen.getByText('Perfect separation could not be resolved')).toBeInTheDocument(),
     )
+  })
+
+  it('saves the current fitted probabilities as an undoable numeric column', async () => {
+    stubBackgroundEndpoints()
+    installSession(regressionSession())
+    let saveCalls = 0
+    server.use(
+      http.post('/api/models/logistic', async ({ request }) => {
+        expect(request.headers.get('X-Ustat-Save-Probabilities')).toBe('true')
+        return HttpResponse.json({
+          model: 'Logistic Regression',
+          outcome: 'DEATH',
+          n: 2,
+          probability_fit: { token: 'model-fit', source: 'fitted sample', event_level: '1' },
+        })
+      }),
+      http.post('/api/models/logistic/save_probabilities', async ({ request }) => {
+        saveCalls += 1
+        expect(await request.json()).toMatchObject({ fit_token: 'model-fit' })
+        return HttpResponse.json({
+          name: 'DEATH_predicted_probability',
+          rows: 3,
+          columns: [...regressionSession().columns, { name: 'DEATH_predicted_probability', dtype: 'float64', kind: 'numeric' }],
+          preview: regressionSession().preview.map((row, idx) => ({
+            ...row, DEATH_predicted_probability: [0.25, null, 0.75][idx],
+          })),
+          undo_depth: 1,
+        })
+      }),
+    )
+
+    const user = userEvent.setup()
+    render(<ModelsPanel />)
+    await user.click(screen.getByText('Logistic Regression', { selector: 'span' }))
+    await user.selectOptions(selectAfterLabel(/^Outcome/), 'DEATH')
+    await user.click(checkPredictor('AGE'))
+    await user.click(screen.getByRole('button', { name: 'Fit Model' }))
+
+    const save = await screen.findByRole('button', { name: 'Save predicted probabilities' })
+    await user.click(checkPredictor('LDL'))
+    expect(save).toBeDisabled()
+    await user.click(save)
+    expect(saveCalls).toBe(0)
+    await user.click(checkPredictor('LDL'))
+    expect(save).toBeEnabled()
+    // Analysis refreshes may replace the preview with selected rows. The
+    // mutation returns the raw grid, so probabilities must not be zipped in.
+    act(() => {
+      const current = useStore.getState().session!
+      useStore.setState({ session: { ...current, preview: current.preview.slice(1) } })
+    })
+    await user.click(save)
+
+    expect(await screen.findByText(/Saved DEATH_predicted_probability/)).toHaveAttribute('role', 'status')
+    const state = useStore.getState()
+    expect(state.session?.columns).toContainEqual({ name: 'DEATH_predicted_probability', dtype: 'float64', kind: 'numeric' })
+    expect(state.session?.preview.map((row) => row.DEATH_predicted_probability)).toEqual([0.25, null, 0.75])
+    expect(state.session?.preview.map((row) => row.AGE)).toEqual([55, 62, 48])
+    expect(state.undoDepth).toBe(1)
+    expect(saveCalls).toBe(1)
+    expect(save).toBeDisabled()
+    expect(await screen.findByText(/Out of date\./)).toBeInTheDocument()
   })
 
   it('Firth logistic: states beside the coefficient table that its intervals are Wald', async () => {
@@ -398,5 +474,17 @@ describe('ModelsPanel', () => {
     // A term the multivariable model dropped still carries its crude estimate,
     // labelled as such rather than passed off as adjusted.
     expect(rows?.[1]).toMatchObject({ label: 'LDL', est: 2.0, extra: 'unadjusted' })
+  })
+})
+
+describe('ModelsPanel removed model types', () => {
+  it('falls back to linear when a cached model is no longer offered', () => {
+    installSession()
+    stubBackgroundEndpoints()
+    useStore.setState({ panelCache: { models: { model: 'cox' } } })
+    render(<ModelsPanel />)
+    const linear = screen.getAllByRole('radio').find((r) => (r as HTMLInputElement).value === 'linear')
+    expect(linear).toBeChecked()
+    expect(screen.queryByText(/Coefficients \(Hazard Ratios\)/)).not.toBeInTheDocument()
   })
 })

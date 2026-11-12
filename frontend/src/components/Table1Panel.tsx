@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { analysisDefaultColumns } from "../lib/columnDefaults";
 import { analysisScope, useStore, type Session } from "../store";
 import api from "../api";
 import ResultExporter from "./ResultExporter";
@@ -8,7 +9,7 @@ import CopyTextButton from "./CopyTextButton";
 import { staleExportTitle, useStaleGuard } from "../lib/staleGuard";
 import ResultProvenanceLine from "./ResultProvenanceLine";
 import { describeStale, makeStamp, staleReasons, type ResultStamp } from "../lib/resultStamp";
-import { fmtP, warningText } from "../lib/format";
+import { fmtP, fmtPRelation, warningText } from "../lib/format";
 import { labelFor } from "../lib/valueLabels";
 
 // ── Stat definitions ──────────────────────────────────────────────────────────
@@ -209,13 +210,12 @@ function StatsSelector({
 export default function Table1Panel() {
   const session = useStore((s) => s.session);
   if (!session) return null;
-  return <Table1PanelBody session={session} />;
+  return <Table1PanelBody key={session.session_id} session={session} />;
 }
 
 function Table1PanelBody({ session }: { session: Session }) {
   const result = useStore((s) => s.table1Result) as T1Result | null;
   const setResult = useStore((s) => s.setTable1Result);
-  const clearTable1 = useStore((s) => s.clearTable1);
   // Per-column decimal overrides set in the Data tab. Backend also has
   // its own session-persisted map (services/store.get_decimals); passing
   // the client snapshot here lets unsaved tweaks preview immediately.
@@ -265,7 +265,7 @@ function Table1PanelBody({ session }: { session: Session }) {
       const allowed = new Set(allCols);
       return new Set(cachedForm.selected.filter((c) => allowed.has(c)));
     }
-    return new Set(allCols);
+    return new Set(analysisDefaultColumns(session, allCols));
   });
   const [kindOverrides, setKindOverrides] = useState<Record<string, "numeric" | "categorical">>(
     cachedForm?.kindOverrides ?? {}
@@ -376,20 +376,6 @@ function Table1PanelBody({ session }: { session: Session }) {
     [rows[from], rows[to]] = [rows[to], rows[from]];
     setResult({ ...result, rows });
   };
-
-  useEffect(() => {
-    // New dataset → reset the form to defaults (don't carry a stale
-    // selection across sessions). The cache useEffect above will then
-    // overwrite the stored snapshot with the fresh defaults.
-    setSelected(new Set(allCols.filter((c) => c !== groupCol)));
-    setKindOverrides({});
-    setSelectedStats(new Set(["auto"]));
-    setWithinGroupNormality(false);
-    clearTable1();
-    writeStamp(null);
-    setError(null);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session.session_id]);
 
   const toggleKind = (col: string) => {
     setKindOverrides((prev) => {
@@ -572,7 +558,7 @@ function Table1PanelBody({ session }: { session: Session }) {
             i === 0 ? (row.p_value ?? "") : "",
             i === 0 ? (row.test ?? "") : "",
             ...(showSMD ? [i === 0 && row.smd != null ? row.smd.toFixed(3) : ""] : []),
-            i === 0 ? `${row.normality_test} (p=${fmtP(row.normality_p)})` : "",
+            i === 0 ? `${row.normality_test} (p${fmtPRelation(row.normality_p)})` : "",
           ]);
         });
       } else {
@@ -734,7 +720,7 @@ function Table1PanelBody({ session }: { session: Session }) {
               <div key={col}
                 className={`flex items-center gap-1.5 px-2 py-1.5 border-b border-gray-100 transition-colors
                   ${isChecked ? "bg-indigo-50" : "hover:bg-gray-50"}`}>
-                <input type="checkbox" className="accent-indigo-500 flex-shrink-0"
+                <input type="checkbox" aria-label={col} className="accent-indigo-500 flex-shrink-0"
                   checked={isChecked} onChange={() => toggle(col)} />
                 <button
                   onClick={(e) => { e.stopPropagation(); toggleKind(col); }}
@@ -964,7 +950,7 @@ function Table1PanelBody({ session }: { session: Session }) {
                                       ? "bg-green-100 text-green-700 border border-green-300"
                                       : "bg-orange-100 text-orange-700 border border-orange-300"}`}
                                   title={Object.entries(row.per_group_normality).map(
-                                    ([g, n]) => `${g}: ${n.normal ? "Normal" : "Non-normal"} (${n.test}, p=${fmtP(n.p)}, n=${n.n})`
+                                    ([g, n]) => `${g}: ${n.normal ? "Normal" : "Non-normal"} (${n.test}, p${fmtPRelation(n.p)}, n=${n.n})`
                                   ).join("\n")}
                                 >
                                   {row.normal ? "All groups normal" : "≥1 group non-normal"}
@@ -978,7 +964,7 @@ function Table1PanelBody({ session }: { session: Session }) {
                                         key={g}
                                         className={`px-1 rounded text-[8px] font-mono
                                           ${n.normal ? "bg-green-200 text-green-800" : "bg-orange-200 text-orange-800"}`}
-                                        title={`${g}: ${n.test}, p=${fmtP(n.p)}, n=${n.n}`}
+                                        title={`${g}: ${n.test}, p${fmtPRelation(n.p)}, n=${n.n}`}
                                       >
                                         {g}:{fmtP(n.p)}
                                       </span>
@@ -993,7 +979,7 @@ function Table1PanelBody({ session }: { session: Session }) {
                                   {row.normal ? "Normal" : "Non-normal"}
                                   <br />
                                   <span className="text-gray-400 font-normal">
-                                    {row.normality_test === "Shapiro-Wilk" ? "S-W" : "K-S"} <i>p</i>={fmtP(row.normality_p)}
+                                    {row.normality_test === "Shapiro-Wilk" ? "S-W" : "K-S"} <i>p</i>{fmtPRelation(row.normality_p)}
                                   </span>
                                 </div>
                               )

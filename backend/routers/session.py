@@ -16,6 +16,7 @@ from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
 from routers.engine_adapter import adapt
 from services import store
+from services.column_identifiers import is_id_like
 from services.dirty_value_guard import values_are_numeric
 from ustat_engine.frame.envelope import build_envelope
 
@@ -276,9 +277,10 @@ async def update_cell(session_id: str, body: CellUpdate):
     else:
         val = np.nan  # blank → missing
 
-    df = df.copy()
+    original = df
+    df = original.copy()
     df.at[body.row_index, body.column] = val
-    store.save(session_id, df)
+    store.save(session_id, df, expected_df=original)
 
     stored = df.at[body.row_index, body.column]
     if hasattr(stored, "item"):
@@ -299,7 +301,8 @@ async def clear_cells(session_id: str, body: ClearCellsRequest):
     if df is None:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    df = df.copy()
+    original = df
+    df = original.copy()
     cleared = 0
     for cell in body.cells:
         r = cell.get("row_index") if isinstance(cell, dict) else None
@@ -311,7 +314,7 @@ async def clear_cells(session_id: str, body: ClearCellsRequest):
         df.at[r, c] = np.nan
         cleared += 1
 
-    store.save(session_id, df)
+    store.save(session_id, df, expected_df=original)
     return {"cleared": cleared}
 
 
@@ -361,7 +364,8 @@ async def set_cells(session_id: str, body: SetCellsRequest):
                    "cannot also equal a value.",
         )
 
-    df = df.copy()
+    original = df
+    df = original.copy()
     changed = 0
     skipped = 0
     for cell in body.cells:
@@ -398,7 +402,7 @@ async def set_cells(session_id: str, body: SetCellsRequest):
         df.at[r, c] = written
         changed += 1
 
-    store.save(session_id, df)
+    store.save(session_id, df, expected_df=original)
     return {"changed": changed, "skipped": skipped}
 
 
@@ -556,9 +560,9 @@ async def reorder_columns(session_id: str, body: ReorderColumnsRequest):
         if c not in new_order:
             new_order.append(c)
 
-    df = df[new_order]
-    store.save(session_id, df)
-    return {"columns": list(df.columns)}
+    reordered = df[new_order]
+    store.save(session_id, reordered, expected_df=df)
+    return {"columns": list(reordered.columns)}
 
 
 # ── Export ─────────────────────────────────────────────────────────────────────
@@ -1262,7 +1266,7 @@ async def load_session(file: UploadFile = File(...)):
     columns = []
     for col in df.columns:
         kind = overrides.get(col) or _detect_kind(df[col])
-        columns.append({"name": col, "dtype": str(df[col].dtype), "kind": kind})
+        columns.append({"name": col, "dtype": str(df[col].dtype), "kind": kind, "id_like": is_id_like(col, df[col])})
     _attach_value_labels(columns, new_session_id)
 
     preview = json.loads(
@@ -1347,7 +1351,7 @@ def _session_preview(df: pd.DataFrame, session_id: str | None = None) -> dict:
             kind = "categorical"
         else:
             kind = "categorical" if df[col].nunique() <= 50 else "text"
-        columns.append({"name": col, "dtype": dtype, "kind": overrides.get(col, kind)})
+        columns.append({"name": col, "dtype": dtype, "kind": overrides.get(col, kind), "id_like": is_id_like(col, df[col])})
     if session_id:
         _attach_value_labels(columns, session_id)
     preview_df = df.head(2000).replace([np.inf, -np.inf], np.nan)
@@ -1546,7 +1550,7 @@ async def get_session_info(session_id: str):
     columns = []
     for col in df.columns:
         kind = kind_overrides.get(col) or _detect_kind(df[col])
-        columns.append({"name": col, "dtype": str(df[col].dtype), "kind": kind})
+        columns.append({"name": col, "dtype": str(df[col].dtype), "kind": kind, "id_like": is_id_like(col, df[col])})
     _attach_value_labels(columns, session_id)
 
     import numpy as np

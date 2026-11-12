@@ -73,8 +73,7 @@ export function ForestPlot({ result, modelType, outcome }: {
   const forestRef = useRef<PlotCaptureHandle | null>(null);
   const themed = usePlotLayout();
   const isORTable = modelType === "ortable" || modelType === "firth_ortable";
-  const isCox     = modelType === "cox";
-  const metric    = isCox ? "HR" : "OR";
+  const metric    = "OR";
   const showGrid  = useStore((s) => s.showGrid);
 
   // ── User-tunable layout options ───────────────────────────────────────────
@@ -247,13 +246,13 @@ export function ForestPlot({ result, modelType, outcome }: {
     {
       ...AB, xref: "paper" as const, yref: "paper" as const,
       x: 0.02, y: yPos, xanchor: "left" as const,
-      text: `◀ ${isCox ? "Reduces hazard" : "Reduces risk"}`,
+      text: "◀ Reduces risk",
       font: { size: 9, color: "#10b981" }, showarrow: false,
     },
     {
       ...AB, xref: "paper" as const, yref: "paper" as const,
       x: forestRight - 0.01, y: yPos, xanchor: "right" as const,
-      text: `${isCox ? "Increases hazard" : "Increases risk"} ▶`,
+      text: "Increases risk ▶",
       font: { size: 9, color: "#ef4444" }, showarrow: false,
     },
   ];
@@ -412,7 +411,7 @@ export function ForestPlot({ result, modelType, outcome }: {
       ? `${opts.customTitle}<br><span style="font-size:11px;color:#6b7280">${opts.customSubtitle}</span>`
       : opts.customTitle;
     const xLabel = opts.customXLabel
-      || `${metric === "OR" ? "Odds Ratio" : "Hazard Ratio"} (95% CI)${splitLayout ? "" : (outcome ? ` — Outcome: ${outcome}` : "")}, log scale`;
+      || `Odds Ratio (95% CI)${splitLayout ? "" : (outcome ? ` — Outcome: ${outcome}` : "")}, log scale`;
     // Push legend BELOW the x-axis title so it never sits inside the data
     // area. Bottom margin grows when the legend is on to make room. Floor
     // raised so the "◀ Reduces risk / Increases risk ▶" annotations at
@@ -449,7 +448,7 @@ export function ForestPlot({ result, modelType, outcome }: {
                   showgrid: showGrid,
                   domain: [0.50, 0.93],
                   anchor: "y" as const,
-                  title: { text: opts.customXLabel || `${metric === "OR" ? "Odds Ratio" : "Hazard Ratio"} (95% CI), log scale${outcome ? ` — Outcome: ${outcome}` : ""}`, font: { size: 10, color: "#374151" } },
+                  title: { text: opts.customXLabel || `Odds Ratio (95% CI), log scale${outcome ? ` — Outcome: ${outcome}` : ""}`, font: { size: 10, color: "#374151" } },
                 },
               }
             : {}),
@@ -482,19 +481,19 @@ export function ForestPlot({ result, modelType, outcome }: {
     );
   }
 
-  // ── Single model — logistic or cox ────────────────────────────────────────
+  // ── Single model: logistic, Firth or ordinal ─────────────────────────────
   const coefs    = (result.coefficients ?? []).filter((c: Coefficient) => c.variable !== "const");
   const n        = coefs.length;
   if (n === 0) return null;
 
-  const estimates = coefs.map((c: Coefficient) => isCox ? c.hr         : c.odds_ratio);
-  const ciLow     = coefs.map((c: Coefficient) => isCox ? c.hr_ci_low  : c.or_ci_low);
-  const ciHigh    = coefs.map((c: Coefficient) => isCox ? c.hr_ci_high : c.or_ci_high);
+  const estimates = coefs.map((c: Coefficient) => c.odds_ratio);
+  const ciLow     = coefs.map((c: Coefficient) => c.or_ci_low);
+  const ciHigh    = coefs.map((c: Coefficient) => c.or_ci_high);
   const pVals     = coefs.map((c: Coefficient) => c.p);
   const labels    = coefs.map((c: Coefficient) => c.variable);
   const estimatesForPlot = estimates.map((e) => e ?? null);
-  const COLOR     = isCox ? "#10b981" : "#6366f1";
-  const COLOR_SIG = isCox ? "#34d399" : "#818cf8";
+  const COLOR     = "#6366f1";
+  const COLOR_SIG = "#818cf8";
   const plotH     = Math.max(260, n * 46 + 120);
 
   // Color resolver honours the colorBy toggle for the single-model branch.
@@ -536,9 +535,7 @@ export function ForestPlot({ result, modelType, outcome }: {
   const titleHtml = opts.customTitle && opts.customSubtitle
     ? `${opts.customTitle}<br><span style="font-size:11px;color:#6b7280">${opts.customSubtitle}</span>`
     : opts.customTitle;
-  const xLabelSingle = opts.customXLabel || (isCox
-    ? `Hazard Ratio (95% CI), log scale${outcome ? ` — Outcome: ${outcome}` : ""}`
-    : `Odds Ratio (95% CI), log scale${outcome ? ` — Outcome: ${outcome}` : ""}`);
+  const xLabelSingle = opts.customXLabel || `Odds Ratio (95% CI), log scale${outcome ? ` — Outcome: ${outcome}` : ""}`;
 
   return (
     <div className="relative" ref={(el) => { forestRef.current = el as unknown as PlotCaptureHandle | null; }}>
@@ -565,7 +562,7 @@ export function ForestPlot({ result, modelType, outcome }: {
         hovertemplate: coefs.map((_: Coefficient, i: number) =>
           `<b>${labels[i]}</b><br>${metric}: ${estimates[i]?.toFixed(3)}<br>95% CI: ${ciLow[i]?.toFixed(3)} – ${ciHigh[i]?.toFixed(3)}<br><i>p</i> = ${fmtP(pVals[i])}<extra></extra>`
         ),
-        name: isCox ? "Hazard Ratio" : "Odds Ratio",
+        name: "Odds Ratio",
         showlegend: opts.showLegend,
       }]}
       layout={{

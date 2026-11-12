@@ -4,6 +4,7 @@ import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
 import { server } from '../test/server'
 import { clearSession, installSession, makeSession } from '../test/testUtils'
+import { useStore } from '../store'
 import SurvivalAdvancedPanel from './SurvivalAdvancedPanel'
 
 afterEach(() => clearSession())
@@ -45,6 +46,51 @@ describe('SurvivalAdvancedPanel', () => {
     clearSession()
     render(<SurvivalAdvancedPanel />)
     expect(screen.getByText('Upload data first.')).toBeInTheDocument()
+  })
+
+  it('shares compatible survival inputs across methods', async () => {
+    installSession(survivalSession())
+    const user = userEvent.setup()
+    render(<SurvivalAdvancedPanel />)
+
+    await user.selectOptions(selectAfterLabel('Duration (time)'), 'TIME')
+    await user.selectOptions(selectAfterLabel('Event (0/1)'), 'EVENT')
+    await user.selectOptions(selectAfterLabel('Group (optional)'), 'GROUP')
+
+    await selectMethod(user, 'Cox PH')
+    expect(selectAfterLabel('Duration (time)')).toHaveValue('TIME')
+    expect(selectAfterLabel('Event (0/1)')).toHaveValue('EVENT')
+    await user.selectOptions(selectAfterLabel('Duration (time)'), 'AGE')
+
+    await selectMethod(user, 'RMST')
+    expect(selectAfterLabel('Duration')).toHaveValue('AGE')
+    expect(selectAfterLabel('Event (0/1)')).toHaveValue('EVENT')
+    expect(selectAfterLabel('Group (optional)')).toHaveValue('GROUP')
+
+    await selectMethod(user, 'Fine-Gray')
+    const competingEvent = 'Event (0=censor, 1,2..=events)'
+    expect(selectAfterLabel(competingEvent)).toHaveValue('EVENT')
+    await user.selectOptions(selectAfterLabel(competingEvent), 'AGE')
+
+    await selectMethod(user, 'Kaplan-Meier')
+    expect(selectAfterLabel('Event (0/1)')).toHaveValue('EVENT')
+    await selectMethod(user, 'Fine-Gray')
+    expect(selectAfterLabel(competingEvent)).toHaveValue('AGE')
+  })
+
+  it('recovers the active method inputs from an older saved analysis', async () => {
+    installSession(survivalSession())
+    useStore.getState().setPanelCache('survival', {
+      activeMethod: 'cox', coxDuration: 'AGE', coxEvent: 'EVENT',
+      kmDuration: 'TIME', kmEvent: 'EVENT', kmGroup: 'GROUP',
+    })
+    const user = userEvent.setup()
+    render(<SurvivalAdvancedPanel />)
+
+    expect(selectAfterLabel('Duration (time)')).toHaveValue('AGE')
+    await selectMethod(user, 'Kaplan-Meier')
+    expect(selectAfterLabel('Duration (time)')).toHaveValue('AGE')
+    expect(selectAfterLabel('Group (optional)')).toHaveValue('GROUP')
   })
 
   it('KM tab (default): runs Kaplan-Meier by group and renders the log-rank result', async () => {

@@ -153,6 +153,11 @@ type ZeroInflatedFields = Pick<ZeroInflatedResultData,
 export interface ModelResult extends MultinomialFields, ZeroInflatedFields {
   model?: string;
   outcome?: string;
+  probability_fit?: {
+    token: string;
+    source: "fitted sample" | "first imputed dataset";
+    event_level: string;
+  };
   n?: number;
   n_total?: number;
   /** OR / HR table: number of candidate predictors screened univariately. */

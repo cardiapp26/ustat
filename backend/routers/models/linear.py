@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from loguru import logger
 
 from services import store
+from services.column_identifiers import is_id_like
 from services.category_health import clean_two_level, rare_level_warnings
 from services.regression import constant_column_warnings, design_with_constant, require_full_rank_design
 from services.impute import apply_imputation
@@ -325,6 +326,11 @@ def linear_regression(req: LinearRequest):
     if dropped_const:
         result["warnings"] = (result.get("warnings") or []) + constant_column_warnings(dropped_const)
 
+    if set(y.unique()) == {0, 1}:
+        result.setdefault("warnings", []).append(
+            "The outcome is binary (0/1). Consider logistic regression for a binary outcome."
+        )
+
     missing_info = missing_pattern_summary(df_full, [req.outcome] + req.predictors)
     result = add_missing_data_diagnostics(result, missing_info)
 
@@ -622,46 +628,6 @@ class LMMRequest(BaseModel):
     imputation: Optional[str] = "listwise"
 
 
-_ID_NAME_TOKENS = frozenset({"id", "no", "num", "number", "patient", "subject", "case", "record", "mrn"})
-_ID_MIN_LEVELS = 10
-_ID_MIN_UNIQUE_RATIO = 0.95
-
-
-def _name_tokens(col: str) -> list:
-    """Lower-case word tokens of a column name: 'patientID' -> [patient, id]."""
-    import re
-
-    spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", col)
-    return [t for t in re.split(r"[^0-9a-zA-Z]+", spaced.lower()) if t]
-
-
-def _is_id_like(col: str, series: pd.Series) -> bool:
-    """Heuristic: column is likely a patient/subject identifier.
-
-    The name alone is not evidence. Matching "id", "no", "num" or "case" as a
-    prefix or suffix of the name rejected `steroid`, `thyroid`, `nodes`,
-    `num_vessels` and `caseload` as fixed effects. A column now counts as an
-    identifier when either
-    - its name ENDS in an identifier word as a whole token (`patient_id`,
-      `recordNo`, `subject`) and it has many distinct values, or
-    - it is integer or text valued and takes a different value in nearly
-      every row, whatever it is called.
-    """
-    values = series.dropna()
-    n = len(values)
-    if n < 5:
-        return False
-    try:
-        n_levels = int(values.nunique())
-    except Exception:
-        return False
-    tokens = _name_tokens(col)
-    if tokens and tokens[-1] in _ID_NAME_TOKENS and n_levels >= _ID_MIN_LEVELS:
-        return True
-    code_like = pd.api.types.is_integer_dtype(values) or not pd.api.types.is_numeric_dtype(values)
-    return code_like and (n_levels / n) > _ID_MIN_UNIQUE_RATIO
-
-
 @router.post("/lmm")
 def linear_mixed_model(req: LMMRequest):
     import re
@@ -670,7 +636,7 @@ def linear_mixed_model(req: LMMRequest):
     df_full = _get_df(req.session_id)
     n_total = len(df_full)
 
-    id_in_fe = [c for c in req.fixed_effects if _is_id_like(c, df_full.get(c, pd.Series()))]
+    id_in_fe = [c for c in req.fixed_effects if c in df_full and is_id_like(c, df_full[c])]
     if id_in_fe:
         raise HTTPException(
             status_code=422,

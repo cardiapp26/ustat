@@ -1386,14 +1386,14 @@ async def rcs_regression(req: RCSRequest):
         "n_excluded": n_total - n,
         "n_events": n_events,
         "n_knots": req.n_knots,
-        "knots": [_round_sig(kn) for kn in knots],
+        "knots": [float(kn) for kn in knots],
         "knot_positions_custom": req.knot_positions is not None,
-        "ref_value": round(ref_val, 4),
+        "ref_value": ref_val,
         "ref_strategy_used": ref_used,
         # Set when a nadir reference was asked for but the curve has no
         # interior minimum, so the median was used instead.
         "ref_fallback": ref_strategy == "nadir" and req.ref_value is None and nadir.at_boundary,
-        "nadir": {"x": round(nadir.x, 4), "at_boundary": nadir.at_boundary},
+        "nadir": {"x": nadir.x, "at_boundary": nadir.at_boundary},
         "x_distribution": _x_distribution(x_raw, x_lo, x_hi),
         "aic": _safe_float(aic_val),
         "log_likelihood": _safe_float(log_lik),

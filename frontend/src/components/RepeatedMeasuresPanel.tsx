@@ -1,3 +1,4 @@
+import { analysisDefaultColumns } from "../lib/columnDefaults";
 import { useState } from "react";
 import { useStore, isNumericKind, type Session } from "../store";
 import { runPairedTTest, runWilcoxonSR, runFriedman, runRMAnova, runMixedAnova } from "../api";
@@ -270,17 +271,20 @@ function RepeatedMeasuresPanelBody({ session }: { session: Session }) {
   const numCols = session.columns.filter((c) => isNumericKind(c.kind)).map((c) => c.name);
   const allCols = session.columns.map((c) => c.name);
 
+  const defaultNumCols = analysisDefaultColumns(session, numCols);
+  const defaultFactors = analysisDefaultColumns(session, allCols.filter((c) => c !== allCols[0]));
+
   // Persisted with the result, so a test restored after a tab switch comes
   // back with the variables it was run on instead of reading stale against
   // the defaults (and recomputing a different test).
   const [test, setTest] = usePersistedPanelState<string>("repeated_measures", "test", "paired_ttest");
-  const [col1, setCol1] = usePersistedPanelState("repeated_measures", "col1", numCols[0] ?? "");
-  const [col2, setCol2] = usePersistedPanelState("repeated_measures", "col2", numCols[1] ?? numCols[0] ?? "");
+  const [col1, setCol1] = usePersistedPanelState("repeated_measures", "col1", defaultNumCols[0] ?? "");
+  const [col2, setCol2] = usePersistedPanelState("repeated_measures", "col2", defaultNumCols[1] ?? defaultNumCols[0] ?? "");
   const [friedmanCols, setFriedmanCols] = usePersistedPanelState<string[]>("repeated_measures", "friedmanCols", []);
   const [subjectCol, setSubjectCol] = usePersistedPanelState("repeated_measures", "subjectCol", allCols[0] ?? "");
-  const [withinCol, setWithinCol] = usePersistedPanelState("repeated_measures", "withinCol", allCols[1] ?? "");
-  const [betweenCol, setBetweenCol] = usePersistedPanelState("repeated_measures", "betweenCol", allCols[2] ?? "");
-  const [valueCol, setValueCol] = usePersistedPanelState("repeated_measures", "valueCol", numCols[0] ?? "");
+  const [withinCol, setWithinCol] = usePersistedPanelState("repeated_measures", "withinCol", defaultFactors[0] ?? "");
+  const [betweenCol, setBetweenCol] = usePersistedPanelState("repeated_measures", "betweenCol", defaultFactors[1] ?? "");
+  const [valueCol, setValueCol] = usePersistedPanelState("repeated_measures", "valueCol", defaultNumCols[0] ?? "");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -345,12 +349,14 @@ function RepeatedMeasuresPanelBody({ session }: { session: Session }) {
               <div>
                 <label className="text-xs text-gray-400 block mb-1">Measurement 1</label>
                 <select className="select w-full" value={col1} onChange={(e) => setCol1(e.target.value)}>
+                  {!col1 && <option value="">Select variable</option>}
                   {numCols.map((c) => <option key={c}>{c}</option>)}
                 </select>
               </div>
               <div>
                 <label className="text-xs text-gray-400 block mb-1">Measurement 2</label>
                 <select className="select w-full" value={col2} onChange={(e) => setCol2(e.target.value)}>
+                  {!col2 && <option value="">Select variable</option>}
                   {numCols.map((c) => <option key={c}>{c}</option>)}
                 </select>
               </div>
@@ -381,6 +387,7 @@ function RepeatedMeasuresPanelBody({ session }: { session: Session }) {
               <div>
                 <label className="text-xs text-gray-400 block mb-1">Within-subjects factor</label>
                 <select className="select w-full" value={withinCol} onChange={(e) => setWithinCol(e.target.value)}>
+                  {!withinCol && <option value="">Select within factor</option>}
                   {allCols.map((c) => <option key={c}>{c}</option>)}
                 </select>
               </div>
@@ -388,6 +395,7 @@ function RepeatedMeasuresPanelBody({ session }: { session: Session }) {
                 <div>
                   <label className="text-xs text-gray-400 block mb-1">Between-subjects factor</label>
                   <select className="select w-full" value={betweenCol} onChange={(e) => setBetweenCol(e.target.value)}>
+                    {!betweenCol && <option value="">Select between factor</option>}
                     {allCols.map((c) => <option key={c}>{c}</option>)}
                   </select>
                 </div>
@@ -395,6 +403,7 @@ function RepeatedMeasuresPanelBody({ session }: { session: Session }) {
               <div>
                 <label className="text-xs text-gray-400 block mb-1">Outcome (numeric)</label>
                 <select className="select w-full" value={valueCol} onChange={(e) => setValueCol(e.target.value)}>
+                  {!valueCol && <option value="">Select outcome</option>}
                   {numCols.map((c) => <option key={c}>{c}</option>)}
                 </select>
               </div>
@@ -404,7 +413,9 @@ function RepeatedMeasuresPanelBody({ session }: { session: Session }) {
             </>
           )}
 
-          <button className="btn-primary w-full" onClick={run} disabled={loading || (isFriedman && friedmanCols.length < 3)}>
+          <button className="btn-primary w-full" onClick={run} disabled={loading || (isPaired && (!col1 || !col2))
+            || (isLong && (!subjectCol || !withinCol || !valueCol || (isMixed && !betweenCol)))
+            || (isFriedman && friedmanCols.length < 3)}>
             {loading ? "Running\u2026" : "Run Test"}
           </button>
           {error && <p className="text-red-400 text-xs">{error}</p>}

@@ -12,6 +12,7 @@ import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
 import { useStampedResult } from "../hooks/useStampedResult";
 import { describeStale } from "../lib/resultStamp";
 import { fmtP } from "../lib/format";
+import { analysisDefaultColumns } from "../lib/columnDefaults";
 import type { PlotData, PlotCaptureHandle } from "../lib/plotTypes";
 
 // ── Result shapes (loose views over the untyped API responses) ──────────────
@@ -218,6 +219,8 @@ interface CurveStyle { color: string; width: number; dash: string; }
 interface MultiResult {
   col: string;
   auc: number;
+  /** Rows complete for this score and the outcome (each curve uses its own). */
+  n?: number;
   ci_lower?: number;
   ci_upper?: number;
   curve: { fpr: number; tpr: number }[];
@@ -365,12 +368,11 @@ function ROCPanelBody({ session }: { session: Session }) {
   }, [session.session_id]);
   // Prefer a binary 0/1 column whose name hints at an outcome; otherwise the
   // first binary column; only fall back to allCols when no binary exists.
-  const defaultOutcome =
-    binaryCols.find((c) => /mortalite|death|event|outcome|binary|status/i.test(c))
-    ?? binaryCols[0]
-    ?? allCols.find((c) => /mortalite|death|event|outcome|binary|status/i.test(c))
-    ?? allCols[0]
-    ?? "";
+  const outcomeCols = binaryCols.length > 0 ? binaryCols : allCols;
+  const defaultOutcomeCols = analysisDefaultColumns(session, outcomeCols);
+  const defaultOutcome = defaultOutcomeCols.find((c) => /mortalite|death|event|outcome|binary|status/i.test(c))
+    ?? defaultOutcomeCols[0] ?? "";
+  const defaultNumCols = analysisDefaultColumns(session, numCols);
 
   // ── Mode ──
   const [mode, setMode] = usePersistedPanelState<"single" | "multi">("roc", "mode", "single");
@@ -382,7 +384,7 @@ function ROCPanelBody({ session }: { session: Session }) {
   const rocMultiRef = useRef<PlotCaptureHandle | null>(null);
 
   // ── Single-curve state ──
-  const [scoreCol,     setScoreCol]     = usePersistedPanelState<string>("roc", "scoreCol", numCols[0] ?? "");
+  const [scoreCol,     setScoreCol]     = usePersistedPanelState<string>("roc", "scoreCol", defaultNumCols[0] ?? "");
   const [manualCutoff, setManualCutoff] = usePersistedPanelState<string>("roc", "manualCutoff", "");
   // Score direction for ROC. "auto" flips the score sign when the naive
   // AUC < 0.5 so protective biomarkers (albumin, eGFR, Hb) report the
@@ -417,7 +419,7 @@ function ROCPanelBody({ session }: { session: Session }) {
   } = useStampedResult<ROCResult>("roc", singleParams);
 
   const [showCompare, setShowCompare] = usePersistedPanelState<boolean>("roc", "showCompare", false);
-  const [scoreCol2,   setScoreCol2]   = usePersistedPanelState<string>("roc", "scoreCol2", numCols[1] ?? numCols[0] ?? "");
+  const [scoreCol2,   setScoreCol2]   = usePersistedPanelState<string>("roc", "scoreCol2", defaultNumCols[1] ?? defaultNumCols[0] ?? "");
   const compareParams = {
     scoreCol, scoreCol2, outcomeCol, direction1: scoreDirection, direction2: scoreDirection2,
   };
@@ -555,6 +557,7 @@ function ROCPanelBody({ session }: { session: Session }) {
           return {
             col: multiCols[i],
             auc: d.auc,
+            n: d.n,
             ci_lower: d.ci_lower,
             ci_upper: d.ci_upper,
             curve: d.curve,
@@ -729,16 +732,16 @@ function ROCPanelBody({ session }: { session: Session }) {
 
   const multiExport = useMemo(() => {
     if (!multiResults.length) return null;
-    const headers = ["Variable", "AUC", "CI Lower", "CI Upper"];
+    const headers = ["Variable", "n", "AUC", "CI Lower", "CI Upper"];
     const rows: (string | number | null)[][] = multiResults.map((r) =>
-      [r.col, r.auc, r.ci_lower ?? "", r.ci_upper ?? ""]
+      [r.col, r.n ?? "", r.auc, r.ci_lower ?? "", r.ci_upper ?? ""]
     );
     // Append each curve's FPR/TPR pairs after the summary so all data lands
     // in one file — section header rows mark the boundary.
     multiResults.forEach((r) => {
       if (r.curve.length) {
-        rows.push(["", "", "", ""], [`Curve — ${r.col}`, "FPR", "TPR", ""]);
-        r.curve.forEach((p) => rows.push(["", p.fpr.toFixed(6), p.tpr.toFixed(6), ""]));
+        rows.push(["", "", "", "", ""], [`Curve: ${r.col}`, "", "FPR", "TPR", ""]);
+        r.curve.forEach((p) => rows.push(["", "", p.fpr.toFixed(6), p.tpr.toFixed(6), ""]));
       }
     });
     return { headers, rows };
@@ -834,7 +837,8 @@ function ROCPanelBody({ session }: { session: Session }) {
           </label>
           <select className="select w-full text-xs" value={outcomeCol}
             onChange={(e) => { setOutcomeCol(e.target.value); setResult(null); setMultiResults([]); }}>
-            {(binaryCols.length > 0 ? binaryCols : allCols).map((c) => <option key={c} value={c}>{c}</option>)}
+            {!outcomeCol && <option value="">Select outcome</option>}
+            {outcomeCols.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
         </div>
 
@@ -845,6 +849,7 @@ function ROCPanelBody({ session }: { session: Session }) {
               <h3 className="text-sm font-semibold text-gray-700">Score / predictor</h3>
               <select className="select w-full text-xs" value={scoreCol}
                 onChange={(e) => { setScoreCol(e.target.value); setResult(null); }}>
+                {!scoreCol && <option value="">Select score</option>}
                 {numCols.map((c) => <option key={c} value={c}>{c}</option>)}
               </select>
 
@@ -940,6 +945,7 @@ function ROCPanelBody({ session }: { session: Session }) {
                     <label className="text-xs text-gray-400 block mb-1">Score 2</label>
                     <select className="select w-full text-xs" value={scoreCol2}
                       onChange={(e) => { setScoreCol2(e.target.value); setCmpResult(null); }}>
+                      {!scoreCol2 && <option value="">Select score</option>}
                       {numCols.map((c) => <option key={c} value={c}>{c}</option>)}
                     </select>
                   </div>
@@ -1699,6 +1705,7 @@ function ROCPanelBody({ session }: { session: Session }) {
                     <div className="flex items-center gap-1.5 min-w-0">
                       <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: st.color }} />
                       <span className="text-xs text-gray-600 truncate">{r.col}</span>
+                      {r.n != null && <span className="text-[10px] text-gray-400 flex-shrink-0">n={r.n}</span>}
                     </div>
                     {r.error ? (
                       <span className="text-red-500 text-xs truncate max-w-[160px]" title={r.error}>{r.error}</span>
@@ -1710,6 +1717,12 @@ function ROCPanelBody({ session }: { session: Session }) {
                   </div>
                 );
               })}
+            {new Set(multiResults.filter((r) => !r.error && r.n != null).map((r) => r.n)).size > 1 && (
+              <p className="text-[10px] text-amber-700 leading-snug">
+                Each AUC uses the rows complete for that score, so the curves rest on different samples.
+                The DeLong comparison below uses only the rows complete for every score.
+              </p>
+            )}
           </div>
 
           {/* Pairwise DeLong matrix */}

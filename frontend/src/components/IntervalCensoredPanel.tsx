@@ -1,3 +1,4 @@
+import { analysisDefaultColumns } from "../lib/columnDefaults";
 import { useMemo, useRef, useState } from "react";
 import { usePlotLayout } from "../plotStyle";
 import Plot from "../PlotComponent";
@@ -38,9 +39,10 @@ export default function IntervalCensoredPanel({ session }: { session: Session })
   const catCols = useMemo(() => analysisCols(session.columns).filter((c) => isCategoricalKind(c.kind)).map((c) => c.name), [session.columns]);
   const allCols = useMemo(() => analysisCols(session.columns).map((c) => c.name), [session.columns]);
 
+  const defaultNumCols = analysisDefaultColumns(session, numCols);
   const sid = session.session_id;
-  const [lowerCol, setLowerCol] = usePersistedPanelState<string>("survival", "icLower", numCols[0] ?? "");
-  const [upperCol, setUpperCol] = usePersistedPanelState<string>("survival", "icUpper", numCols[1] ?? "");
+  const [lowerCol, setLowerCol] = usePersistedPanelState<string>("survival", "icLower", defaultNumCols[0] ?? "");
+  const [upperCol, setUpperCol] = usePersistedPanelState<string>("survival", "icUpper", defaultNumCols[1] ?? "");
   const [groupCol, setGroupCol] = usePersistedPanelState<string>("survival", "icGroup", "");
   const [covariates, setCovariates] = usePersistedPanelState<string[]>("survival", "icCovs", []);
 

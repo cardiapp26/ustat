@@ -1,3 +1,4 @@
+import { analysisDefaultColumns } from "../lib/columnDefaults";
 import { useMemo, useRef, useState } from "react";
 import { runScoreComposite } from "../api";
 import { usePersistedPanelState } from "../hooks/usePersistedPanelState";
@@ -49,9 +50,10 @@ function ScoreCompositePanelBody({ session }: { session: Session }) {
   const numericCols = columns.filter((col) => isNumericKind(col.kind)).map((col) => col.name);
   const groupCols = columns.filter((col) => isCategoricalKind(col.kind)).map((col) => col.name);
 
-  const [groupCol, setGroupCol] = usePersistedPanelState("score_composite", "groupCol", groupCols[0] ?? "");
-  const [scoreA, setScoreA] = usePersistedPanelState("score_composite", "scoreA", numericCols[0] ?? "");
-  const [scoreB, setScoreB] = usePersistedPanelState("score_composite", "scoreB", numericCols[1] ?? numericCols[0] ?? "");
+  const defaultNumericCols = analysisDefaultColumns(session, numericCols);
+  const [groupCol, setGroupCol] = usePersistedPanelState("score_composite", "groupCol", analysisDefaultColumns(session, groupCols)[0] ?? "");
+  const [scoreA, setScoreA] = usePersistedPanelState("score_composite", "scoreA", defaultNumericCols[0] ?? "");
+  const [scoreB, setScoreB] = usePersistedPanelState("score_composite", "scoreB", defaultNumericCols[1] ?? "");
   const [labelA, setLabelA] = usePersistedPanelState("score_composite", "labelA", "");
   const [labelB, setLabelB] = usePersistedPanelState("score_composite", "labelB", "");
   const [componentsA, setComponentsA] = usePersistedPanelState<string[]>("score_composite", "componentsA", []);
@@ -153,6 +155,7 @@ function ScoreCompositePanelBody({ session }: { session: Session }) {
           <div>
             <label className="text-xs text-gray-400 block mb-1">Burden / group column</label>
             <select className="select w-full" value={groupCol} onChange={(e) => setGroupCol(e.target.value)}>
+              {!groupCol && <option value="">Select group</option>}
               {groupCols.map((name) => <option key={name} value={name}>{displayName(columns.find((col) => col.name === name), name)}</option>)}
             </select>
           </div>
@@ -281,6 +284,7 @@ function ScoreBlock({
       <div>
         <label className="text-xs text-gray-400 block mb-1">Score column</label>
         <select className="select w-full" value={score} onChange={(e) => setScore(e.target.value)}>
+          {!score && <option value="">Select score</option>}
           {numericCols.map((name) => <option key={name} value={name}>{displayName(columns.find((col) => col.name === name), name)}</option>)}
         </select>
       </div>

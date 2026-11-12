@@ -15,7 +15,8 @@
 """
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+import functools
+from typing import Callable, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -58,6 +59,26 @@ def _numeric_or_two_level(col: pd.Series, name: str) -> tuple[pd.Series, Optiona
     return coded.astype(float), {"column": name, "coded_0": levels[0], "coded_1": levels[1]}
 
 
+
+def _states_exposure_coding(fn: Callable[..., dict]) -> Callable[..., dict]:
+    """Append how a text exposure was coded to the result sentence.
+
+    The coding was returned as `exposure_coding` but no panel printed it, so a
+    reader of "IV effect = 3.40" could not tell whether that was treat minus
+    control or the reverse. In the sentence it also reaches copies and exports.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs) -> dict:
+        result = fn(*args, **kwargs)
+        coding = result.get("exposure_coding") if isinstance(result, dict) else None
+        if coding and isinstance(result.get("result_text"), str):
+            result["result_text"] = (
+                f"{result['result_text'].rstrip()} {coding['column']} was coded "
+                f"1 = '{coding['coded_1']}', 0 = '{coding['coded_0']}'."
+            )
+        return result
+    return wrapper
+
 def _p_str(p: float) -> str:
     return "<0.001" if p < 0.001 else f"{p:.4f}"
 
@@ -79,6 +100,7 @@ class IV2SLSRequest(BaseModel):
 
 
 @router.post("/iv_2sls")
+@_states_exposure_coding
 def iv_2sls(req: IV2SLSRequest):
     """Two-stage least squares IV estimator for a continuous outcome with one
     endogenous regressor. Reports the IV (2SLS) effect with correct SE, the
@@ -252,6 +274,7 @@ class MediationRequest(BaseModel):
 
 
 @router.post("/mediation")
+@_states_exposure_coding
 def mediation(req: MediationRequest):
     """Linear causal mediation (Baron-Kenny / Preacher-Hayes) for a continuous
     mediator and outcome. Decomposes the total effect into the indirect effect
@@ -416,6 +439,7 @@ def _smd_bin_cont(t: np.ndarray, c: np.ndarray) -> float:
 
 
 @router.post("/target_trial")
+@_states_exposure_coding
 def target_trial(req: TargetTrialRequest):
     """Target-trial emulation: apply explicit eligibility, estimate the
     intention-to-treat-style average treatment effect on the eligible cohort via
@@ -605,6 +629,7 @@ class DiDRequest(BaseModel):
 
 
 @router.post("/did")
+@_states_exposure_coding
 def difference_in_differences(req: DiDRequest):
     """Canonical 2×2 difference-in-differences for a continuous outcome. The
     treatment effect is the group×time interaction in OLS

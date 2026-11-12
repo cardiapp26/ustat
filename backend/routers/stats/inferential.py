@@ -15,6 +15,7 @@ from routers.engine_adapter import adapt
 from services import store
 from services.category_health import clean_two_level, rare_level_warnings
 from services.impute import apply_imputation
+from services.number_format import format_p_clause
 from services.risk_measures import compute_risk_measures
 from services.text_generators import (
     methods_chisquare, methods_fisher, methods_anova,
@@ -761,14 +762,15 @@ def noninferiority(req: NonInferiorityRequest):
         p_ni = float(scipy_stats.norm.cdf(z))
         stat_name = "z"
 
+    p_text = format_p_clause(p_ni, decimals=4)
     interp = (
         f"Non-inferiority test ({eff}, {test_g} vs {ref_g}). "
         f"{eff} = {round(est_disp, 4)} ({ci_level}% CI {round(lo_disp, 4)}–{round(hi_disp, 4)}); "
         f"prespecified margin = {req.margin}. One-sided α = {req.alpha} "
         f"(equivalently a two-sided {ci_level}% CI). "
-        + (f"Non-inferiority DEMONSTRATED — {rule}, p = {'<0.001' if p_ni < 0.001 else round(p_ni, 4)}."
+        + (f"Non-inferiority DEMONSTRATED ({rule}, {p_text})."
            if non_inferior else
-           f"Non-inferiority NOT demonstrated — {rule} fails (p = {round(p_ni, 4)}).")
+           f"Non-inferiority NOT demonstrated ({rule} fails, {p_text}).")
     )
 
     try:

@@ -30,6 +30,21 @@ def _seed(sid: str) -> str:
     return sid
 
 
+def test_missing_check_separates_distinct_raw_missing_rows_from_flagged_values():
+    sid = "mi_suspect"
+    store.save(sid, pd.DataFrame({
+        "admissions": [0, 20, None, 2] + [0, 1, 2] * 32,
+        "other": [0, 1, None, None] + [0, 1, 2] * 32,
+    }))
+    response = client.get(f"/api/stats/{sid}/missing", params={"columns": "admissions,other,admissions"})
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["raw_rows_affected"] == 2
+    assert result["rows_affected"] == 3
+    assert result["per_column"]["admissions"]["raw_count"] == 1
+    assert result["per_column"]["admissions"]["n_implausible"] == 1
+
+
 def test_panel_mice_mixed_numeric_and_categorical():
     sid = _seed("mi_panel")
     r = client.post("/api/survival_advanced/mice", json={

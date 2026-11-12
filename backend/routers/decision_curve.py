@@ -11,6 +11,7 @@ from typing import List, Optional
 from services import store
 from services.category_health import clean_two_level, rare_level_warnings
 from services.impute import apply_imputation
+from services.regression import encode_binary_outcome
 from services.decision_curve import (
     add_bootstrap_correction_to_dca,
     decision_curve_analysis_binary,
@@ -421,7 +422,8 @@ def dca(req: DCARequest):
     elif (req.probability_col or req.risk_col) and req.outcome:
         # Pre-computed probability / risk mode (best for feeding from survival ML benchmark)
         p_or_risk = df[req.probability_col or req.risk_col].values
-        y = df[req.outcome].values
+        coded, outcome_info = encode_binary_outcome(df[req.outcome], "Decision curve analysis")
+        y = coded.to_numpy(dtype=float)
         # If user gave risk scores (not probabilities), the service will still work
         # because decision_curve_analysis_binary accepts any monotonic score.
         service_res = decision_curve_analysis_binary(
@@ -434,7 +436,10 @@ def dca(req: DCARequest):
         service_res["probability_col"] = req.probability_col
         service_res["risk_col"] = req.risk_col
         service_res["outcome"] = req.outcome
-        dca_y = np.asarray(y, dtype=float)
+        service_res["outcome_event_level"] = outcome_info["event_level"]
+        if outcome_info["coded_from_text"] and service_res.get("result_text"):
+            service_res["result_text"] += f" The event is {req.outcome} = '{outcome_info['event_level']}'."
+        dca_y = y
         dca_p = np.asarray(p_or_risk, dtype=float)
 
     elif req.outcome and req.predictors:

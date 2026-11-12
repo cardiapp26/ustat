@@ -74,6 +74,18 @@ def test_formula_basic_arithmetic(client, synth):
     assert set(body) >= {"name", "dtype", "kind", "preview_values", "n_computed", "n_missing"}
 
 
+@pytest.mark.parametrize(("formula", "hint"), [
+    ("log(AGE)", "Use LOG in a formula or the Transform tab"),
+    ("NOSUCH(AGE)", "Function 'NOSUCH' is not supported"),
+])
+def test_formula_reports_unknown_function_as_function(client, synth, formula, hint):
+    sid = _fresh(synth, "formula_function_error")
+    r = client.post(f"{BASE}/{sid}/formula", json={"formula": formula, "new_col": "BAD"})
+    assert r.status_code == 422, r.text
+    assert hint in r.json()["detail"]
+    assert "BAD" not in store.get(sid).columns
+
+
 def test_formula_dedupes_a_colliding_name_instead_of_overwriting(client, synth):
     """Reported: typing an existing column's name into "New column name" and
     running a formula said a new column was created — while nothing new

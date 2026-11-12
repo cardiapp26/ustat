@@ -50,3 +50,11 @@ def test_three_level_text_exposure_is_rejected_with_a_clear_message(frame):
         iv_2sls(IV2SLSRequest(session_id=sid, outcome="y", endogenous="grp3", instruments=["z"]))
     assert err.value.status_code == 422
     assert "exactly two levels" in err.value.detail
+
+
+def test_result_text_states_how_the_text_exposure_was_coded(frame):
+    sid = make_session(frame, "causal_iv_text_sentence")
+    text = iv_2sls(IV2SLSRequest(session_id=sid, outcome="y", endogenous="arm", instruments=["z"]))
+    assert text["result_text"].endswith("arm was coded 1 = 'treat', 0 = 'control'.")
+    num = iv_2sls(IV2SLSRequest(session_id=sid, outcome="y", endogenous="treat_num", instruments=["z"]))
+    assert "was coded" not in num["result_text"]

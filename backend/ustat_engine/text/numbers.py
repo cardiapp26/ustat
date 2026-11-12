@@ -4,10 +4,7 @@ Moved verbatim from `services/number_format.py`, which now re-exports these
 three names and keeps the rest of its formatters (they are server-side
 presentation and nothing in the engine calls them).
 
-Only `format_p` and its two supports moved, because only they are reached from
-a result the engine returns: `results_ttest_ind` prints `p = <0.001` through
-this function. A second copy in the browser that rounded to `0.000` at the
-boundary would contradict the `p` field sitting beside it in the same payload.
+Engine results use this same policy for tables and prose.
 """
 from __future__ import annotations
 
@@ -23,7 +20,7 @@ def _finite(x) -> bool:
         return False
 
 
-def format_p(p, *, prefix: bool = False) -> str:
+def format_p(p, *, prefix: bool = False, decimals: int = 3) -> str:
     """Canonical p-value string: '<0.001' or exact 3-decimal (0.035 → '0.035').
     `prefix=True` → 'p<0.001' / 'p=0.035'."""
     if not _finite(p):
@@ -31,8 +28,16 @@ def format_p(p, *, prefix: bool = False) -> str:
     n = float(p)
     if n < 0.001:
         return "p<0.001" if prefix else "<0.001"
-    body = f"{n:.3f}"
+    body = f"{n:.{decimals}f}"
     return f"p={body}" if prefix else body
 
 
-__all__ = ["DASH", "_finite", "format_p"]
+def format_p_clause(p, *, decimals: int = 3) -> str:
+    """Write a p-value as part of a sentence."""
+    body = format_p(p, decimals=decimals)
+    if body.startswith("<"):
+        return f"p < {body[1:]}"
+    return f"p = {body}"
+
+
+__all__ = ["DASH", "_finite", "format_p", "format_p_clause"]

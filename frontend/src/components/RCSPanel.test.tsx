@@ -49,6 +49,19 @@ describe('RCSPanel', () => {
     expect(screen.getByText('Configure and fit an RCS model')).toBeInTheDocument()
   })
 
+  it('keeps identifiers available for manual selection without choosing them by default', () => {
+    const session = rcsSession()
+    session.columns.unshift({ name: 'pid', dtype: 'int64', kind: 'numeric', role: 'id' })
+    installSession(session)
+    render(<RCSPanel />)
+
+    for (const label of ['Predictor (continuous)', 'Duration column']) {
+      const picker = within(screen.getByText(label).parentElement!).getByRole('combobox')
+      expect(picker).toHaveValue('AGE')
+      expect(within(picker).getByRole('option', { name: 'pid' })).toBeInTheDocument()
+    }
+  })
+
   it('Univariate RCS (Cox outcome): runs and renders the dose-response curve', async () => {
     installSession(rcsSession())
     server.use(
@@ -63,9 +76,10 @@ describe('RCSPanel', () => {
           model_type: 'cox',
           duration_col: 'TIME',
           event_col: 'EVENT',
-          knots: [100, 130, 160],
+          knots: [0.010001, 0.010002, 0.01456],
           n_knots: 3,
-          ref_value: 130,
+          ref_value: 0.01123456,
+          nadir: { x: 0.01123456, at_boundary: false },
           n: 4,
           n_total: 4,
           n_events: 3,
@@ -87,6 +101,10 @@ describe('RCSPanel', () => {
     expect(screen.getAllByTestId('plotly-mock').length).toBeGreaterThan(0)
     // non-linearity badge
     expect(screen.getByText(/non-linearity/)).toBeInTheDocument()
+    expect(screen.getByText('0.010001')).toBeInTheDocument()
+    expect(screen.getByText('0.010002')).toBeInTheDocument()
+    expect(screen.getByText('0.014560')).toBeInTheDocument()
+    expect(screen.getByText('nadir = 0.011235')).toBeInTheDocument()
   })
 
   it('Univariate RCS: shows backend error message on failure', async () => {
@@ -353,7 +371,8 @@ describe('RCSPanel reference and curve layers', () => {
 
     await waitFor(() => expect(sent).not.toBeNull())
     expect(sent!.ref_strategy).toBe('nadir')
-    expect(await screen.findByText('nadir = 50')).toBeInTheDocument()
+    expect(sent!.outcome).toBe('EVENT')
+    expect(await screen.findByText('nadir = 50.00')).toBeInTheDocument()
     expect(screen.getByText(/95% CI excludes OR = 1 for AGE/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Show distribution' })).toHaveAttribute('aria-pressed', 'true')
   })
@@ -366,7 +385,7 @@ describe('RCSPanel reference and curve layers', () => {
     render(<RCSPanel />)
     await settle()
     await user.click(await screen.findByRole('button', { name: 'Run RCS' }))
-    expect(await screen.findByText('no interior nadir (lowest at 40)')).toBeInTheDocument()
+    expect(await screen.findByText('no interior nadir (lowest at 40.00)')).toBeInTheDocument()
   })
 })
 

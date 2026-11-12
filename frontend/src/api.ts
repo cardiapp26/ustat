@@ -1,6 +1,6 @@
 import axios from "axios";
 // Type-only, so the api ⇄ store cycle is erased at compile time.
-import type { ColKind } from "./store";
+import type { ColKind, Session } from "./store";
 import { runColumnStructureMutation } from "./lib/columnStructureLock";
 import { fromResponseHeaders, record as recordProvenance } from "./lib/engine/provenance";
 import { installSessionRecovery } from "./lib/sessionRecovery";
@@ -162,6 +162,7 @@ export interface SessionColumnInfo {
   name: string;
   dtype: string;
   kind: ColKind;
+  id_like?: boolean;
   value_labels?: Record<string, string>;
 }
 
@@ -382,7 +383,17 @@ export const runKMComposite = (data: object) => api.post("/api/charts/km_composi
 export const runLinear   = (data: object) => api.post("/api/models/linear", data);
 export const runMultiOutcomeRegression = (data: object) => api.post("/api/models/multi_outcome_regression", data);
 export const runRCS      = (data: object) => api.post("/api/models/rcs", data);
-export const runLogistic = (data: object) => api.post("/api/models/logistic", data);
+// The foreground fit can be saved to the dataset. Analysis replays reuse the
+// URL/body without this header, so background Split File runs need no tokens.
+export const runLogistic = (data: object) =>
+  api.post("/api/models/logistic", data, { headers: { "X-Ustat-Save-Probabilities": "true" } });
+export const saveLogisticProbabilities = (sessionId: string, fitToken: string) =>
+  api.post<Pick<Session, "rows" | "columns" | "preview"> & {
+    name: string;
+    n_computed: number;
+    n_missing: number;
+    undo_depth: number;
+  }>("/api/models/logistic/save_probabilities", { session_id: sessionId, fit_token: fitToken });
 export const runFirthLogistic = (data: object) => api.post("/api/models/firth_logistic", data);
 export const runLogisticTable = (data: object) => api.post("/api/models/logistic_table", data);
 export const runPoisson  = (data: object) => api.post("/api/models/poisson", data);

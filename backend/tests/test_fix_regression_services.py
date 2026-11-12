@@ -12,7 +12,7 @@ import pytest
 import statsmodels.api as sm
 from fastapi import HTTPException
 
-from routers.models.linear import _is_id_like
+from services.column_identifiers import is_id_like
 from services.causal_sensitivity import e_value
 from services.psm import (
     _compute_smd,
@@ -245,18 +245,36 @@ def test_propensity_model_is_maximum_likelihood():
 @pytest.mark.parametrize("name", ["steroid", "thyroid", "nodes", "num_vessels", "number_of_stents", "caseload"])
 def test_ordinary_covariates_are_not_identifiers(name):
     rng = np.random.default_rng(5)
-    assert not _is_id_like(name, pd.Series(rng.integers(0, 4, 200)))
+    assert not is_id_like(name, pd.Series(rng.integers(0, 4, 200)))
 
 
 def test_continuous_covariate_is_not_an_identifier():
     rng = np.random.default_rng(5)
-    assert not _is_id_like("ldl", pd.Series(rng.normal(120, 30, 200)))
+    assert not is_id_like("ldl", pd.Series(rng.normal(120, 30, 200)))
 
 
 @pytest.mark.parametrize("name", ["patient_id", "subjectID", "record_no", "id"])
 def test_repeated_subject_identifier_is_detected(name):
-    assert _is_id_like(name, pd.Series(np.repeat(np.arange(40), 5)))
+    assert is_id_like(name, pd.Series(np.repeat(np.arange(40), 5)))
 
 
 def test_unique_integer_code_is_detected_whatever_its_name():
-    assert _is_id_like("x", pd.Series(np.arange(1000, 1200)))
+    assert is_id_like("x", pd.Series(np.arange(1000, 1200)))
+
+
+def test_upload_and_session_identifiers_use_full_column_values(client):
+    frame = pd.DataFrame({
+        "pid": np.arange(3000),
+        "visit_number": np.r_[np.zeros(2000), np.arange(1000)].astype(float) / 2,
+        "score": np.r_[np.arange(2000), np.repeat(100, 1000)],
+        "steroid": np.tile([0, 1], 1500),
+        "age": np.linspace(20.1, 80.1, 3000),
+    })
+    uploaded = client.post(
+        "/api/upload/", files={"file": ("ids.csv", frame.to_csv(index=False), "text/csv")},
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    session = uploaded.json()
+    expected = {"pid": True, "visit_number": True, "score": False, "steroid": False, "age": False}
+    for payload in (session, client.get(f"/api/sessions/{session['session_id']}").json()):
+        assert {c["name"]: c["id_like"] for c in payload["columns"]} == expected

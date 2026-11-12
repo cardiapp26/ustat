@@ -9,7 +9,6 @@ export const MODEL_FOREST_TITLE: Record<string, string> = {
   firth_ortable: "Firth penalized logistic regression",
   logistic: "Logistic regression",
   ortable: "Logistic regression",
-  cox: "Cox proportional hazards",
   ordinal: "Ordinal logistic regression",
 };
 
@@ -43,16 +42,6 @@ export const MODEL_GUIDANCE: Record<string, { use: string; check: string; interp
     use: "Zero-inflated counts that are also overdispersed (variance well above the mean among the non-structural rows). Adds a negative-binomial dispersion alpha to the zero-inflated Poisson model.",
     check: "Outcome must be non-negative integers with at least one zero. Check the Vuong test against the standard negative binomial and the alpha estimate: alpha near 0 means a zero-inflated Poisson would do. Keep the zero-inflation part small.",
     interpret: "Count table: IRR among non-structural rows. Zero-inflation table: OR of a structural zero. alpha is the dispersion (theta = 1/alpha). Report both tables, alpha and the Vuong verdict.",
-  },
-  km: {
-    use: "Visualise time-to-event data. The survival curve shows the probability of surviving beyond each time point. Log-rank test compares curves between groups.",
-    check: "Event column must be binary 0/1 (1 = event occurred). Duration must be positive. Censoring is assumed non-informative.",
-    interpret: "Curves that separate early = strong effect. Log-rank p < 0.05 = significant difference between groups. Median survival = time at which 50% have had the event.",
-  },
-  cox: {
-    use: "Regression for time-to-event data with multiple predictors. Returns Hazard Ratios (HR) — the multiplicative effect on the event rate.",
-    check: "Proportional hazards assumption: HR should be constant over time (check Schoenfeld residuals). Event column must be binary 0/1.",
-    interpret: "HR > 1 = higher hazard (worse prognosis). HR < 1 = protective. HR = 1 = no effect. Report: HR (95% CI), p-value.",
   },
   ordinal: {
     use: "Ordinal outcome with ≥3 ordered categories (e.g. NYHA I–IV, Killip, none/mild/severe). Proportional-odds model — one OR per predictor shared across the cumulative thresholds.",

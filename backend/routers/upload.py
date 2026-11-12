@@ -12,6 +12,7 @@ import pyreadstat
 from fastapi import APIRouter, UploadFile, File, HTTPException, Request
 from loguru import logger
 from services import store
+from services.column_identifiers import is_id_like
 from services.ingest_coercion import coerce_with_report
 
 router = APIRouter()
@@ -414,7 +415,7 @@ async def upload_file(request: Request, file: UploadFile = File(...)):
         kind = _kind_with_imported_metadata(df[col], col_metadata)
         if kind != detected_kind:
             kind_overrides[col] = kind
-        col_obj = {"name": col, "dtype": str(df[col].dtype), "kind": kind}
+        col_obj = {"name": col, "dtype": str(df[col].dtype), "kind": kind, "id_like": is_id_like(col, df[col])}
         for key in ("label", "value_labels", "missing_ranges", "missing_user_values", "measure"):
             if key in col_metadata:
                 col_obj[key] = col_metadata[key]
